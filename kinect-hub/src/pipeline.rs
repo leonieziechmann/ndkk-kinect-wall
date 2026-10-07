@@ -9,7 +9,7 @@ use bytes::Bytes;
 use serde_json::json;
 use tracing::{info, warn};
 
-use crate::lut::build_param_set;
+use crate::lut::{build_param_set, param_set_with_rays};
 use crate::protocol::{FLAG_HAS_IR, MessageBuf, PIXELS, Stream, WorkerHeader};
 use crate::state::{CameraParams, FrameSet, FrameStats, Hub, ParamSet, now_us};
 
@@ -88,14 +88,36 @@ pub struct Pipeline {
     params: Option<Arc<ParamSet>>,
 }
 
+/// The `ir` byte for tone-table entry `i` (raw IR values from `i << IR_SHIFT`).
+fn ir_tone(i: u32) -> u8 {
+    let v = (i << IR_SHIFT) as f32 + 8.0;
+    ((v / IR_WHITE).clamp(0.0, 1.0).sqrt() * 255.0 + 0.5) as u8
+}
+
+/// For every byte of the `ir` stream, a raw IR value that the pipeline maps back to exactly that
+/// byte, so a recorded `ir` stream replays unchanged. Bytes the tone mapping never produces get
+/// the value of the next higher one.
+pub fn ir_raw_for_tone() -> [f32; 256] {
+    let entries = 65536u32 >> IR_SHIFT;
+    let mut first = [None; 256];
+    for i in 0..entries {
+        if let Some(slot) = first.get_mut(usize::from(ir_tone(i)))
+            && slot.is_none() {
+                *slot = Some(i);
+            }
+    }
+    let mut raw = [0.0; 256];
+    let mut next = entries - 1;
+    for (out, entry) in raw.iter_mut().zip(first).rev() {
+        next = entry.unwrap_or(next);
+        *out = (next << IR_SHIFT) as f32 + 8.0; // the middle of the entry
+    }
+    raw
+}
+
 impl Pipeline {
     pub fn new(hub: Arc<Hub>) -> Pipeline {
-        let ir_table = (0..(65536u32 >> IR_SHIFT))
-            .map(|i| {
-                let v = (i << IR_SHIFT) as f32 + 8.0;
-                ((v / IR_WHITE).clamp(0.0, 1.0).sqrt() * 255.0 + 0.5) as u8
-            })
-            .collect();
+        let ir_table = (0..(65536u32 >> IR_SHIFT)).map(ir_tone).collect();
         Pipeline { hub, filtered: vec![0.0; PIXELS], ir_table, hist: vec![0; HIST_BINS], params: None }
     }
 
@@ -124,11 +146,22 @@ impl Pipeline {
                 return;
             }
         }
+        self.publish_params(build_param_set(params));
+    }
+
+    /// Camera parameters with the rays recorded from the real sensor (replay): clients get the
+    /// `lut` exactly as the Kinect's hub sent it.
+    pub fn set_recorded_params(&mut self, params: CameraParams, rays: Vec<f32>) {
+        self.publish_params(param_set_with_rays(params, rays));
+    }
+
+    fn publish_params(&mut self, set: ParamSet) {
+        let p = &set.params;
         info!(
             "camera parameters: fx {:.2} fy {:.2} cx {:.2} cy {:.2} k1 {:.4} k2 {:.4} k3 {:.4} (serial {}, firmware {})",
-            params.fx, params.fy, params.cx, params.cy, params.k1, params.k2, params.k3, params.serial, params.firmware
+            p.fx, p.fy, p.cx, p.cy, p.k1, p.k2, p.k3, p.serial, p.firmware
         );
-        let set = Arc::new(build_param_set(params));
+        let set = Arc::new(set);
         self.params = Some(set.clone());
         self.hub.params.send_replace(Some(set));
     }
@@ -254,4 +287,20 @@ pub fn points_message(depth: &[u16], rays: &[f32], seq: u32, capture: u64, publi
         *out = xyz_bytes(d, *ray);
     }
     m.finish(Stream::Points, seq, capture, publish)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recorded_ir_replays_unchanged() {
+        let raw = ir_raw_for_tone();
+        for i in 0..(65536u32 >> IR_SHIFT) {
+            let byte = ir_tone(i);
+            let v = raw.get(usize::from(byte)).copied().unwrap_or(f32::NAN);
+            // what on_frame does with a raw IR value
+            assert_eq!(ir_tone(v.min(65535.0) as u32 >> IR_SHIFT), byte, "table entry {i}");
+        }
+    }
 }

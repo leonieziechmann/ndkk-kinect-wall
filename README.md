@@ -32,7 +32,7 @@ python viewer.py --hub
 python pointcloud.py --hub
 ```
 
-Ohne Kinect gibt es eine generierte Testszene: `kinect-hub.exe --source synthetic`.
+Ohne Kinect gibt es eine generierte Testszene: `kinect-hub.exe --source synthetic`. Echte Daten ohne jemanden vor dem Sensor liefert eine Aufnahme: `kinect-hub-probe record --seconds 30 --out recordings/NAME.k2rec` nimmt vom laufenden Hub auf, `kinect-hub.exe --source replay recordings/NAME.k2rec --bind 127.0.0.1:8091` spielt sie in Schleife ab (siehe [`kinect-hub/README.md`](kinect-hub/README.md)). Aufnahmen zeigen den Raum und die Menschen darin und bleiben in `recordings/`, das git ignoriert.
 
 ## Aus dem Repo bauen
 

@@ -22,7 +22,7 @@ cargo build --release                      # im Ordner kinect-hub
 kinect-hub\target\release\kinect-hub.exe   # aus dem Projektordner
 ```
 
-Optionen (`--help`): `--bind 0.0.0.0:8090` (LAN statt nur localhost), `--source synthetic` (generierte Testszene ohne Kinect), `--pipeline cl|cpu`, `--smoothing 0.4`, `--max-clients 64`, `--allow-origin URL`, `--web-dir` (z. B. `web/dist` für gebaute Szenen), `--worker`. Logging über `RUST_LOG=debug`.
+Optionen (`--help`): `--bind 0.0.0.0:8090` (LAN statt nur localhost), `--source synthetic` (generierte Testszene ohne Kinect), `--source replay DATEI` (Aufnahme in Schleife abspielen, s. u.), `--pipeline cl|cpu`, `--smoothing 0.4`, `--max-clients 64`, `--allow-origin URL`, `--web-dir` (z. B. `web/dist` für gebaute Szenen), `--worker`. Logging über `RUST_LOG=debug`.
 
 Der Worker `fn2/bin/fn2_capture.exe` wird mit `sh fn2/build.sh` gebaut. Er braucht den libusbK-Treiber auf „Xbox NUI Sensor (Interface 0)“.
 
@@ -79,6 +79,51 @@ Die Zeiten sind µs seit 1970 auf der Uhr des Hub-Rechners. `capture_time_us` is
 - **Python:** `kinect_hub.py` im Projektordner: `Hub().depth()`, `.points()`, `.status()` per HTTP (nur Standardbibliothek + numpy), Live-Stream mit `Hub().stream([...])` (braucht `pip install websockets`). `viewer.py --hub` und `pointcloud.py --hub` lesen ebenfalls vom Hub.
 - **Andere Origins:** Seiten von anderen localhost-Ports (z. B. Vite) sind erlaubt. Fremde Origins nur mit `--allow-origin`, damit keine beliebige Website den Tiefenstream deines Zimmers lesen kann.
 
+## Aufnahme und Wiedergabe
+
+Steht gerade niemand vor der Kinect, sehen Szenen nur einen leeren Raum. Eine Aufnahme liefert echte Daten mit Menschen, Bewegung und Sensorrauschen, und zwar bei jedem Lauf dieselben. So lassen sich Szenen reproduzierbar entwickeln und vergleichen.
+
+```
+kinect-hub-probe record --seconds 30 --out recordings/NAME.k2rec            # vom laufenden Hub aufnehmen
+kinect-hub --source replay recordings/NAME.k2rec --bind 127.0.0.1:8091       # eigener Hub, spielt sie in Schleife ab
+```
+
+**Aufnahme** (`kinect-hub-probe record`):
+- Liest vom **laufenden** Hub per WebSocket (`--url`, Standard `ws://127.0.0.1:8090/ws`), nie direkt vom Sensor. Der Haupt-Hub läuft dabei ungestört weiter.
+- Abonniert `depth_raw`, `ir` und `lut`. Die Kameraparameter kommen aus `hello`/`params`.
+- Speichert jeden Frame mit seinem `capture_time_us`.
+- Strg+C beendet früher und behält das Aufgenommene.
+- Eine vorhandene Datei wird nicht überschrieben.
+- Am Ende liest der Recorder die Datei zur Kontrolle zurück und meldet Frames, Dauer, fps und vom Stream übersprungene Frames.
+- Größe: etwa 20 MB/s, 30 s ≈ 590 MB.
+
+**Wiedergabe** (`--source replay DATEI`):
+- Spielt die Aufnahme endlos im originalen Frame-Takt ab. Pausen über 1 s (z. B. ein Sensorneustart während der Aufnahme) werden auf 1 s gekürzt.
+- Läuft durch dieselbe Pipeline wie die Kinect, also mit Glättung für `depth`, `points`, Statistik und PNGs.
+- `depth_raw` und `ir` kommen Byte für Byte so heraus, wie sie aufgenommen wurden. Kameraparameter und LUT stammen aus der Datei.
+- `seq` zählt fortlaufend ab 0. `capture_time_us` ist der Zeitpunkt der Wiedergabe, Latenzmessungen stimmen also.
+- `/api/status` meldet `"source": "replay"`, das Sensor-Detail nennt Datei, Frames und Länge.
+- Fehlt die Datei oder ist sie kaputt, zeigt der Status `offline` mit dem Grund. Die API läuft weiter, und der Hub versucht es alle 5 s erneut, eine ersetzte Datei wird also übernommen. Eine abgebrochene Aufnahme spielt bis zum letzten vollständigen Frame.
+- Ein relativer Pfad, den es im aktuellen Ordner nicht gibt, wird auch oberhalb der `kinect-hub.exe` gesucht. `recordings/NAME.k2rec` funktioniert deshalb auch aus einem Worktree, solange man das Hub-Exe des Hauptordners startet.
+- Ein Replay-Hub fasst die Kinect nie an. Er kann auf einem eigenen Port neben dem Haupt-Hub laufen, beliebig viele gleichzeitig.
+
+**Format `.k2rec`** (little-endian, Details in `src/recording.rs`):
+
+```
+Dateikopf, 32 Byte:
+  u32 magic "K2RC" | u32 version (1) | u32 header_len (Offset des ersten Frames)
+  | u16 width (512) | u16 height (424) | u32 info_len | u32 lut_len | u64 reserviert (0)
+info_len Byte JSON:  {"params": {Kameraparameter wie vom Hub gesendet}, "recorded_at_us", "source_url", "hub_source", …}
+lut_len Byte:        Nutzdaten der lut-Nachricht: f32 x,y je Pixel
+dann Frames bis zum Dateiende, je 24 Byte Kopf und Pixel:
+  u32 magic "K2RF" | u32 seq | u64 capture_time_us | u16 flags (1 = IR folgt) | u16 reserviert
+  | u32 payload_len | u16 Tiefe[512*424] in mm (depth_raw) | u8 ir[512*424] (ir-Stream)
+```
+
+Es gibt keine Frame-Anzahl im Kopf, damit eine abgebrochene Aufnahme lesbar bleibt. Für die Wiedergabe rechnet der Hub die IR-Bytes in Rohwerte zurück, die sein Tonemapping wieder auf genau dieselben Bytes abbildet.
+
+**Datenschutz:** Aufnahmen zeigen den Raum und die Menschen darin. Sie gehören nach `recordings/` (wie `*.k2rec` per `.gitignore` ausgeschlossen) und werden nie committet oder hochgeladen.
+
 ## Robustheit
 
 - Im Code gibt es kein `unwrap`, `expect`, `panic!` und keine ungeprüfte Indizierung (Clippy-Lints auf `deny`). Fehler werden behandelt und geloggt.
@@ -115,7 +160,10 @@ Hilfreich dafür sind `TCP_NODELAY`, geteilte Puffer (kein Kopieren pro Client) 
 ```
 kinect-hub-probe stream --clients 5 --seconds 10 --streams depth,ir,meta   # fps, Latenz, Lücken je Client
 kinect-hub-probe abuse                                                       # Missbrauchstest, s. u.
+kinect-hub-probe abuse --url ws://127.0.0.1:8093/ws                          # dasselbe gegen einen Replay-Hub
 ```
+
+Ohne Kinect oder für reproduzierbare Messungen: einen Replay-Hub auf einem freien Port starten (`--source replay recordings/NAME.k2rec --bind 127.0.0.1:8093`) und die Probe mit `--url` darauf richten.
 
 `abuse`: Ein gesunder Client misst durchgehend, während andere angreifen:
 - Müll senden, fluten, übergroße Nachrichten schicken, nicht mehr lesen

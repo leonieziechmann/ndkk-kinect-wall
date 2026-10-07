@@ -1,5 +1,5 @@
-//! The data source thread: supervises the capture worker process (or runs the synthetic scene)
-//! and feeds every message into the pipeline.
+//! The data source thread: supervises the capture worker process (or runs the synthetic scene,
+//! or replays a recording) and feeds every message into the pipeline.
 //!
 //! libfreenect2 never runs inside the hub. The worker is a separate process: if it crashes,
 //! hangs or the Kinect misbehaves, the hub kills and restarts it with a backoff while clients
@@ -20,7 +20,7 @@ use crate::config::SourceKind;
 use crate::pipeline::Pipeline;
 use crate::protocol::{WORKER_HEADER_LEN, WorkerKind, parse_worker_header};
 use crate::state::{Hub, SensorState};
-use crate::synthetic;
+use crate::{replay, synthetic};
 
 /// A worker that sends nothing (not even its 1 Hz heartbeat) for this long is considered hung.
 const WORKER_SILENCE_LIMIT: Duration = Duration::from_secs(5);
@@ -81,6 +81,7 @@ fn run(hub: Arc<Hub>) {
         let result = catch_unwind(AssertUnwindSafe(|| match hub.cfg.source {
             SourceKind::Kinect => supervise_worker(&hub),
             SourceKind::Synthetic => synthetic::run(&hub),
+            SourceKind::Replay => replay::run(&hub),
         }));
         if let Err(p) = result {
             error!("source crashed ({}), restarting it", panic_message(p.as_ref()));

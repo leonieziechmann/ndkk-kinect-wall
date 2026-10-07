@@ -1,4 +1,4 @@
-//! kinect-hub-probe: measures and abuses a running kinect-hub.
+//! kinect-hub-probe: measures and abuses a running kinect-hub, and records from it.
 //!
 //!   kinect-hub-probe stream [--url ws://127.0.0.1:8090/ws] [--clients N] [--seconds S] [--streams depth,ir]
 //!       N clients subscribe; prints frames/s, latency (sensor capture -> client) and sequence gaps
@@ -6,13 +6,24 @@
 //!       one healthy client keeps measuring while others misbehave (garbage, flooding, oversized
 //!       messages, a client that stops reading, connection churn, too many clients, PNG requests,
 //!       junk and floods against the dev server registry)
+//!   kinect-hub-probe record --out recordings/NAME.k2rec [--url ...] [--seconds S]
+//!       records depth_raw + ir with their capture timestamps from the running hub (never from the
+//!       sensor itself) for `kinect-hub --source replay FILE`; the format is in src/recording.rs
+
+#[path = "../recording.rs"]
+mod recording;
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::BufWriter;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_tungstenite::connect_async;
@@ -28,6 +39,7 @@ struct Args {
     clients: usize,
     seconds: u64,
     streams: Vec<String>,
+    out: Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -37,16 +49,18 @@ fn parse_args() -> Result<Args, String> {
         clients: 1,
         seconds: 10,
         streams: vec!["depth".into()],
+        out: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut val = || it.next().ok_or(format!("{arg} needs a value"));
         match arg.as_str() {
-            "stream" | "abuse" => a.mode = arg.clone(),
+            "stream" | "abuse" | "record" => a.mode = arg.clone(),
             "--url" => a.url = val()?,
             "--clients" => a.clients = val()?.parse().map_err(|e| format!("--clients: {e}"))?,
             "--seconds" => a.seconds = val()?.parse().map_err(|e| format!("--seconds: {e}"))?,
             "--streams" => a.streams = val()?.split(',').map(str::to_string).collect(),
+            "--out" => a.out = Some(PathBuf::from(val()?)),
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -366,6 +380,241 @@ async fn abuse_registry(url: &str) -> String {
     format!("{} -> {verdict}", parts.join(", "))
 }
 
+/// State of `record`: camera parameters and LUT come first, then frames as depth_raw + ir pairs.
+struct Recorder {
+    url: String,
+    part: PathBuf,
+    hub_source: Option<Value>,
+    hub_sensor: Option<Value>,
+    params: Option<Value>,
+    /// width, height and the payload of the `lut` message
+    lut: Option<(u16, u16, Bytes)>,
+    writer: Option<recording::Writer<BufWriter<File>>>,
+    /// A depth_raw frame waiting for the ir of the same frame: seq, capture time, pixels.
+    pending: Option<(u32, u64, Bytes)>,
+    started: Option<Instant>,
+    frames: u64,
+    with_ir: u64,
+    /// Why the recording has to end early.
+    stop: Option<String>,
+}
+
+impl Recorder {
+    fn on_text(&mut self, text: &str) {
+        let Ok(v) = serde_json::from_str::<Value>(text) else { return };
+        let params = v.get("params").filter(|p| p.is_object()).cloned();
+        match v.get("type").and_then(Value::as_str) {
+            Some("hello") => {
+                self.hub_sensor = v.get("sensor").cloned();
+                self.params = self.params.take().or(params);
+            }
+            // once recording, a change shows in the LUT that follows
+            Some("params") if self.writer.is_none() && params.is_some() => self.params = params,
+            Some("error") => eprintln!("hub: {text}"),
+            _ => {}
+        }
+    }
+
+    fn on_binary(&mut self, b: &Bytes) -> Result<(), String> {
+        let (Some(magic), Some(kind), Some(header_len), Some(seq), Some(w), Some(h), Some(capture)) = (
+            b.get(0..4).and_then(|s| s.try_into().ok()).map(u32::from_le_bytes),
+            b.get(4).copied(),
+            b.get(6..8).and_then(|s| s.try_into().ok()).map(u16::from_le_bytes),
+            b.get(8..12).and_then(|s| s.try_into().ok()).map(u32::from_le_bytes),
+            b.get(12..14).and_then(|s| s.try_into().ok()).map(u16::from_le_bytes),
+            b.get(14..16).and_then(|s| s.try_into().ok()).map(u16::from_le_bytes),
+            b.get(16..24).and_then(|s| s.try_into().ok()).map(u64::from_le_bytes),
+        ) else {
+            return Ok(());
+        };
+        if magic != 0x3148_324B || usize::from(header_len) > b.len() {
+            return Ok(());
+        }
+        let payload = b.slice(usize::from(header_len)..);
+        let pixels = usize::from(w) * usize::from(h);
+        match kind {
+            16 if payload.len() == pixels * 8 => {
+                if self.writer.is_none() {
+                    self.lut = Some((w, h, payload));
+                } else if self.lut.as_ref().is_some_and(|(_, _, old)| *old != payload) {
+                    self.stop = Some("the camera parameters changed".to_string());
+                }
+            }
+            2 if payload.len() == pixels * 2 => {
+                if self.writer.is_none() && !self.start()? {
+                    return Ok(()); // parameters or LUT still missing
+                }
+                if let Some((s, c, depth)) = self.pending.take() {
+                    self.write(s, c, &depth, None)?;
+                }
+                self.pending = Some((seq, capture, payload));
+            }
+            3 if payload.len() == pixels => {
+                if let Some((s, c, depth)) = self.pending.take() {
+                    self.write(s, c, &depth, (s == seq).then_some(payload.as_ref()))?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Creates the file once the camera parameters and the LUT are known.
+    fn start(&mut self) -> Result<bool, String> {
+        let (Some(params), Some((w, h, lut))) = (&self.params, &self.lut) else { return Ok(false) };
+        let info = json!({
+            "params": params,
+            "recorded_at_us": now_us(),
+            "source_url": self.url,
+            "hub_source": self.hub_source,
+            "hub_sensor": self.hub_sensor,
+            "recorder": concat!("kinect-hub-probe ", env!("CARGO_PKG_VERSION")),
+            "depth": "u16 mm per pixel from the depth_raw stream (unfiltered)",
+            "ir": "u8 per pixel from the ir stream (sqrt tone-mapped)",
+        });
+        let fail = |e: std::io::Error| format!("cannot write {}: {e}", self.part.display());
+        let file = File::create(&self.part).map_err(fail)?;
+        self.writer = Some(recording::Writer::new(BufWriter::with_capacity(1 << 20, file), *w, *h, &info, lut).map_err(fail)?);
+        self.started = Some(Instant::now());
+        println!("recording ...");
+        Ok(true)
+    }
+
+    fn write(&mut self, seq: u32, capture: u64, depth: &[u8], ir: Option<&[u8]>) -> Result<(), String> {
+        let Some(w) = self.writer.as_mut() else { return Ok(()) };
+        w.frame(seq, capture, depth, ir).map_err(|e| format!("cannot write {}: {e}", self.part.display()))?;
+        self.frames += 1;
+        self.with_ir += u64::from(ir.is_some());
+        Ok(())
+    }
+}
+
+/// Records from a running hub into `--out` (written as `<out>.part`, renamed when complete).
+async fn run_record(a: &Args) -> Result<String, String> {
+    let out = a.out.clone().ok_or("record needs --out FILE, e.g. --out recordings/people.k2rec")?;
+    if out.exists() {
+        return Err(format!("{} exists already: choose another name or delete it first", out.display()));
+    }
+    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    let mut part = out.clone().into_os_string();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let result = record_into(a, &part).await;
+    let reason = match result {
+        Ok((frames, reason)) if frames > 0 => reason,
+        other => {
+            let _ = std::fs::remove_file(&part);
+            return Err(match other {
+                Err(e) => e,
+                Ok((_, reason)) => format!("no frames recorded ({reason}); is the hub streaming? see /api/status"),
+            });
+        }
+    };
+    std::fs::rename(&part, &out).map_err(|e| format!("cannot rename {} to {}: {e}", part.display(), out.display()))?;
+    let rec = recording::Recording::open(&out).map_err(|e| format!("{} was written but does not read back: {e}", out.display()))?;
+    let secs = rec.duration_us() as f64 / 1e6;
+    let ir = rec.frames.iter().filter(|f| f.has_ir).count();
+    let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+    Ok(format!(
+        "{}: {} frames ({ir} with IR), {secs:.1} s, {:.1} fps, {} skipped by the hub stream, {:.0} MB ({reason})\n\
+         replay: kinect-hub --source replay {} --bind 127.0.0.1:8091",
+        out.display(),
+        rec.frames.len(),
+        if secs > 0.0 { (rec.frames.len() as f64 - 1.0) / secs } else { 0.0 },
+        rec.skipped_frames(),
+        size as f64 / 1e6,
+        out.display()
+    ))
+}
+
+/// Returns the number of frames written and why the recording ended.
+async fn record_into(a: &Args, part: &Path) -> Result<(u64, String), String> {
+    let hub_source = match http_get(&a.url, "/api/status").await {
+        Ok((200, body)) => serde_json::from_slice::<Value>(&body).ok().and_then(|v| v.get("source").cloned()),
+        _ => None,
+    };
+    let (ws, _) = connect_async(a.url.as_str()).await.map_err(|e| format!("cannot connect to {}: {e}", a.url))?;
+    let (mut tx, mut rx) = ws.split();
+    let sub = json!({"type": "subscribe", "streams": ["depth_raw", "ir", "lut"]}).to_string();
+    tx.send(Message::text(sub)).await.map_err(|e| format!("subscribe: {e}"))?;
+    println!(
+        "{}: {} s from {} (hub source {}), about 20 MB per second",
+        part.display(),
+        a.seconds,
+        a.url,
+        hub_source.as_ref().and_then(Value::as_str).unwrap_or("?")
+    );
+
+    let mut r = Recorder {
+        url: a.url.clone(),
+        part: part.to_path_buf(),
+        hub_source,
+        hub_sensor: None,
+        params: None,
+        lut: None,
+        writer: None,
+        pending: None,
+        started: None,
+        frames: 0,
+        with_ir: 0,
+        stop: None,
+    };
+    let ctrl_c = async {
+        if tokio::signal::ctrl_c().await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::pin!(ctrl_c);
+    let mut keepalive = tokio::time::interval(Duration::from_secs(10)); // the hub drops clients silent for 60 s
+    keepalive.tick().await;
+    let connected = Instant::now();
+    let mut reported = Instant::now();
+    let reason = loop {
+        if let Some(reason) = r.stop.take() {
+            break reason;
+        }
+        match r.started {
+            Some(t) if t.elapsed() >= Duration::from_secs(a.seconds) => break format!("{} s recorded", a.seconds),
+            Some(t) if reported.elapsed() >= Duration::from_secs(5) => {
+                println!("  {:4.1} s, {} frames", t.elapsed().as_secs_f64(), r.frames);
+                reported = Instant::now();
+            }
+            None if connected.elapsed() > Duration::from_secs(15) => {
+                let state = r.hub_sensor.as_ref().and_then(|s| s.get("state")).and_then(Value::as_str).unwrap_or("?");
+                break format!("nothing to record within 15 s (sensor {state})");
+            }
+            _ => {}
+        }
+        let msg = tokio::select! {
+            m = rx.next() => m,
+            _ = &mut ctrl_c => break "stopped with Ctrl+C".to_string(),
+            _ = keepalive.tick() => {
+                let _ = tx.send(Message::text("{\"type\":\"ping\"}")).await;
+                continue;
+            }
+            _ = tokio::time::sleep(Duration::from_millis(500)) => continue,
+        };
+        match msg {
+            Some(Ok(Message::Binary(b))) => r.on_binary(&b)?,
+            Some(Ok(Message::Text(t))) => r.on_text(t.as_str()),
+            Some(Ok(_)) => {}
+            Some(Err(e)) => break format!("connection lost: {e}"),
+            None => break "the hub closed the connection".to_string(),
+        }
+    };
+    let _ = tx.send(Message::Close(None)).await;
+    // an unpaired depth frame at the end is dropped: every frame either has its IR or never had one
+    if let Some(w) = r.writer.take() {
+        w.finish().map_err(|e| format!("cannot write {}: {e}", part.display()))?;
+    }
+    if r.frames > 0 && r.with_ir > 0 && r.with_ir < r.frames {
+        println!("note: {} of {} frames came without IR", r.frames - r.with_ir, r.frames);
+    }
+    Ok((r.frames, reason))
+}
+
 #[tokio::main]
 async fn main() {
     let a = match parse_args() {
@@ -377,6 +626,13 @@ async fn main() {
     };
     match a.mode.as_str() {
         "abuse" => run_abuse(&a).await,
+        "record" => match run_record(&a).await {
+            Ok(summary) => println!("{summary}"),
+            Err(e) => {
+                eprintln!("record failed: {e}");
+                std::process::exit(1);
+            }
+        },
         _ => run_stream(&a).await,
     }
 }
