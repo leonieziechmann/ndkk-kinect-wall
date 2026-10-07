@@ -227,14 +227,15 @@ Recordings with people (local only, never commit or upload them) are in `recordi
 | `alt-live2` | a small full room: up to 5 people, sitting, standing close, in the door |
 | `alt-desk2` | a desk, a person close to the camera |
 
-Play one on your own hub and point the scene at it:
+Play one on a replay hub as in [AGENTS.md](AGENTS.md#recorded-people-instead-of-an-empty-room) (one replay hub serves everyone: if 8091 already plays a recording, use it; another recording on 8092, …), and point the scene at it:
 
 ```bash
-"$MAIN/kinect-hub/target/release/kinect-hub.exe" --source replay recordings/final-solo.k2rec --bind 127.0.0.1:8091
+curl -s http://127.0.0.1:8091/api/status        # "source":"replay"? which file: sensor.detail
+"$MAIN/kinect-hub/target/release/kinect-hub.exe" --source replay "$MAIN/recordings/final-solo.k2rec" --bind 127.0.0.1:8091   # else, in the BACKGROUND
 npm run check my-scene -- --hub 8091 --seconds 12
 ```
 
-Allow 8–12 s: the pose model loads and warms up first (about 5 s). Stop the replay hub when you are done.
+Allow 8–12 s: the pose model loads and warms up first (about 5 s).
 
 ## Good to know
 
