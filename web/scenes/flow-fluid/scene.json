@@ -1,0 +1,7 @@
+{
+  "title": "Neonströmung",
+  "description": "Fluid-Simulation, die du mit deinen Bewegungen umrührst: Optical Flow (Lucas-Kanade auf der GPU) aus Tiefe und IR treibt Strömung und Neonfarbe, nur gleichmäßige Bewegung zählt, Rauschen nicht. Maus ziehen geht auch.",
+  "author": "claude/fluid-simulation-optical-flow-7cd5f8",
+  "based_on": "depth-shader",
+  "created": "2026-10-07"
+}
