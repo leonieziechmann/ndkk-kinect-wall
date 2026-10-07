@@ -68,9 +68,9 @@ export class FlowTracker {
    * kept in between (backwards if `to` is older). Only points with use[k] = 1 move. A point that
    * cannot be followed in a step moves like the median of the others (or not at all) and is tried
    * again in the next step; lost[k] counts such steps in a row. False if a frame is not kept
-   * (nothing moved).
+   * (nothing moved). check = false skips tracking back (twice as fast, for rough predictions).
    */
-  track(from, to, pts, n, use, lost) {
+  track(from, to, pts, n, use, lost, check = true) {
     if (from === to) return true;
     let a = -1;
     let b = -1;
@@ -97,7 +97,7 @@ export class FlowTracker {
         const nx = out[0];
         const ny = out[1];
         // and back: it must come out where it started
-        if (!this._lk(J, I, nx, ny) || (out[0] - x) ** 2 + (out[1] - y) ** 2 > this.maxError ** 2) continue;
+        if (check && (!this._lk(J, I, nx, ny) || (out[0] - x) ** 2 + (out[1] - y) ** 2 > this.maxError ** 2)) continue;
         ok[p] = 1;
         lost[p] = 0;
         dx[m] = nx - x;

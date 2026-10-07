@@ -40,7 +40,9 @@ function onPose(m) {
   if (m.error) poseError = m.error;
   else {
     poseError = null;
-    tracker.setPoses(m.poses, m.seq);
+    // the frame the pose belongs to is usually still waiting here: its depth checks the pose
+    const f = queue.find((q) => q.seq === m.seq);
+    tracker.setPoses(m.poses, m.seq, f ? new Uint16Array(f.depth) : null);
     posedUpTo = m.seq;
     poseMs = poseRuns ? 0.9 * poseMs + 0.1 * m.ms : m.ms;
     poseRuns++;
