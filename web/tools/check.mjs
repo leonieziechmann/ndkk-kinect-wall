@@ -115,6 +115,8 @@ function report(r) {
     if (s.state === 'error') problems.push('Szene angehalten');
     for (const e of s.errors) problems.push(`${e.where}${e.count > 1 ? ` (${e.count}×)` : ''}: ${e.message}${e.stack ? `\n${e.stack}` : ''}`);
     if (s.state === 'running' && s.frames < 10) problems.push(`nur ${s.frames} Frames gerendert`);
+    if (s.persons?.error) problems.push(`Personen-Tracker: ${s.persons.error}`);
+    else if (s.persons && s.kinect?.received > 30 && !s.persons.results) problems.push('Personen-Tracker liefert keine Ergebnisse');
     if (s.hubFps !== undefined && s.hubFps < 22) {
       problems.push(
         `Die Kinect-Bildrate im Hub fiel auf ${s.hubFps} fps, solange die Szene lief: sie lastet die GPU so aus, dass die Tiefenberechnung (gleiche GPU) nicht mehr mitkommt. GPU-Last senken oder maxFps: 30 setzen.`,
@@ -128,7 +130,9 @@ function report(r) {
   const k = s?.kinect;
   const data = !k ? '' : !k.connected ? `Kinect: keine Verbindung zu ${k.hub}` : k.received === 0 ? `Kinect: ${k.sensor}, keine Bilder` : `Kinect ${k.fps} fps · Latenz ${k.latencyMs} ms`;
   const hub = s?.hubFps !== undefined ? `Hub ${s.hubFps} fps` : null;
-  const line = s ? [`${s.fps} fps`, data, hub, s.size ? s.size.join('×') : null, `bereit nach ${s.readyMs} ms`].filter(Boolean).join(' · ') : '';
+  const p = s?.persons;
+  const persons = p ? `${p.count} Personen (Pose ${p.poseMs ?? '–'} ms ${p.provider ?? '?'} ×${p.poseRuns}, Maske ${p.ms ?? '–'} ms${p.delayMs ? `, verzögert ${p.delayMs} ms` : ''}${p.floor ? `, Boden ${p.floor} m` : ''})` : null;
+  const line = s ? [`${s.fps} fps`, data, hub, persons, s.size ? s.size.join('×') : null, `bereit nach ${s.readyMs} ms`].filter(Boolean).join(' · ') : '';
   console.log(`${failed ? 'FEHLER' : 'OK    '}  ${r.name.padEnd(22)} ${line}`);
   if (k?.received > 0 && s.hubFps >= 22 && k.fps < 0.75 * s.hubFps) {
     logs.push(

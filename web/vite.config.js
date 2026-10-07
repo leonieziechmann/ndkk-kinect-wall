@@ -20,6 +20,9 @@ export default defineConfig({
     // scenes are loaded at runtime: name them so new dependencies do not trigger a reload later
     entries: ['index.html', 'scene.html', 'scenes/*/main.{js,ts}'],
     include: ['lil-gui', 'three', 'three/webgpu', 'three/tsl'],
+    // ONNX Runtime (person tracking, lib/persons-pose.js) is one self-contained ES module that loads
+    // its WebAssembly itself: served as is, never pre-bundled
+    exclude: ['onnxruntime-web'],
   },
   plugins: [kinect()],
 });

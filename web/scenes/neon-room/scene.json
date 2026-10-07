@@ -1,0 +1,5 @@
+{
+  "title": "Neon-Raum",
+  "description": "Nur die Menschen als leuchtende Punktwolken in einem minimalistischen Neon-Raum: spiegelnder Boden mit Raster, Horizont, ein Lichtring in der Tracking-Farbe unter jeder Person, das Sichtfeld der Kinect auf dem Boden. Vorlage für 3D-Effekte auf der Personenerkennung (streams: ['persons']).",
+  "author": "claude"
+}

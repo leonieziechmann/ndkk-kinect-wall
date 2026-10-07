@@ -443,10 +443,14 @@ function sensorLine(now) {
   return '';
 }
 
+function personsActive() {
+  return !!kinect._personStream?.enabled;
+}
+
 function updateHud(now) {
   if (now - lastHud < 250) return;
   lastHud = now;
-  const problem = sensorLine(now);
+  const problem = sensorLine(now) || (personsActive() && kinect.personTracker.error ? kinect.personTracker.statusText : '');
   banner.textContent = problem;
   banner.style.display = problem && !KIOSK ? 'block' : 'none';
   hud.classList.toggle('k-idle', now - lastMove > 4000);
@@ -457,6 +461,7 @@ function updateHud(now) {
     `${rt.fps.toFixed(0)} fps`,
     `Kinect ${kinect.fps.toFixed(1)} fps`,
     kinect.latencyMs ? `Latenz ${kinect.latencyMs.toFixed(0)} ms` : null,
+    personsActive() ? kinect.personTracker.statusText : null,
     rt.current?.ctx.status || null,
   ]
     .filter(Boolean)
@@ -595,6 +600,21 @@ globalThis.__kinectRuntime = {
       received: kinect.received,
       latencyMs: Math.round(kinect.latencyMs * 10) / 10,
     },
+    persons: personsActive()
+      ? {
+          results: kinect.personTracker.results,
+          count: kinect.persons?.list.length ?? 0,
+          floor: kinect.persons?.floor ? Math.round(kinect.persons.floor.height * 100) / 100 : null,
+          ms: kinect.persons ? Math.round(kinect.persons.ms * 10) / 10 : null,
+          poseMs: kinect.persons ? Math.round(kinect.persons.poseMs * 10) / 10 : null,
+          poseRuns: kinect.persons?.poseRuns ?? 0,
+          seq: kinect.persons?.seq ?? null,
+          delayMs: kinect.persons ? Math.round(kinect.persons.lag) : null,
+          waitMs: kinect.personTracker.waitStats(),
+          provider: kinect.personTracker.provider,
+          error: kinect.personTracker.error ? String(kinect.personTracker.error) : null,
+        }
+      : null,
   }),
 };
 

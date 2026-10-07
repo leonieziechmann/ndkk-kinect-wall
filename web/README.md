@@ -62,6 +62,7 @@ npm run dev
 | `lib/kinect-stream.js` | WebSocket-Client für den Hub, ohne Abhängigkeiten |
 | `lib/shader-pass.js` | Vollbild-WGSL-Shader mit Kinect-Daten, Parametern als Uniforms und Feedback |
 | `lib/camera.js`, `lib/params.js`, `lib/hub.js` | Orbit-Kamera, Parameter-Panel (lil-gui), Hub-URL und Szenenlisten |
+| `lib/persons*.js`, `lib/models/` | Personenerkennung (`streams: ['persons']`): YOLO-Pose auf dem Infrarotbild in einem eigenen Worker, Maske je Tiefenframe mit gelerntem Hintergrund, Skelett zwischen den Posen interpoliert, s. [AGENTS.md](AGENTS.md) |
 | `tools/vite-plugin-kinect.js` | Routen `/scenes/<name>/` und `/__scenes`, Vorschaubilder, Hot-Swap, Anmeldung beim Hub |
 | `tools/new-scene.mjs`, `tools/check.mjs` | `npm run new`, `npm run check` (puppeteer-core mit dem installierten Chrome/Edge) |
 | `scenes/<name>/` | eine Szene: `main.js` und `scene.json` (Titel, Beschreibung) |
@@ -73,6 +74,8 @@ Beispielszenen, zugleich Vorlagen:
 | `pointcloud` | die Punktwolke im Referenz-Look, rohes WebGPU |
 | `depth-shader` | Höhenlinien als einzelner WGSL-Shader |
 | `three-points` | three.js-Partikel |
+| `person-mask` | nur die Menschen in 2D, jede Person in ihrer Tracking-Farbe |
+| `neon-room` | nur die Menschen als Punktwolken in einem virtuellen Neon-Raum |
 
 ## Gut zu wissen
 
@@ -83,3 +86,4 @@ Beispielszenen, zugleich Vorlagen:
 - **Wand ohne Node:** `npm run build`, danach `kinect-hub.exe --web-dir web/dist` und im Browser `http://127.0.0.1:8090/scenes/<name>/?kiosk`.
 - **Privatsphäre:** Vorschaubilder und Screenshots in `.cache/` zeigen den Raum und die Menschen darin. Sie sind git-ignoriert und bleiben lokal.
 - **Latenz:** Die Szenen verbinden sich direkt mit dem Hub, nicht über einen Vite-Proxy. Der Hub braucht 2–4 ms bis zum Senden, dann folgt die Darstellung im nächsten Frame.
+- **Personen sind verzögert:** Mit `streams: ['persons']` wartet jedes Bild auf die nächste Pose (etwa 150–250 ms) und bekommt dafür ein genaues Skelett. Die ganze Szene läuft dann gleichmäßig um diese Zeit versetzt. `configure({ delay: 0 })` schaltet auf live.

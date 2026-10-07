@@ -2,13 +2,14 @@
 // the scene uses WebGPU) GPU textures and buffers that are updated automatically.
 
 import { KinectStream } from './kinect-stream.js';
+import { PersonStream } from './persons.js';
 
 export const WIDTH = 512;
 export const HEIGHT = 424;
 const N = WIDTH * HEIGHT;
 // wire name -> property on KinectData
 const FRAME_STREAMS = { depth: 'depth', depth_raw: 'depthRaw', ir: 'ir', points: 'points' };
-const noneFresh = () => ({ depth: false, depthRaw: false, ir: false, points: false, meta: false, lut: false });
+const noneFresh = () => ({ depth: false, depthRaw: false, ir: false, points: false, meta: false, lut: false, persons: false });
 
 let pinhole = null;
 /** Rays of an ideal pinhole Kinect (used until the hub sent the real undistortion table). */
@@ -35,6 +36,10 @@ export class KinectData {
     this.points = null; // Int16Array x,y,z in mm (Kinect camera frame)
     this.lut = null; // Float32Array x,y ray per pixel
     this.meta = null; // per-frame JSON: seq, stats { median_mm, centroid_mm, valid_ratio, ... }
+    /** Person tracking ('persons' in streams): { list, labels, depth, indices, floor, ... }, see persons.js */
+    this.persons = null;
+    this._personStream = null;
+    this._held = new Map(); // seq -> { depth, ir, ... }: frames waiting for their (delayed) persons
     /** true during the animation frame in which new data of that kind arrived */
     this.fresh = noneFresh();
     this._pending = noneFresh();
@@ -49,17 +54,27 @@ export class KinectData {
 
     for (const [wire, prop] of Object.entries(FRAME_STREAMS)) {
       this.stream.addEventListener(wire, (e) => {
-        this[prop] = e.detail;
-        this._pending[prop] = true;
         if (prop === 'depth') {
           this.received++;
           this._count++;
+          this._personStream?.push(e.detail);
+        } else if (prop === 'ir') this._personStream?.pushIr(e.detail);
+        if (this._personStream?.delayed) {
+          // shown together with the persons of the same frame, which come a few frames later
+          let h = this._held.get(e.detail.seq);
+          if (!h) this._held.set(e.detail.seq, (h = {}));
+          h[prop] = e.detail;
+          if (this._held.size > 64) this._held.delete(this._held.keys().next().value);
+          return;
         }
+        this[prop] = e.detail;
+        this._pending[prop] = true;
       });
     }
     this.stream.addEventListener('lut', (e) => {
       this.lut = e.detail;
       this._pending.lut = true;
+      this._personStream?.setRays(e.detail.data);
     });
     this.stream.addEventListener('frame', (e) => {
       this.meta = e.detail;
@@ -104,9 +119,42 @@ export class KinectData {
     return frame ? this.stream.ageMs(frame) : Infinity;
   }
 
-  /** Runtime: subscribes the streams the scene needs (+ lut, meta, status). */
+  /**
+   * Person tracking (runs while a scene asks for 'persons'): configure({...}), statusText, error.
+   * Created on first use. With its delayed output (the default) depth, ir and the other frames
+   * here are those of the newest persons result, so everything fits together.
+   */
+  get personTracker() {
+    if (!this._personStream) {
+      this._personStream = new PersonStream((result) => {
+        this.persons = result;
+        this._pending.persons = true;
+        if (!this._personStream.delayed) return;
+        const h = this._held.get(result.seq);
+        if (h) {
+          for (const [prop, frame] of Object.entries(h)) {
+            this[prop] = frame;
+            this._pending[prop] = true;
+          }
+        }
+        for (const seq of this._held.keys()) {
+          if (seq > result.seq) break;
+          this._held.delete(seq);
+        }
+      });
+      if (this.lut) this._personStream.setRays(this.lut.data);
+    }
+    return this._personStream;
+  }
+
+  /** Runtime: subscribes the streams the scene needs (+ lut, meta, status). 'persons' implies depth and ir. */
   setStreams(list) {
-    const want = [...new Set(['lut', 'meta', 'status', ...list])].sort();
+    const persons = list.includes('persons');
+    if (persons) this.personTracker.start();
+    else this._personStream?.stop();
+    const wire = list.filter((s) => s !== 'persons');
+    if (persons) wire.push('depth', 'ir');
+    const want = [...new Set(['lut', 'meta', 'status', ...wire])].sort();
     if (want.join() === this._streams) return;
     this._streams = want.join();
     this.stream.subscribe(want);
@@ -114,6 +162,7 @@ export class KinectData {
 
   /** Runtime: once per animation frame, before the scene's frame(). */
   beginFrame(now) {
+    this._personStream?.tick(now); // delayed person tracking: its result for now (and its frames)
     this.fresh = this._pending;
     this._pending = noneFresh();
     if (this.fresh.depth) {
@@ -139,6 +188,12 @@ export class KinectData {
  *   depthBuffer   storage     u16 mm, two per u32 (as sent by the hub)
  *   irBuffer      storage     u8, four per u32
  *   lutBuffer     storage     array<vec2f>
+ * Person tracking (streams: ['persons']), all from the same depth frame:
+ *   personLabelTexture  r8uint     slot of the person per pixel (1..16), 0 = no person
+ *   personDepthTexture  r32float   depth in meters of person pixels only, 0 elsewhere
+ *   personLabelBuffer   storage    u8 slots, four per u32
+ *   personDepthBuffer   storage    u16 mm of person pixels, two per u32
+ *   personIndexBuffer   storage    array<u32>: the person pixels; count = ctx.kinect.persons.indices.length
  */
 export class KinectGpu {
   constructor(device) {
@@ -193,10 +248,59 @@ export class KinectGpu {
     return this._buffer('lutBuffer', N * 8);
   }
 
+  get personLabelTexture() {
+    return this._texture('personLabelTexture', 'r8uint');
+  }
+
+  get personDepthTexture() {
+    return this._texture('personDepthTexture', 'r32float');
+  }
+
+  get personLabelBuffer() {
+    return this._buffer('personLabelBuffer', N);
+  }
+
+  get personDepthBuffer() {
+    return this._buffer('personDepthBuffer', N * 2);
+  }
+
+  get personIndexBuffer() {
+    return this._buffer('personIndexBuffer', N * 4);
+  }
+
   upload(k) {
     const q = this.device.queue;
     const due = (key, fresh) => this._res.has(key) && (fresh || this._new.has(key));
     const size = [WIDTH, HEIGHT];
+    const p = k.persons;
+    if (p) {
+      if (due('personLabelTexture', k.fresh.persons)) {
+        q.writeTexture({ texture: this._res.get('personLabelTexture') }, p.labels, { bytesPerRow: WIDTH }, size);
+        this._new.delete('personLabelTexture');
+      }
+      if (due('personDepthTexture', k.fresh.persons)) {
+        this._personMeters ??= new Float32Array(N);
+        const m = this._personMeters;
+        m.fill(0);
+        const mm = p.depth;
+        const idx = p.indices;
+        for (let j = 0; j < idx.length; j++) m[idx[j]] = mm[idx[j]] * 0.001;
+        q.writeTexture({ texture: this._res.get('personDepthTexture') }, m, { bytesPerRow: WIDTH * 4 }, size);
+        this._new.delete('personDepthTexture');
+      }
+      if (due('personLabelBuffer', k.fresh.persons)) {
+        q.writeBuffer(this._res.get('personLabelBuffer'), 0, p.labels);
+        this._new.delete('personLabelBuffer');
+      }
+      if (due('personDepthBuffer', k.fresh.persons)) {
+        q.writeBuffer(this._res.get('personDepthBuffer'), 0, p.depth);
+        this._new.delete('personDepthBuffer');
+      }
+      if (due('personIndexBuffer', k.fresh.persons) && p.indices.length) {
+        q.writeBuffer(this._res.get('personIndexBuffer'), 0, p.indices);
+        this._new.delete('personIndexBuffer');
+      }
+    }
     if (k.depth && due('depthTexture', k.fresh.depth)) {
       this._meters ??= new Float32Array(N);
       const mm = k.depth.data;
