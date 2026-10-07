@@ -22,15 +22,15 @@
 //   seq, captureTimeUs   the depth frame it belongs to (labels and depth always match each other)
 //   lag       ms it is shown after its depth frame arrived (0 when live)
 //
-// Delayed output (default, configure({ delay: 12 })): a frame waits for the pose of a later frame,
-// at most `delay` frames (about 4..8 at 8 poses a second, 130..270 ms), and its skeleton is then
-// interpolated between the poses before and after it: as exact as a pose of every frame, the masks
-// steadier too. The results come in bursts (whenever a pose is in), so they are played out at the
-// pace of the frames, a constant time after each frame arrived: as short as the recent frames allow
-// (it skips frames to catch up when the waits get shorter, e.g. after the model's slow first run).
-// Meanwhile ctx.kinect.depth, .ir (and their GPU copies) show the same frame as the persons, so
-// everything a scene draws fits together: a smooth, slightly delayed mirror. delay: 0 = live (the
-// skeleton follows the optical flow from the last pose; faster, less exact).
+// Delayed output (default, configure({ delay: 12 })): every frame is cut out as soon as it arrives,
+// then its result waits for the pose of a later frame (at most `delay` frames, typically 4..8,
+// about 130..270 ms) and its skeleton is interpolated between the poses before and after it: as
+// exact as a pose of every frame. The results are played out at the pace of the frames, a constant
+// time after each frame arrived: as short as the recent frames allow (it skips frames to catch up
+// when the waits get shorter, e.g. after the model's slow first run). Meanwhile ctx.kinect.depth,
+// .ir (and their GPU copies) show the same frame as the persons, so everything a scene draws fits
+// together: a smooth, slightly delayed mirror. delay: 0 = live (the skeleton follows the optical
+// flow from the last pose; the same masks, a less exact skeleton on fast limbs).
 //
 // The arrays are valid until the next but one result: copy what you want to keep longer.
 // GPU copies: ctx.kinect.gpu.personLabelTexture/-Buffer, personDepthTexture/-Buffer, personIndexBuffer.
