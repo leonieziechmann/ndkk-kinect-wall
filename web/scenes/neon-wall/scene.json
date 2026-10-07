@@ -1,6 +1,6 @@
 {
   "title": "Neonwand",
-  "description": "Prototyp für die LED-Wand (6 × 2 m, 1008 × 336): Bewegung wird in 3D gemessen (Optical Flow × Tiefe, in m/s) und an ihrer echten Stelle auf die Wand gesetzt, egal wie nah man an der Kinect steht. Sie treibt ein Neon-Fluid, Farbe nach Entfernung.",
+  "description": "Prototyp für die LED-Wand (6 × 2 m, 1008 × 336) auf der Personenerkennung (live): Bewegung wird auf den Masken gemessen (Optical Flow × Tiefe, m/s) und landet an ihrer echten Stelle auf der Wand. Arme zählen mehr und reichen weiter, eine Automatik hält die Wand weder leer noch voll.",
   "author": "claude/fluid-simulation-optical-flow-7cd5f8",
   "based_on": "flow-fluid",
   "created": "2026-10-07"

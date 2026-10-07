@@ -1,5 +1,5 @@
-// Bindings and helpers of every compute pass in the sim module (camera.wgsl + sim.wgsl), and the
-// optical flow of the camera image, once per Kinect frame:
+// The optical flow of the camera image, once per person tracking result (bindings and ldA/ldB/ldC
+// come from sim.wgsl). Its input is the people only (kinect.wgsl prep), so the room adds no noise:
 //   camSignal   prep (512x424) -> signal 128x106: r now, g before, b front depth now, a before
 //   down        signal -> half resolution (64x53, then 32x27)
 //   lkCoarse    Lucas-Kanade on the coarsest level
@@ -7,15 +7,6 @@
 //   lkFinal     same on 128x106, plus smoothing over time
 // Coarse to fine because a hand 1 m from the sensor easily moves 30 pixels per frame, far more than
 // Lucas-Kanade can follow on a single level.
-@group(0) @binding(1) var texA: texture_2d<f32>;
-@group(0) @binding(2) var texB: texture_2d<f32>;
-@group(0) @binding(3) var samp: sampler;
-@group(0) @binding(4) var outTex: texture_storage_2d<rgba16float, write>;
-@group(0) @binding(5) var texC: texture_2d<f32>;
-
-fn ldA(p: vec2i) -> vec4f { return textureLoad(texA, clamp(p, vec2i(0), vec2i(textureDimensions(texA)) - 1), 0); }
-fn ldB(p: vec2i) -> vec4f { return textureLoad(texB, clamp(p, vec2i(0), vec2i(textureDimensions(texB)) - 1), 0); }
-fn ldC(p: vec2i) -> vec4f { return textureLoad(texC, clamp(p, vec2i(0), vec2i(textureDimensions(texC)) - 1), 0); }
 
 // ---- texA prep, texB previous signal. Nearness mixed with IR, averaged over 8x8 depth pixels; the
 // depth of the front surface in the block (mean of the points up to 15 cm behind the nearest)

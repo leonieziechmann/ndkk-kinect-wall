@@ -1,23 +1,25 @@
-// Shared by every pass. struct Uni is generated from FIELDS in main.js and put in front of this.
+// Shared by every pass. struct Uni and the constants BONES, BONE_COUNT, POINT_COUNT, ARM_BONES are
+// generated in main.js and put in front of this.
 @group(0) @binding(0) var<uniform> U: Uni;
+// main.js writes it whenever the person tracking has a new result:
+//   [0..3]                                  the room matrix (columns, world -> room: floor y = 0, y up, z forward)
+//   SKEL_JOINTS + slot * POINT_COUNT + j    room position of point j (m), confidence (0 = not seen)
+//   SKEL_PERSONS + slot                     color rgb, 1 if visible
+@group(0) @binding(10) var<storage, read> skel: array<vec4f>;
 
 const KINECT_FPS = 30.0;
+const SKEL_JOINTS = 4u;
+const SKEL_PERSONS = SKEL_JOINTS + 17u * POINT_COUNT;
 
-// a vector in the Kinect camera frame (x right, y down, z forward) -> room axes:
-// x right as seen on the wall (mirrored by xSign), down, forward (away from the wall)
-fn roomAxes(v: vec3f) -> vec3f {
-  let t = radians(U.camTilt);
-  return vec3f(U.xSign * v.x, v.y * cos(t) + v.z * sin(t), v.z * cos(t) - v.y * sin(t));
-}
-// a point in the camera frame (m) -> wall frame: x = meters right of the wall center,
-// y = height above the floor, z = distance in front of the camera
-fn toWall(cam: vec3f) -> vec3f {
-  let r = roomAxes(cam);
-  return vec3f(r.x + U.camX, U.camH - r.y, r.z);
-}
-// wall frame (x, height) -> wall uv: 0..1, y down
+fn roomMatrix() -> mat4x4f { return mat4x4f(skel[0], skel[1], skel[2], skel[3]); }
+fn toRoom(world: vec3f) -> vec3f { return (roomMatrix() * vec4f(world, 1.0)).xyz; }
+fn roomVector(world: vec3f) -> vec3f { return (roomMatrix() * vec4f(world, 0.0)).xyz; }
+fn joint(slot: u32, j: u32) -> vec4f { return skel[SKEL_JOINTS + slot * POINT_COUNT + j]; }
+fn person(slot: u32) -> vec4f { return skel[SKEL_PERSONS + slot]; }
+
+// room (x right, height above the floor) -> wall uv: 0..1, y down
 fn wallUv(xh: vec2f) -> vec2f {
-  return vec2f(xh.x / U.wallW + 0.5, (U.wallBottom + U.wallH - xh.y) / U.wallH);
+  return vec2f((xh.x + U.camX) / U.wallW + 0.5, (U.wallBottom + U.wallH - xh.y) / U.wallH);
 }
 fn nearness(d: f32) -> f32 { return saturate((U.zoneFar - d) / max(U.zoneFar - U.zoneNear, 0.01)); }
 
