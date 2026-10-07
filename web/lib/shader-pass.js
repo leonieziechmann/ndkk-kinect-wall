@@ -13,11 +13,32 @@
 //   pointAt(k)       3D point in world space (m, x right, y up, z forward); z = 0 without measurement
 //   inImage(k)       k inside the depth image?
 //   prev(uv)         the previous output (only with feedback: true; for trails, echoes, ...)
+// with streams: ['persons'] (person tracking, see persons.js; without it these stay 0):
+//   personAt(k)      slot of the person at k (u32, 1..16), 0 = no person
+//   isPerson(k)      personAt(k) > 0
+//   personMask(k)    0..1 with smooth edges (bilinear), for soft silhouettes
+//   personDepthAt(k) depth in meters if k belongs to a person, else 0 (same frame as the labels)
+//   personPointAt(k) 3D point (world, m) of a person pixel; z = 0 elsewhere
+//   personColor(s)   the default color of slot s (PERSON_COLORS in persons.js)
+// the skeletons (also in mode 'skeleton', where the masks above stay empty):
+//   personVisible(s)            slot s has a visible person; personInfo(s): visible, id, height m, age s
+//   personJointUv(s, J_...)     xy: depth image uv like kinectUv(), z: depth m, w: confidence (0 = not seen)
+//   personJoint(s, J_...)       xyz: world m like pointAt(), w: confidence
+//   personBox(s)                the person's box in depth image uv (u0, v0, u1, v1)
+//   personBoneDist(k, s)        distance (depth image pixels) from k to the stick figure of slot s
+//   skeletonDist(k)             x: distance to the nearest stick figure of anyone, y: its slot (0 = none)
+//   J_NOSE … J_RIGHT_ANKLE (0..16, COCO), J_NECK, J_PELVIS, J_HEAD, J_LEFT_HAND, J_RIGHT_HAND,
+//   J_CENTER, J_GROUND; BONES / BONE_COUNT: the stick figure as pairs of J_ indices
 //
 //   const pass = await createShaderPass(ctx, { shade: SHADE_WGSL, feedback: true });
 //   frame(ctx) { pass.render(); }
 
 import { optionValues } from './params.js';
+import { PERSON_COLORS, POINTS, BONES, MAX_PERSONS } from './persons.js';
+import { PERSON_POINTS } from './kinect-data.js';
+
+// WGSL names of the person points: leftHand -> J_LEFT_HAND
+const jointConsts = POINTS.map((n, i) => `const J_${n.replace(/[A-Z]/g, (c) => `_${c}`).toUpperCase()} = ${i}u;`).join('\n');
 
 /** Creates a shader module and throws a readable error (line numbers of `code`) if WGSL fails. */
 export async function checkedModule(device, code, label = 'shader', lineOffset = 0) {
@@ -101,6 +122,9 @@ ${layout.struct}
 @group(0) @binding(4) var lutTex: texture_2d<f32>;   // rg: ray per pixel, point = (x*z, y*z, z)
 @group(0) @binding(5) var prevTex: texture_2d<f32>;  // previous output (feedback: true)
 @group(0) @binding(6) var smoothSampler: sampler;
+@group(0) @binding(7) var personTex: texture_2d<u32>;      // slot of the person per pixel, 0 = none
+@group(0) @binding(8) var personDepthTex: texture_2d<f32>; // meters, person pixels only
+@group(0) @binding(9) var<storage, read> personPoints: array<vec4f>; // see personJoint()
 
 const KINECT_SIZE = vec2f(512.0, 424.0);
 
@@ -125,6 +149,70 @@ fn pointAt(k: vec2f) -> vec3f {
   return vec3f(F.xSign * ray.x * z, -ray.y * z, z);
 }
 fn prev(uv: vec2f) -> vec4f { return textureSampleLevel(prevTex, smoothSampler, uv, 0.0); }
+fn personAt(k: vec2f) -> u32 { return textureLoad(personTex, kinectPx(k), 0).r; }
+fn isPerson(k: vec2f) -> bool { return personAt(k) > 0u; }
+fn personMask(k: vec2f) -> f32 {
+  let p = clamp(k, vec2f(0.0), vec2f(1.0)) * KINECT_SIZE - vec2f(0.5);
+  let i = vec2i(floor(p));
+  let f = fract(p);
+  let hi = vec2i(511, 423);
+  let a = f32(textureLoad(personTex, clamp(i, vec2i(0), hi), 0).r > 0u);
+  let b = f32(textureLoad(personTex, clamp(i + vec2i(1, 0), vec2i(0), hi), 0).r > 0u);
+  let c = f32(textureLoad(personTex, clamp(i + vec2i(0, 1), vec2i(0), hi), 0).r > 0u);
+  let d = f32(textureLoad(personTex, clamp(i + vec2i(1, 1), vec2i(0), hi), 0).r > 0u);
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+fn personDepthAt(k: vec2f) -> f32 { return textureLoad(personDepthTex, kinectPx(k), 0).r; }
+fn personPointAt(k: vec2f) -> vec3f {
+  let px = kinectPx(k);
+  let z = textureLoad(personDepthTex, px, 0).r;
+  let ray = textureLoad(lutTex, px, 0).rg;
+  return vec3f(F.xSign * ray.x * z, -ray.y * z, z);
+}
+const PERSON_COLORS = array<vec3f, ${PERSON_COLORS.length}>(${PERSON_COLORS.map((h) => {
+  const v = Number.parseInt(h.slice(1), 16);
+  return `vec3f(${(((v >> 16) & 255) / 255).toFixed(4)}, ${(((v >> 8) & 255) / 255).toFixed(4)}, ${((v & 255) / 255).toFixed(4)})`;
+}).join(', ')});
+fn personColor(slot: u32) -> vec3f { return PERSON_COLORS[min(slot, ${PERSON_COLORS.length - 1}u)]; }
+${jointConsts}
+const PERSON_SLOTS = ${MAX_PERSONS}u;
+const PERSON_POINTS = ${PERSON_POINTS}u;
+const BONE_COUNT = ${BONES.length}u;
+const BONES = array<vec2u, ${BONES.length}>(${BONES.map(([a, b]) => `vec2u(${a}u, ${b}u)`).join(', ')});
+fn personEntry(slot: u32, j: u32) -> u32 { return (min(slot, PERSON_SLOTS) * PERSON_POINTS + min(j, PERSON_POINTS - 1u)) * 2u; }
+fn personInfo(slot: u32) -> vec4f { return personPoints[personEntry(slot, PERSON_POINTS - 1u)]; }
+fn personVisible(slot: u32) -> bool { return slot > 0u && personInfo(slot).x > 0.5; }
+fn personBox(slot: u32) -> vec4f { return personPoints[personEntry(slot, PERSON_POINTS - 1u) + 1u]; }
+fn personJointUv(slot: u32, j: u32) -> vec4f { return personPoints[personEntry(slot, j)]; }
+fn personJoint(slot: u32, j: u32) -> vec4f { return personPoints[personEntry(slot, j) + 1u]; }
+fn segmentDist(p: vec2f, a: vec2f, b: vec2f) -> f32 {
+  let ab = b - a;
+  let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+  return length(p - a - ab * t);
+}
+fn personBoneDist(k: vec2f, slot: u32) -> f32 {
+  var d = 1e6;
+  if (!personVisible(slot)) { return d; }
+  let p = k * KINECT_SIZE;
+  for (var b = 0u; b < BONE_COUNT; b++) {
+    let a = personJointUv(slot, BONES[b].x);
+    let c = personJointUv(slot, BONES[b].y);
+    if (a.w > 0.0 && c.w > 0.0) { d = min(d, segmentDist(p, a.xy * KINECT_SIZE, c.xy * KINECT_SIZE)); }
+  }
+  return d;
+}
+fn skeletonDist(k: vec2f) -> vec2f {
+  var best = vec2f(1e6, 0.0);
+  for (var s = 1u; s <= PERSON_SLOTS; s++) {
+    if (!personVisible(s)) { continue; }
+    let box = personBox(s);
+    let m = 40.0 / KINECT_SIZE; // a few cm around the box: hands and the glow just outside
+    if (any(k < box.xy - m) || any(k > box.zw + m)) { continue; }
+    let d = personBoneDist(k, s);
+    if (d < best.x) { best = vec2f(d, f32(s)); }
+  }
+  return best;
+}
 `;
 }
 
@@ -166,6 +254,9 @@ export async function createShaderPass(ctx, { shade, feedback = false } = {}) {
       { binding: 4, visibility: FRAG, texture: { sampleType } },
       { binding: 5, visibility: FRAG, texture: { sampleType: 'float' } },
       { binding: 6, visibility: FRAG, sampler: { type: 'filtering' } },
+      { binding: 7, visibility: FRAG, texture: { sampleType: 'uint' } },
+      { binding: 8, visibility: FRAG, texture: { sampleType: 'unfilterable-float' } },
+      { binding: 9, visibility: FRAG, buffer: { type: 'read-only-storage' } },
     ],
   });
   const targetFormat = feedback ? 'rgba16float' : format;
@@ -193,7 +284,13 @@ export async function createShaderPass(ctx, { shade, feedback = false } = {}) {
   const paramData = new Float32Array(layout.size / 4);
   const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
   const black = device.createTexture({ size: [1, 1], format: 'rgba16float', usage: GPUTextureUsage.TEXTURE_BINDING });
-  const kinectViews = [gpu.depthTexture.createView(), gpu.irTexture.createView(), gpu.lutTexture.createView()];
+  const kinectViews = [
+    gpu.depthTexture.createView(),
+    gpu.irTexture.createView(),
+    gpu.lutTexture.createView(),
+    gpu.personLabelTexture.createView(),
+    gpu.personDepthTexture.createView(),
+  ];
   const group = (prevView) =>
     device.createBindGroup({
       layout: bindLayout,
@@ -205,6 +302,9 @@ export async function createShaderPass(ctx, { shade, feedback = false } = {}) {
         { binding: 4, resource: kinectViews[2] },
         { binding: 5, resource: prevView },
         { binding: 6, resource: sampler },
+        { binding: 7, resource: kinectViews[3] },
+        { binding: 8, resource: kinectViews[4] },
+        { binding: 9, resource: { buffer: gpu.personPointBuffer } },
       ],
     });
   const plainGroup = group(black.createView());

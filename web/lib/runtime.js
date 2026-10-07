@@ -3,10 +3,13 @@
 // the GPU device, the camera and the parameter values stay. Scene API: ../AGENTS.md
 //
 // Keys of the runtime: h UI on/off · f fullscreen · m mirror · , . previous/next scene (all worktrees)
+// Person tracking: streams: ['persons'] plus optional persons: {...} (or (params) => {...}), see
+// ../PERSONS.md; ctx.persons is the list of Person objects.
 // URL options: ?hub=8091 (other hub) · ?kiosk (no UI at all) · ?fps=30 (cap the render rate)
 //              · ?nothumb (no thumbnail upload)
 
 import { KinectData, KinectGpu } from './kinect-data.js';
+import { PERSON_OPTIONS } from './persons.js';
 import { ParamPanel } from './params.js';
 import { OrbitCamera } from './camera.js';
 import { hubUrl, wsUrl, devServer, localScenes, allDevServers } from './hub.js';
@@ -188,6 +191,32 @@ function createContext(inst) {
     get xSign() {
       return xSign;
     },
+    /** The tracked persons (streams: ['persons']): Person objects, see PERSONS.md. */
+    get persons() {
+      return kinect.view;
+    },
+    /** Depth image pixel (u, v) -> canvas pixels, as kinectUv() in 2D shaders (CSS px: / pixelRatio). */
+    kinectToScreen(u, v) {
+      let kx = (u + 0.5) / 512;
+      let ky = (v + 0.5) / 424;
+      if (xSign < 0) kx = 1 - kx;
+      const screen = ctx.width / Math.max(1, ctx.height);
+      const image = 512 / 424;
+      kx -= 0.5;
+      ky -= 0.5;
+      if (screen > image) ky = (ky * screen) / image;
+      else kx = (kx * image) / screen;
+      return [(kx + 0.5) * ctx.width, (ky + 0.5) * ctx.height];
+    },
+    /** World point (m, the space of ctx.camera) -> canvas pixels; null if behind the camera. */
+    worldToScreen(p) {
+      const m = ctx.camera.viewProj;
+      const x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12];
+      const y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13];
+      const w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+      if (w <= 1e-6) return null;
+      return [((x / w) * 0.5 + 0.5) * ctx.width, (0.5 - (y / w) * 0.5) * ctx.height];
+    },
     get camera() {
       if (!inst.cameraAttached) {
         inst.cameraAttached = true;
@@ -238,9 +267,32 @@ function wantedStreams(inst) {
   return Array.isArray(s) ? s : ['depth'];
 }
 
+/** The scene's `persons` options (object or (params) => object) over the defaults. */
+function wantedPersons(inst) {
+  let o = inst.def.persons ?? {};
+  if (typeof o === 'function') {
+    try {
+      o = o(inst.params.values);
+    } catch (e) {
+      pushError('persons()', e);
+      o = {};
+    }
+  }
+  return { ...PERSON_OPTIONS, ...(o && typeof o === 'object' ? o : {}) };
+}
+
+let personConfig = '';
 function updateStreams() {
   const inst = rt.pending ?? rt.current;
-  if (inst) kinect.setStreams(wantedStreams(inst));
+  if (!inst) return;
+  const streams = wantedStreams(inst);
+  kinect.setStreams(streams);
+  if (!streams.includes('persons')) return;
+  const options = wantedPersons(inst);
+  const key = JSON.stringify(options);
+  if (key === personConfig) return;
+  personConfig = key;
+  kinect.personTracker.configure(options);
 }
 
 function sizeCanvas(inst) {
@@ -364,6 +416,7 @@ function loop(now) {
   }
   const dt = Math.min(0.25, (now - lastFrame) / 1000);
   lastFrame = now;
+  kinect.xSign = xSign;
   kinect.beginFrame(now);
   if (kinect.fresh.meta) camera.track(kinect.meta?.stats?.median_mm);
   if (inst && rt.state === 'running') {
@@ -443,10 +496,14 @@ function sensorLine(now) {
   return '';
 }
 
+function personsActive() {
+  return !!kinect._personStream?.enabled;
+}
+
 function updateHud(now) {
   if (now - lastHud < 250) return;
   lastHud = now;
-  const problem = sensorLine(now);
+  const problem = sensorLine(now) || (personsActive() && kinect.personTracker.error ? kinect.personTracker.statusText : '');
   banner.textContent = problem;
   banner.style.display = problem && !KIOSK ? 'block' : 'none';
   hud.classList.toggle('k-idle', now - lastMove > 4000);
@@ -457,6 +514,7 @@ function updateHud(now) {
     `${rt.fps.toFixed(0)} fps`,
     `Kinect ${kinect.fps.toFixed(1)} fps`,
     kinect.latencyMs ? `Latenz ${kinect.latencyMs.toFixed(0)} ms` : null,
+    personsActive() ? kinect.personTracker.statusText : null,
     rt.current?.ctx.status || null,
   ]
     .filter(Boolean)
@@ -576,6 +634,8 @@ async function boot() {
 
 globalThis.__kinectRuntime = {
   hotSwap: (mod) => launch(mod, { swap: true }),
+  /** For debugging: what the scene sees as ctx.persons. */
+  persons: () => kinect.view,
   /** For tools/check.mjs and debugging. */
   status: () => ({
     scene: NAME,
@@ -595,6 +655,22 @@ globalThis.__kinectRuntime = {
       received: kinect.received,
       latencyMs: Math.round(kinect.latencyMs * 10) / 10,
     },
+    persons: personsActive()
+      ? {
+          results: kinect.personTracker.results,
+          count: kinect.persons?.list.length ?? 0,
+          floor: kinect.persons?.floor ? Math.round(kinect.persons.floor.height * 100) / 100 : null,
+          ms: kinect.persons ? Math.round(kinect.persons.ms * 10) / 10 : null,
+          poseMs: kinect.persons ? Math.round(kinect.persons.poseMs * 10) / 10 : null,
+          poseRuns: kinect.persons?.poseRuns ?? 0,
+          seq: kinect.persons?.seq ?? null,
+          mode: kinect.personTracker.options.mode ?? 'full',
+          delayMs: kinect.persons ? Math.round(kinect.persons.lag) : null,
+          waitMs: kinect.personTracker.waitStats(),
+          provider: kinect.personTracker.provider,
+          error: kinect.personTracker.error ? String(kinect.personTracker.error) : null,
+        }
+      : null,
   }),
 };
 

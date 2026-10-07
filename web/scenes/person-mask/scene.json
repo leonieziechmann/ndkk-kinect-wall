@@ -1,0 +1,5 @@
+{
+  "title": "Personen-Maske",
+  "description": "Nur die Menschen: jede Person in ihrer Tracking-Farbe mit Relief, IR-Details, Kontur, ID und Größe. Vorlage für 2D-Effekte auf der Personenerkennung (streams: ['persons'], isPerson/personMask in WGSL).",
+  "author": "claude"
+}
