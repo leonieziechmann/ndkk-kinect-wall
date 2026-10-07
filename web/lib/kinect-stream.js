@@ -160,7 +160,9 @@ export class KinectStream extends EventTarget {
       this._retryMs = 250;
       this._bestRtt = Infinity;
       this.subscribe(this.streams, this.maxFps);
-      this._ping();
+      // a few quick pings: right after loading the page is often busy, and a delayed pong would
+      // skew the clock offset; the sample with the shortest round trip wins
+      for (const ms of [0, 150, 400, 900, 2000]) this._later(() => this._ping(), ms);
       clearInterval(this._pingTimer);
       this._pingTimer = setInterval(() => this._ping(), 5000);
       this._emit('open', {});

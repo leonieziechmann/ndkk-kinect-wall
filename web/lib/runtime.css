@@ -1,0 +1,41 @@
+:root { color-scheme: dark; }
+html, body { margin: 0; height: 100%; background: #111; color: #ddd; overflow: hidden; font: 13px/1.45 system-ui, sans-serif; }
+#stage { position: fixed; inset: 0; }
+.k-canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+.k-canvas.k-pending { visibility: hidden; }
+/* scenes put their own DOM in ctx.dom; it does not catch the mouse unless a child sets pointer-events */
+.k-scene-dom { position: fixed; inset: 0; pointer-events: none; }
+
+.k-hud {
+  position: fixed; left: 14px; bottom: 14px; z-index: 5; padding: 8px 11px; border-radius: 8px;
+  background: rgba(0, 0, 0, 0.5); color: #d8d8d8; white-space: pre; font-variant-numeric: tabular-nums;
+  transition: opacity 0.6s; pointer-events: none;
+}
+.k-hud.k-idle { opacity: 0; }
+.k-hud-title { font-weight: 600; color: #fff; }
+.k-hud-keys { color: #9a9aa0; }
+.k-hud a { color: #8fc1ff; pointer-events: auto; }
+
+.k-banner {
+  position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 6; display: none;
+  padding: 6px 12px; border-radius: 6px; background: rgba(110, 80, 10, 0.85); color: #fff;
+}
+
+.k-error {
+  position: fixed; left: 14px; top: 14px; z-index: 20; display: none; max-width: min(900px, calc(100vw - 360px));
+  max-height: 60vh; overflow: auto; padding: 10px 12px; border-radius: 8px; border: 1px solid #b44;
+  background: rgba(50, 8, 8, 0.94); color: #fdd; font: 12px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap;
+}
+.k-error-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; font-family: system-ui, sans-serif; }
+.k-error-actions button { margin-left: 6px; background: #3a1515; color: #fdd; border: 1px solid #b44; border-radius: 4px; cursor: pointer; }
+.k-error-msg { margin-top: 6px; color: #fff; }
+.k-error-stack { color: #d99; padding-left: 12px; }
+.k-error-hint { margin-top: 8px; color: #b88; font-family: system-ui, sans-serif; }
+
+.k-missing { position: fixed; inset: 0; padding: 40px; background: #161618; overflow: auto; z-index: 30; }
+.k-missing h1 { font-size: 20px; }
+.k-missing a { color: #8fc1ff; line-height: 2; }
+
+.k-ui-hidden .k-hud, .k-kiosk .k-hud { display: none; }
+.lil-gui.kinect-params { --width: 300px; z-index: 10; }
+.lil-gui.kinect-params .controller.changed > .name { color: #ffcf6b; }

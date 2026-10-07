@@ -12,7 +12,7 @@ Kinect ─USB─▶ fn2_capture.exe   (C++/libfreenect2 + OpenCL, eigener Prozes
              Fan-out     – „latest only“: langsame Clients überspringen Frames statt zu verzögern
                  │ ws://127.0.0.1:8090/ws  +  http://127.0.0.1:8090/api/…
                  ▼
-           web/ (WebGPU), kinect_hub.py, eigene Agenten …
+           Szenen im Browser (web/, ein Vite-Dev-Server je Worktree), kinect_hub.py, eigene Agenten …
 ```
 
 ## Start
@@ -22,7 +22,7 @@ cargo build --release                      # im Ordner kinect-hub
 kinect-hub\target\release\kinect-hub.exe   # aus dem Projektordner
 ```
 
-Optionen (`--help`): `--bind 0.0.0.0:8090` (LAN statt nur localhost), `--source synthetic` (generierte Testszene ohne Kinect), `--pipeline cl|cpu`, `--smoothing 0.4`, `--max-clients 64`, `--allow-origin URL`, `--web-dir`, `--worker`. Logging über `RUST_LOG=debug`.
+Optionen (`--help`): `--bind 0.0.0.0:8090` (LAN statt nur localhost), `--source synthetic` (generierte Testszene ohne Kinect), `--pipeline cl|cpu`, `--smoothing 0.4`, `--max-clients 64`, `--allow-origin URL`, `--web-dir` (z. B. `web/dist` für gebaute Szenen), `--worker`. Logging über `RUST_LOG=debug`.
 
 Der Worker `fn2/bin/fn2_capture.exe` wird mit `sh fn2/build.sh` gebaut. Er braucht den libusbK-Treiber auf „Xbox NUI Sensor (Interface 0)“.
 
@@ -30,13 +30,16 @@ Der Worker `fn2/bin/fn2_capture.exe` wird mit `sh fn2/build.sh` gebaut. Er brauc
 
 | | |
 |---|---|
-| `GET /` | Web-Clients aus `web/` (Startseite mit Status und 2D-Vorschau, `/pointcloud/` = WebGPU) |
+| `GET /` | Startseite aus `web/`: Status, 2D-Vorschau und die Szenen aller angemeldeten Dev-Server |
 | `GET /api` | maschinenlesbare Beschreibung von allem hier (für Agenten) |
 | `GET /api/status` | Sensorzustand, fps, Latenz, Clients, Worker, Fehlerzähler, Statistik des letzten Frames |
 | `GET /api/params` | Intrinsik und Verzeichnung der Tiefenkamera (aus der Kinect gelesen) |
 | `GET /api/lut` | Entzerrungstabelle: f32 x,y je Pixel |
 | `GET /api/frame/{depth,depth_raw,ir,points,meta}` | neuester Frame binär; `?format=png` für depth (16 Bit, mm) und ir |
 | `GET /ws` | WebSocket-Stream |
+| `GET /api/devservers` | Register der Szenen-Dev-Server (Vite, einer je Worktree) mit ihren Szenen |
+| `POST /api/devservers` | Dev-Server meldet sich an: `{url: "http://127.0.0.1:<port>", label, branch, worktree, hub, pid, scenes: [...]}`. Alle paar Sekunden wiederholen, Einträge verfallen nach 15 s. Erledigt das Vite-Plugin in `web/tools/`. |
+| `DELETE /api/devservers?url=…` | Dev-Server meldet sich ab |
 
 ## WebSocket-Protokoll
 
@@ -68,11 +71,11 @@ u32 seq | u16 width (512) | u16 height (424) | u64 capture_time_us | u64 publish
 
 Die Zeiten sind µs seit 1970 auf der Uhr des Hub-Rechners. `capture_time_us` ist der Moment, in dem der fertige Tiefenframe aus libfreenect2 kam.
 
-**Koordinaten:** Kamerakoordinaten der Kinect: x nach rechts, y nach unten, z nach vorn, Einheit mm. 3D-Punkt eines Pixels: `(lut.x * z, lut.y * z, z)`. Die LUT enthält die Linsenentzerrung, die der Hub einmal pro Sensorstart berechnet. Das Kinect-Bild kommt gespiegelt; für eine echte 3D-Ansicht x negieren (macht `/pointcloud/` standardmäßig, Taste `m`).
+**Koordinaten:** Kamerakoordinaten der Kinect: x nach rechts, y nach unten, z nach vorn, Einheit mm. 3D-Punkt eines Pixels: `(lut.x * z, lut.y * z, z)`. Die LUT enthält die Linsenentzerrung, die der Hub einmal pro Sensorstart berechnet. Das Kinect-Bild kommt gespiegelt; für eine echte 3D-Ansicht x negieren (machen die Szenen standardmäßig, Taste `m`).
 
 ## Eigene Clients
 
-- **Browser:** Seite unter `web/<name>/` anlegen, `import { KinectStream } from '/lib/kinect-stream.js'`. Die Dateien liefert der Hub ohne Neustart aus. Ein Beispiel steht auf der Startseite, der WebGPU-Renderer liegt unter `web/pointcloud/main.js`.
+- **Browser:** Szenen entstehen in `web/scenes/<name>/` und laufen über einen Vite-Dev-Server mit Hot-Swap, siehe [`web/README.md`](../web/README.md) und [`web/AGENTS.md`](../web/AGENTS.md). Für eine schlichte Seite ohne Build genügt `import { KinectStream } from '/lib/kinect-stream.js'`; der Hub liefert `web/` direkt aus.
 - **Python:** `kinect_hub.py` im Projektordner: `Hub().depth()`, `.points()`, `.status()` per HTTP (nur Standardbibliothek + numpy), Live-Stream mit `Hub().stream([...])` (braucht `pip install websockets`). `viewer.py --hub` und `pointcloud.py --hub` lesen ebenfalls vom Hub.
 - **Andere Origins:** Seiten von anderen localhost-Ports (z. B. Vite) sind erlaubt. Fremde Origins nur mit `--allow-origin`, damit keine beliebige Website den Tiefenstream deines Zimmers lesen kann.
 
@@ -89,6 +92,11 @@ Die Zeiten sind µs seit 1970 auf der Uhr des Hub-Rechners. `capture_time_us` is
   - Höchstens 64 Clients; weitere bekommen HTTP 503.
 - Panics in Tasks, Threads oder der Frame-Verarbeitung werden abgefangen und gezählt (`errors` in `/api/status`).
 - Ist der Port belegt, versucht der Hub es weiter. Fehlt der Worker, liefert der Hub die API trotzdem und zeigt den Grund im Status.
+- Dev-Server-Register:
+  - Anmelden darf nur ein Prozess auf diesem Rechner, nie eine Browserseite (Origin-Header → 403).
+  - Grenzen: höchstens 64 Einträge, 64 KB je Anmeldung, nur `http://127.0.0.1|localhost|[::1]:<port>`, Texte werden gekürzt und gesäubert.
+  - Ein abgestürzter Dev-Server verschwindet nach 15 s.
+- Der Worker startet den Sensor erst nach 2 s ohne Frame neu. Die Tiefenberechnung teilt sich die GPU mit den Browser-Szenen, und bei Volllast kommen Frames nur langsamer, sie fehlen nicht. Ein Neustart würde dann nur weitere 3 s Pause bringen.
 
 ## Latenz
 
@@ -109,4 +117,9 @@ kinect-hub-probe stream --clients 5 --seconds 10 --streams depth,ir,meta   # fps
 kinect-hub-probe abuse                                                       # Missbrauchstest, s. u.
 ```
 
-`abuse`: Ein gesunder Client misst durchgehend, während andere Müll senden, fluten, übergroße Nachrichten schicken, nicht mehr lesen, 300 Verbindungen auf- und abbauen, das Client-Limit sprengen und 40 PNGs parallel holen. Am Ende muss der Hub weiter 30 fps liefern und 0 Fehler zählen.
+`abuse`: Ein gesunder Client misst durchgehend, während andere angreifen:
+- Müll senden, fluten, übergroße Nachrichten schicken, nicht mehr lesen
+- 300 Verbindungen auf- und abbauen, das Client-Limit sprengen, 40 PNGs parallel holen
+- das Dev-Server-Register mit Müll, fremden URLs, Browser-Origins, übergroßen und zu vielen Anmeldungen bombardieren
+
+Am Ende muss der Hub weiter 30 fps liefern und 0 Fehler zählen, und die Register-Zeile endet mit `OK`.

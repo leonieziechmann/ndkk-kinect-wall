@@ -3,6 +3,10 @@ kinect-hub/target/
 fn2/bin/
 __pycache__/
 *.pyc
+web/node_modules/
+web/dist/
+# thumbnails, check screenshots, dev server info (show the room / people)
+web/.cache/
 
 # third-party sources and builds: recreated by third_party/setup.sh
 third_party/*

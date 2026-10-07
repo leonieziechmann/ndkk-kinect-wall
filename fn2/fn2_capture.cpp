@@ -423,8 +423,10 @@ int main(int argc, char **argv)
       send_status(out, "streaming", "");
       streaming_reported = true;
     }
-    // no frame for 500 ms while streaming, or none 8 s after start (the sensor needs ~3 s after a reboot)
-    const bool stalled = last > 0 ? now_ms() - last > 500 : now_ms() - started_ms > 8000;
+    // no frame for 2 s while streaming, or none 8 s after start (the sensor needs ~3 s after a reboot).
+    // Not shorter: the depth decoding shares the GPU with the browser scenes, and a GPU-heavy scene
+    // can slow it to a few frames per second. Restarting then only adds a 3 s gap per restart.
+    const bool stalled = last > 0 ? now_ms() - last > 2000 : now_ms() - started_ms > 8000;
     if (!g_lost && !stalled) continue;
 
     const bool usb_gone = g_lost;

@@ -1,0 +1,5 @@
+{
+  "title": "three.js Partikel",
+  "description": "Kinect-Punkte als leuchtende, farbige Sprites mit three.js (WebGPURenderer) und OrbitControls. Vorlage für alles mit three.js.",
+  "author": "claude"
+}

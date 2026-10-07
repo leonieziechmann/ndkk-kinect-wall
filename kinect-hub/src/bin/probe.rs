@@ -4,7 +4,8 @@
 //!       N clients subscribe; prints frames/s, latency (sensor capture -> client) and sequence gaps
 //!   kinect-hub-probe abuse [--url ...]
 //!       one healthy client keeps measuring while others misbehave (garbage, flooding, oversized
-//!       messages, a client that stops reading, connection churn, too many clients, PNG requests)
+//!       messages, a client that stops reading, connection churn, too many clients, PNG requests,
+//!       junk and floods against the dev server registry)
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -128,10 +129,17 @@ async fn measuring_client(url: String, streams: Vec<String>, seconds: u64, stop:
 }
 
 async fn http_get(url: &str, path: &str) -> Result<(u16, Vec<u8>), String> {
+    http_request(url, "GET", path, "", b"").await
+}
+
+/// Minimal HTTP/1.1 client; `headers` are extra header lines, each ending in \r\n.
+async fn http_request(url: &str, method: &str, path: &str, headers: &str, body: &[u8]) -> Result<(u16, Vec<u8>), String> {
     let host = url.trim_start_matches("ws://").split('/').next().unwrap_or("127.0.0.1:8090").to_string();
     let mut s = TcpStream::connect(&host).await.map_err(|e| e.to_string())?;
-    let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    let req = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nContent-Length: {}\r\n{headers}\r\n", body.len());
     s.write_all(req.as_bytes()).await.map_err(|e| e.to_string())?;
+    // the server may answer (413) and close before the whole body is sent: still read the answer
+    let _ = s.write_all(body).await;
     let mut buf = Vec::new();
     s.read_to_end(&mut buf).await.map_err(|e| e.to_string())?;
     let code = std::str::from_utf8(buf.get(9..12).unwrap_or_default()).ok().and_then(|c| c.parse().ok()).unwrap_or(0);
@@ -275,6 +283,8 @@ async fn run_abuse(a: &Args) {
     }
     println!("40 parallel PNGs:      {ok} ok");
 
+    println!("dev server registry:   {}", abuse_registry(&url).await);
+
     match slow.await {
         Ok(v) => println!("client that never reads: {v}"),
         Err(e) => println!("client that never reads: task failed {e}"),
@@ -299,6 +309,61 @@ async fn run_abuse(a: &Args) {
         }
         Err(e) => println!("hub afterwards: UNREACHABLE {e}"),
     }
+}
+
+/// Junk, foreign URLs, browser origins, oversized bodies and more registrations than allowed.
+async fn abuse_registry(url: &str) -> String {
+    const JSON: &str = "Content-Type: application/json\r\n";
+    let code = |r: Result<(u16, Vec<u8>), String>| r.map(|(c, _)| c.to_string()).unwrap_or_else(|e| format!("closed ({e})"));
+    let post = |headers: &'static str, body: String| async move { http_request(url, "POST", "/api/devservers", headers, body.as_bytes()).await };
+    let mut unexpected = Vec::new();
+    let mut check = |what: &str, got: String, ok: &[&str]| {
+        if !ok.iter().any(|o| got.starts_with(o)) {
+            unexpected.push(format!("{what}: {got}"));
+        }
+        format!("{what} {got}")
+    };
+    let valid = r#"{"url":"http://127.0.0.1:1"}"#.to_string();
+    let huge = format!(r#"{{"url":"http://127.0.0.1:1","label":"{}"}}"#, "x".repeat(200_000));
+    let mut parts = vec![
+        check("text/plain", code(post("Content-Type: text/plain\r\n", valid.clone()).await), &["415"]),
+        check("broken json", code(post(JSON, r#"{"url":"#.to_string()).await), &["400"]),
+        check("foreign url", code(post(JSON, r#"{"url":"http://evil.example:80"}"#.to_string()).await), &["400"]),
+        check("browser origin", code(post("Content-Type: application/json\r\nOrigin: http://evil.example\r\n", valid).await), &["403"]),
+        check("200 KB", code(post(JSON, huge).await), &["413", "closed"]),
+    ];
+    // more registrations than allowed, then sign all of them off again
+    let (mut accepted, mut full) = (0, 0);
+    for port in 41000..41070 {
+        let body = format!(r#"{{"url":"http://127.0.0.1:{port}","label":"probe","scenes":[{{"name":"x","title":"<script>"}}]}}"#);
+        match post(JSON, body).await {
+            Ok((200, _)) => accepted += 1,
+            Ok((503, _)) => full += 1,
+            other => unexpected.push(format!("registration: {}", code(other))),
+        }
+    }
+    let listed = match http_get(url, "/api/devservers").await {
+        Ok((200, body)) => serde_json::from_slice::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|v| {
+                let list = v.get("devservers")?.as_array()?;
+                Some(list.iter().filter(|e| e.get("label").and_then(|l| l.as_str()) == Some("probe")).count())
+            })
+            .unwrap_or(0),
+        _ => 0,
+    };
+    let mut removed = 0;
+    for port in 41000..41070 {
+        if let Ok((200, _)) = http_request(url, "DELETE", &format!("/api/devservers?url=http://127.0.0.1:{port}"), "", b"").await {
+            removed += 1;
+        }
+    }
+    if full == 0 || accepted != listed || removed != accepted {
+        unexpected.push(format!("70 registrations: {accepted} accepted, {full} full, {listed} listed, {removed} removed"));
+    }
+    parts.push(format!("70 registrations: {accepted} ok / {full} full / {listed} listed / {removed} removed"));
+    let verdict = if unexpected.is_empty() { "OK".to_string() } else { format!("UNEXPECTED: {}", unexpected.join("; ")) };
+    format!("{} -> {verdict}", parts.join(", "))
 }
 
 #[tokio::main]

@@ -1,11 +1,11 @@
 # ndkk-kinect-wall
 
-Kinect v2 an einem Windows-Rechner (USB-Mod): Tiefenbild mit 30 fps, eine Punktwolke im Look „weiße Punkte auf dunklem Grau“ und eine Middleware, über die beliebig viele Programme und Agenten gleichzeitig auf den Sensor zugreifen.
+Kinect v2 an einem Windows-Rechner (USB-Mod): Tiefenbild mit 30 fps, eine Middleware, über die beliebig viele Programme und Agenten gleichzeitig auf den Sensor zugreifen, und eine Szenen-Werkstatt, in der viele Agenten parallel (je ein Worktree) Browser-Szenen für die Wand entwickeln.
 
 | Teil | Was |
 |---|---|
 | [`kinect-hub/`](kinect-hub/README.md) | Rust-Middleware: besitzt die Kinect, rechnet einmal pro Frame vor, streamt per WebSocket/HTTP an alle |
-| [`web/`](web/) | Browser-Clients: Startseite mit Status, WebGPU-Punktwolke, JS-Bibliothek `lib/kinect-stream.js` |
+| [`web/`](web/README.md) | Szenen-Werkstatt (Vite): Galerie, Laufzeit mit Hot-Swap, Beispielszenen (Punktwolke, Shader, three.js). Anleitung für Agenten: [`web/AGENTS.md`](web/AGENTS.md) |
 | `fn2/` | C++ auf libfreenect2: Capture-Worker für den Hub, Reconnect-Messtool, DLLs für Python |
 | `kinect_hub.py` | Python-Client für den Hub |
 | `pointcloud.py`, `viewer.py` | Python-Viewer (direkt über libfreenect2/SDK oder `--hub`) |
@@ -17,7 +17,15 @@ Kinect v2 an einem Windows-Rechner (USB-Mod): Tiefenbild mit 30 fps, eine Punktw
 kinect-hub\target\release\kinect-hub.exe
 ```
 
-Dann im Browser (Chrome/Edge, wegen WebGPU) **http://127.0.0.1:8090** öffnen: Status, Live-Vorschau und unter `/pointcloud/` die Punktwolke (Maus ziehen = drehen, Rad = Zoom, `h` = Hilfe). Weitere Programme lesen parallel mit:
+Dann im Browser (Chrome/Edge, wegen WebGPU) **http://127.0.0.1:8090** öffnen: Status, Live-Vorschau und die Szenen aller laufenden Dev-Server. Szenen entwickeln (je Worktree ein Dev-Server, Node.js 20+):
+
+```
+cd web
+npm install
+npm run dev
+```
+
+Details in [`web/README.md`](web/README.md). Weitere Programme lesen parallel mit:
 
 ```
 python viewer.py --hub
@@ -33,6 +41,7 @@ Voraussetzungen:
 - [w64devkit](https://github.com/skeeto/w64devkit): gcc, cmake, ninja im `PATH`.
 - Rust (rustup, Toolchain `stable-x86_64-pc-windows-gnu`).
 - Python 3 mit `pip install -r requirements.txt`.
+- Node.js 20 oder neuer, für die Szenen in `web/` (`npm install` dort).
 - Kinect-Treiber: in Zadig „Xbox NUI Sensor (Interface 0)“ auf **libusbK** umstellen (Options → List All Devices). Damit läuft das Kinect SDK nicht mehr. Zurück geht es im Geräte-Manager: Treiber samt Treibersoftware deinstallieren, dann nach geänderter Hardware suchen.
 
 ```

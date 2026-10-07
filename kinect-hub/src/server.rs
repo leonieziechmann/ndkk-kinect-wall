@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{ConnectInfo, Path, Query, State, WebSocketUpgrade};
+use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State, WebSocketUpgrade};
 use axum::http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use axum::http::{Method, StatusCode};
 use axum::response::{Html, IntoResponse, Json, Response};
@@ -21,6 +22,7 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
+use crate::devservers::{self, RegisterError, Registration};
 use crate::pipeline::points_message;
 use crate::protocol::{CLIENT_HEADER_LEN, HEIGHT, PROTOCOL_VERSION, Stream, WIDTH, payload};
 use crate::state::{FrameSet, Hub, Shutdown};
@@ -83,6 +85,10 @@ fn router(hub: Arc<Hub>) -> Router {
         .route("/api/params", get(api_params))
         .route("/api/lut", get(api_lut))
         .route("/api/frame/{stream}", get(api_frame))
+        .route(
+            "/api/devservers",
+            get(devservers_list).post(devservers_register).delete(devservers_remove).layer(DefaultBodyLimit::max(64 * 1024)),
+        )
         .with_state(hub.clone());
     let files = match &hub.cfg.web_dir {
         Some(dir) => {
@@ -285,6 +291,70 @@ fn encode_png(data: &[u8], sixteen_bit: bool) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+async fn devservers_list(State(hub): State<Arc<Hub>>) -> Response {
+    Json(hub.devservers.list_json()).into_response()
+}
+
+/// Dev servers announce themselves from this machine. Browser pages have no business here: a
+/// website could otherwise plant links on the start page.
+fn registry_rejection(addr: &SocketAddr, headers: &HeaderMap) -> Option<Response> {
+    if !addr.ip().is_loopback() {
+        return Some(error(StatusCode::FORBIDDEN, "dev servers can only register from this machine"));
+    }
+    if headers.contains_key(header::ORIGIN) {
+        return Some(error(StatusCode::FORBIDDEN, "browser pages cannot register dev servers"));
+    }
+    None
+}
+
+async fn devservers_register(
+    State(hub): State<Arc<Hub>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Result<Json<Registration>, JsonRejection>,
+) -> Response {
+    if let Some(rejection) = registry_rejection(&addr, &headers) {
+        return rejection;
+    }
+    let reg = match body {
+        Ok(Json(reg)) => reg,
+        Err(e) => return error(e.status(), format!("invalid registration: {}", e.body_text())),
+    };
+    match hub.devservers.register(reg) {
+        Ok(new) => Json(json!({ "ok": true, "new": new, "ttl_s": devservers::TTL.as_secs() })).into_response(),
+        Err(RegisterError::BadUrl) => {
+            error(StatusCode::BAD_REQUEST, "url must be http://127.0.0.1:<port> (or localhost, [::1]) without a path")
+        }
+        Err(RegisterError::Full) => {
+            error(StatusCode::SERVICE_UNAVAILABLE, format!("{} dev servers are registered already", devservers::MAX_SERVERS))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct RemoveQuery {
+    url: String,
+}
+
+async fn devservers_remove(
+    State(hub): State<Arc<Hub>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    query: Result<Query<RemoveQuery>, QueryRejection>,
+) -> Response {
+    if let Some(rejection) = registry_rejection(&addr, &headers) {
+        return rejection;
+    }
+    let Ok(Query(q)) = query else {
+        return error(StatusCode::BAD_REQUEST, "use DELETE /api/devservers?url=http://127.0.0.1:<port>");
+    };
+    if hub.devservers.remove(&q.url) {
+        Json(json!({ "ok": true })).into_response()
+    } else {
+        error(StatusCode::NOT_FOUND, "no dev server registered under this url")
+    }
+}
+
 async fn api_index(State(hub): State<Arc<Hub>>) -> Response {
     let streams: serde_json::Map<String, serde_json::Value> =
         Stream::ALL.iter().map(|s| (s.name().to_string(), json!({"kind": s.kind(), "description": s.describe()}))).collect();
@@ -298,7 +368,10 @@ async fn api_index(State(hub): State<Arc<Hub>>) -> Response {
             "GET /api/lut": "undistortion table: f32 x,y per pixel (binary)",
             "GET /api/frame/{depth|depth_raw|ir|points|meta}": "latest frame; ?format=png for depth/depth_raw (16-bit mm) and ir (8-bit)",
             "GET /ws": "WebSocket stream (see websocket)",
-            "GET /": "web clients from the web/ directory",
+            "GET /api/devservers": "scene dev servers (Vite, one per worktree) that announced themselves, with their scenes (JSON)",
+            "POST /api/devservers": "announce a dev server: {url: 'http://127.0.0.1:<port>', label, branch, worktree, hub, pid, scenes: [{name, title, description, author, thumb, modified_ms, error}]}; repeat every few seconds, entries expire after ttl_s; only from this machine, not from browsers",
+            "DELETE /api/devservers?url=...": "sign a dev server off",
+            "GET /": "start page from the web/ directory: hub status and the scenes of all dev servers",
         },
         "websocket": {
             "url": "ws://<host>/ws",

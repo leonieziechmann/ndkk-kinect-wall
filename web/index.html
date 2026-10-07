@@ -3,81 +3,188 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>kinect-hub</title>
+<title>Kinect Wall · Szenen</title>
+<link rel="icon" href="data:,">
 <style>
-  :root { color-scheme: dark; --bg: #1c1c1e; --panel: #26262a; --text: #dcdcdc; --muted: #9a9aa0; --accent: #8fc1ff; }
+  :root {
+    color-scheme: dark;
+    --bg: #161618; --panel: #222226; --panel2: #2b2b30; --line: #34343a;
+    --text: #e2e2e6; --muted: #9a9aa3; --accent: #8fc1ff; --ok: #3f8f52; --warn: #a3862c; --bad: #a33f3f;
+  }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; }
-  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  h2 { font-size: 15px; margin: 28px 0 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  main { max-width: 1280px; margin: 0 auto; padding: 22px 16px 60px; }
   a { color: var(--accent); }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 18px; }
+  h1 { font-size: 22px; margin: 0; }
+  h2 { font-size: 13px; margin: 30px 0 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
   code, pre { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
   pre { background: var(--panel); padding: 12px; border-radius: 8px; overflow-x: auto; margin: 0; }
-  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
-  @media (max-width: 760px) { .grid { grid-template-columns: minmax(0, 1fr); } }
-  .card { background: var(--panel); border-radius: 10px; padding: 14px 16px; }
-  .state { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #444; font-weight: 600; }
-  .state.streaming { background: #2f6b3a; }
-  .state.starting, .state.searching { background: #7a6420; }
-  .state.offline, .state.disconnected { background: #7a2b2b; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px; background: #444; font-size: 12.5px; font-weight: 600; }
+  .pill.streaming { background: var(--ok); } .pill.starting, .pill.searching { background: var(--warn); }
+  .pill.offline, .pill.disconnected { background: var(--bad); }
+  .muted { color: var(--muted); }
+  .server { margin-top: 26px; }
+  .server-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; border-bottom: 1px solid var(--line); padding-bottom: 6px; margin-bottom: 12px; }
+  .server-head b { font-size: 16px; }
+  .server-head .here { color: #9fe0a8; font-size: 12.5px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; }
+  .card { display: flex; flex-direction: column; background: var(--panel); border-radius: 10px; overflow: hidden; text-decoration: none; color: inherit; border: 1px solid transparent; }
+  .card:hover { border-color: var(--accent); }
+  .thumb { aspect-ratio: 16 / 9; background: #0d0d0f center / cover no-repeat; display: grid; place-items: center; color: #555; font-size: 13px; }
+  .card-body { padding: 9px 11px 11px; display: flex; flex-direction: column; gap: 2px; }
+  .card-title { font-weight: 600; }
+  .card-meta { color: var(--muted); font-size: 12px; }
+  .card-desc { color: #c4c4cb; font-size: 12.5px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .card-error { color: #ffb4b4; font-size: 12px; }
+  .empty { background: var(--panel); border-radius: 10px; padding: 16px; }
+  .cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 760px) { .cols { grid-template-columns: minmax(0, 1fr); } }
+  .box { background: var(--panel); border-radius: 10px; padding: 12px 14px; }
   table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
-  td { padding: 3px 0; vertical-align: top; }
-  td:first-child { color: var(--muted); width: 45%; }
+  td { padding: 3px 0; vertical-align: top; } td:first-child { color: var(--muted); width: 42%; }
   canvas { width: 100%; height: auto; border-radius: 8px; background: #000; display: block; }
-  .links a { display: block; padding: 10px 12px; margin-bottom: 8px; background: #303036; border-radius: 8px; text-decoration: none; }
-  .links a span { display: block; color: var(--muted); font-size: 12.5px; }
 </style>
 </head>
 <body>
 <main>
-  <h1>kinect-hub</h1>
-  <div>Kinect v2 Middleware: ein Prozess besitzt den Sensor, beliebig viele Clients bekommen den Stream.</div>
+  <header>
+    <h1>Kinect Wall · Szenen</h1>
+    <span id="hubPill" class="pill">…</span>
+    <span id="hubLine" class="muted"></span>
+  </header>
+  <div class="muted" style="margin-top:4px">Alle Szenen aller Worktrees. Jeder Agent startet in seinem Worktree <code>npm run dev</code> in <code>web/</code> – der Dev-Server meldet sich hier an. Klick öffnet die Szene; dort wechseln <code>,</code> und <code>.</code> zur vorigen/nächsten Szene.</div>
 
-  <div class="grid">
-    <section>
-      <h2>Status</h2>
-      <div class="card">
-        <table id="status"><tr><td>Verbindung</td><td>…</td></tr></table>
-      </div>
-      <h2>Clients</h2>
-      <div class="links">
-        <a href="/pointcloud/">Punktwolke (WebGPU)<span>Weiße Punkte auf Grau, Orbit-Kamera, Glow – Maus ziehen zum Drehen</span></a>
-        <a href="/api">API-Beschreibung (JSON)<span>Endpunkte, WebSocket-Protokoll, Binär-Header</span></a>
-        <a href="/api/frame/depth?format=png">Aktuelles Tiefenbild als 16-Bit-PNG<span>Werte in mm, 512×424</span></a>
-      </div>
-    </section>
-    <section>
-      <h2>Tiefe live (2D-Vorschau)</h2>
-      <canvas id="preview" width="512" height="424"></canvas>
-    </section>
+  <div id="servers"></div>
+
+  <h2>Hub</h2>
+  <div class="cols">
+    <div class="box"><table id="status"><tr><td>Verbindung</td><td>…</td></tr></table>
+      <p class="muted" style="margin:10px 0 0"><a href="" id="apiLink">API-Beschreibung (JSON)</a> · <a href="" id="pngLink">Tiefenbild als PNG</a></p>
+    </div>
+    <div><canvas id="preview" width="512" height="424"></canvas></div>
   </div>
 
-  <h2>Eigener Client in 10 Zeilen</h2>
-  <pre>import { KinectStream } from '/lib/kinect-stream.js';
-
-const kinect = new KinectStream({ streams: ['depth', 'lut'] });
-kinect.addEventListener('depth', (e) =&gt; {
-  const { data, width, height, seq } = e.detail;   // Uint16Array, mm, 0 = kein Messwert
-});
-kinect.addEventListener('lut', (e) =&gt; {
-  const rays = e.detail.data;                        // Float32Array x,y je Pixel: Punkt = (x*z, y*z, z)
-});
-kinect.connect();</pre>
-  <p>Neue Seiten einfach unter <code>web/</code> anlegen – der Hub liefert sie sofort aus (kein Neustart nötig).
-    Python, Rust &amp; Co. verbinden sich per WebSocket mit <code>ws://127.0.0.1:8090/ws</code> oder holen Einzelbilder per HTTP.</p>
+  <h2>Neue Szene (Agenten: web/AGENTS.md)</h2>
+<pre>cd web
+npm install                      # einmal pro Worktree
+npm run dev                      # Dev-Server (im Hintergrund laufen lassen)
+npm run new meine-szene          # neue Szene aus der Vorlage (oder: npm run new meine-szene pointcloud)
+npm run check meine-szene        # headless rendern: Fehler, fps, Screenshot nach .cache/shots/</pre>
 </main>
 
 <script type="module">
 import { KinectStream } from '/lib/kinect-stream.js';
+import { hubUrl, wsUrl, devServer, getJson } from '/lib/hub.js';
+
+const HUB = hubUrl();
+const DEV = devServer();
+const BUILD = !!window.__KINECT_DEV__?.build; // npm run build, served by the hub (--web-dir web/dist)
+document.getElementById('apiLink').href = `${HUB}/api`;
+document.getElementById('pngLink').href = `${HUB}/api/frame/depth?format=png`;
+
+const el = (tag, className, parent, text) => {
+  const e = document.createElement(tag);
+  if (className) e.className = className;
+  if (text !== undefined) e.textContent = text;
+  parent?.append(e);
+  return e;
+};
+
+function ago(ms) {
+  if (!ms) return '';
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 60) return 'gerade eben';
+  if (s < 3600) return `vor ${Math.round(s / 60)} min`;
+  if (s < 86400) return `vor ${Math.round(s / 3600)} h`;
+  return `vor ${Math.round(s / 86400)} Tagen`;
+}
+
+// ---------- scene lists ----------
+
+let registry = [];
+let local = null; // this dev server's own list (live, also without hub)
+let hubReachable = true;
+
+async function refresh() {
+  try {
+    registry = (await getJson(`${HUB}/api/devservers`)).devservers ?? [];
+    hubReachable = true;
+  } catch {
+    registry = [];
+    hubReachable = false;
+  }
+  if (DEV || BUILD) {
+    try {
+      const l = await getJson('/__scenes');
+      local = {
+        ...(l.devserver ?? { label: 'Build (web/dist)', url: location.origin }),
+        scenes: (l.scenes ?? []).map((s) => ({ ...s, url: `/scenes/${s.name}/`, thumb: s.thumb })),
+      };
+    } catch {
+      local = null;
+    }
+  }
+  render();
+}
+
+let lastSig = '';
+function render() {
+  const servers = registry.filter((s) => !local || s.url !== local.url);
+  if (local) servers.unshift({ ...local, here: true });
+  const sig = JSON.stringify([servers, hubReachable]);
+  if (sig === lastSig) return;
+  lastSig = sig;
+  const root = document.getElementById('servers');
+  root.replaceChildren();
+  if (!hubReachable) {
+    el('div', 'empty', root, `kinect-hub unter ${HUB} ist nicht erreichbar – die Szenen anderer Worktrees fehlen hier, und Szenen bekommen keine Daten. Hub starten: siehe CLAUDE.md.`).style.marginTop = '20px';
+  }
+  if (!servers.length) {
+    const e = el('div', 'empty', root);
+    e.style.marginTop = '20px';
+    el('div', '', e, 'Noch kein Dev-Server angemeldet.');
+    el('div', 'muted', e, 'In einem Worktree: cd web && npm install && npm run dev');
+  }
+  for (const s of servers) {
+    const box = el('section', 'server', root);
+    const head = el('div', 'server-head', box);
+    el('b', '', head, s.label || s.url);
+    if (s.here) el('span', 'here', head, BUILD ? '● gebaut, ohne Node' : '● dieser Dev-Server');
+    if (s.branch && s.branch !== s.label) el('span', 'muted', head, s.branch);
+    const link = el('a', '', head, s.url);
+    link.href = `${s.url}/`;
+    if (s.worktree) el('span', 'muted', head, s.worktree);
+    el('span', 'muted', head, `${s.scenes?.length ?? 0} Szenen`);
+    const grid = el('div', 'grid', box);
+    for (const sc of s.scenes ?? []) {
+      const card = el('a', 'card', grid);
+      card.href = sc.url;
+      const thumb = el('div', 'thumb', card);
+      if (sc.thumb) thumb.style.backgroundImage = `url("${sc.thumb}")`;
+      else thumb.textContent = 'noch kein Vorschaubild';
+      const body = el('div', 'card-body', card);
+      el('div', 'card-title', body, sc.title || sc.name);
+      el('div', 'card-meta', body, [sc.name, sc.author, ago(sc.modified_ms)].filter(Boolean).join(' · '));
+      if (sc.description) el('div', 'card-desc', body, sc.description);
+      if (sc.error) el('div', 'card-error', body, sc.error);
+    }
+  }
+}
+
+refresh();
+setInterval(refresh, 2000);
+if (import.meta.hot) import.meta.hot.on('kinect:scenes', refresh);
+
+// ---------- hub status + live depth preview ----------
 
 const table = document.getElementById('status');
+const pill = document.getElementById('hubPill');
+const hubLine = document.getElementById('hubLine');
 const canvas = document.getElementById('preview');
-const ctx = canvas.getContext('2d');
-const image = ctx.createImageData(512, 424);
-
-// turbo-like colormap: near = warm, far = cold, 0 = black
-const palette = new Uint8ClampedArray(256 * 3);
+const ctx2d = canvas.getContext('2d');
+const image = ctx2d.createImageData(512, 424);
+const palette = new Uint8ClampedArray(256 * 3); // near = warm, far = cold
 for (let i = 0; i < 256; i++) {
   const t = i / 255;
   palette[i * 3] = 255 * Math.min(1, Math.max(0, 1.6 - Math.abs(4 * t - 3.2)));
@@ -85,50 +192,61 @@ for (let i = 0; i < 256; i++) {
   palette[i * 3 + 2] = 255 * Math.min(1, Math.max(0, 1.6 - Math.abs(4 * t - 0.8)));
 }
 
-const kinect = new KinectStream({ streams: ['depth', 'status'], maxFps: 15 });
+const kinect = new KinectStream({ url: wsUrl(HUB), streams: ['depth', 'status'], maxFps: 10 });
 kinect.addEventListener('depth', (e) => {
   const d = e.detail.data;
   const px = image.data;
   for (let i = 0; i < d.length; i++) {
     const v = d[i];
     const o = i * 4;
-    if (v === 0) {
-      px[o] = px[o + 1] = px[o + 2] = 0;
-    } else {
-      const c = 255 - Math.min(255, Math.max(0, ((v - 500) * 255) / 4000)) | 0;
+    if (v === 0) px[o] = px[o + 1] = px[o + 2] = 0;
+    else {
+      const c = (255 - Math.min(255, Math.max(0, ((v - 500) * 255) / 4000))) | 0;
       px[o] = palette[c * 3];
       px[o + 1] = palette[c * 3 + 1];
       px[o + 2] = palette[c * 3 + 2];
     }
     px[o + 3] = 255;
   }
-  ctx.putImageData(image, 0, 0);
+  ctx2d.putImageData(image, 0, 0);
 });
 
-const row = (k, v) => `<tr><td>${k}</td><td>${v}</td></tr>`;
-function render() {
+function row(k, v) {
+  const tr = el('tr');
+  el('td', '', tr, k);
+  el('td', '', tr, v);
+  return tr;
+}
+
+function renderStatus() {
   const s = kinect.status;
   if (!kinect.connected || !s) {
-    table.innerHTML = row('Verbindung', '<span class="state disconnected">getrennt</span> – verbinde neu …');
+    pill.className = 'pill disconnected';
+    pill.textContent = 'Hub getrennt';
+    hubLine.textContent = HUB;
+    table.replaceChildren(row('Verbindung', `getrennt – verbinde neu (${HUB})`));
     return;
   }
   const st = s.sensor?.state ?? '?';
+  pill.className = `pill ${st}`;
+  pill.textContent = `Kinect ${st}`;
+  hubLine.textContent = `${s.fps.toFixed(1)} fps · ${s.clients} Clients · ${s.dev_servers ?? 0} Dev-Server · ${HUB}`;
   const f = s.frame?.stats;
-  table.innerHTML = [
-    row('Sensor', `<span class="state ${st}">${st}</span> ${s.sensor?.detail ?? ''}`),
+  table.replaceChildren(
+    row('Sensor', `${st} ${s.sensor?.detail ?? ''}`),
     row('Quelle', s.source),
     row('Bildrate', `${s.fps.toFixed(1)} fps`),
-    row('Latenz im Hub', `${(s.latency_ms.worker_to_hub + s.latency_ms.processing).toFixed(1)} ms (Pipe ${s.latency_ms.worker_to_hub} + Vorberechnung ${s.latency_ms.processing})`),
+    row('Latenz im Hub', `${(s.latency_ms.worker_to_hub + s.latency_ms.processing).toFixed(1)} ms`),
     row('Clients', `${s.clients} / ${s.max_clients}`),
     row('Tiefe', f ? `${f.min_mm}–${f.max_mm} mm, Median ${f.median_mm} mm, ${(f.valid_ratio * 100).toFixed(0)} % gültig` : '–'),
-    row('Worker', `PID ${s.worker.pid ?? '–'}, Neustarts ${s.worker.restarts}`),
+    row('Worker', `PID ${s.worker?.pid ?? '–'}, Neustarts ${s.worker?.restarts ?? 0}`),
     row('Fehler', `Panics ${s.errors.panics_caught}, Protokoll ${s.errors.protocol}, Frames ${s.errors.frames}`),
-  ].join('');
+  );
 }
-kinect.addEventListener('status', render);
-kinect.addEventListener('close', render);
+kinect.addEventListener('status', renderStatus);
+kinect.addEventListener('close', renderStatus);
 kinect.connect();
-render();
+renderStatus();
 </script>
 </body>
 </html>

@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 use tokio::sync::{Semaphore, watch};
 
 use crate::config::Config;
+use crate::devservers::DevServers;
 use crate::protocol::{HEIGHT, Stream, WIDTH};
 
 /// Wall-clock time in microseconds since 1970 (same clock as the worker's timestamps).
@@ -220,6 +221,8 @@ pub struct Hub {
     metrics: Mutex<Metrics>,
     pub started: Instant,
     stop: AtomicBool,
+    /// Scene dev servers (one per worktree) that announced themselves; see devservers.rs.
+    pub devservers: DevServers,
 }
 
 impl Hub {
@@ -243,6 +246,7 @@ impl Hub {
             metrics: Mutex::new(Metrics::default()),
             started: Instant::now(),
             stop: AtomicBool::new(false),
+            devservers: DevServers::default(),
         })
     }
 
@@ -328,6 +332,7 @@ impl Hub {
             },
             "clients": self.clients.load(Ordering::Relaxed),
             "max_clients": self.cfg.max_clients,
+            "dev_servers": self.devservers.count(),
             "subscribers": subscribers,
             "sent": {
                 "messages": self.messages_sent.load(Ordering::Relaxed),
