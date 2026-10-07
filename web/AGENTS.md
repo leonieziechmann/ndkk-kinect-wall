@@ -27,6 +27,7 @@ Before you start, `curl -s http://127.0.0.1:8090/api/status` must answer. If it 
 | `three-points` | three.js `WebGPURenderer`: points as sprites, OrbitControls | `main.js` |
 | `person-mask` | only the people, 2D: each in its tracking color, relief, outline, id tags | `shade.wgsl`, `main.js` |
 | `neon-room` | only the people as lit point clouds in a virtual neon room, floor rings, reflection | `main.js`, `points.wgsl`, `room.wgsl` |
+| `person-skeleton` | stick figures of everyone (skeleton-only tracking), glowing hands, trails, optional silhouettes | `shade.wgsl`, `main.js` |
 
 ## Scene file
 
@@ -35,6 +36,7 @@ Before you start, `curl -s http://127.0.0.1:8090/api/status` must answer. If it 
 ```js
 export default {
   streams: ['depth'],               // what to receive: depth, depth_raw, ir, points, persons; or (params) => [...]
+  persons: { mode: 'full' },        // optional, with 'persons' in streams: see PERSONS.md
   params: {                         // sliders in the page; the user's changes persist
     speed: { value: 1, min: 0, max: 5, step: 0.1, label: 'Tempo' },
     glow: true,                     // checkbox
@@ -70,6 +72,8 @@ export default {
 | `ctx.camera` | orbit camera: `viewProj` / `view` / `proj` (Float32Array(16), column-major, for WGSL `mat4x4f`), `eye`, `focalPx`. Drag rotates, wheel zooms, space toggles auto orbit, `r` resets. |
 | `ctx.xSign` | -1 or +1. Multiply Kinect x by it: key `m` mirrors every scene. |
 | `ctx.pointer` | `{ x, y, down }` in canvas pixels |
+| `ctx.persons` | the tracked people (with `streams: ['persons']`), see People below |
+| `ctx.kinectToScreen(u, v)` | depth image pixel -> canvas pixels as `kinectUv()` (2D scenes); `ctx.worldToScreen([x, y, z])` for 3D scenes |
 | `ctx.dom` | a div over the canvas for your own HTML (`pointer-events: none`; set it to `auto` on your elements) |
 | `ctx.on(target, type, fn)` | `addEventListener` that is removed again on hot swap |
 | `ctx.track(obj)` | `obj.destroy()` on hot swap: use it for big GPU textures and buffers |
@@ -99,22 +103,33 @@ WGSL errors show the line in your `shade.wgsl`. `fwidth`/`dpdx` must not sit ins
 
 ## People (person tracking)
 
-Most installations should show **only the people**, not the room. `streams: ['persons']` starts the person tracking (depth and ir come with it). A pose model (YOLO-pose on the infrared image) finds the skeletons; every depth frame is cut out at 30 fps. The tracker learns the background by itself and keeps ids stable. You get:
+Most installations should show **only the people**, not the room. Add `streams: ['persons']`: the tracker finds everyone, keeps a stable id and color per person, and gives you each person's mask (30 fps, with details) and an exact 3D skeleton. **Full reference with recipes: [PERSONS.md](PERSONS.md).**
+
+```js
+export default {
+  streams: ['persons'],
+  persons: { mode: 'full' },          // optional: 'skeleton' = skeletons only (much cheaper); delay: 0 = live
+  frame(ctx) {
+    for (const p of ctx.persons) {    // the visible persons
+      p.id; p.slot; p.color;          // stable id, slot 1..16, its color [r, g, b]
+      p.joints.rightHand;             // [x, y, z] meters (world, as ctx.camera) or null; 24 named points
+      p.room.ground;                  // on the floor below the feet (room space: floor at y = 0)
+      p.image.joints.head;            // [u, v] depth image pixels -> ctx.kinectToScreen(u, v)
+    }
+    for (const p of ctx.persons.entered) { /* someone came in */ }
+  },
+};
+```
 
 | | |
 |---|---|
-| `ctx.kinect.persons` | `null` until the first result, then `{ seq, list, labels, depth, indices, floor, lag }` |
-| `.list` | per person: `id`, `slot` (1..16, the label value), `visible`, `centroid`/`head`/`ground` (mm, camera frame), `height` (m), `velocity` (mm/s), `bbox`, `joints` (17 × [x, y, z, conf], mm), `keypoints` (17 × [u, v, conf], depth pixels) |
-| `.labels` / `.depth` / `.indices` | `Uint8Array` slot per pixel (0 = nobody), `Uint16Array` mm of person pixels only, `Uint32Array` the person pixels |
-| `.floor` | `{ normal, d, height, pitchDeg }` (camera frame, m) or `null` |
-| `ctx.kinect.fresh.persons` | `true` in the frame a new result arrived |
-| `ctx.kinect.gpu.personLabelTexture` | r8uint slot per pixel; `personDepthTexture` (r32float m, persons only), `personLabelBuffer`, `personDepthBuffer`, `personIndexBuffer` (count = `persons.indices.length`) |
-| WGSL (2D shaders) | `personAt(k)` slot, `isPerson(k)`, `personMask(k)` (soft 0..1), `personDepthAt(k)` (m), `personPointAt(k)` (world), `personColor(slot)` |
-| `/lib/persons.js` | `JOINTS`, `SKELETON` (pairs to draw), `PERSON_COLORS`, `personColor(slot)`, `toWorld(p, xSign)`, `roomFrame(floor, xSign)` (matrix world → room with the floor at y = 0) |
+| `ctx.persons` | the visible persons (Person objects, see PERSONS.md); `.all`, `.entered`, `.left`, `.byId()`, `.room`, `.floor` |
+| WGSL (2D shaders) | masks: `personAt(k)`, `isPerson(k)`, `personMask(k)`, `personDepthAt(k)`, `personColor(slot)`; skeletons: `personVisible(s)`, `personJointUv(s, J_LEFT_HAND)`, `personJoint(s, j)`, `skeletonDist(k)` |
+| `ctx.kinect.gpu` | `personLabelTexture`, `personDepthTexture`, `personPointBuffer` (all points of everyone), `personIndexBuffer` … |
+| `ctx.kinect.persons` | the raw data: `labels`, `depth`, `indices` (Uint arrays per pixel), `list` (camera frame, mm) |
+| templates | `person-mask` (2D masks), `person-skeleton` (stick figures, skeleton mode), `neon-room` (3D point clouds in a room) |
 
-**Delayed by default.** Each frame is cut out at once, then its result waits for the pose of a later frame (about 150–250 ms) and its skeleton is interpolated between the poses before and after it: as exact as a pose on every frame. Results are played out smoothly at 30 fps, and `ctx.kinect.depth`, `.ir` and their GPU copies are delayed the same way, so everything you draw fits together. For the lowest latency call `ctx.kinect.personTracker.configure({ delay: 0 })` in `setup()`: the masks are the same, the skeleton then follows the optical flow from the last pose (less exact on fast limbs). Other options: `maxDepth` (mm), `maxPersons`, see `DEFAULTS` in `lib/persons-core.js`.
-
-The pose model shares the GPU with your scene and the Kinect decoding: keep the scene light (the templates render at 60 fps next to it).
+**Delayed by default** (about 150–250 ms): every frame waits for a later pose, and its skeleton is interpolated, so it is as exact as a pose on every frame. The whole scene, including `ctx.kinect.depth` and `ir`, is shifted by the same time. `persons: { delay: 0 }` is live. The pose model shares the GPU with your scene: keep the scene light. Replays with people for testing: PERSONS.md, "Testing".
 
 ## three.js
 

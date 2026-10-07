@@ -2,7 +2,7 @@
 // the scene uses WebGPU) GPU textures and buffers that are updated automatically.
 
 import { KinectStream } from './kinect-stream.js';
-import { PersonStream } from './persons.js';
+import { PersonStream, personView, POINTS, MAX_PERSONS } from './persons.js';
 
 export const WIDTH = 512;
 export const HEIGHT = 424;
@@ -10,6 +10,9 @@ const N = WIDTH * HEIGHT;
 // wire name -> property on KinectData
 const FRAME_STREAMS = { depth: 'depth', depth_raw: 'depthRaw', ir: 'ir', points: 'points' };
 const noneFresh = () => ({ depth: false, depthRaw: false, ir: false, points: false, meta: false, lut: false, persons: false });
+// GPU buffer of the person points: per slot (0..16) POINTS then one info entry, two vec4f each
+export const PERSON_POINTS = POINTS.length + 1;
+const EMPTY_VIEW = Object.freeze(Object.assign([], { all: [], entered: [], left: [], fresh: false, floor: null, seq: null, delayMs: 0, byId: () => null, bySlot: () => null }));
 
 let pinhole = null;
 /** Rays of an ideal pinhole Kinect (used until the hub sent the real undistortion table). */
@@ -38,6 +41,12 @@ export class KinectData {
     this.meta = null; // per-frame JSON: seq, stats { median_mm, centroid_mm, valid_ratio, ... }
     /** Person tracking ('persons' in streams): { list, labels, depth, indices, floor, ... }, see persons.js */
     this.persons = null;
+    /** The same as Person objects (ctx.persons): named points in world, room and image space. */
+    this.view = EMPTY_VIEW;
+    /** -1 or 1 as ctx.xSign (set by the runtime): the world space of the view. */
+    this.xSign = -1;
+    this._viewSeq = null;
+    this._viewSign = 0;
     this._personStream = null;
     this._held = new Map(); // seq -> { depth, ir, ... }: frames waiting for their (delayed) persons
     /** true during the animation frame in which new data of that kind arrived */
@@ -174,6 +183,20 @@ export class KinectData {
       this._count = 0;
       this._countSince = now;
     }
+    // the Person objects: rebuilt for a new result (or after the mirror changed); entered/left
+    // only count in the frame of the update
+    const r = this.persons;
+    if (r && (r.seq !== this._viewSeq || this.xSign !== this._viewSign)) {
+      this.view = personView(r, { xSign: this.xSign, previous: this.view === EMPTY_VIEW ? null : this.view });
+      this._viewSeq = r.seq;
+      this._viewSign = this.xSign;
+      this._viewFresh = true;
+    } else if (this.view.fresh) {
+      this.view.fresh = false;
+      this.view.entered = [];
+      this.view.left = [];
+      this._viewFresh = false;
+    }
     this.gpu?.upload(this);
   }
 }
@@ -194,6 +217,7 @@ export class KinectData {
  *   personLabelBuffer   storage    u8 slots, four per u32
  *   personDepthBuffer   storage    u16 mm of person pixels, two per u32
  *   personIndexBuffer   storage    array<u32>: the person pixels; count = ctx.kinect.persons.indices.length
+ *   personPointBuffer   storage    array<vec4f>: every person's points (see the getter, PERSONS.md)
  */
 export class KinectGpu {
   constructor(device) {
@@ -268,10 +292,42 @@ export class KinectGpu {
     return this._buffer('personIndexBuffer', N * 4);
   }
 
+  /**
+   * The points of every person (ctx.persons, smoothed), array<vec4f>: for slot s (1..16) and point
+   * j (POINTS order, then 24 = info) at index (s * PERSON_POINTS + j) * 2:
+   *   [0] u, v (depth image uv 0..1, as kinectUv()), depth m, confidence (0 = not seen)
+   *   [1] x, y, z (world m, as ctx.camera / pointAt()), confidence
+   *   info: [0] visible (0/1), id, height m, age s   [1] the person's box in depth image uv: u0 v0 u1 v1
+   */
+  get personPointBuffer() {
+    return this._buffer('personPointBuffer', (MAX_PERSONS + 1) * PERSON_POINTS * 32);
+  }
+
   upload(k) {
     const q = this.device.queue;
     const due = (key, fresh) => this._res.has(key) && (fresh || this._new.has(key));
     const size = [WIDTH, HEIGHT];
+    if (due('personPointBuffer', k._viewFresh)) {
+      const data = (this._points ??= new Float32Array((MAX_PERSONS + 1) * PERSON_POINTS * 8));
+      data.fill(0);
+      for (const p of k.view.all) {
+        if (p.slot < 1 || p.slot > MAX_PERSONS) continue;
+        for (let j = 0; j < POINTS.length; j++) {
+          const name = POINTS[j];
+          const o = (p.slot * PERSON_POINTS + j) * 8;
+          const w = p.joints[name];
+          const c = p.visible && w ? Math.max(0.01, p.confidence[name] ?? 1) : 0;
+          const im = p.image.joints[name];
+          if (im) data.set([im[0] / WIDTH, im[1] / HEIGHT, w ? w[2] : 0, c], o);
+          if (w) data.set([w[0], w[1], w[2], c], o + 4);
+        }
+        const o = (p.slot * PERSON_POINTS + POINTS.length) * 8;
+        const b = p.image.bbox;
+        data.set([p.visible ? 1 : 0, p.id, p.height, p.age, b[0] / WIDTH, b[1] / HEIGHT, b[2] / WIDTH, b[3] / HEIGHT], o);
+      }
+      q.writeBuffer(this._res.get('personPointBuffer'), 0, data);
+      this._new.delete('personPointBuffer');
+    }
     const p = k.persons;
     if (p) {
       if (due('personLabelTexture', k.fresh.persons)) {

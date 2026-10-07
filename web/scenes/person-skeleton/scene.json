@@ -1,0 +1,5 @@
+{
+  "title": "Strichmännchen",
+  "description": "Die Skelette aller Personen als klare Neon-Linien auf Schwarz, Gelenke als Punkte, leuchtende Hände mit kurzen Spuren; wahlweise mit Silhouetten. Begrüßt jeden, der neu ins Bild kommt. Vorlage für Effekte auf den Skeletten (persons: { mode: 'skeleton' }, skeletonDist/personJointUv in WGSL, ctx.persons in JS).",
+  "author": "claude"
+}

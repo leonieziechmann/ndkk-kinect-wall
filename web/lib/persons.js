@@ -35,13 +35,32 @@
 // The arrays are valid until the next but one result: copy what you want to keep longer.
 // GPU copies: ctx.kinect.gpu.personLabelTexture/-Buffer, personDepthTexture/-Buffer, personIndexBuffer.
 
-import { MAX_PERSONS, JOINTS, SKELETON } from './persons-core.js';
+import { MAX_PERSONS, JOINTS, EXTRA, SKELETON, DEFAULTS as CORE_DEFAULTS } from './persons-core.js';
 
-export { MAX_PERSONS, JOINTS, SKELETON };
+export { MAX_PERSONS, JOINTS, EXTRA, SKELETON };
 
 const N = 512 * 424;
 /** Frames the output may wait for a later pose (0 = live). */
 export const DEFAULT_DELAY = 12;
+/** What a scene can set with `persons: {...}` (its defaults; see PERSONS.md). */
+export const PERSON_OPTIONS = Object.freeze({ ...CORE_DEFAULTS, delay: DEFAULT_DELAY });
+
+/**
+ * Every point of a person, in this order in Person.joints, in the GPU buffer and in WGSL (J_*):
+ * the 17 COCO joints, then neck, pelvis, head, leftHand, rightHand (derived), center, ground.
+ */
+export const POINTS = Object.freeze([...JOINTS, ...EXTRA, 'center', 'ground']);
+/** POINTS by name: POINT.leftHand === 20. */
+export const POINT = Object.freeze(Object.fromEntries(POINTS.map((n, i) => [n, i])));
+/** A stick figure: pairs of POINTS indices (head-neck-pelvis, shoulders, arms to the hands, legs). */
+export const BONES = Object.freeze(
+  [
+    ['head', 'neck'], ['neck', 'leftShoulder'], ['neck', 'rightShoulder'], ['leftShoulder', 'leftElbow'],
+    ['leftElbow', 'leftWrist'], ['leftWrist', 'leftHand'], ['rightShoulder', 'rightElbow'], ['rightElbow', 'rightWrist'],
+    ['rightWrist', 'rightHand'], ['neck', 'pelvis'], ['pelvis', 'leftHip'], ['pelvis', 'rightHip'], ['leftHip', 'leftKnee'],
+    ['leftKnee', 'leftAnkle'], ['rightHip', 'rightKnee'], ['rightKnee', 'rightAnkle'],
+  ].map(([a, b]) => [POINTS.indexOf(a), POINTS.indexOf(b)]),
+);
 
 /** One color per slot (1..16), neon on dark; index 0 is unused. Scenes may use their own. */
 export const PERSON_COLORS = [
@@ -100,6 +119,143 @@ export function roomFrame(floor, xSign = -1, fallbackHeight = 1) {
   return { matrix: m, height, up, forward: fwd, right, found: !!floor?.normal, apply };
 }
 
+// ---------- the persons as scenes like them (ctx.persons) ----------
+
+const EMPTY_IMAGE = Object.freeze([0, 0, 0, 0]);
+
+/**
+ * The persons of a tracking result (ctx.kinect.persons) as scenes like them: Person objects with
+ * named points in three spaces (see PERSONS.md). The runtime keeps one up to date as ctx.persons:
+ *
+ *   an Array of the visible persons (by slot), with
+ *   .all       every tracked person, also those hidden for a moment (visible: false)
+ *   .entered   persons seen for the first time in this update; .left: ids gone in this update
+ *   .fresh     true in the animation frame of an update (entered/left are empty otherwise)
+ *   .byId(id), .bySlot(slot), .room (roomFrame of the floor), .floor, .seq, .delayMs
+ *
+ * Person: id, slot, color [r,g,b] 0..1, css '#rrggbb', visible, age (s), score, height (m),
+ *   pixels, area (m², 0 in skeleton mode)
+ *   center, head, ground, velocity (m/s)       world: meters, x right, y up, z away from the sensor
+ *                                               (the space of ctx.camera and pointAt(); key m mirrors)
+ *   joints.<name> [x, y, z] or null (not seen); confidence.<name> 0..1; motion.<name> [vx, vy, vz]
+ *                                               m/s or null; names: POINTS. Smoothed (One-Euro:
+ *                                               steady when slow, no lag when fast; SMOOTHING)
+ *   room.{center, head, ground, joints}         meters on the floor: y = 0 on the floor, y up,
+ *                                               origin below the sensor, z forward along the floor
+ *   image.{bbox, joints}                        depth image pixels (512×424, mirrored as the hub
+ *                                               sends it): [u, v]; ctx.kinectToScreen() maps them
+ *   camera                                      the raw entry of ctx.kinect.persons.list (mm)
+ */
+export function personView(result, { xSign = -1, previous = null, smooth = SMOOTHING } = {}) {
+  const room = roomFrame(result?.floor, xSign);
+  const before = new Map((previous?.all ?? []).map((p) => [p.id, p]));
+  const dt = previous && result ? (result.captureTimeUs - previous.captureTimeUs) / 1e6 : 0;
+  const all = (result?.list ?? []).map((c) => makePerson(c, xSign, room, before.get(c.id), dt, smooth));
+  const visible = all.filter((p) => p.visible).sort((a, b) => a.slot - b.slot);
+  const ids = new Set(all.map((p) => p.id));
+  return Object.assign(visible, {
+    all,
+    entered: visible.filter((p) => !before.has(p.id) && !previous?.seenIds?.has(p.id)),
+    left: [...before.keys()].filter((id) => !ids.has(id)),
+    seenIds: new Set([...(previous?.seenIds ?? []), ...visible.map((p) => p.id)].slice(-256)),
+    fresh: true,
+    room,
+    floor: result?.floor ?? null,
+    seq: result?.seq ?? null,
+    captureTimeUs: result?.captureTimeUs ?? 0,
+    delayMs: result?.lag ?? 0,
+    byId: (id) => all.find((p) => p.id === id) ?? null,
+    bySlot: (slot) => all.find((p) => p.slot === slot) ?? null,
+  });
+}
+
+/** One-Euro filter settings for the points (smooth when slow, quick when fast); null = raw. */
+export const SMOOTHING = Object.freeze({ minCutoff: 1.2, beta: 0.6, dCutoff: 1.0 });
+
+const alphaOf = (cutoff, dt) => 1 / (1 + 1 / (2 * Math.PI * cutoff * dt));
+
+/** One-Euro filter of a 3D point; the state lives in `f` (carried from person to person). */
+function oneEuro(f, x, dt, cfg) {
+  if (!f.x || !(dt > 0) || dt > 0.5) {
+    f.x = x.slice();
+    f.dx = [0, 0, 0];
+    return f.x.slice();
+  }
+  const a = alphaOf(cfg.dCutoff, dt);
+  for (let j = 0; j < 3; j++) f.dx[j] += a * ((x[j] - f.x[j]) / dt - f.dx[j]);
+  const speed = Math.hypot(f.dx[0], f.dx[1], f.dx[2]);
+  const b = alphaOf(cfg.minCutoff + cfg.beta * speed, dt);
+  for (let j = 0; j < 3; j++) f.x[j] += b * (x[j] - f.x[j]);
+  return f.x.slice();
+}
+
+function makePerson(c, xSign, room, prev, dt, smooth) {
+  const w = (p) => (p ? [(xSign * p[0]) / 1000, -p[1] / 1000, p[2] / 1000] : null);
+  const joints = {};
+  const confidence = {};
+  const image = {};
+  // the filters travel from one Person of this id to the next
+  const filters = prev?.filters && prev.xSign === xSign ? prev.filters : {};
+  const steady = (name, p) => {
+    if (!p) {
+      delete filters[name];
+      return null;
+    }
+    return smooth ? oneEuro((filters[name] ??= {}), p, dt, smooth) : p;
+  };
+  const camPoints = [...c.joints, ...(c.extra ?? [])];
+  const imgPoints = [...c.keypoints, ...(c.extraKeypoints ?? [])];
+  for (let k = 0; k < camPoints.length && k < POINTS.length; k++) {
+    const name = POINTS[k];
+    const conf = camPoints[k][3];
+    joints[name] = steady(name, conf > 0 ? w(camPoints[k]) : null);
+    confidence[name] = conf;
+    image[name] = conf > 0 && imgPoints[k] ? [imgPoints[k][0], imgPoints[k][1]] : null;
+  }
+  const center = steady('center', w(c.centroid));
+  const ground = steady('ground', w(c.ground));
+  const head = joints.head ?? w(c.head);
+  joints.center = center;
+  joints.ground = ground;
+  confidence.center = c.visible ? 1 : 0;
+  confidence.ground = c.visible ? 1 : 0;
+  image.center = c.bbox ? [(c.bbox[0] + c.bbox[2]) / 2, (c.bbox[1] + c.bbox[3]) / 2] : null;
+  image.ground = null;
+  const motion = {};
+  for (const name of POINTS) {
+    const a = prev?.joints[name];
+    const b = joints[name];
+    motion[name] = a && b && dt > 0 && dt < 0.5 ? [(b[0] - a[0]) / dt, (b[1] - a[1]) / dt, (b[2] - a[2]) / dt] : null;
+  }
+  const roomJoints = {};
+  for (const name of POINTS) roomJoints[name] = joints[name] ? room.apply(joints[name]) : null;
+  const color = personColor(c.slot);
+  return {
+    id: c.id,
+    slot: c.slot,
+    color,
+    css: PERSON_COLORS[c.slot] ?? PERSON_COLORS[0],
+    visible: c.visible,
+    age: c.age,
+    score: c.score,
+    height: c.height,
+    pixels: c.pixels,
+    area: c.area,
+    center,
+    head,
+    ground,
+    velocity: c.velocity ? [(xSign * c.velocity[0]) / 1000, -c.velocity[1] / 1000, c.velocity[2] / 1000] : [0, 0, 0],
+    joints,
+    confidence,
+    motion,
+    room: { center: roomJoints.center, head: head ? room.apply(head) : null, ground: roomJoints.ground, joints: roomJoints },
+    image: { bbox: c.bbox ?? EMPTY_IMAGE, center: image.center, joints: image },
+    camera: c,
+    filters,
+    xSign,
+  };
+}
+
 export class PersonStream {
   /** @param {(result) => void} onResult  called with every new result */
   constructor(onResult) {
@@ -115,7 +271,7 @@ export class PersonStream {
     this.newestSeq = -1;
     this.inputs = [];
     this.irInputs = [];
-    this.options = { delay: DEFAULT_DELAY };
+    this.options = { ...PERSON_OPTIONS };
     this.waiting = []; // results to be played out (delayed output), oldest first
     this.lags = []; // recent ms from a frame's arrival to its result
     this.playDelay = 0; // ms after its arrival a frame is shown
@@ -321,6 +477,7 @@ export class PersonStream {
     if (!r || !this.provider) return 'Personen: lade das Pose-Modell …';
     const n = r.list.length;
     const lag = this.options.delay > 0 ? ` · ${Math.round(this.playDelay)} ms verzögert` : '';
-    return `${n} ${n === 1 ? 'Person' : 'Personen'} · Pose ${r.poseMs.toFixed(0)} ms (${this.provider})${lag}`;
+    const mode = this.options.mode === 'skeleton' ? ' · nur Skelett' : '';
+    return `${n} ${n === 1 ? 'Person' : 'Personen'} · Pose ${r.poseMs.toFixed(0)} ms (${this.provider})${mode}${lag}`;
   }
 }

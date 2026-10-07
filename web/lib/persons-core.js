@@ -42,6 +42,8 @@ export const JOINTS = [
   'nose', 'leftEye', 'rightEye', 'leftEar', 'rightEar', 'leftShoulder', 'rightShoulder', 'leftElbow',
   'rightElbow', 'leftWrist', 'rightWrist', 'leftHip', 'rightHip', 'leftKnee', 'rightKnee', 'leftAnkle', 'rightAnkle',
 ];
+/** The points after the 17 joints in `extra` / `extraKeypoints`: derived from the joints. */
+export const EXTRA = ['neck', 'pelvis', 'head', 'leftHand', 'rightHand'];
 /** Joint pairs to draw a skeleton. */
 export const SKELETON = [
   [5, 6], [5, 7], [7, 9], [6, 8], [8, 10], [5, 11], [6, 12], [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
@@ -69,15 +71,19 @@ const CAP = 9;
 // bones whose middle is sampled to see whose pixels a pose lies on
 const BODY_BONES = SKELETON.slice(0, 12);
 const MAX_TRACKS = 32;
-const MAX_LOST = 8;
+const MAX_LOST = 8; // a keypoint the flow could not follow for more frames is not used until the next pose
 const KEEP_KEYS = 60; // frames a keyframe is kept after a newer one (finalize() looks back that far)
-const HIDDEN = 800; // mm: a keypoint this far in front of the person's joints of a moment ago is hidden // a keypoint the flow could not follow for more frames is not used until the next pose
+const HIDDEN = 800; // mm: a keypoint this far in front of the person's joints of a moment ago is hidden
+// limb bones (parent, child) and their typical length (mm, joint center to joint center): a thin
+// wrist or ankle whose depth does not fit its bone is put on its ray at the bone's length
+const LIMBS = [[5, 7, 290], [7, 9, 250], [6, 8, 290], [8, 10, 250], [11, 13, 430], [13, 15, 420], [12, 14, 430], [14, 16, 420]];
 const BEHIND = 70; // mm: how far behind its bone a pixel of a body may lie (the far rim of a limb)
 // learned background "nothing measured here": beyond the sensor's range, a window, black velvet.
 // Anything measured there is in front of it.
 const FAR = 65535;
 
 export const DEFAULTS = Object.freeze({
+  mode: 'full', // 'full': masks and skeletons; 'skeleton': skeletons only (no masks, a fraction of the work)
   minDepth: 400, // mm
   maxDepth: 4500, // mm: farther pixels never belong to a person
   minScore: 0.45, // pose confidence for a new person
@@ -96,6 +102,7 @@ export const DEFAULTS = Object.freeze({
   confirmPoses: 2, // a new person shows after this many pose detections
   keepSeconds: 4, // a visible person the pose model does not find any more is kept this long
   lostSeconds: 1.5, // a hidden person (no pixels) without a matching pose for this long is gone
+  staleSeconds: 0.5, // skeleton mode: a person without a pose for this long is not visible (but kept)
   floor: true, // estimate the floor plane
   maxPersons: MAX_PERSONS,
   fps: 30,
@@ -114,6 +121,49 @@ export function pinholeRays() {
 }
 
 const now = () => (globalThis.performance ? performance.now() : Date.now());
+
+function iou(a, b) {
+  const x0 = Math.max(a[0], b[0]);
+  const y0 = Math.max(a[1], b[1]);
+  const x1 = Math.min(a[2], b[2]);
+  const y1 = Math.min(a[3], b[3]);
+  const inter = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+  const area = (r) => Math.max(0, r[2] - r[0]) * Math.max(0, r[3] - r[1]);
+  return inter / Math.max(1e-6, area(a) + area(b) - inter);
+}
+
+/** Similarity of two keypoint sets (0..1), like COCO's OKS with a fixed tolerance. */
+function keypointSimilarity(a, b, scale, minConf) {
+  let s = 0;
+  let n = 0;
+  const k2 = 2 * (0.15 * scale) ** 2;
+  for (let k = 0; k < 17; k++) {
+    if (a[3 * k + 2] < minConf || b[3 * k + 2] < minConf) continue;
+    const du = a[3 * k] - b[3 * k];
+    const dv = a[3 * k + 1] - b[3 * k + 1];
+    s += Math.exp(-(du * du + dv * dv) / k2);
+    n++;
+  }
+  return n ? s / n : 0;
+}
+
+/** Box around the confident keypoints, null if there are fewer than two. */
+function keypointBox(kp, minConf) {
+  let u0 = Infinity;
+  let v0 = Infinity;
+  let u1 = -Infinity;
+  let v1 = -Infinity;
+  let n = 0;
+  for (let k = 0; k < 17; k++) {
+    if (kp[3 * k + 2] < minConf) continue;
+    u0 = Math.min(u0, kp[3 * k]);
+    v0 = Math.min(v0, kp[3 * k + 1]);
+    u1 = Math.max(u1, kp[3 * k]);
+    v1 = Math.max(v1, kp[3 * k + 1]);
+    n++;
+  }
+  return n >= 2 ? [u0, v0, u1, v1] : null;
+}
 
 // squared distance of a point (mm) to the bone of capsule p; segDz = how far it lies behind the bone
 let segDz = 0;
@@ -260,6 +310,10 @@ export class PersonTracker {
     const depth = snap ? snap.depth : this.lastDepth;
     if (!depth) return;
     this.poseResults++;
+    if (o.mode === 'skeleton') {
+      this._matchSkeletons(poses, seq, depth, uidMap, snap);
+      return;
+    }
     // whose pixels each pose lies on, in the frame it was computed on
     const hits = poses.map((p) => this._hits(p, uidMap));
     const pairs = [];
@@ -293,6 +347,44 @@ export class PersonTracker {
       if (usedP.has(pi) || p.score < o.minScore || this.tracks.length >= MAX_TRACKS) continue;
       // mostly on someone's pixels: a second pose of a known person, not a new one
       if (hits[pi].n && hits[pi].any > 0.5 * hits[pi].n) continue;
+      const t = this._newTrack(p);
+      this._applyPose(t, p, depth, uidMap, snap, seq);
+    }
+  }
+
+  /**
+   * Skeleton mode (no labels): poses go to the person whose keypoints are most alike (they are a
+   * few frames older than the person's current keypoints: a generous tolerance) or whose keypoint
+   * box overlaps most; the others start new persons unless they overlap someone.
+   */
+  _matchSkeletons(poses, seq, depth, uidMap, snap) {
+    const o = this.options;
+    const mk = o.minKeypoint;
+    const boxes = this.tracks.map((t) => (t.kpSeq === null ? null : keypointBox(t.kp, mk)));
+    const pairs = [];
+    for (let pi = 0; pi < poses.length; pi++) {
+      const p = poses[pi];
+      const scale = Math.sqrt(Math.max(1, (p.box[2] - p.box[0]) * (p.box[3] - p.box[1])));
+      for (let ti = 0; ti < this.tracks.length; ti++) {
+        const b = boxes[ti];
+        if (!b) continue;
+        const s = keypointSimilarity(p.kp, this.tracks[ti].kp, scale, mk) + 0.5 * iou(p.box, b);
+        if (s >= 0.3) pairs.push({ pi, ti, s });
+      }
+    }
+    pairs.sort((a, b) => b.s - a.s);
+    const usedP = new Set();
+    const usedT = new Set();
+    for (const { pi, ti } of pairs) {
+      if (usedP.has(pi) || usedT.has(ti)) continue;
+      usedP.add(pi);
+      usedT.add(ti);
+      this._applyPose(this.tracks[ti], poses[pi], depth, uidMap, snap, seq);
+    }
+    for (let pi = 0; pi < poses.length; pi++) {
+      const p = poses[pi];
+      if (usedP.has(pi) || p.score < o.minScore || this.tracks.length >= MAX_TRACKS) continue;
+      if (boxes.some((b) => b && iou(p.box, b) > 0.3)) continue; // a second pose of someone known
       const t = this._newTrack(p);
       this._applyPose(t, p, depth, uidMap, snap, seq);
     }
@@ -385,7 +477,7 @@ export class PersonTracker {
     // a pose that does not lift (all keypoints hidden), or a skeleton that does not cover the
     // person's pixels of that frame (keypoints on the background next to it): the person keeps its
     // keypoints
-    const seen = snap ? snap.tracks.has(t.uid) : t.pixels > 0;
+    const seen = this.options.mode !== 'skeleton' && (snap ? snap.tracks.has(t.uid) : t.pixels > 0);
     if (!this._lift(p.kp, depth, uidMap, t.uid, seen, this.jScratch, this.uvScratch, this._refZ(t))) return;
     if (seen && t.lifted) {
       this._capsules(this.jScratch, this.capScratch);
@@ -495,9 +587,11 @@ export class PersonTracker {
    * Keypoints (u, v, conf) -> 3D joints J (x, y, z mm, valid) and image points UV (u, v, conf).
    * seen: the person has pixels in uidMap (their depth is preferred: a keypoint next to the
    * silhouette must not take the depth of the background behind it). refZ: median depth of its
-   * joints a moment ago (0 = unknown).
+   * joints a moment ago (0 = unknown). steady: { prev, z, n } (prev: the joints of the last frame)
+   * damps implausible depth jumps (the background next to a thin wrist, motion blur): such a
+   * joint keeps its depth along its new ray unless the new depth holds for three frames.
    */
-  _lift(kp, depth, uidMap, uid, seen, J, UV, refZ = 0) {
+  _lift(kp, depth, uidMap, uid, seen, J, UV, refZ = 0, steady = null) {
     const o = this.options;
     const rays = this.rays;
     J.fill(0);
@@ -537,11 +631,25 @@ export class PersonTracker {
       if (!J[4 * k + 3]) continue;
       // the joint center lies a few cm behind the surface the keypoint is seen on
       const i = Math.round(UV[3 * k + 1]) * W + Math.round(UV[3 * k]);
-      const z = J[4 * k + 2] + INSET[k] * 1000;
+      let z = J[4 * k + 2] + INSET[k] * 1000;
+      if (steady?.prev && steady.prev[4 * k + 3]) {
+        const zp = steady.prev[4 * k + 2];
+        const lim = 150 + 0.05 * zp;
+        if (Math.abs(z - zp) > lim) {
+          if (steady.n[k] && Math.abs(z - steady.z[k]) < lim / 2) steady.n[k]++;
+          else {
+            steady.z[k] = z;
+            steady.n[k] = 1;
+          }
+          if (steady.n[k] < 3) z = zp;
+          else steady.n[k] = 0;
+        } else steady.n[k] = 0;
+      }
       J[4 * k] = rays[2 * i] * z;
       J[4 * k + 1] = rays[2 * i + 1] * z;
       J[4 * k + 2] = z;
     }
+    if (steady) this._limbs(J, UV, steady);
     const mid = (a, b, out) => {
       if (!J[4 * a + 3] || !J[4 * b + 3]) return;
       for (let j = 0; j < 3; j++) J[4 * out + j] = (J[4 * a + j] + J[4 * b + j]) / 2;
@@ -597,6 +705,51 @@ export class PersonTracker {
   }
 
   /**
+   * Limbs: each elbow, wrist, knee and ankle must lie its bone's length from its parent joint. A
+   * joint whose measured depth does not fit (the depth next to a thin limb is often the background
+   * or the body behind it) moves along its ray to the point at that distance nearest to where it
+   * was a moment ago. The lengths are learned per person from the measurements that fit.
+   */
+  _limbs(J, UV, st) {
+    const rays = this.rays;
+    st.bones ??= Float32Array.from(LIMBS, (l) => l[2]);
+    for (let b = 0; b < LIMBS.length; b++) {
+      const [a, c] = LIMBS[b];
+      if (!J[4 * a + 3] || !J[4 * c + 3]) continue;
+      const L = st.bones[b];
+      const px = J[4 * a];
+      const py = J[4 * a + 1];
+      const pz = J[4 * a + 2];
+      const len = Math.hypot(J[4 * c] - px, J[4 * c + 1] - py, J[4 * c + 2] - pz);
+      if (Math.abs(len - L) < 0.3 * L) {
+        if (Math.abs(len - L) < 0.15 * L) st.bones[b] = 0.97 * L + 0.03 * len; // learn the length
+        continue;
+      }
+      // the ray through the joint's pixel: point = z * (rx, ry, 1)
+      const i = Math.round(UV[3 * c + 1]) * W + Math.round(UV[3 * c]);
+      const rx = this.rays[2 * i];
+      const ry = this.rays[2 * i + 1];
+      const rr = rx * rx + ry * ry + 1;
+      // |z r - P| = L  ->  rr z² - 2 (r·P) z + |P|² - L² = 0
+      const rp = rx * px + ry * py + pz;
+      const disc = rp * rp - rr * (px * px + py * py + pz * pz - L * L);
+      let z;
+      if (disc <= 0) z = rp / rr; // the bone cannot reach the ray: the nearest point on it
+      else {
+        // of the two points at that distance: the one nearer to where the joint was a moment ago
+        // (else nearer to its parent's depth; the measurement is what is in doubt)
+        const z1 = (rp - Math.sqrt(disc)) / rr;
+        const z2 = (rp + Math.sqrt(disc)) / rr;
+        const m = st.prev && st.prev[4 * c + 3] ? st.prev[4 * c + 2] : pz;
+        z = Math.abs(z1 - m) < Math.abs(z2 - m) ? z1 : z2;
+      }
+      J[4 * c] = rx * z;
+      J[4 * c + 1] = ry * z;
+      J[4 * c + 2] = z;
+    }
+  }
+
+  /**
    * The skeleton of the current frame: its keypoints (followed by the flow) lifted with this frame's
    * depth, the person's own pixels of the last frame preferred; its body parts. Keypoints the flow
    * lost for a while do not count. A joint that cannot be placed this frame (no pose for a while,
@@ -610,7 +763,9 @@ export class PersonTracker {
     for (let k = 0; k < 17; k++) if (t.lost[k] > MAX_LOST) kp[3 * k + 2] = 0;
     const J = this.jScratch;
     const U = this.uvScratch;
-    if (!this._lift(kp, this.lastDepth, this.prevUid, t.uid, t.pixels > 0, J, U, this._refZ(t))) {
+    t.steady ??= { prev: null, z: new Float32Array(17), n: new Uint8Array(17) };
+    t.steady.prev = t.lifted ? t.joints : null;
+    if (!this._lift(kp, this.lastDepth, this.prevUid, t.uid, t.pixels > 0, J, U, this._refZ(t), t.steady)) {
       J.fill(0);
       U.fill(0);
     }
@@ -888,6 +1043,19 @@ export class PersonTracker {
 
   // ---------- 4. background ----------
 
+  /** nearPerson = 1 inside the persons' boxes (with a margin). */
+  _personBoxes(persons) {
+    const near = this.nearPerson;
+    near.fill(0);
+    for (const t of persons) {
+      if (!t.bbox || !t.pos) continue;
+      const pad = Math.ceil((250 * 370) / Math.max(500, t.pos[2]));
+      const u0 = Math.max(0, t.bbox[0] - pad);
+      const u1 = Math.min(W - 1, t.bbox[2] + pad);
+      for (let v = Math.max(0, t.bbox[1] - pad), v1 = Math.min(H - 1, t.bbox[3] + pad); v <= v1; v++) near.fill(1, v * W + u0, v * W + u1 + 1);
+    }
+  }
+
   /**
    * Learns the background where no person is: what stays in place (see learnFrames & co.). Close
    * to a person, an unknown background takes as long as something new (the person's sleeve or
@@ -983,6 +1151,7 @@ export class PersonTracker {
     const lost = Math.round(o.lostSeconds * o.fps);
     const keep = Math.round(o.keepSeconds * o.fps);
     this.tracks = this.tracks.filter((t) => this.frame - t.lastPose <= (t.pixels ? keep : lost));
+    if (o.mode === 'skeleton') for (const t of this.tracks) t.pixels = 0;
     const used = new Set(this.tracks.filter((t) => t.slot).map((t) => t.slot));
     for (const t of this.tracks) {
       if (!t.slot && t.poses >= o.confirmPoses) {
@@ -1007,7 +1176,9 @@ export class PersonTracker {
       return z;
     };
     active.sort((a, b) => near(a) - near(b));
-    const count = this._segment(depth, active);
+    const masks = o.mode !== 'skeleton';
+    if (masks) this._segment(depth, active);
+    else this.owner.fill(-1);
 
     // labels, statistics, the list of person pixels and the seeds of the next frame: one pass in
     // raster order (memory in order is several times faster than in the order the regions grew)
@@ -1064,12 +1235,16 @@ export class PersonTracker {
       if (h > s.hMax) s.hMax = h;
     }
     this.prevCount = pc;
+    const stale = Math.round(o.staleSeconds * o.fps);
     for (const t of this.tracks) {
       const q = active.indexOf(t);
-      this._update(t, q >= 0 ? stats[q] : null);
+      if (masks) this._update(t, q >= 0 ? stats[q] : null);
+      else this._updateSkeleton(t, q >= 0);
+      t.visible = masks ? t.pixels > 0 : q >= 0 && this.frame - t.lastPose <= stale;
     }
     // the background is learned once the pose model runs (before, a person could become part of it)
-    if (this.poseResults) this._learn(depth, this.tracks, active);
+    if (masks && this.poseResults) this._learn(depth, this.tracks, active);
+    else if (!masks) this._personBoxes(this.tracks); // keeps the persons out of the floor estimate
     this.prevDepth.set(depth);
     if (seq !== undefined && seq === this.snapSeq) this._snapshot(seq, depth);
 
@@ -1125,6 +1300,56 @@ export class PersonTracker {
     t.hMax = s.hMax;
   }
 
+  /** Skeleton mode: position, motion, box and heights from the joints (there are no pixels). */
+  _updateSkeleton(t, placed) {
+    t.pixels = 0;
+    t.area = 0;
+    if (!placed) {
+      t.dpos = null;
+      t.dc2 = null;
+      return;
+    }
+    const J = t.joints;
+    const U = t.uv;
+    let pick = [5, 6, 11, 12].filter((k) => J[4 * k + 3]);
+    if (!pick.length) pick = [...Array(NJ).keys()].filter((k) => J[4 * k + 3]);
+    if (!pick.length) return;
+    const c = [0, 1, 2].map((j) => pick.reduce((a, k) => a + J[4 * k + j], 0) / pick.length);
+    const c2 = [0, 1].map((j) => pick.reduce((a, k) => a + U[3 * k + j], 0) / pick.length);
+    if (t.pos) for (let j = 0; j < 3; j++) t.vel[j] = 0.7 * t.vel[j] + 0.3 * (c[j] - t.pos[j]);
+    t.dpos = t.pos ? [c[0] - t.pos[0], c[1] - t.pos[1], c[2] - t.pos[2]] : null;
+    t.dc2 = t.c2 ? [c2[0] - t.c2[0], c2[1] - t.c2[1]] : null;
+    t.pos = c;
+    t.c2 = c2;
+    const f = this.floor ?? this.feetFloor;
+    const upx = f ? f.normal[0] : 0;
+    const upy = f ? f.normal[1] : -1;
+    const upz = f ? f.normal[2] : 0;
+    const up0 = f ? f.d * 1000 : 0;
+    let u0 = W;
+    let v0 = H;
+    let u1 = 0;
+    let v1 = 0;
+    let hMin = Infinity;
+    let hMax = -Infinity;
+    for (let k = 0; k < NJ; k++) {
+      if (!J[4 * k + 3]) continue;
+      u0 = Math.min(u0, U[3 * k]);
+      v0 = Math.min(v0, U[3 * k + 1]);
+      u1 = Math.max(u1, U[3 * k]);
+      v1 = Math.max(v1, U[3 * k + 1]);
+      const h = upx * J[4 * k] + upy * J[4 * k + 1] + upz * J[4 * k + 2] + up0;
+      hMin = Math.min(hMin, h);
+      hMax = Math.max(hMax, h);
+    }
+    const pu = 0.1 * (u1 - u0) + 4;
+    const pv = 0.06 * (v1 - v0) + 4;
+    t.bbox = [Math.max(0, Math.round(u0 - pu)), Math.max(0, Math.round(v0 - pv)), Math.min(W - 1, Math.round(u1 + pu)), Math.min(H - 1, Math.round(v1 + pv))];
+    // the joints are inside the body: the top of the head lies above its center, the soles below the ankles
+    t.hMin = hMin - 60;
+    t.hMax = hMax + (J[4 * HEAD + 3] ? 110 : 0);
+  }
+
   /**
    * joints, keypoints, head and ground point of a skeleton for the person list: J/U as _lift makes
    * them, kp the keypoints (u, v, conf), pos/hMin of the person's pixels (without ankles or floor).
@@ -1151,8 +1376,15 @@ export class PersonTracker {
       const conf = lost && lost[k] > MAX_LOST ? 0 : kp[3 * k + 2];
       keypoints.push([Math.round(kp[3 * k] * 10) / 10, Math.round(kp[3 * k + 1] * 10) / 10, Math.round(conf * 100) / 100]);
     }
+    const extra = [];
+    const extraKeypoints = [];
+    for (const k of [SC, HC, HEAD, LH, RH]) {
+      const ok = J[4 * k + 3] && visible;
+      extra.push([Math.round(J[4 * k]), Math.round(J[4 * k + 1]), Math.round(J[4 * k + 2]), ok ? Math.round(Math.max(0.01, U[3 * k + 2]) * 100) / 100 : 0]);
+      extraKeypoints.push([Math.round(U[3 * k] * 10) / 10, Math.round(U[3 * k + 1] * 10) / 10, ok ? Math.round(Math.max(0.01, U[3 * k + 2]) * 100) / 100 : 0]);
+    }
     const head = J[4 * HEAD + 3] ? [J[4 * HEAD], J[4 * HEAD + 1], J[4 * HEAD + 2]] : pos;
-    return { joints, keypoints, head: mm(head), ground: mm(ground) };
+    return { joints, keypoints, extra, extraKeypoints, head: mm(head), ground: mm(ground) };
   }
 
   /**
@@ -1197,7 +1429,8 @@ export class PersonTracker {
       }
       const zs = p.joints.filter((j) => j[3] > 0).map((j) => j[2]).sort((x, y) => x - y);
       const refZ = zs.length ? zs[zs.length >> 1] : 0;
-      if (!this._lift(kp, depth, labels, p.slot, true, J, U, refZ)) continue;
+      t.steadyFinal ??= { prev: null, z: new Float32Array(17), n: new Uint8Array(17), joints: new Float32Array(NJ * 4) };
+      if (!this._lift(kp, depth, labels, p.slot, true, J, U, refZ, t.steadyFinal)) continue;
       // joints that do not lift in that frame keep the ones made at once
       for (let k = 0; k < 17; k++) {
         if (J[4 * k + 3] || !p.joints[k][3]) continue;
@@ -1207,10 +1440,14 @@ export class PersonTracker {
         J[4 * k + 3] = 1;
         U[3 * k + 2] = p.joints[k][3];
       }
+      t.steadyFinal.joints.set(J);
+      t.steadyFinal.prev = t.steadyFinal.joints;
       const pos = p.centroid;
       const o = this._skeletonOut(J, U, kp, null, pos, -(p.ground?.[1] ?? 0), true);
       p.joints = o.joints;
       p.keypoints = o.keypoints;
+      p.extra = o.extra;
+      p.extraKeypoints = o.extraKeypoints;
       p.head = o.head;
       p.ground = o.ground;
     }
@@ -1219,12 +1456,13 @@ export class PersonTracker {
   _describe(t) {
     const f = this.floor ?? this.feetFloor;
     const mm = (p) => p.map((x) => Math.round(x));
-    const { joints, keypoints, head, ground } = this._skeletonOut(t.joints, t.uv, t.kp, t.lost, t.pos, t.hMin, t.pixels > 0);
+    const visible = !!t.visible;
+    const { joints, keypoints, extra, extraKeypoints, head, ground } = this._skeletonOut(t.joints, t.uv, t.kp, t.lost, t.pos, t.hMin, visible);
     const fps = this.options.fps;
     return {
       id: t.id,
       slot: t.slot,
-      visible: t.pixels > 0,
+      visible,
       age: (this.frame - (t.since ?? this.frame)) / fps,
       score: Math.round((t.score ?? 0) * 100) / 100,
       pixels: t.pixels,
@@ -1237,6 +1475,8 @@ export class PersonTracker {
       bbox: t.bbox ?? [0, 0, 0, 0],
       joints,
       keypoints,
+      extra,
+      extraKeypoints,
     };
   }
 
@@ -1277,6 +1517,7 @@ export class PersonTracker {
       this._floorAt = this.frame;
       const rays = this.rays;
       const owner = this.owner;
+      const skel = this.options.mode === 'skeleton';
       this._samples ??= new Float32Array(3 * Math.ceil(N / 16 + 64));
       const S = this._samples;
       let n = 0;
@@ -1284,7 +1525,7 @@ export class PersonTracker {
         for (let u = 2; u < W; u += 4) {
           const i = v * W + u;
           const d = depth[i];
-          if (owner[i] !== -1 || d < 400 || d > 7000) continue;
+          if (owner[i] !== -1 || d < 400 || d > 7000 || (skel && this.nearPerson[i])) continue;
           const z = d * 0.001;
           S[3 * n] = rays[2 * i] * z;
           S[3 * n + 1] = rays[2 * i + 1] * z;

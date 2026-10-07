@@ -1,37 +1,20 @@
 // Person mask in 2D: only the people, each in the color of its tracking slot, with relief, infrared
 // detail and an outline; their id and height above them. The room shows at most as a faint ghost.
 //
-// Template for 2D effects on the person tracking: streams: ['persons'] starts it, then in WGSL
-// isPerson(k), personMask(k), personAt(k), personDepthAt(k), personColor(slot), and in JS
-// ctx.kinect.persons.list (see /lib/persons.js).
+// Template for 2D effects on the person tracking (see /PERSONS.md): streams: ['persons'] starts it,
+// then in WGSL isPerson(k), personMask(k), personAt(k), personDepthAt(k), personColor(slot), and in
+// JS ctx.persons (Person objects) with ctx.kinectToScreen() for HTML on top.
 
 import { createShaderPass } from '/lib/shader-pass.js';
-import { PERSON_COLORS } from '/lib/persons.js';
 import SHADE from './shade.wgsl?raw';
 
 let pass = null;
 let tags = null;
 const tagEls = new Map();
 
-/** Depth image pixel (u, v) -> CSS pixels on the screen, matching kinectUv() in the shader. */
-function screenOf(ctx, u, v) {
-  let kx = (u + 0.5) / 512;
-  let ky = (v + 0.5) / 424;
-  if (ctx.xSign < 0) kx = 1 - kx;
-  const screen = ctx.width / Math.max(1, ctx.height);
-  const image = 512 / 424;
-  kx -= 0.5;
-  ky -= 0.5;
-  if (screen > image) ky = (ky * screen) / image;
-  else kx = (kx * image) / screen;
-  return [((kx + 0.5) * ctx.width) / ctx.pixelRatio, ((ky + 0.5) * ctx.height) / ctx.pixelRatio];
-}
-
 function updateTags(ctx) {
-  const list = ctx.params.labels ? (ctx.kinect.persons?.list ?? []) : [];
   const seen = new Set();
-  for (const p of list) {
-    if (!p.visible) continue;
+  for (const p of ctx.params.labels ? ctx.persons : []) {
     seen.add(p.id);
     let el = tagEls.get(p.id);
     if (!el) {
@@ -40,9 +23,11 @@ function updateTags(ctx) {
       tags.append(el);
       tagEls.set(p.id, el);
     }
-    const [x, y] = screenOf(ctx, (p.bbox[0] + p.bbox[2]) / 2, p.bbox[1]);
-    el.style.transform = `translate(${x.toFixed(1)}px, ${(y - 10).toFixed(1)}px) translate(-50%, -100%)`;
-    el.style.color = PERSON_COLORS[p.slot];
+    // above the person's box (depth image pixels -> canvas pixels -> CSS pixels)
+    const b = p.image.bbox;
+    const [x, y] = ctx.kinectToScreen((b[0] + b[2]) / 2, b[1]);
+    el.style.transform = `translate(${(x / ctx.pixelRatio).toFixed(1)}px, ${(y / ctx.pixelRatio - 10).toFixed(1)}px) translate(-50%, -100%)`;
+    el.style.color = p.css;
     el.textContent = `#${p.id} · ${p.height.toFixed(2)} m`;
   }
   for (const [id, el] of tagEls) {
