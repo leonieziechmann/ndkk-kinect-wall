@@ -120,13 +120,31 @@ Import only from `three/webgpu`, `three/tsl` and `three/addons/...`. Mixing in p
 - URL options: `?hub=8091` (another hub), `?fps=30`, `?kiosk` (no UI).
 - Hot swap: saving `main.js` or a file it imports replaces the scene without a reload. If `setup()` throws, the previous version keeps running and the error is shown. If `frame()` throws, the scene pauses; save again to retry.
 - `npm run check` without names checks every scene in your worktree. Options go after `--`: `npm run check my-scene -- --seconds 8 --size 1920x1080 --hub 8091`.
-- Reproducible data without the real Kinect: run your own synthetic hub (moving spheres in a room): `"$MAIN/kinect-hub/target/release/kinect-hub.exe" --source synthetic --bind 127.0.0.1:8091` (`MAIN` = first path of `git worktree list`). Then `npm run check my-scene -- --hub 8091` or `?hub=8091`.
+
+## Recorded people instead of an empty room
+
+Often nobody stands in front of the Kinect, and your scene only sees an empty room. A **replay hub** loops a recording of the real sensor, people and noise included, at the original frame rate. Every run gets the same data, so you can compare versions. It never touches the Kinect and uses no GPU.
+
+```bash
+MAIN=$(git worktree list --porcelain | sed -n '1s/^worktree //p')   # the main checkout
+ls "$MAIN/recordings"                                                 # the recordings (*.k2rec)
+curl -s http://127.0.0.1:8091/api/status                              # "source":"replay"? then just use it
+"$MAIN/kinect-hub/target/release/kinect-hub.exe" --source replay "$MAIN/recordings/<name>.k2rec" --bind 127.0.0.1:8091   # else: in the BACKGROUND
+npm run check my-scene -- --hub 8091                                  # or open the scene with ?hub=8091
+```
+
+- One replay hub serves everyone: leave it running, and never stop one you did not start.
+- If another kind of hub holds 8091, or you want a different recording, take 8092, 8093, ….
+- No recordings yet: `--source synthetic` instead of `--source replay <file>` gives moving spheres in a room.
+- New recordings need someone in front of the sensor, so ask the user. The command is in `CLAUDE.md`.
+- Recordings show the room and the people in it. They stay in `recordings/` (git-ignored); never commit or upload them.
 
 ## When something is off
 
 | symptom | cause |
 |---|---|
-| "Keine Verbindung zu kinect-hub" | the hub is not running: `CLAUDE.md` |
+| "Keine Verbindung zu kinect-hub" | the hub is not running: `CLAUDE.md`. With `?hub=8091` / `--hub 8091`: start the replay hub (above) |
+| replay hub: no frames, sensor `offline` | recording missing or damaged; `curl -s http://127.0.0.1:8091/api/status` shows why |
 | `check`: Kinect connected but no frames | the sensor is (re)starting; wait a few seconds and run it again |
 | `check`: "Kinect-Bildrate im Hub fiel" | your scene uses too much GPU (see Rules) |
 | `check`: "Die Seite bekam nur … Kinect-Bilder" | `frame()` blocks the main thread too long (heavy JS per frame), or other scenes are rendering on the same GPU right now; run it again later and compare |

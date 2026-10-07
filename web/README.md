@@ -46,7 +46,7 @@ npm run dev
 - **Parameter (rechts oben):** Was du verstellst, bleibt gespeichert und ist gelb markiert. „Zurücksetzen“ holt die Werte aus dem Code zurück, „Werte kopieren“ legt sie als JSON in die Zwischenablage, etwa für einen Agenten.
 - **HUD (links unten):** Bildrate, Kinect-Bildrate und die Latenz vom Sensor bis zum Bild (gemessen 12–19 ms). Es blendet sich aus, wenn die Maus ruht.
 - **URL-Optionen:**
-  - `?hub=8091` nimmt einen anderen Hub, z. B. den synthetischen.
+  - `?hub=8091` nimmt einen anderen Hub, z. B. einen, der eine Aufnahme abspielt (`--source replay`), oder den synthetischen.
   - `?fps=30` begrenzt die Bildrate.
   - `?kiosk` blendet alle Bedienelemente aus, für die Wand.
   - `?nothumb` lädt kein Vorschaubild hoch.

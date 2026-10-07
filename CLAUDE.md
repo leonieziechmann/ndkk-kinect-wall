@@ -26,7 +26,12 @@ Only one process can open the Kinect at a time. **kinect-hub** owns it and serve
 - Worktrees have no built hub or worker (`target/` and `fn2/bin/` are not in git). Do not build them there.
 - Never stop a hub you did not start yourself.
 - Do **not** start `fn2_capture.exe`, `fn2_reconnect.exe`, `viewer.py --fn2` or `pointcloud.py` without `--hub` while the hub runs; they would fight over the sensor. `viewer.py --hub` / `pointcloud.py --hub` are fine.
-- Without hardware, or for reproducible tests, run your own synthetic hub on a separate port: `"$MAIN/kinect-hub/target/release/kinect-hub.exe" --source synthetic --bind 127.0.0.1:8091`. Scenes then use `?hub=8091`; for `npm run check`, append `-- --hub 8091`.
+- Recorded people instead of an empty room, or reproducible tests: use a **replay hub** on a separate port. It loops a recording at the original frame rate and never touches the Kinect.
+  - `ls "$MAIN/recordings"` lists the recordings (`*.k2rec`).
+  - `curl -s http://127.0.0.1:8091/api/status`: if it answers with `"source":"replay"`, use that hub. Otherwise start one in the background: `"$MAIN/kinect-hub/target/release/kinect-hub.exe" --source replay "$MAIN/recordings/<name>.k2rec" --bind 127.0.0.1:8091`. If another kind of hub holds 8091, take 8092, 8093, ….
+  - Scenes then use `?hub=8091`; for `npm run check`, append `-- --hub 8091`.
+  - No recording yet: `--source synthetic` instead of `--source replay <file>` gives moving spheres in a room.
+- New recordings need someone in front of the sensor, so ask the user. Then `"$MAIN/kinect-hub/target/release/kinect-hub-probe.exe" record --seconds 30 --out "$MAIN/recordings/<name>.k2rec"` reads from the running hub (not the sensor). Recordings show the room and people: `recordings/` is git-ignored; never commit or upload them.
 - Protocol: `kinect-hub/README.md`, or `GET /api` (machine-readable). Dev servers announce themselves at `POST /api/devservers` (done by the Vite plugin).
 - Python: `kinect_hub.py` provides `Hub().depth()`, `.points()`, `.stream([...])` and `HubDepthSensor`.
 - Coordinates: x right, y down, z forward, in mm. point = (lut.x * z, lut.y * z, z). The Kinect image is mirrored.

@@ -7,6 +7,8 @@ mod devservers;
 mod lut;
 mod pipeline;
 mod protocol;
+mod recording;
+mod replay;
 mod server;
 mod source;
 mod state;

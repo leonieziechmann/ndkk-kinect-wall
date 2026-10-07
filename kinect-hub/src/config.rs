@@ -9,8 +9,9 @@ kinect-hub - Kinect v2 middleware: one process owns the sensor, every client get
 usage: kinect-hub [options]
 
   --bind ADDR            listen address (default 127.0.0.1:8090; 0.0.0.0:8090 = whole LAN)
-  --source kinect|synthetic
-                         data source (default kinect; synthetic = generated test scene)
+  --source kinect|synthetic|replay FILE
+                         data source (default kinect; synthetic = generated test scene;
+                         replay FILE = loop a recording of `kinect-hub-probe record`)
   --worker PATH          capture worker (default: fn2/bin/fn2_capture.exe, searched upwards)
   --pipeline cl|cpu|clkde
                          libfreenect2 depth pipeline inside the worker (default cl = OpenCL)
@@ -28,6 +29,7 @@ Logging: set RUST_LOG, e.g. RUST_LOG=debug";
 pub enum SourceKind {
     Kinect,
     Synthetic,
+    Replay,
 }
 
 impl SourceKind {
@@ -35,6 +37,7 @@ impl SourceKind {
         match self {
             SourceKind::Kinect => "kinect",
             SourceKind::Synthetic => "synthetic",
+            SourceKind::Replay => "replay",
         }
     }
 }
@@ -43,6 +46,8 @@ impl SourceKind {
 pub struct Config {
     pub bind: SocketAddr,
     pub source: SourceKind,
+    /// The recording for `--source replay`, as given on the command line.
+    pub replay: Option<PathBuf>,
     pub worker: Option<PathBuf>,
     pub pipeline: String,
     pub web_dir: Option<PathBuf>,
@@ -57,6 +62,7 @@ impl Config {
         let mut cfg = Config {
             bind: SocketAddr::from(([127, 0, 0, 1], 8090)),
             source: SourceKind::Kinect,
+            replay: None,
             worker: None,
             pipeline: "cl".to_string(),
             web_dir: None,
@@ -77,7 +83,15 @@ impl Config {
                     cfg.source = match value("--source")?.as_str() {
                         "kinect" => SourceKind::Kinect,
                         "synthetic" => SourceKind::Synthetic,
-                        other => return Err(format!("--source {other}: expected kinect or synthetic")),
+                        "replay" => {
+                            let file = value("--source replay")?;
+                            if file.starts_with("--") {
+                                return Err("--source replay needs the recording: --source replay recordings/NAME.k2rec".to_string());
+                            }
+                            cfg.replay = Some(PathBuf::from(file));
+                            SourceKind::Replay
+                        }
+                        other => return Err(format!("--source {other}: expected kinect, synthetic or replay FILE")),
                     }
                 }
                 "--worker" => cfg.worker = Some(PathBuf::from(value("--worker")?)),
@@ -120,6 +134,17 @@ impl Config {
             Some(p) => p.is_file().then(|| p.clone()),
             None => find_upwards(&Path::new("fn2").join("bin").join("fn2_capture.exe")),
         }
+    }
+
+    /// The recording to replay, looked up again before every attempt. A relative path that does
+    /// not exist here is also searched upwards from the executable: `recordings/` lives in the
+    /// main checkout, next to the hub, not in the worktrees.
+    pub fn replay_path(&self) -> Option<PathBuf> {
+        let p = self.replay.as_ref()?;
+        if p.is_absolute() || p.exists() {
+            return Some(p.clone());
+        }
+        Some(find_upwards(p).unwrap_or_else(|| p.clone()))
     }
 }
 

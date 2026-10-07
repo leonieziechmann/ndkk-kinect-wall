@@ -14,6 +14,9 @@ third_party/*
 !third_party/libfreenect2-fastreconnect.patch
 
 # local recordings, logs and measurements (may show the room / people)
+recordings/
+*.k2rec
+*.k2rec.part
 snapshots/
 fn2/logs/
 *.csv

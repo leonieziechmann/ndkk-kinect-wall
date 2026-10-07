@@ -42,6 +42,11 @@ pub fn undistorted_rays(p: &CameraParams) -> Vec<f32> {
 
 pub fn build_param_set(params: CameraParams) -> ParamSet {
     let rays = undistorted_rays(&params);
+    param_set_with_rays(params, rays)
+}
+
+/// Like `build_param_set`, with rays that were computed elsewhere (a recording of a real sensor).
+pub fn param_set_with_rays(params: CameraParams, rays: Vec<f32>) -> ParamSet {
     let now = now_us();
     let lut_msg = f32_message(Stream::Lut, 0, now, now, &rays);
     let json = json!({ "type": "params", "params": &params, "lut": {
