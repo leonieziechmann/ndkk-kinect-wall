@@ -1,0 +1,40 @@
+[package]
+name = "kinect-hub"
+version = "0.1.0"
+edition = "2024"
+description = "Kinect v2 middleware: owns the sensor, precomputes once per frame, streams to many clients"
+publish = false
+
+[[bin]]
+name = "kinect-hub"
+path = "src/main.rs"
+
+[[bin]]
+name = "kinect-hub-probe"
+path = "src/bin/probe.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+png = "0.18"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
+tokio-tungstenite = "0.28"
+tower-http = { version = "0.6", features = ["fs", "cors", "catch-panic", "set-header"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[profile.release]
+debug = "line-tables-only"  # readable backtraces in the log
+panic = "unwind"            # a bug in one task or thread is caught and logged, not fatal
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"

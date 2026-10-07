@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kinect-hub</title>
+<style>
+  :root { color-scheme: dark; --bg: #1c1c1e; --panel: #26262a; --text: #dcdcdc; --muted: #9a9aa0; --accent: #8fc1ff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 28px 0 10px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+  a { color: var(--accent); }
+  code, pre { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  pre { background: var(--panel); padding: 12px; border-radius: 8px; overflow-x: auto; margin: 0; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .card { background: var(--panel); border-radius: 10px; padding: 14px 16px; }
+  .state { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #444; font-weight: 600; }
+  .state.streaming { background: #2f6b3a; }
+  .state.starting, .state.searching { background: #7a6420; }
+  .state.offline, .state.disconnected { background: #7a2b2b; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  td { padding: 3px 0; vertical-align: top; }
+  td:first-child { color: var(--muted); width: 45%; }
+  canvas { width: 100%; height: auto; border-radius: 8px; background: #000; display: block; }
+  .links a { display: block; padding: 10px 12px; margin-bottom: 8px; background: #303036; border-radius: 8px; text-decoration: none; }
+  .links a span { display: block; color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>kinect-hub</h1>
+  <div>Kinect v2 Middleware: ein Prozess besitzt den Sensor, beliebig viele Clients bekommen den Stream.</div>
+
+  <div class="grid">
+    <section>
+      <h2>Status</h2>
+      <div class="card">
+        <table id="status"><tr><td>Verbindung</td><td>…</td></tr></table>
+      </div>
+      <h2>Clients</h2>
+      <div class="links">
+        <a href="/pointcloud/">Punktwolke (WebGPU)<span>Weiße Punkte auf Grau, Orbit-Kamera, Glow – Maus ziehen zum Drehen</span></a>
+        <a href="/api">API-Beschreibung (JSON)<span>Endpunkte, WebSocket-Protokoll, Binär-Header</span></a>
+        <a href="/api/frame/depth?format=png">Aktuelles Tiefenbild als 16-Bit-PNG<span>Werte in mm, 512×424</span></a>
+      </div>
+    </section>
+    <section>
+      <h2>Tiefe live (2D-Vorschau)</h2>
+      <canvas id="preview" width="512" height="424"></canvas>
+    </section>
+  </div>
+
+  <h2>Eigener Client in 10 Zeilen</h2>
+  <pre>import { KinectStream } from '/lib/kinect-stream.js';
+
+const kinect = new KinectStream({ streams: ['depth', 'lut'] });
+kinect.addEventListener('depth', (e) =&gt; {
+  const { data, width, height, seq } = e.detail;   // Uint16Array, mm, 0 = kein Messwert
+});
+kinect.addEventListener('lut', (e) =&gt; {
+  const rays = e.detail.data;                        // Float32Array x,y je Pixel: Punkt = (x*z, y*z, z)
+});
+kinect.connect();</pre>
+  <p>Neue Seiten einfach unter <code>web/</code> anlegen – der Hub liefert sie sofort aus (kein Neustart nötig).
+    Python, Rust &amp; Co. verbinden sich per WebSocket mit <code>ws://127.0.0.1:8090/ws</code> oder holen Einzelbilder per HTTP.</p>
+</main>
+
+<script type="module">
+import { KinectStream } from '/lib/kinect-stream.js';
+
+const table = document.getElementById('status');
+const canvas = document.getElementById('preview');
+const ctx = canvas.getContext('2d');
+const image = ctx.createImageData(512, 424);
+
+// turbo-like colormap: near = warm, far = cold, 0 = black
+const palette = new Uint8ClampedArray(256 * 3);
+for (let i = 0; i < 256; i++) {
+  const t = i / 255;
+  palette[i * 3] = 255 * Math.min(1, Math.max(0, 1.6 - Math.abs(4 * t - 3.2)));
+  palette[i * 3 + 1] = 255 * Math.min(1, Math.max(0, 1.6 - Math.abs(4 * t - 2.0)));
+  palette[i * 3 + 2] = 255 * Math.min(1, Math.max(0, 1.6 - Math.abs(4 * t - 0.8)));
+}
+
+const kinect = new KinectStream({ streams: ['depth', 'status'], maxFps: 15 });
+kinect.addEventListener('depth', (e) => {
+  const d = e.detail.data;
+  const px = image.data;
+  for (let i = 0; i < d.length; i++) {
+    const v = d[i];
+    const o = i * 4;
+    if (v === 0) {
+      px[o] = px[o + 1] = px[o + 2] = 0;
+    } else {
+      const c = 255 - Math.min(255, Math.max(0, ((v - 500) * 255) / 4000)) | 0;
+      px[o] = palette[c * 3];
+      px[o + 1] = palette[c * 3 + 1];
+      px[o + 2] = palette[c * 3 + 2];
+    }
+    px[o + 3] = 255;
+  }
+  ctx.putImageData(image, 0, 0);
+});
+
+const row = (k, v) => `<tr><td>${k}</td><td>${v}</td></tr>`;
+function render() {
+  const s = kinect.status;
+  if (!kinect.connected || !s) {
+    table.innerHTML = row('Verbindung', '<span class="state disconnected">getrennt</span> – verbinde neu …');
+    return;
+  }
+  const st = s.sensor?.state ?? '?';
+  const f = s.frame?.stats;
+  table.innerHTML = [
+    row('Sensor', `<span class="state ${st}">${st}</span> ${s.sensor?.detail ?? ''}`),
+    row('Quelle', s.source),
+    row('Bildrate', `${s.fps.toFixed(1)} fps`),
+    row('Latenz im Hub', `${(s.latency_ms.worker_to_hub + s.latency_ms.processing).toFixed(1)} ms (Pipe ${s.latency_ms.worker_to_hub} + Vorberechnung ${s.latency_ms.processing})`),
+    row('Clients', `${s.clients} / ${s.max_clients}`),
+    row('Tiefe', f ? `${f.min_mm}–${f.max_mm} mm, Median ${f.median_mm} mm, ${(f.valid_ratio * 100).toFixed(0)} % gültig` : '–'),
+    row('Worker', `PID ${s.worker.pid ?? '–'}, Neustarts ${s.worker.restarts}`),
+    row('Fehler', `Panics ${s.errors.panics_caught}, Protokoll ${s.errors.protocol}, Frames ${s.errors.frames}`),
+  ].join('');
+}
+kinect.addEventListener('status', render);
+kinect.addEventListener('close', render);
+kinect.connect();
+render();
+</script>
+</body>
+</html>

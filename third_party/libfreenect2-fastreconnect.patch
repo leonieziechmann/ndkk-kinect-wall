@@ -1,0 +1,174 @@
+diff --git a/src/command_transaction.cpp b/src/command_transaction.cpp
+index e3dc9b0..60ff270 100644
+--- a/src/command_transaction.cpp
++++ b/src/command_transaction.cpp
+@@ -30,6 +30,7 @@
+ #include <libfreenect2/logging.h>
+ 
+ #include <stdint.h>
++#include <chrono>
+ 
+ #define WRITE_LIBUSB_ERROR(__RESULT) libusb_error_name(__RESULT) << " " << libusb_strerror((libusb_error)__RESULT)
+ 
+@@ -49,6 +50,21 @@ CommandTransaction::~CommandTransaction() {}
+ 
+ bool CommandTransaction::execute(const CommandBase& command, Result& result)
+ {
++  // FASTRECONNECT: per-command timing (LIBFREENECT2_LOGGER_LEVEL=debug)
++  struct Timed
++  {
++    const CommandBase &cmd;
++    std::chrono::steady_clock::time_point start;
++    explicit Timed(const CommandBase &c) : cmd(c), start(std::chrono::steady_clock::now()) {}
++    ~Timed()
++    {
++      double ms = std::chrono::duration<double, std::milli>(
++                    std::chrono::steady_clock::now() - start).count();
++      uint32_t id = reinterpret_cast<const uint32_t *>(cmd.data())[3];
++      LOG_DEBUG << "command 0x" << std::hex << id << std::dec << " took " << ms << " ms";
++    }
++  } timed(command);
++
+   result.resize(command.maxResponseLength());
+   response_complete_result_.resize(ResponseCompleteLength);
+ 
+diff --git a/src/libfreenect2.cpp b/src/libfreenect2.cpp
+index 631a578..aad24cd 100644
+--- a/src/libfreenect2.cpp
++++ b/src/libfreenect2.cpp
+@@ -925,7 +925,11 @@ bool Freenect2DeviceImpl::startStreams(bool enable_rgb, bool enable_depth)
+   if (!command_tx_.execute(SetModeEnabledWith0x00640064Command(nextCommandSeq()), result)) return false;
+   if (!command_tx_.execute(SetModeDisabledCommand(nextCommandSeq()), result)) return false;
+ 
+-  int timeout = 50; // about 5 seconds (100ms x 50)
++  int timeout = 500; // about 5 seconds (10ms x 500)
++  // FASTRECONNECT: LIBFREENECT2_STATUS_TIMEOUT_MS bounds the wait for the sensor-ready bit
++  // (after a reboot the firmware reports not-ready for ~3 s); 0 = do not wait at all
++  if (const char *st = std::getenv("LIBFREENECT2_STATUS_TIMEOUT_MS"))
++    timeout = std::atoi(st) / 10;
+   for (uint32_t status = 0, last = 0; (status & 1) == 0 && 0 < timeout; last = status, timeout--)
+   {
+     if (!command_tx_.execute(ReadStatus0x090000Command(nextCommandSeq()), result)) return false;
+@@ -933,7 +937,7 @@ bool Freenect2DeviceImpl::startStreams(bool enable_rgb, bool enable_depth)
+     if (status != last)
+       LOG_DEBUG << "status 0x090000: " << status;
+     if ((status & 1) == 0)
+-      this_thread::sleep_for(chrono::milliseconds(100));
++      this_thread::sleep_for(chrono::milliseconds(10));
+   }
+   if (timeout == 0) {
+     LOG_DEBUG << "status 0x090000: timeout";
+@@ -1057,6 +1061,14 @@ bool Freenect2DeviceImpl::close()
+    */
+   command_tx_.execute(ShutdownCommand(nextCommandSeq()), result);
+   libfreenect2::this_thread::sleep_for(libfreenect2::chrono::milliseconds(4*1000));
++#else
++  // FASTRECONNECT: LIBFREENECT2_SHUTDOWN_ON_CLOSE=1 reboots the device on close (it
++  // drops off the bus for a few seconds), used to exercise the reconnect path.
++  {
++    const char *shutdown = std::getenv("LIBFREENECT2_SHUTDOWN_ON_CLOSE");
++    if (shutdown && shutdown[0] == '1')
++      command_tx_.execute(ShutdownCommand(nextCommandSeq()), result);
++  }
+ #endif
+ 
+   if(pipeline_->getRgbPacketProcessor() != 0)
+@@ -1168,7 +1180,11 @@ Freenect2Device *Freenect2::openDevice(int idx)
+ 
+ Freenect2Device *Freenect2::openDevice(int idx, const PacketPipeline *pipeline)
+ {
+-  return impl_->openDevice(idx, pipeline, true);
++  // FASTRECONNECT: LIBFREENECT2_SKIP_RESET=1 skips libusb_reset_device on open.
++  // After a firmware reset the device is fresh anyway; the reset can cost a
++  // re-enumeration plus a fixed 1 s sleep on Windows.
++  const char *skip = std::getenv("LIBFREENECT2_SKIP_RESET");
++  return impl_->openDevice(idx, pipeline, !(skip && skip[0] == '1'));
+ }
+ 
+ Freenect2Device *Freenect2Impl::openDevice(int idx, const PacketPipeline *pipeline, bool attempting_reset)
+@@ -1197,7 +1213,7 @@ Freenect2Device *Freenect2Impl::openDevice(int idx, const PacketPipeline *pipeli
+   }
+ 
+   int r;
+-  for (int i = 0; i < 10; i++)
++  for (int i = 0; i < 50; i++)
+   {
+     r = libusb_open(dev.dev, &dev_handle);
+     if(r == LIBUSB_SUCCESS)
+@@ -1205,7 +1221,7 @@ Freenect2Device *Freenect2Impl::openDevice(int idx, const PacketPipeline *pipeli
+       break;
+     }
+     LOG_INFO << "device unavailable right now, retrying";
+-    this_thread::sleep_for(chrono::milliseconds(100));
++    this_thread::sleep_for(chrono::milliseconds(20));
+   }
+ 
+   if(r != LIBUSB_SUCCESS)
+diff --git a/src/opencl_depth_packet_processor.cpp b/src/opencl_depth_packet_processor.cpp
+index d8db14d..2dab5a6 100644
+--- a/src/opencl_depth_packet_processor.cpp
++++ b/src/opencl_depth_packet_processor.cpp
+@@ -251,7 +251,9 @@ public:
+     newIrFrame();
+     newDepthFrame();
+ 
++#ifndef CL_ICDL_VERSION  // newer cl_ext.h defines it as a macro (same value)
+     const int CL_ICDL_VERSION = 2;
++#endif
+     typedef cl_int (*icdloader_func)(int, size_t, void*, size_t*);
+ #ifdef _MSC_VER
+ #pragma warning(push)
+diff --git a/src/opencl_kde_depth_packet_processor.cpp b/src/opencl_kde_depth_packet_processor.cpp
+index 98dbdff..48b4435 100644
+--- a/src/opencl_kde_depth_packet_processor.cpp
++++ b/src/opencl_kde_depth_packet_processor.cpp
+@@ -259,7 +259,9 @@ public:
+     newIrFrame();
+     newDepthFrame();
+ 
++#ifndef CL_ICDL_VERSION  // newer cl_ext.h defines it as a macro (same value)
+     const int CL_ICDL_VERSION = 2;
++#endif
+     typedef cl_int (*icdloader_func)(int, size_t, void*, size_t*);
+ #ifdef _MSC_VER
+ #pragma warning(push)
+diff --git a/src/packet_pipeline.cpp b/src/packet_pipeline.cpp
+index e5d7ca3..e5b1e2b 100644
+--- a/src/packet_pipeline.cpp
++++ b/src/packet_pipeline.cpp
+@@ -72,6 +72,10 @@ public:
+   DepthPacketProcessor *depth_processor_;
+   BaseDepthPacketProcessor *async_depth_processor_;
+ 
++  // FASTRECONNECT: a PacketPipeline subclass that never calls initialize() (e.g. a
++  // wrapper that forwards to a shared pipeline) must not delete garbage pointers.
++  PacketPipelineComponents() : rgb_parser_(0), depth_parser_(0), rgb_processor_(0), async_rgb_processor_(0),
++                               depth_processor_(0), async_depth_processor_(0) {}
+   ~PacketPipelineComponents();
+   void initialize(RgbPacketProcessor *rgb, DepthPacketProcessor *depth);
+ };
+diff --git a/src/transfer_pool.cpp b/src/transfer_pool.cpp
+index 6c644b3..7f8a0bd 100644
+--- a/src/transfer_pool.cpp
++++ b/src/transfer_pool.cpp
+@@ -127,16 +127,16 @@ void TransferPool::cancel()
+     }
+   }
+ 
+-  for(;;)
++  for(int waited_ms = 0;; waited_ms += 5)
+   {
+-    libfreenect2::this_thread::sleep_for(libfreenect2::chrono::milliseconds(100));
+     size_t stopped_transfers = 0;
+     for(TransferQueue::iterator it = transfers_.begin(); it != transfers_.end(); ++it)
+       stopped_transfers += it->getStopped();
+     if (stopped_transfers == transfers_.size())
+       break;
+-    LOG_INFO << "waiting for transfer cancellation";
+-    libfreenect2::this_thread::sleep_for(libfreenect2::chrono::milliseconds(1000));
++    if (waited_ms % 1000 == 0 && waited_ms > 0)
++      LOG_INFO << "waiting for transfer cancellation";
++    libfreenect2::this_thread::sleep_for(libfreenect2::chrono::milliseconds(5));
+   }
+ }
+ 

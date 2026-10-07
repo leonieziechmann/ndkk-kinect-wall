@@ -1,0 +1,4 @@
+* text=auto
+*.sh text eol=lf
+# applied byte-for-byte to the libfreenect2 checkout
+*.patch -text
