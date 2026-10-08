@@ -21,6 +21,7 @@ use tracing::{debug, info};
 
 use crate::protocol::{CLIENT_HEADER_LEN, ClientRequest, HEIGHT, PROTOCOL_VERSION, Stream, WIDTH};
 use crate::state::{FrameSet, Hub, ParamSet, now_us};
+use crate::tracking::PersonsSet;
 
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
@@ -86,7 +87,13 @@ pub async fn run(socket: WebSocket, hub: Arc<Hub>, addr: SocketAddr, _permit: Ow
     let (mut tx, mut rx) = socket.split();
     let mut frames = hub.frames.subscribe();
     let mut params = hub.params.subscribe();
+    let mut poses = hub.poses.subscribe();
+    let mut persons = hub.persons.subscribe();
+    let mut persons_live = hub.persons_live.subscribe();
     frames.mark_unchanged(); // the first frame sent is a fresh one
+    poses.mark_unchanged();
+    persons.mark_unchanged();
+    persons_live.mark_unchanged();
     params.mark_unchanged(); // params are sent when `lut` gets subscribed
 
     if send(&hub, &mut tx, Message::Text(hello(&hub, session.id).into())).await.is_err() {
@@ -159,6 +166,36 @@ pub async fn run(socket: WebSocket, hub: Arc<Hub>, addr: SocketAddr, _permit: Ow
                 if let Some(p) = p
                     && send_params(&hub, &mut tx, &p).await.is_err() {
                         break "send failed".to_string();
+                    }
+            }
+            changed = poses.changed(), if session.has(Stream::Poses) => {
+                if changed.is_err() {
+                    break "hub shutting down".to_string();
+                }
+                let p = poses.borrow_and_update().clone();
+                if let Some(p) = p
+                    && send(&hub, &mut tx, Message::Text(p.json.clone())).await.is_err() {
+                        break "send failed".to_string();
+                    }
+            }
+            changed = persons.changed(), if session.has(Stream::Persons) => {
+                if changed.is_err() {
+                    break "hub shutting down".to_string();
+                }
+                let p = persons.borrow_and_update().clone();
+                if let Some(p) = p
+                    && send_persons(&hub, &mut tx, &p).await.is_err() {
+                        break "client too slow or gone (send timed out)".to_string();
+                    }
+            }
+            changed = persons_live.changed(), if session.has(Stream::PersonsLive) => {
+                if changed.is_err() {
+                    break "hub shutting down".to_string();
+                }
+                let p = persons_live.borrow_and_update().clone();
+                if let Some(p) = p
+                    && send_persons(&hub, &mut tx, &p).await.is_err() {
+                        break "client too slow or gone (send timed out)".to_string();
                     }
             }
             _ = status_tick.tick(), if session.has(Stream::Status) => {
@@ -311,6 +348,27 @@ async fn send_frame(hub: &Hub, session: &Session, tx: &mut Tx, frame: &FrameSet)
     match result {
         Ok(Ok(())) => {
             hub.messages_sent.fetch_add(count, Ordering::Relaxed);
+            hub.bytes_sent.fetch_add(total, Ordering::Relaxed);
+            Ok(())
+        }
+        _ => Err(()),
+    }
+}
+
+/// A person tracking result: its JSON, then its labels, flushed together.
+async fn send_persons(hub: &Hub, tx: &mut Tx, p: &PersonsSet) -> Result<(), ()> {
+    let msgs = [Message::Text(p.json.clone()), Message::Binary(p.labels.clone())];
+    let total: u64 = msgs.iter().map(byte_len).sum();
+    let result = timeout(SEND_TIMEOUT, async {
+        for m in msgs {
+            tx.feed(m).await?;
+        }
+        tx.flush().await
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {
+            hub.messages_sent.fetch_add(2, Ordering::Relaxed);
             hub.bytes_sent.fetch_add(total, Ordering::Relaxed);
             Ok(())
         }

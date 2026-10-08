@@ -1,0 +1,3 @@
+/target/
+# onnxruntime.dll from the NuGet package (README.md)
+/ort/
