@@ -14,23 +14,41 @@ function parse(frames) {
   });
 }
 
+// The invaders seen from above (they hover over the map), facing right: towards the city for the
+// formation from the left (the one from the right is drawn mirrored). '#' body, 'e' eyes at the front,
+// 'o' the mothership's dome.
+const TOP = {
+  // 30 points: an arrow, tentacles trailing behind
+  squid: [
+    ['...........', '#..####....', '.#.######..', '..######e#.', '#.#########', '..######e#.', '.#.######..', '#..####....', '...........'],
+    ['...........', '.#.####....', '#..######..', '.#.#####e#.', '..#########', '.#.#####e#.', '#..######..', '.#.####....', '...........'],
+  ],
+  // 20 points: a shell, legs at the sides, pincers in front
+  crab: [
+    ['.......##..', '..#.....#.#', '#.#####..#.', '.#######e..', '..#######..', '.#######e..', '#.#####..#.', '..#.....#.#', '.......##..'],
+    ['...........', '..#....###.', '#.#####...#', '.#######e..', '..#######..', '.#######e..', '#.#####...#', '..#....###.', '...........'],
+  ],
+  // 10 points: round, tentacles all around; the front row
+  octopus: [
+    ['.#.......#.', '..#.....#..', '#..#####...', '.#######e..', '..########.', '.#######e..', '#..#####...', '..#.....#..', '.#.......#.'],
+    ['..#.....#..', '...#...#...', '.#.#####...', '#.######e..', '..########.', '#.######e..', '.#.#####...', '...#...#...', '..#.....#..'],
+  ],
+  // the mothership: a saucer with a dome
+  ufo: [['....#######....', '..##.......##..', '.#..#######..#.', '#..##ooooo##..#', '#.##ooooooo##.#', '#.##ooooooo##.#', '#..##ooooo##..#', '.#..#######..#.', '..##.......##..', '....#######....']],
+};
+const solid = (rows) => rows.map((r) => r.replace(/[eo]/g, '#'));
+/** the special pixels of a sprite ('e' eyes, 'o' dome) as [x, y] */
+const marks = (rows, ch) => rows.flatMap((r, y) => [...r].map((c, x) => (c === ch ? [x, y] : null)).filter(Boolean));
+
+export const UFO_W = TOP.ufo[0][0].length;
+export const UFO_H = TOP.ufo[0].length;
+export const UFO_DOME = marks(TOP.ufo[0], 'o');
+
 export const SPRITES = {
-  // 30 points: the small one
-  squid: parse([
-    ['...##...', '..####..', '.######.', '##.##.##', '########', '..#..#..', '.#.##.#.', '#.#..#.#'],
-    ['...##...', '..####..', '.######.', '##.##.##', '########', '.#.##.#.', '#......#', '.#....#.'],
-  ]),
-  // 20 points
-  crab: parse([
-    ['..#.....#..', '...#...#...', '..#######..', '.##.###.##.', '###########', '#.#######.#', '#.#.....#.#', '...##.##...'],
-    ['..#.....#..', '#..#...#..#', '#.#######.#', '###.###.###', '###########', '.#########.', '..#.....#..', '.#.......#.'],
-  ]),
-  // 10 points: the big one, closest to the city
-  octopus: parse([
-    ['....####....', '.##########.', '############', '###..##..###', '############', '...##..##...', '..##.##.##..', '##........##'],
-    ['....####....', '.##########.', '############', '###..##..###', '############', '..###..###..', '.##..##..##.', '..##....##..'],
-  ]),
-  ufo: parse([['.....######.....', '...##########...', '..############..', '.##.##.##.##.##.', '################', '..###..##..###..', '...#........#...']]),
+  squid: parse(TOP.squid.map(solid)),
+  crab: parse(TOP.crab.map(solid)),
+  octopus: parse(TOP.octopus.map(solid)),
+  ufo: parse(TOP.ufo.map(solid)),
   boom: parse([['....#...#....', '.#...#.#...#.', '..#.......#..', '...#.....#...', '##.........##', '...#.....#...', '..#..#.#..#..', '.#..#...#..#.']]),
   // an invader bullet flying sideways: a zigzag, four frames
   zig: parse([
@@ -45,23 +63,8 @@ export const SPRITES = {
 
 export const INVADER_TYPES = ['squid', 'crab', 'octopus'];
 
-/** the eyes of each invader (the holes in row 3 of the classic sprites): they glow, and turn red before a shot */
-export const EYES = {
-  squid: [
-    [2, 3],
-    [5, 3],
-  ],
-  crab: [
-    [3, 3],
-    [7, 3],
-  ],
-  octopus: [
-    [3, 3],
-    [4, 3],
-    [7, 3],
-    [8, 3],
-  ],
-};
+/** the eyes of each invader (at its front): they glow, and turn red before a shot */
+export const EYES = { squid: marks(TOP.squid[0], 'e'), crab: marks(TOP.crab[0], 'e'), octopus: marks(TOP.octopus[0], 'e') };
 
 /**
  * The battleship, seen from above: '#' hull, 'o' windows, '=' engines (towards the wall), 'E' the
@@ -104,29 +107,37 @@ export function neon(x) {
   });
 }
 
+/**
+ * The game's pixel layer at LED resolution, drawn in blocks: every "art pixel" is a block of S x S
+ * LEDs (the blocky look), but a block sits wherever its position falls, to the LED (sub-block
+ * placement: smooth motion, clearer shapes). Coordinates are art pixels (floats); `unit` draws smaller
+ * blocks for fine detail (0.5: S/2 x S/2 LEDs). ox, oy: where art pixel (0, 0) is on the LEDs.
+ */
 export class Pix {
-  constructor(w, h) {
-    this.resize(w, h);
+  constructor(W = 8, H = 8, S = 1, ox = 0, oy = 0) {
+    this.resize(W, H, S, ox, oy);
   }
 
-  resize(w, h) {
-    this.w = w;
-    this.h = h;
-    this.buf = new Uint8ClampedArray(w * h * 4);
-    this.img = new ImageData(this.buf, w, h);
+  resize(W, H, S = 1, ox = 0, oy = 0) {
+    this.W = W;
+    this.H = H;
+    this.S = S;
+    this.ox = ox;
+    this.oy = oy;
+    this.w = Math.floor((W - ox) / S); // in art pixels
+    this.h = Math.floor((H - oy) / S);
+    this.buf = new Uint8ClampedArray(W * H * 4);
   }
 
   clear() {
     this.buf.fill(0);
   }
 
-  /** one art pixel, color c [r, g, b] 0..1, opacity a: laid over what is there */
-  put(x, y, c, a = 1) {
-    x = Math.floor(x);
-    y = Math.floor(y);
-    if (x < 0 || y < 0 || x >= this.w || y >= this.h || !(a > 0.004)) return;
+  /** one LED, color c [r, g, b] 0..1, opacity a: laid over what is there */
+  dot(X, Y, c, a = 1) {
+    if (X < 0 || Y < 0 || X >= this.W || Y >= this.H || !(a > 0.004)) return;
     const b = this.buf;
-    const i = (y * this.w + x) * 4;
+    const i = (Y * this.W + X) * 4;
     const da = b[i + 3] / 255;
     if (a >= 1 || da === 0) {
       b[i] = c[0] * 255;
@@ -143,68 +154,76 @@ export class Pix {
     b[i + 3] = oa * 255;
   }
 
-  rect(x, y, w, h, c, a = 1) {
-    for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) this.put(x + i, y + j, c, a);
+  /** a block of `unit` art pixels with its top left corner at art (x, y), placed to the LED */
+  put(x, y, c, a = 1, unit = 1) {
+    if (!(a > 0.004)) return;
+    const n = Math.max(1, Math.round(unit * this.S));
+    const X = Math.round(this.ox + x * this.S);
+    const Y = Math.round(this.oy + y * this.S);
+    if (X >= this.W || Y >= this.H || X + n <= 0 || Y + n <= 0) return;
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) this.dot(X + i, Y + j, c, a);
   }
 
-  /** a sprite frame with its top left corner at (x, y) */
-  sprite(f, x, y, c, a = 1, flipX = false) {
-    x = Math.round(x);
-    y = Math.round(y);
+  /** a rectangle of art pixels (w x h), placed to the LED */
+  rect(x, y, w, h, c, a = 1) {
+    const X0 = Math.round(this.ox + x * this.S);
+    const Y0 = Math.round(this.oy + y * this.S);
+    const X1 = Math.round(this.ox + (x + w) * this.S);
+    const Y1 = Math.round(this.oy + (y + h) * this.S);
+    for (let Y = Math.max(0, Y0); Y < Math.min(this.H, Y1); Y++) for (let X = Math.max(0, X0); X < Math.min(this.W, X1); X++) this.dot(X, Y, c, a);
+  }
+
+  /** a sprite frame with its top left corner at (x, y); unit: the size of its pixels in art pixels */
+  sprite(f, x, y, c, a = 1, flipX = false, unit = 1) {
     for (let j = 0; j < f.h; j++) {
       for (let i = 0; i < f.w; i++) {
-        if (f.bits[j * f.w + (flipX ? f.w - 1 - i : i)]) this.put(x + i, y + j, c, a);
+        if (f.bits[j * f.w + (flipX ? f.w - 1 - i : i)]) this.put(x + i * unit, y + j * unit, c, a, unit);
       }
     }
   }
 
-  /** Bresenham line; thick 2 adds the pixel beside each one (a 2 px line) */
-  line(x0, y0, x1, y1, c, a = 1, thick = 1) {
-    x0 = Math.round(x0);
-    y0 = Math.round(y0);
-    x1 = Math.round(x1);
-    y1 = Math.round(y1);
-    const dx = Math.abs(x1 - x0);
-    const dy = -Math.abs(y1 - y0);
-    const sx = x0 < x1 ? 1 : -1;
-    const sy = y0 < y1 ? 1 : -1;
-    const steep = -dy > dx;
-    let err = dx + dy;
-    for (let n = 0; n < 2000; n++) {
-      this.put(x0, y0, c, a);
+  /** a line of blocks; thick 2 adds a block beside each one */
+  line(x0, y0, x1, y1, c, a = 1, thick = 1, unit = 1) {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const n = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy)) / unit));
+    const steep = Math.abs(dy) > Math.abs(dx);
+    let lx = null;
+    let ly = null;
+    for (let k = 0; k <= n; k++) {
+      const x = x0 + (dx * k) / n;
+      const y = y0 + (dy * k) / n;
+      const X = Math.round(this.ox + x * this.S);
+      const Y = Math.round(this.oy + y * this.S);
+      if (X === lx && Y === ly) continue;
+      lx = X;
+      ly = Y;
+      this.put(x - unit / 2, y - unit / 2, c, a, unit);
       if (thick > 1) {
-        if (steep) this.put(x0 + 1, y0, c, a);
-        else this.put(x0, y0 + 1, c, a);
-      }
-      if (x0 === x1 && y0 === y1) break;
-      const e2 = 2 * err;
-      if (e2 >= dy) {
-        err += dy;
-        x0 += sx;
-      }
-      if (e2 <= dx) {
-        err += dx;
-        y0 += sy;
+        if (steep) this.put(x + unit / 2, y - unit / 2, c, a, unit);
+        else this.put(x - unit / 2, y + unit / 2, c, a, unit);
       }
     }
   }
 
-  disc(cx, cy, r, c, a = 1) {
-    const x0 = Math.round(cx);
-    const y0 = Math.round(cy);
-    const rr = r * r + r * 0.6;
-    const n = Math.ceil(r);
-    for (let j = -n; j <= n; j++) for (let i = -n; i <= n; i++) if (i * i + j * j <= rr) this.put(x0 + i, y0 + j, c, a);
-  }
-
-  ring(cx, cy, r, c, a = 1) {
-    const x0 = Math.round(cx);
-    const y0 = Math.round(cy);
-    const n = Math.ceil(r) + 1;
+  disc(cx, cy, r, c, a = 1, unit = 1) {
+    const rr = r * r + r * 0.6 * unit;
+    const n = Math.ceil(r / unit);
     for (let j = -n; j <= n; j++) {
       for (let i = -n; i <= n; i++) {
-        const d = Math.sqrt(i * i + j * j);
-        if (Math.abs(d - r) < 0.5) this.put(x0 + i, y0 + j, c, a);
+        const x = i * unit;
+        const y = j * unit;
+        if (x * x + y * y <= rr) this.put(cx + x - unit / 2, cy + y - unit / 2, c, a, unit);
+      }
+    }
+  }
+
+  ring(cx, cy, r, c, a = 1, unit = 1) {
+    const n = Math.ceil(r / unit) + 1;
+    for (let j = -n; j <= n; j++) {
+      for (let i = -n; i <= n; i++) {
+        const d = Math.hypot(i * unit, j * unit);
+        if (Math.abs(d - r) < 0.5 * unit) this.put(cx + i * unit - unit / 2, cy + j * unit - unit / 2, c, a, unit);
       }
     }
   }
@@ -238,4 +257,59 @@ export const JUMP_HINT = {
   crouch: parse([['..###..', '..###..', '...#...', '.#####.', '#..#..#', '...#...', '..#.#..', '.#...#.', '.##.##.']])[0],
   jump: parse([['#.###.#', '#.###.#', '.#.#.#.', '..###..', '...#...', '...#...', '..#.#..', '.#...#.', '#.....#']])[0],
   arrow: parse([['...#...', '..#.#..', '.#...#.']])[0],
+  // the answer to a jump: big chevrons shooting up
+  chevron: parse([['....#....', '...###...', '..##.##..', '.##...##.', '##.....##']])[0],
 };
+
+/**
+ * A person seen from above, in half blocks (drawn with unit 0.5: rounder than whole blocks): 'h' head
+ * (hair), '#' shoulders, 'a' arms at the sides. Made from ellipses: shoulders 21 x 9, arms 4 x 7 at
+ * both ends, the head (diameter 9) a little to the front. personCell(x, y): the part at x (to the
+ * right), y (to the back) half px from the middle; PERSON: facing up, 26 x 13.
+ */
+export function personCell(x, y) {
+  const inE = (cx, cy, rx, ry) => ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2 <= 1;
+  if (inE(0, -1.5, 4.6, 4.6)) return 'h';
+  if (inE(0, 1, 10.5, 4.6)) return '#';
+  x = Math.abs(x);
+  if (inE(10.4, 1, 2.1, 3.6)) return 'a';
+  return '.';
+}
+export const PERSON = Array.from({ length: 13 }, (_, y) => Array.from({ length: 26 }, (_, x) => personCell(x + 0.5 - 13, y + 0.5 - 6.5)).join(''));
+export const PERSON_W = PERSON[0].length;
+export const PERSON_H = PERSON.length;
+export const PERSON_UNIT = 0.5; // art px per sprite pixel
+/** the figure turns in steps of 360° / TURNS (no flicker of single pixels while it turns a little) */
+export const TURNS = 24;
+const turned = new Map();
+/**
+ * The figure turned to face `face` (rad on the map, 0 = right, -π/2 = up), in half px: { w, h, ox, oy,
+ * cells } with cells[j * w + i] the part at (i + 0.5 - ox, j + 0.5 - oy) half px from the middle (the
+ * middle on a column edge and a row center, as in PERSON: facing the wall it is exactly PERSON).
+ */
+export function personTurned(face) {
+  const q = ((Math.round((face / (Math.PI * 2)) * TURNS) % TURNS) + TURNS) % TURNS;
+  let g = turned.get(q);
+  if (g) return g;
+  const a = (q / TURNS) * Math.PI * 2;
+  const f = [Math.cos(a), Math.sin(a)];
+  const n = Math.ceil(Math.hypot(PERSON_W, PERSON_H) / 2) + 1;
+  g = { w: 2 * n, h: 2 * n + 1, ox: n, oy: n + 0.5, cells: [] };
+  for (let j = 0; j < g.h; j++) {
+    for (let i = 0; i < g.w; i++) {
+      const x = i + 0.5 - g.ox;
+      const y = j + 0.5 - g.oy;
+      // right of the figure: f turned by +90° on the map (y down); back: -f
+      g.cells.push(personCell(-x * f[1] + y * f[0], -(x * f[0] + y * f[1])));
+    }
+  }
+  turned.set(q, g);
+  return g;
+}
+/** the figure's frame on the map: f forward, r to its right (art px directions) */
+export function facing(face) {
+  const f = [Math.cos(face), Math.sin(face)];
+  return { f, r: [-f[1], f[0]] };
+}
+/** a stretched-out arm of the figure, in art px: from its shoulder joint (beside the middle), its longest reach beyond */
+export const ARM = { shoulder: 4.5, reach: 7, thick: 0.9, hand: 1.3 };

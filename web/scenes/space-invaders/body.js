@@ -8,9 +8,14 @@
 //            than rMin from the torso, collected in an angle histogram seen from above; a peak with
 //            enough points is an arm, its direction the mean angle, its reach the 90th percentile.
 //            Followed from frame to frame (smoothed, on after 2 frames, off after 4).
+//            The hidden arm (param mirrorArm): one arm stretched out along the shoulders, the other
+//            not seen, and the body turned so far (50°+) that the body hides it from the sensor (it
+//            would point away from the wall): it is stretched out to the other side too (virtual).
 //   head     the top of the body seen from above (the points within 22 cm of the highest), smoothed
 //   hands    the outermost points to the left and right at hand height (2.5 cm bins with enough
 //            points, so single stray pixels do not count), or the tip of an arm; smoothed
+//   face     the turn of the body seen from above (rad on the map), from the skeleton's shoulders
+//            (turn() below), smoothed and in steps of 360° / TURNS
 //   stomp    a jump, at the push-off (the same detection as the scene pixel-jump-run): the median
 //            height of the whole mask and the raw pelvis of the skeleton both rise fast enough, and
 //            the body would fly at least `jumpRise` above where it stands (height + v² / 2g); not
@@ -22,6 +27,8 @@
 const BINS = 36;
 const RB = 28; // reach histogram: 5 cm steps up to 1.4 m
 const RSTEP = 0.05;
+import { ARM, TURNS, facing } from './pixels.js';
+
 const SLOTS = 17;
 const TAU = Math.PI * 2;
 const HB = 96; // hand bins: 2.5 cm from -1.2 to 1.2 m beside the torso
@@ -117,6 +124,31 @@ export class Bodies {
     return this.kind[y * this.w + x];
   }
 
+  /** the top-down figure of a person into the grid: shoulders and head (body), stretched-out arms */
+  stampFigure(p, L, P) {
+    const [cx, cy] = p.center;
+    const rx = 6.5; // the figure sprite (pixels.js PERSON): 26 x 13 half px = 13 x 6.5 art px
+    const ry = 3.3;
+    const { f, r } = facing(p.face);
+    for (let y = -rx; y <= rx; y++) {
+      for (let x = -rx; x <= rx; x++) {
+        const u = x * r[0] + y * r[1];
+        const v = x * f[0] + y * f[1];
+        if ((u / rx) ** 2 + (v / ry) ** 2 <= 1) this.stamp(cx + x, cy + y, p.slot, 1, 150);
+      }
+    }
+    for (const a of p.arms) {
+      const [sx, sy] = a.from;
+      const n = Math.ceil(Math.hypot(a.tip[0] - sx, a.tip[1] - sy));
+      for (let i = 0; i <= n; i++) {
+        const x = sx + ((a.tip[0] - sx) * i) / Math.max(1, n);
+        const y = sy + ((a.tip[1] - sy) * i) / Math.max(1, n);
+        this.stamp(x, y, p.slot, 2, 140);
+        this.stamp(x, y + 1, p.slot, 2, 140);
+      }
+    }
+  }
+
   /** a cell of a test player or the mouse */
   stamp(x, y, slot, kind, cm) {
     x = Math.floor(x);
@@ -165,7 +197,7 @@ export class Bodies {
       if (!q.inZone || q.slot < 1 || q.slot >= SLOTS) continue;
       let st = this.state.get(q.id);
       if (!st) {
-        st = { H: q.person.height > 0.8 ? q.person.height : 1.7, body: new Signal(), pelvis: new Signal(), armed: true, armedAt: 0, born: time, walks: [], stompAt: -9, arms: [], seen: time };
+        st = { H: q.person.height > 0.8 ? q.person.height : 1.7, body: new Signal(), pelvis: new Signal(), armed: true, armedAt: 0, born: time, walks: [], stompAt: -9, arms: [], seen: time, face: L.wallFace, faceQ: null, faceAt: time };
         this.state.set(q.id, st);
       }
       st.seen = time;
@@ -354,6 +386,8 @@ export class Bodies {
         } else if (!st.armed && time - st.armedAt > 0.15 && (body.v < 0.05 || body.rise < P.jumpRise * 0.35)) st.armed = true;
       }
       const center = L.map(inf.cx, inf.cz);
+      const face = P.turn ? turn(st, q.person, m, side, L, time) : L.wallFace;
+      const { r: across } = facing(face);
       const shrink = (m) => (m ? L.map(inf.cx + (m[0] - inf.cx) * ks, inf.cz + (m[1] - inf.cz) * ks) : null);
       // head and hands seen from above, smoothed (they are only shown, nothing is aimed with them)
       const ema = (old, v, a) => (old && v ? [old[0] + (v[0] - old[0]) * a, old[1] + (v[1] - old[1]) * a] : v);
@@ -371,23 +405,88 @@ export class Bodies {
       const hl = hand(0, 1, -1);
       const hr = hand(HB - 1, -1, 1);
       st.hands = [ema(st.hands?.[0], hl, 0.5), ema(st.hands?.[1], hr, 0.5)];
-      const arms = st.arms
-        .filter((a) => a.on)
+      const arms = [...st.arms.filter((a) => a.on), ...hiddenArm(st, P, time)]
         .map((a) => {
-          const tip = L.map(inf.cx + Math.cos(a.ang) * a.len * ks, inf.cz + Math.sin(a.ang) * a.len * ks);
           const dx = Math.cos(a.ang) * sx;
           const dy = Math.sin(a.ang) * sy * (up ? 1 : -1);
           const d = Math.hypot(dx, dy) || 1;
-          return { id: a.id, tip, dir: [dx / d, dy / d], len: a.len };
+          const dir = [dx / d, dy / d];
+          // drawn as figures: the arm in the figure's proportions (from the shoulder, longer the
+          // more it is stretched); as silhouettes: where it really is (scaled like the body)
+          let tip;
+          let from = center;
+          if (P.look !== 'Silhouette') {
+            // the shoulder on the arm's side of the turned figure (kept while the arm is up)
+            const d = dir[0] * across[0] + dir[1] * across[1];
+            if (!a.side || (Math.abs(d) > 0.35 && Math.sign(d) !== a.side)) a.side = d < 0 ? -1 : 1;
+            from = [center[0] + a.side * ARM.shoulder * across[0], center[1] + a.side * ARM.shoulder * across[1]];
+            const reach = ARM.reach * Math.min(1, Math.max(0.35, (a.len - 0.3) / 0.4));
+            tip = [from[0] + dir[0] * reach, from[1] + dir[1] * reach];
+          } else tip = L.map(inf.cx + Math.cos(a.ang) * a.len * ks, inf.cz + Math.sin(a.ang) * a.len * ks);
+          return { id: a.id, tip, dir, len: a.len, from, virtual: !!a.virtual };
         });
       // an arm that points: its hand is at the tip
       const hands = st.hands.map(shrink);
       for (const a of arms) hands[a.dir[0] < 0 ? 0 : 1] = a.tip;
-      out.push({ id: q.id, slot: s, q, center, cz: inf.cz, H: st.H, arms, stomp, head: shrink(st.head), hands });
+      out.push({ id: q.id, slot: s, q, center, cz: inf.cz, H: st.H, arms, stomp, head: shrink(st.head), hands, face });
     }
     for (const [id, st] of this.state) if (time - st.seen > 3) this.state.delete(id);
     this.persons = out;
+    // drawn as top-down figures (main.js, draw.js): what can be hit is the figure, not the mask
+    if (P.look !== 'Silhouette') {
+      this.clear();
+      for (const p of out) this.stampFigure(p, L, P);
+    }
   }
+}
+
+/**
+ * The turn of a body seen from above (rad on the map), from the skeleton: the line from the left to
+ * the right shoulder on the floor (wall x, z). Facing the wall, it points to the audience's right; the
+ * body faces 90° to its left. (Offline on the multi recordings: 6° median error for people walking
+ * towards the sensor.) A shoulder line shorter than 8 cm (seen exactly from the side) or longer than
+ * 60 cm (a depth outlier) keeps the last turn. The face settles front or back if the pose mixed up
+ * left and right: a visible face looks towards the sensor, a back without a face away from it.
+ * Smoothed, then held in steps of 360° / TURNS until it is almost a step away (no flicker).
+ */
+function turn(st, person, m, side, L, time) {
+  const J = person.joints;
+  const C = person.confidence;
+  const dt = Math.min(0.5, Math.max(0, time - st.faceAt));
+  st.faceAt = time;
+  const ls = J?.leftShoulder;
+  const rs = J?.rightShoulder;
+  if (ls && rs && C.leftShoulder > 0.3 && C.rightShoulder > 0.3) {
+    const toWall = (w) => [side * (m[0] * w[0] + m[4] * w[1] + m[8] * w[2] + m[12]), m[2] * w[0] + m[6] * w[1] + m[10] * w[2] + m[14]];
+    const l = toWall(ls);
+    const r = toWall(rs);
+    let a = r[0] - l[0];
+    let b = r[1] - l[1];
+    const len = Math.hypot(a, b);
+    const eyes = Math.max(C.leftEye ?? 0, C.rightEye ?? 0);
+    const face = (C.nose ?? 0) > 0.5 && eyes > 0.5;
+    const back = (C.nose ?? 0) < 0.2 && eyes < 0.2 && Math.min(C.leftShoulder, C.rightShoulder) > 0.5;
+    if ((face && a < -0.1) || (back && a > 0.1)) {
+      a = -a;
+      b = -b;
+    }
+    if (len > 0.08 && len < 0.6) {
+      // the line to the right shoulder (wall x, z), smoothed: the hidden arm needs it
+      const k = 1 - Math.exp(-dt / 0.2);
+      const rn = [a / len, b / len];
+      st.right = st.right ? [st.right[0] + (rn[0] - st.right[0]) * k, st.right[1] + (rn[1] - st.right[1]) * k] : rn;
+      const n = Math.hypot(st.right[0], st.right[1]) || 1;
+      st.right = [st.right[0] / n, st.right[1] / n];
+      st.rightAt = time;
+      // facing: the shoulder line turned by -90° seen from above (wall x to the right, z away from
+      // it), at its real angle (the map is wider than deep: scaled, small turns would look bigger)
+      const phi = Math.atan2((L.up ? 1 : -1) * -a, b);
+      st.face = wrap(st.face + wrap(phi - st.face) * (1 - Math.exp(-dt / 0.25)));
+    }
+  }
+  const step = TAU / TURNS;
+  if (st.faceQ === null || Math.abs(wrap(st.face - st.faceQ * step)) > 0.9 * step) st.faceQ = Math.round(st.face / step);
+  return wrap(st.faceQ * step);
 }
 
 /** up to two arms in the angle histogram of slot s: [{ ang, len, n }] */
@@ -446,6 +545,35 @@ function wrap(a) {
   while (a > Math.PI) a -= TAU;
   while (a < -Math.PI) a += TAU;
   return a;
+}
+
+/**
+ * The arm the sensor cannot see (see the top of this file): [] or [the virtual arm]. On after 2 frames
+ * in a row, off after 4, its direction smoothed; it keeps its id while the visible arm stays.
+ */
+function hiddenArm(st, P, time) {
+  const real = st.arms.filter((a) => a.on);
+  let want = null;
+  if (P.mirrorArm && real.length === 1 && st.right && time - st.rightAt < 0.5) {
+    const a = real[0];
+    const along = Math.cos(a.ang) * st.right[0] + Math.sin(a.ang) * st.right[1];
+    const v = [-Math.sign(along) * st.right[0], -Math.sign(along) * st.right[1]];
+    // stretched out along the shoulders (within 30°), the body turned by 50° or more, so the other
+    // side lies behind it (a hand pointing ahead turns the shoulders a little: that is no reason)
+    if (Math.abs(along) > 0.87 && a.len > P.armMin + 0.15 && v[1] > 0.77) want = { of: a, ang: Math.atan2(v[1], v[0]) };
+  }
+  let h = st.hidden;
+  if (want) {
+    if (!h || h.of !== want.of) h = st.hidden = { id: -want.of.id, of: want.of, ang: want.ang, len: want.of.len, hits: 0, miss: 0, on: false, virtual: true };
+    h.ang = wrap(h.ang + wrap(want.ang - h.ang) * 0.5);
+    h.len = want.of.len;
+    h.miss = 0;
+    if (++h.hits >= 2) h.on = true;
+  } else if (h) {
+    h.hits = 0;
+    if (++h.miss >= 4) st.hidden = h = null;
+  }
+  return h?.on ? [h] : [];
 }
 
 let armIds = 1;

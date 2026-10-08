@@ -1,6 +1,6 @@
 // The renderer (WebGPU): the map floor with its hex grid, lit by the game's lights; over it the crisp
-// pixel layer of the game (art pixels, nearest); then bloom in two sizes, distortion ripples, color
-// fringes and flashes.
+// pixel layer of the game (at LED resolution: blocks placed to the LED, see pixels.js Pix); then bloom
+// in two sizes, distortion ripples, color fringes and flashes.
 //
 // Made for an LED wall with 5.9 mm pitch: nothing finer than a few LEDs repeats regularly (no 1-LED
 // lines, no raster, no dither), so neither the LED grid nor a camera sees moiré. The hex lines are soft
@@ -86,9 +86,9 @@ fn hexEdge(p: vec2f) -> f32 {
   let light = textureSampleLevel(lightTex, samp, auv, 0.0).rgb;
   let gridCol = vec3f(0.3, 0.42, 1.0);
   var col = base + light * (0.07 + line * 1.5) + gridCol * line * u.hex * (0.03 + 0.05 * u.pulse);
-  // the game's pixels (crisp: one texel per art pixel)
-  let ai = vec2i(floor(art));
-  if (all(ai >= vec2i(0)) && all(ai < vec2i(u.art))) {
+  // the game's pixels (one texel per LED)
+  let ai = vec2i(floor(pos.xy - u.shake));
+  if (all(ai >= vec2i(0)) && all(ai < vec2i(u.res))) {
     let px = textureLoad(artTex, ai, 0);
     col = mix(col, px.rgb * (1.0 + light * 0.25), px.a);
   }
@@ -221,7 +221,7 @@ export async function createRenderer(ctx) {
     const c4 = tex(Math.ceil(W / 4), Math.ceil(H / 4));
     const a8 = tex(Math.ceil(W / 8), Math.ceil(H / 8));
     const c8 = tex(Math.ceil(W / 8), Math.ceil(H / 8));
-    const art = tex(AW, AH, 'rgba8unorm', GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST);
+    const art = tex(W, H, 'rgba8unorm', GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST);
     const fog = tex(AW, AH, 'r8unorm', GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST);
     const lm = tex(AW, AH);
     const src = (t) => device.createBindGroup({ layout: srcLayout, entries: [{ binding: 3, resource: t.createView() }] });
@@ -281,13 +281,13 @@ export async function createRenderer(ctx) {
       device.queue.writeTexture({ texture: t.fog }, mask, { bytesPerRow: L.AW }, [L.AW, L.AH]);
     },
     /**
-     * f: { L, art (Uint8ClampedArray AW*AH*4), lights (Float32Array), nLights, ripples [[x, y, r, amp] LED px],
+     * f: { L, art (Uint8ClampedArray W*H*4, LED resolution), lights (Float32Array), nLights, ripples [[x, y, r, amp] LED px],
      *      shake [x, y] LED px, flash [r, g, b, a], chroma, pulse, hex, bloom, bloomWide, brightness, time }
      */
     render(f) {
       const { L } = f;
       const t = ensure(L.W, L.H, L.AW, L.AH);
-      device.queue.writeTexture({ texture: t.art }, f.art, { bytesPerRow: L.AW * 4 }, [L.AW, L.AH]);
+      device.queue.writeTexture({ texture: t.art }, f.art, { bytesPerRow: L.W * 4 }, [L.W, L.H]);
       if (f.nLights) device.queue.writeBuffer(lightBuf, 0, f.lights, 0, f.nLights * 8);
       U.fill(0);
       U.set([L.W, L.H, L.AW, L.AH, L.ox, L.oy, L.S, f.time, L.sx, L.sy, f.shake[0], f.shake[1]], 0);

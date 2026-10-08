@@ -1,8 +1,14 @@
 // The game's pixel layer (art pixels, crisp) and the lights it casts on the floor (render.js).
 // Retro sprites, lit like a modern game: everything that glows also lights the map around it.
+//
+// Everything says "seen from above": the light comes from the top left (bright top-left edges, dark
+// bottom-right ones), everything that is up in the air casts a shadow to the bottom right, the
+// people are top-down figures (shoulders, head, feet stepping out when they walk) leaving footprints,
+// the invaders are creatures seen from above facing the city, the city is a night satellite picture
+// (streets with lamps, cars driving, roofs with shadows, parks, a dome).
 
-import { CITY } from './game.js';
-import { SPRITES, EYES, SHIP, SHIP_W, SHIP_H, ICONS, POWER_COLORS, JUMP_HINT, rgb, neon } from './pixels.js';
+import { CITY } from './city.js';
+import { SPRITES, EYES, SHIP, SHIP_W, SHIP_H, UFO_W, UFO_H, UFO_DOME, ICONS, POWER_COLORS, JUMP_HINT, PERSON_H, PERSON_UNIT, ARM, personTurned, facing, rgb, neon } from './pixels.js';
 import { MAX_LIGHTS } from './render.js';
 
 export const WHITE = [1, 1, 1];
@@ -21,13 +27,7 @@ const ENGINE = rgb('#5ff0ff');
 const SHIP_WINDOW = rgb('#ffd0f0');
 const LASER = rgb('#ff4a1f');
 
-const CITY_COLORS = {
-  [CITY.WALL]: rgb('#2a8fd8'),
-  [CITY.TOWER]: rgb('#5fb4f0'),
-  [CITY.HOUSE]: rgb('#1d3196'),
-  [CITY.HOUSE2]: rgb('#33209a'),
-  [CITY.CORE]: rgb('#a8dcff'),
-};
+
 
 /** glowing embers cool from orange through deep red and magenta to the dark violet rubble (never brown) */
 function ember(heat) {
@@ -147,26 +147,61 @@ function hexagon(pix, cx, cy, rx, ry, col, a, fill) {
   }
 }
 
-/** an invader: its sprite (missing pixels where it is cracked), glowing eyes */
-function invader(pix, f, type, x, y, col, eye, crack, seed) {
-  x = Math.round(x);
-  y = Math.round(y);
+/**
+ * An invader seen from above: lit from the top left (bright top-left edges, dark bottom-right ones),
+ * missing pixels where it is cracked, glowing eyes at its front. flip: facing left.
+ */
+function invader(pix, f, type, x, y, col, eye, crack, seed, flip = false, eyes = EYES[type]) {
+  const lit = mix(col, WHITE, 0.4);
+  const dark = scale(col, 0.55);
+  const at = (i, j) => i >= 0 && j >= 0 && i < f.w && j < f.h && f.bits[j * f.w + (flip ? f.w - 1 - i : i)];
   for (let j = 0; j < f.h; j++) {
     for (let i = 0; i < f.w; i++) {
-      if (!f.bits[j * f.w + i]) continue;
+      if (!at(i, j)) continue;
       if (crack > 0 && hash(seed * 97 + j * 13 + i) < crack) continue;
-      pix.put(x + i, y + j, col);
+      const k = !at(i, j - 1) || !at(i - 1, j) ? lit : !at(i, j + 1) || !at(i + 1, j) ? dark : col;
+      pix.put(x + i, y + j, k);
     }
   }
-  if (eye) for (const [ex, ey] of EYES[type]) pix.put(x + ex, y + ey, eye);
+  if (eye) for (const [ex, ey] of eyes) pix.put(x + (flip ? f.w - 1 - ex : ex), y + ey, eye);
+}
+
+/** a sprite turned to face down (rotated a quarter turn clockwise), with its eyes */
+const turned = new Map();
+function facingDown(type, frame) {
+  const key = `${type}${frame}`;
+  if (!turned.has(key)) {
+    const f = SPRITES[type][frame];
+    const bits = new Uint8Array(f.w * f.h);
+    for (let j = 0; j < f.w; j++) for (let i = 0; i < f.h; i++) bits[j * f.h + i] = f.bits[(f.h - 1 - i) * f.w + j];
+    const eyes = EYES[type].map(([ex, ey]) => [f.h - 1 - ey, ex]);
+    turned.set(key, { f: { w: f.h, h: f.w, bits }, eyes });
+  }
+  return turned.get(key);
+}
+
+/** a sprite and its eyes for a direction of flight (right, left, down or up) */
+function oriented(type, frame, vx, vy) {
+  if (Math.abs(vx) >= Math.abs(vy)) return { f: SPRITES[type][frame], eyes: EYES[type], flip: vx < 0, flipY: false };
+  const d = facingDown(type, frame);
+  return { f: d.f, eyes: d.eyes, flip: false, flipY: vy < 0 };
+}
+
+/** a sprite, mirrored up-down when needed (for divers flying upwards) */
+function flipped(o) {
+  if (!o.flipY) return o;
+  const f = o.f;
+  const bits = new Uint8Array(f.w * f.h);
+  for (let j = 0; j < f.h; j++) for (let i = 0; i < f.w; i++) bits[j * f.w + i] = f.bits[(f.h - 1 - j) * f.w + i];
+  return { f: { w: f.w, h: f.h, bits }, eyes: o.eyes.map(([ex, ey]) => [ex, f.h - 1 - ey]), flip: o.flip };
 }
 
 /** the battleship: hull with lit edges, windows, engines; the emitter glows while it charges */
 function ship(pix, sh, t, charge) {
   const hit = t - sh.flash < 0.06;
   const worn = 1 - sh.hp / sh.hpMax;
-  const x0 = Math.round(sh.x);
-  const y0 = Math.round(sh.y);
+  const x0 = sh.x;
+  const y0 = sh.y;
   for (let j = 0; j < SHIP_H; j++) {
     const row = SHIP[j];
     for (let i = 0; i < SHIP_W; i++) {
@@ -206,6 +241,75 @@ function beam(pix, x0, y0, x1, y1, half, col, seed) {
   }
 }
 
+/**
+ * A person seen from above, a classic top-down figure (a pixel sprite, pixels.js PERSON), turned the
+ * way the body is turned (pp.face): a shadow to the bottom right, feet that step out in the direction
+ * of walking (both peek out in front when standing), arms stretched out where the masks show them,
+ * shoulders, arms at the sides, the head a little to the front, a dark rim. The light stays at the
+ * top left however the figure turns.
+ */
+function figure(pix, pp, lk, L, P, t) {
+  const s = lk.s;
+  const [cx0, cy0] = pp.center;
+  const cx = cx0;
+  const cy = cy0 - lk.lift;
+  const { f, r } = facing(pp.face ?? L.wallFace);
+  const a = lk.a;
+  const U = PERSON_UNIT; // half blocks: rounder
+  const g = personTurned(pp.face ?? L.wallFace);
+  const x0 = cx - g.ox * U;
+  const y0 = cy - g.oy * U;
+  const at = (i, j) => (i >= 0 && j >= 0 && i < g.w && j < g.h ? g.cells[j * g.w + i] : '.');
+  // the shadow, to the bottom right (it stays on the floor when the figure hops)
+  for (let j = 0; j < g.h; j++) for (let i = 0; i < g.w; i++) if (at(i, j) !== '.') pix.put(cx0 - g.ox * U + i * U + 1.5, cy0 - g.oy * U + j * U + 2, BLACK, 0.5, U);
+  // the feet: they step out in the direction of walking; standing, both peek out in front
+  const shoe = scale(lk.col, 0.4);
+  const walking = s && s.speed > 0.15;
+  const dir = walking && s.dir ? s.dir : f;
+  const dn = Math.hypot(dir[0], dir[1]) || 1;
+  const stride = walking ? Math.sin(s.phase) * 3 : 0;
+  const toe = walking ? 0 : (PERSON_H * U) / 2 - 0.5;
+  for (const side of [-1, 1]) {
+    const reach = stride * side;
+    const fx = cx + side * 2 * r[0] + (dir[0] / dn) * reach + f[0] * toe;
+    const fy = cy + side * 2 * r[1] + (dir[1] / dn) * reach + f[1] * toe;
+    pix.line(fx - f[0] * 0.65, fy - f[1] * 0.65, fx + f[0] * 0.65, fy + f[1] * 0.65, shoe, a, 2, U);
+  }
+  // stretched-out arms (from the masks), in the figure's proportions: a round, thick arm in the
+  // sleeves' color from the shoulder, a dark rim, a light round hand at its end
+  const armCol = scale(lk.col, 0.55);
+  const handCol = mix(lk.col, WHITE, 0.45);
+  for (const arm of pp.arms) {
+    const [sx0, sy0] = arm.from ? [arm.from[0], arm.from[1] - lk.lift] : [cx, cy];
+    const tx = arm.tip[0];
+    const ty = arm.tip[1] - lk.lift;
+    const n = Math.max(1, Math.ceil(Math.hypot(tx - sx0, ty - sy0) / 0.5));
+    for (const [rr, col, al] of [
+      [ARM.thick + 0.5, BLACK, 0.8],
+      [ARM.thick, armCol, 1],
+    ]) {
+      for (let k = 0; k <= n; k++) pix.disc(sx0 + ((tx - sx0) * k) / n, sy0 + ((ty - sy0) * k) / n, rr, col, al * a, U);
+    }
+    pix.disc(tx, ty, ARM.hand + 0.5, BLACK, 0.8 * a, U);
+    pix.disc(tx, ty, ARM.hand, handCol, a, U);
+    pix.put(tx - ARM.hand * 0.5 - 0.25, ty - ARM.hand * 0.5 - 0.25, mix(handCol, WHITE, 0.6), a, U);
+  }
+  // the figure: a dark rim, then shirt, arms and hair, lit from the top left
+  const tone = { '#': scale(lk.col, 0.72), a: scale(lk.col, 0.55), h: mix(lk.col, WHITE, 0.4) };
+  for (let j = -1; j <= g.h; j++) {
+    for (let i = -1; i <= g.w; i++) {
+      const ch = at(i, j);
+      if (ch === '.') {
+        if ([at(i - 1, j), at(i + 1, j), at(i, j - 1), at(i, j + 1)].some((q) => q !== '.')) pix.put(x0 + i * U, y0 + j * U, BLACK, 0.8 * a, U);
+        continue;
+      }
+      const same = (q) => q === ch;
+      const col = !same(at(i, j - 1)) || !same(at(i - 1, j)) ? mix(tone[ch], WHITE, 0.25) : !same(at(i, j + 1)) || !same(at(i + 1, j)) ? scale(tone[ch], 0.7) : tone[ch];
+      pix.put(x0 + i * U, y0 + j * U, col, a, U);
+    }
+  }
+}
+
 /** how each person looks this frame (color, blinking when stunned) */
 export function looks(game, people) {
   const t = game.time;
@@ -220,7 +324,10 @@ export function looks(game, people) {
       col = mix(col, RED, 0.65);
       a = Math.floor(t * 10) % 2 ? 0.35 : 1;
     }
-    look.set(pp.slot, { col, a, s, firing: !!s && pp.arms.some((arm) => t - (s.fire.get(arm.id) ?? -9) < 0.12) });
+    // a jump that was seen: the unit hops (in this top-down view: lifted up, its shadow stays below)
+    const ju = s ? (t - s.jumpAt) / 0.35 : 9;
+    const lift = ju >= 0 && ju < 1 ? Math.round(Math.sin(Math.PI * ju) * 5) : 0;
+    look.set(pp.slot, { col, a, s, lift, firing: !!s && pp.arms.some((arm) => t - (s.fire.get(arm.id) ?? -9) < 0.12) });
   }
   return look;
 }
@@ -233,44 +340,97 @@ export function drawArt(S, people, look) {
   const invCol = S.invCol;
   pix.clear();
 
-  // ---- the city: roofs with light and shadow edges, lit windows, an energy wall; rubble and embers
+  // ---- the city: its aerial picture (city.js) where it stands, rubble and embers where it was hit,
+  // the energy wall drawn live
   const c = game.city;
   const wallHit = Math.max(0, 1 - (t - c.hitAt) / 0.2);
+  const S0 = c.S;
+  const X0 = Math.round(pix.ox + c.x0 * S0);
+  const Y0 = Math.round(pix.oy);
+  const px = [0, 0, 0];
   for (let j = 0; j < c.h; j++) {
     for (let i = 0; i < c.w; i++) {
       const k = j * c.w + i;
-      const base = c.base[k];
-      if (!base) continue;
       const type = c.alive[k];
       if (!type) {
+        if (!c.base[k]) continue;
         const age = t - c.deadAt[k];
-        if (age < 2.5) {
-          const fl = 0.75 + 0.25 * Math.sin(t * 13 + hash(k) * 40);
-          pix.put(c.x0 + i, j, ember((1 - age / 2.5) * fl), 1);
-        } else pix.put(c.x0 + i, j, RUBBLE, 0.9);
+        const col = age < 2.5 ? ember((1 - age / 2.5) * (0.75 + 0.25 * Math.sin(t * 13 + hash(k) * 40))) : RUBBLE;
+        pix.put(c.x0 + i, j, col, age < 2.5 ? 1 : 0.9);
         continue;
       }
-      let col = CITY_COLORS[type];
-      if (type === CITY.HOUSE || type === CITY.HOUSE2) {
-        const up = j > 0 && c.base[k - c.w] === base;
-        const left = i > 0 && c.base[k - 1] === base;
-        const down = j < c.h - 1 && c.base[k + c.w] === base;
-        const right = i < c.w - 1 && c.base[k + 1] === base;
-        if (!up || !left) col = scale(col, 1.8);
-        else if (!down || !right) col = scale(col, 0.55);
-        if (c.win[k]) {
-          const on = hash(k + Math.floor(t * 0.25 + hash(k) * 4)) > 0.25;
-          if (on) col = scale(WINDOW, 0.75 + 0.25 * hash(k * 3));
-        }
-      } else if (type === CITY.WALL) {
-        col = scale(col, 0.75 + 0.25 * Math.sin(t * 5 + j * 0.35));
+      const born = t - c.born[k];
+      const flashB = born < 0.35 ? 1 - born / 0.35 : 0;
+      if (type === CITY.WALL || type === CITY.TOWER) {
+        let col = type === CITY.TOWER ? [0.37, 0.7, 0.94] : scale([0.16, 0.56, 0.85], 0.75 + 0.25 * Math.sin(t * 5 + j * 0.35));
         if (wallHit > 0) col = mix(col, WHITE, wallHit);
         if (party) col = neon(t * 0.6 + j * 0.02);
-      } else if (type === CITY.CORE) col = scale(col, 0.85 + 0.15 * Math.sin(t * 2));
-      const born = t - c.born[k];
-      if (born < 0.35) col = mix(WHITE, col, born / 0.35);
-      if (alarm > 0) col = mix(col, RED, alarm * 0.7);
-      pix.put(c.x0 + i, j, col);
+        if (alarm > 0) col = mix(col, RED, alarm * 0.7);
+        pix.put(c.x0 + i, j, mix(col, WHITE, flashB));
+        continue;
+      }
+      // copy this art pixel's S x S LEDs from the picture
+      for (let v = 0; v < S0; v++) {
+        for (let u = 0; u < S0; u++) {
+          const o = ((j * S0 + v) * c.imgW + i * S0 + u) * 3;
+          px[0] = c.img[o];
+          px[1] = c.img[o + 1];
+          px[2] = c.img[o + 2];
+          let col = px;
+          if (flashB > 0) col = mix(px, WHITE, flashB);
+          if (alarm > 0) col = mix(col, RED, alarm * 0.5);
+          pix.dot(X0 + i * S0 + u, Y0 + j * S0 + v, col);
+        }
+      }
+    }
+  }
+  const aliveAt = (ax, ay) => {
+    const i = Math.floor(ax - c.x0);
+    const j = Math.floor(ay);
+    return i >= 0 && j >= 0 && i < c.w && j < c.h && c.alive[j * c.w + i] > 0;
+  };
+  // the energy core: ring segments turning both ways, the core pulsing
+  if (aliveAt(c.x0 + c.core.x, c.core.y)) {
+    const cr = c.core;
+    for (const [rr, speed, segs, col] of [
+      [cr.r * 0.86, 0.9, 3, [0.5, 1, 1]],
+      [cr.r * 0.52, -1.6, 2, [0.85, 0.6, 1]],
+    ]) {
+      for (let k = 0; k < segs; k++) {
+        const a0 = t * speed + (k / segs) * Math.PI * 2;
+        for (let a = a0; a < a0 + 0.9; a += 0.12) pix.put(c.x0 + cr.x + Math.cos(a) * rr - 0.25, cr.y + Math.sin(a) * rr - 0.25, col, 0.9, 0.5);
+      }
+    }
+    pix.disc(c.x0 + cr.x, cr.y, cr.r * 0.22 * (1 + 0.15 * Math.sin(t * 6)), WHITE, 0.9, 0.5);
+  }
+  // the conduit: light pulses run down from the core
+  {
+    const cd = c.conduit;
+    const len = cd.y1 - cd.y0;
+    for (let k = 0; k < 3; k++) {
+      const y = cd.y0 + ((t * 9 + (k * len) / 3) % len);
+      for (let d = 0; d < 3; d += 0.5) if (aliveAt(c.x0 + cd.x, y - d)) pix.put(c.x0 + cd.x - 0.25, y - d, mix([0.3, 0.95, 1], WHITE, 1 - d / 3), 1 - d / 3.5, 0.5);
+    }
+  }
+  // hover gliders: a bright nose, a colored body, a light trail behind; only on living streets
+  for (const car of game.cars) {
+    const ln = car.lane;
+    const along = Math.round(car.pos);
+    const across = Math.round(ln.at);
+    const cellX = ln.vertical ? Math.floor(ln.at / S0) : Math.floor(along / S0);
+    const cellY = ln.vertical ? Math.floor(along / S0) : Math.floor(ln.at / S0);
+    if (cellX < 0 || cellY < 0 || cellX >= c.w || cellY >= c.h || !c.alive[cellY * c.w + cellX]) continue;
+    const trail = S0 * 4;
+    for (let a = 0; a < trail; a++) {
+      const back = along - ln.dir * a;
+      const k = a < 2 ? WHITE : a < S0 ? car.col : car.col;
+      const al = a < S0 ? 1 : 0.7 * (1 - (a - S0) / (trail - S0));
+      for (let b2 = -1; b2 <= 0; b2++) {
+        if (a >= S0 && b2 !== 0) continue; // the trail is thinner than the glider
+        const X = ln.vertical ? across + b2 : back;
+        const Y = ln.vertical ? back : across + b2;
+        pix.dot(X0 + X, Y0 + Y, k, al);
+      }
     }
   }
 
@@ -312,8 +472,51 @@ export function drawArt(S, people, look) {
     if (grow >= 1) pix.sprite(ICONS[it.type], it.x - 3, it.y - 3 + bob, mix(col, WHITE, 0.35 + 0.25 * Math.sin(t * 6)));
   }
 
-  // ---- the people seen from above: each cell the highest point there, brighter the higher it is
-  for (let y = 0; y < body.h; y++) {
+  // ---- a jump: the shadow left on the floor, the landing ring, arrows shooting up
+  for (const pp of people) {
+    const lk = look.get(pp.slot);
+    const s = lk.s;
+    if (!s) continue;
+    const age = t - s.jumpAt;
+    if (age < 0 || age > 1) continue;
+    const [cx, cy] = pp.center;
+    const r = 0.2 * S.P.bodyScale + 0.05;
+    if (lk.lift > 0) {
+      const sh = lk.lift / 5;
+      for (let y = -r * L.sy; y <= r * L.sy; y++) {
+        for (let x = -r * L.sx; x <= r * L.sx; x++) if ((x / (r * L.sx)) ** 2 + (y / (r * L.sy)) ** 2 <= 1) pix.put(cx + x, cy + y + 2, BLACK, 0.45 * sh);
+      }
+    }
+    if (age > 0.3) {
+      const u = (age - 0.3) / 0.7;
+      const rr = (0.3 * S.P.bodyScale + 0.15) * (1 + u);
+      ellipse(pix, cx, cy, rr * L.sx, rr * L.sy, mix(lk.col, WHITE, 0.5), 1 - u);
+    }
+    if (age < 0.9) {
+      const u = age / 0.9;
+      const top = cy - 30 >= 0; // decided once per jump, so the arrows do not jump around
+      for (let k = 0; k < 3; k++) {
+        // above the unit, or below it near the top edge of the map
+        const y = top ? cy - 10 - age * 40 - k * 7 : cy + 8 + k * 7;
+        pix.sprite(JUMP_HINT.chevron, cx - 4, y, mix(lk.col, WHITE, 0.8 - k * 0.2), Math.min(1, (1 - u) * 2) * (1 - k * 0.2));
+      }
+    }
+  }
+
+  // ---- footprints: one per step, left and right, turned the way the person walked; they fade
+  for (const f of game.footprints) {
+    const u = (t - f.t0) / S.P.footLife;
+    const a = 0.9 * (1 - u) ** 1.2;
+    const col = mix(f.col, WHITE, 0.3);
+    const [dx, dy] = f.dir;
+    // the ball of the foot (bigger) in front, the heel behind
+    pix.rect(f.x + dx * 1.1 - 0.6, f.y + dy * 1.1 - 0.6, 1.2, 1.2, col, a);
+    pix.rect(f.x - dx * 1.1 - 0.45, f.y - dy * 1.1 - 0.35, 0.9, 0.7, col, a * 0.8);
+  }
+
+  // ---- the people as top-down figures (or their real silhouettes, param look)
+  if (S.P.look !== 'Silhouette') for (const pp of people) figure(pix, pp, look.get(pp.slot), L, S.P, t);
+  else for (let y = 0; y < body.h; y++) {
     for (let x = 0; x < body.w; x++) {
       const k = y * body.w + x;
       const s = body.slot[k];
@@ -322,7 +525,8 @@ export function drawArt(S, people, look) {
       const h = Math.min(1, body.height[k] / 180);
       let col = scale(lk.col, 0.25 + 0.75 * h ** 1.6);
       if (body.kind[k] === 2 && lk.firing) col = mix(col, WHITE, 0.45);
-      pix.put(x, y, col, lk.a);
+      if (lk.lift) col = mix(col, WHITE, lk.lift * 0.06);
+      pix.put(x, y - lk.lift, col, lk.a);
     }
   }
   // their base on the floor: a hexagon that is the boost energy (a bent power bar, clockwise from the
@@ -332,19 +536,24 @@ export function drawArt(S, people, look) {
     const lk = look.get(pp.slot);
     const s = lk.s;
     const [cx, cy] = pp.center;
-    const r = 0.36 * S.P.bodyScale + 0.1;
+    // the boost starts: the hexagon pops up big and snaps back
+    const pop = s ? Math.max(0, 1 - (t - s.boost.at) / 0.3) : 0;
+    const r = (0.36 * S.P.bodyScale + 0.1) * (1 + 0.6 * pop * pop);
     const rx = r * L.sx;
     const ry = r * L.sy;
     const bo = s?.boost ?? { charge: 1, active: false, at: -9, readyAt: -9, uses: 0 };
     // ready and not used yet: the hexagon hops along with the jump hint (see below)
     const hint = jumpHint(S.P, bo, t);
-    const hop = hint === 'full' && (t * 1.1) % 1 > 0.5 ? -2 : 0;
+    const hop = (hint === 'full' && (t * 1.1) % 1 > 0.5 ? -2 : 0) - look.get(pp.slot).lift;
     if (s?.fortified) {
       const u = Math.min(1, (t - s.fortAt) / 0.25);
       hexagon(pix, cx, cy, rx * (1 + 0.4 * (1 - u) ** 2), ry * (1 + 0.4 * (1 - u) ** 2), lk.col, 0, 0.1);
       for (const [x, y] of hexPoints(cx, cy, rx, ry)) pix.rect(Math.round(x) - 1, Math.round(y) - 1, 2, 2, mix(lk.col, WHITE, 0.5), lk.a);
     }
-    hexArc(pix, cx, cy + hop, rx, ry, 1, lk.col, 0.12 * lk.a);
+    // jumped without a full hexagon: its empty track flickers
+    const denied = s && t - s.deniedAt < 0.4 ? Math.floor(t * 20) % 2 : 0;
+    hexArc(pix, cx, cy + hop, rx, ry, 1, denied ? mix(lk.col, RED, 0.6) : lk.col, (denied ? 0.7 : 0.12) * lk.a);
+    if (pop > 0) hexArc(pix, cx, cy + hop, rx * 1.15, ry * 1.15, 1, WHITE, pop * lk.a);
     let col = lk.col;
     let a = 0.4;
     if (bo.active) {
@@ -357,6 +566,11 @@ export function drawArt(S, people, look) {
       a = 0.75 + 0.25 * Math.sin(t * 4);
     }
     hexArc(pix, cx, cy + hop, rx, ry, bo.charge, col, a * lk.a);
+    // the hint figure that was showing takes off with the boost
+    if (s && s.launchFull && t - s.launchAt < 0.45) {
+      const u = (t - s.launchAt) / 0.45;
+      pix.sprite(JUMP_HINT.jump, Math.round(cx + rx * 0.75), Math.round(cy - ry - 13 - u * 40), WHITE, 1 - u);
+    }
     // the jump hint, no text: a little figure crouching and jumping, an arrow up (until the first boost)
     if (hint) {
       const ph = (t * 1.1) % 1;
@@ -411,24 +625,28 @@ export function drawArt(S, people, look) {
     }
   }
 
-  // ---- invaders: a shadow on the floor (they hover), then the sprite
+  // ---- invaders: they hover over the map, their shadows fall to the bottom right; they bob slowly
   const b = [0, 0, 0, 0, ''];
+  const bob = (side, i) => Math.round(Math.sin(t * 2.2 + i * 0.9 + side.edge) * 0.9);
   for (const side of game.sides) {
     for (let i = 0; i < side.alive.length; i++) {
       if (!side.alive[i] || t < side.spawn[i]) continue;
       game.box(side, i, b);
-      pix.sprite(SPRITES[b[4]][game.frameAnim], b[0] + 2, b[1] + 2, BLACK, 0.55);
+      pix.sprite(SPRITES[b[4]][game.frameAnim], b[0] + 3, b[1] + 4, BLACK, 0.6, side.edge > 0);
     }
   }
-  for (const d of game.divers) pix.sprite(SPRITES[d.type][game.frameAnim], d.x - 6 + 3, d.y - 4 + 3, BLACK, 0.5);
-  if (game.ufo) pix.sprite(SPRITES.ufo[0], game.ufo.x + 3, game.ufo.y + 3, BLACK, 0.55);
+  for (const d of game.divers) {
+    const o = flipped(oriented(d.type, game.frameAnim, d.vx, d.vy));
+    pix.sprite(o.f, d.x - o.f.w / 2 + 5, d.y - o.f.h / 2 + 6, BLACK, 0.5, o.flip);
+  }
+  if (game.ufo) pix.sprite(SPRITES.ufo[0], game.ufo.x + 4, game.ufo.y + 5, BLACK, 0.6);
   for (const side of game.sides) {
     for (let i = 0; i < side.alive.length; i++) {
       if (!side.alive[i] || t < side.spawn[i]) continue;
       game.box(side, i, b);
       const kick = Math.max(0, 1 - (t - side.kickAt[i]) / 0.12);
       const x = b[0] + side.kickX[i] * kick;
-      const y = b[1] + side.kickY[i] * kick;
+      const y = b[1] + side.kickY[i] * kick + bob(side, i);
       const storming = side.storm?.includes(i);
       // a light wave runs through the formation on every beat, from the back to the front
       const outer = side.edge < 0 ? i % side.cols : side.cols - 1 - (i % side.cols);
@@ -442,7 +660,7 @@ export function drawArt(S, people, look) {
       const charging = side.charge[i] > t;
       const blink = (t * 0.7 + hash(i + side.edge * 50) * 10) % 4 < 0.12;
       const eye = charging ? (Math.floor(t * 20) % 2 ? RED : [1, 0.6, 0.4]) : blink ? null : mix(col, WHITE, 0.7);
-      invader(pix, SPRITES[b[4]][game.frameAnim], b[4], x, y, col, eye, worn * 0.35, i + side.edge * 100);
+      invader(pix, SPRITES[b[4]][game.frameAnim], b[4], x, y, col, eye, worn * 0.35, i + side.edge * 100, side.edge > 0);
       if (side.shield[i] > 0) {
         const hitS = Math.max(0, 1 - (t - side.shieldHit[i]) / 0.15);
         ellipse(pix, x + b[2] / 2, y + 4, b[2] / 2 + 2.5, 6.5, mix(SHIELD, WHITE, hitS), 0.35 + 0.2 * side.shield[i] + hitS * 0.4, 8, t * 2 + i);
@@ -450,17 +668,28 @@ export function drawArt(S, people, look) {
     }
   }
   // divers: afterimages behind them, blinking
+  // divers: turned into their direction of flight, afterimages behind them, blinking
   for (const d of game.divers) {
-    const f = SPRITES[d.type][game.frameAnim];
-    d.trail.forEach(([x, y], k) => pix.sprite(f, x - 6, y - 4, mix(invCol(d.type), RED, 0.5), 0.45 * (1 - k / d.trail.length)));
+    const o = flipped(oriented(d.type, game.frameAnim, d.vx, d.vy));
+    d.trail.forEach(([x, y], k) => pix.sprite(o.f, x - o.f.w / 2, y - o.f.h / 2, mix(invCol(d.type), RED, 0.5), 0.45 * (1 - k / d.trail.length), o.flip));
     const col = t - d.flash < 0.08 ? WHITE : Math.floor(t * 10) % 2 ? RED : invCol(d.type);
-    pix.sprite(f, d.x - 6, d.y - 4, col);
+    invader(pix, o.f, d.type, d.x - o.f.w / 2, d.y - o.f.h / 2, col, RED, 0, 0, o.flip, o.eyes);
   }
+  // the mothership: a saucer seen from above, its dome lit from the top left, lights running round
   if (game.ufo) {
     const u = game.ufo;
-    pix.sprite(SPRITES.ufo[0], u.x, u.y, RED);
-    const blink = Math.floor(t * 8) % 3;
-    for (let k = 0; k < 3; k++) pix.put(u.x + 4 + k * 3, u.y + 3, k === blink ? WHITE : [1, 0.6, 0.2]);
+    invader(pix, SPRITES.ufo[0], 'ufo', u.x, u.y, RED, null, 0, 0, false, []);
+    const cx = u.x + UFO_W / 2 - 0.5;
+    const cy = u.y + UFO_H / 2 - 0.5;
+    for (const [dx, dy] of UFO_DOME) {
+      const l = Math.max(0, 1 - Math.hypot(dx - UFO_W / 2 + 2, dy - UFO_H / 2 + 2) / 5);
+      pix.put(u.x + dx, u.y + dy, mix([1, 0.45, 0.6], WHITE, 0.25 + 0.6 * l));
+    }
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2;
+      const on = (Math.floor(t * 12) - k + 80) % 8 < 2;
+      pix.put(cx + Math.cos(a) * 6.5, cy + Math.sin(a) * 4.2, on ? WHITE : [1, 0.6, 0.2]);
+    }
   }
   // mines: lobbed (a shadow on the floor, the orb above), then a warning pulse that speeds up
   for (const bm of game.bombs) {
@@ -509,8 +738,8 @@ export function drawArt(S, people, look) {
     for (const tg of targets) {
       const at = game.targetPos(tg);
       if (!at) continue;
-      if (tg.ufo) reticle(pix, Math.round(tg.ufo.x), tg.ufo.y, 16, 7, lk.col, t);
-      else if (tg.diver) reticle(pix, Math.round(at[0] - 6), Math.round(at[1] - 4), 12, 8, lk.col, t);
+      if (tg.ufo) reticle(pix, Math.round(tg.ufo.x), tg.ufo.y, UFO_W, UFO_H, lk.col, t);
+      else if (tg.diver) reticle(pix, Math.round(at[0] - 5.5), Math.round(at[1] - 4.5), 11, 9, lk.col, t);
       else if (tg.ship) reticle(pix, Math.round(tg.ship.x), Math.round(tg.ship.y), SHIP_W, SHIP_H, lk.col, t);
       else reticle(pix, ...game.box(tg.side, tg.i).slice(0, 4), lk.col, t);
     }
@@ -542,17 +771,20 @@ export function drawArt(S, people, look) {
     });
   }
 
-  // ---- heads and hands: the bright points of every unit
+  // ---- heads and hands: the bright points of every unit (the figures have their own head; their
+  // hands glow only at the end of a stretched-out arm)
+  const figures = S.P.look !== 'Silhouette';
   for (const pp of people) {
     const lk = look.get(pp.slot);
     const s = lk.s;
-    if (pp.head) {
-      pix.disc(pp.head[0], pp.head[1], 2.2, mix(lk.col, WHITE, 0.75), lk.a);
-      ellipse(pix, pp.head[0], pp.head[1], 3.6, 3.6, lk.col, 0.8 * lk.a);
+    if (pp.head && !figures) {
+      pix.disc(pp.head[0], pp.head[1] - lk.lift, 2.2, mix(lk.col, WHITE, 0.75), lk.a);
+      ellipse(pix, pp.head[0], pp.head[1] - lk.lift, 3.6, 3.6, lk.col, 0.8 * lk.a);
     }
-    for (const h of pp.hands ?? []) {
+    for (const h of figures ? pp.arms.map((a) => a.tip) : (pp.hands ?? [])) {
       if (!h) continue;
-      pix.rect(Math.round(h[0]) - 1, Math.round(h[1]) - 1, 2, 2, WHITE, lk.a);
+      const hy = Math.round(h[1]) - lk.lift;
+      pix.rect(Math.round(h[0]) - 1, hy - 1, 2, 2, WHITE, lk.a);
       for (const [dx, dy] of [
         [-2, -1],
         [1, -1],
@@ -563,7 +795,7 @@ export function drawArt(S, people, look) {
         [-1, 1],
         [0, 1],
       ])
-        pix.put(Math.round(h[0]) + dx, Math.round(h[1]) + dy, lk.col, 0.8 * lk.a);
+        pix.put(Math.round(h[0]) + dx, hy + dy, lk.col, 0.8 * lk.a);
     }
     if (!s) continue;
     for (const arm of pp.arms) if (t - (s.fire.get(arm.id) ?? -9) < 0.06) pix.disc(arm.tip[0], arm.tip[1], 2, WHITE);
@@ -664,15 +896,16 @@ export function collectLights(S, people, look, out) {
   }
   for (const pp of people) {
     const lk = look.get(pp.slot);
-    add(pp.center[0], pp.center[1], 0.9, 0.3 * lk.a, lk.col);
-    if (pp.head) add(pp.head[0], pp.head[1], 0.4, 0.55 * lk.a, mix(lk.col, WHITE, 0.4));
-    for (const h of pp.hands ?? []) if (h) add(h[0], h[1], 0.3, 0.7 * lk.a, lk.col);
+    const figures = S.P.look !== 'Silhouette';
+    add(pp.center[0], pp.center[1], 0.9, (figures ? 0.16 : 0.3) * lk.a, lk.col);
+    if (pp.head && !figures) add(pp.head[0], pp.head[1], 0.4, 0.55 * lk.a, mix(lk.col, WHITE, 0.4));
+    for (const h of figures ? pp.arms.map((q) => q.tip) : (pp.hands ?? [])) if (h) add(h[0], h[1], 0.3, 0.7 * lk.a, lk.col);
     if (lk.s?.fortified) add(pp.center[0], pp.center[1], 0.55, 0.3, lk.col);
     if (lk.s?.boost.active) add(pp.center[0], pp.center[1], 0.75, 0.55 + 0.15 * Math.sin(t * 20), lk.col);
   }
   for (const sh of game.shots) add(sh.x, sh.y, 0.35, 0.8, sh.col);
   for (const d of game.divers) add(d.x, d.y, 0.5, 1, RED);
-  if (game.ufo) add(game.ufo.x + 8, game.ufo.y + 3, 1, 1.2, RED);
+  if (game.ufo) add(game.ufo.x + UFO_W / 2, game.ufo.y + UFO_H / 2, 1, 1.2, RED);
   for (const ln of game.links) {
     const flash = Math.max(0, 1 - (t - ln.st.flash) / 0.15);
     const la = look.get(ln.a.slot);
@@ -717,7 +950,7 @@ export function collectLights(S, people, look, out) {
   }
   // the city: the palace, and embers where it burns
   const c = game.city;
-  add(c.x0 + c.w / 2, 4, 0.6, 0.45, CITY_COLORS[CITY.CORE]);
+  for (const l of c.lights) if (!l.blink || Math.floor(t * 1.5) % 2) add(c.x0 + l.x, l.y, l.r, l.i, l.col);
   let embers = 0;
   for (let k = c.dead.length - 1; k >= 0 && embers < 6; k--) {
     const cell = c.dead[k];

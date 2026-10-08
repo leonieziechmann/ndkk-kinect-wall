@@ -17,7 +17,7 @@
 import { Game } from './game.js';
 import { Bodies } from './body.js';
 import { FX } from './fx.js';
-import { Pix, rgb } from './pixels.js';
+import { Pix, ARM, rgb } from './pixels.js';
 import { drawArt, collectLights, looks, WHITE } from './draw.js';
 import { createRenderer, MAX_LIGHTS } from './render.js';
 import { Sound } from './sound.js';
@@ -34,9 +34,11 @@ const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
 
 // state per instance (ctx): the output window may run this scene twice at once
 const STATES = new WeakMap();
+// the render cap of the param `fps` (read by the runtime every frame through maxFps below)
+let fpsCap = 0;
 
 /** the map: art pixel grid on the LED image, wall m -> art px */
-function makeLayout(ctx, p) {
+export function makeLayout(ctx, p) {
   const wall = ctx.wall;
   const s = wall.setup;
   const W = ctx.width;
@@ -64,9 +66,10 @@ function makeLayout(ctx, p) {
     zTop,
     zBot,
     up,
+    wallFace: up ? -Math.PI / 2 : Math.PI / 2, // facing the wall (rad on the map)
     cityW,
     cityX0,
-    gameKey: [AW, AH, cityW, cityX0].join(),
+    gameKey: [W, H, S, AW, AH, cityW, cityX0].join(),
     fogKey: [AW, AH, up, wall.version, p.fog].join(),
     /** wall x (m from the left edge), z (m in front of the wall) -> art px */
     map(x, z) {
@@ -105,9 +108,10 @@ function collectPeople(ctx, S, p) {
   const L = S.layout;
   const body = S.body;
   body.update(ctx, L, p, S.fx.time); // real time: slow motion must not change the jump velocities
-  const people = body.persons.map((b) => ({ id: b.id, slot: b.slot, col: slotColor(b.slot), center: b.center, arms: b.arms, stomp: b.stomp, head: b.head, hands: b.hands }));
+  const people = body.persons.map((b) => ({ id: b.id, slot: b.slot, col: slotColor(b.slot), center: b.center, arms: b.arms, stomp: b.stomp, head: b.head, hands: b.hands, face: b.face }));
 
-  // test players (headless tests, see globalThis.__invaders): { x, z (m), arms: 'L' | 'R' | 'LR', stomp }
+  // test players (headless tests, see globalThis.__invaders): { x, z (m), arms: 'L' | 'R' | 'LR', stomp,
+  // turn (degrees, + = to the right as seen from above) }
   const stampBody = (gx, gy, slot, arms) => {
     const rx = 0.2 * L.sx * p.bodyScale;
     const ry = 0.08 * L.sy * p.bodyScale;
@@ -121,13 +125,21 @@ function collectPeople(ctx, S, p) {
     const [gx, gy] = L.map(f.x, f.z);
     const slot = f.slot ?? 1;
     const arms = [];
-    const reach = 0.75 * L.sx * p.bodyScale;
-    if (f.arms?.includes('L')) arms.push({ id: `${f.id}L`, tip: [gx - reach, gy], dir: [-1, 0] });
-    if (f.arms?.includes('R')) arms.push({ id: `${f.id}R`, tip: [gx + reach, gy], dir: [1, 0] });
-    stampBody(gx, gy, slot, arms);
+    const face = L.wallFace + (((f.turn ?? 0) * Math.PI) / 180) * (L.up ? 1 : -1);
+    const fig = p.look !== 'Silhouette';
+    // the arms stretched out sideways from the turned shoulders
+    const [rx, ry] = [-Math.sin(face) * (L.up ? 1 : -1), Math.cos(face) * (L.up ? 1 : -1)];
+    for (const [k, sd] of [['L', -1], ['R', 1]]) {
+      if (!f.arms?.includes(k)) continue;
+      const from = fig ? [gx + sd * ARM.shoulder * rx, gy + sd * ARM.shoulder * ry] : [gx, gy];
+      const reach = fig ? ARM.reach : 0.75 * L.sx * p.bodyScale;
+      arms.push({ id: `${f.id}${k}`, from, tip: [from[0] + sd * reach * rx, from[1] + sd * reach * ry], dir: [sd * rx, sd * ry] });
+    }
+    if (fig) body.stampFigure({ center: [gx, gy], face, arms, slot }, L, p);
+    else stampBody(gx, gy, slot, arms);
     const hw = 0.24 * L.sx * p.bodyScale;
-    const hands = [arms.find((a) => a.dir[0] < 0)?.tip ?? [gx - hw, gy + 1], arms.find((a) => a.dir[0] > 0)?.tip ?? [gx + hw, gy + 1]];
-    people.push({ id: `fake${f.id ?? 0}`, slot, col: slotColor(slot), center: [gx, gy], arms, stomp: !!f.stomp, head: [gx, gy - 1], hands });
+    const hands = [arms.find((a) => a.id.endsWith('L'))?.tip ?? [gx - hw, gy + 1], arms.find((a) => a.id.endsWith('R'))?.tip ?? [gx + hw, gy + 1]];
+    people.push({ id: `fake${f.id ?? 0}`, slot, col: slotColor(slot), center: [gx, gy], arms, stomp: !!f.stomp, head: [gx, gy - 1], hands, face });
     f.stomp = false;
   }
   // the mouse (testing without people): a unit where the button is held, it points away from the city
@@ -136,9 +148,9 @@ function collectPeople(ctx, S, p) {
     const x = (wp.x / ctx.wall.setup.size.w) * L.AW;
     const y = wp.v * L.AH;
     const dir = x < L.cityX0 + L.cityW / 2 ? -1 : 1;
-    const arms = [{ id: 'mouse', tip: [x + dir * 0.6 * L.sx, y], dir: [dir, 0] }];
+    const arms = [{ id: 'mouse', from: [x + dir * ARM.shoulder, y], tip: [x + dir * (ARM.shoulder + ARM.reach), y], dir: [dir, 0] }];
     stampBody(x, y, 16, arms);
-    people.push({ id: 'mouse', slot: 16, col: WHITE, center: [x, y], arms, stomp: false, head: [x, y], hands: [arms[0].tip, null] });
+    people.push({ id: 'mouse', slot: 16, col: WHITE, center: [x, y], arms, stomp: false, head: [x, y], hands: [arms[0].tip, null], face: L.wallFace });
   }
   return people;
 }
@@ -148,6 +160,11 @@ export default {
   streams: ['persons'],
   // the masks are exact in every frame, also live: the bodies and arms come from them (body.js)
   persons: { mode: 'full', delay: 0 },
+  // 30 fps (param `fps`): the whole frame (tracking analysis, game, drawing) only every second display
+  // frame, which leaves CPU and GPU time to the person tracker and the Kinect's depth decoding
+  get maxFps() {
+    return fpsCap;
+  },
 
   params: {
     control: { value: 'Automatik + Zeigen', options: ['Automatik + Zeigen', 'Automatik', 'Zeigen'], label: 'Steuerung', folder: 'Steuerung' },
@@ -162,8 +179,13 @@ export default {
     pointEvery: { value: 0.2, min: 0.05, max: 1, step: 0.01, label: 'Zeigen: Schuss alle … s', folder: 'Steuerung' },
     assist: { value: 28, min: 0, max: 60, step: 1, label: 'Zeigen: Zielhilfe (Grad)', folder: 'Steuerung' },
     armMin: { value: 0.33, min: 0.2, max: 0.6, step: 0.01, label: 'Zeigen: Arm ab (m vom Körper)', folder: 'Steuerung' },
+    mirrorArm: { value: true, label: 'Verdeckten Arm ergänzen (gespiegelt)', folder: 'Steuerung' },
     homing: { value: 5, min: 0, max: 20, step: 0.5, label: 'Schüsse lenken nach (rad/s)', folder: 'Steuerung' },
     bodyScale: { value: 0.6, min: 0.3, max: 1, step: 0.05, label: 'Personen-Größe', folder: 'Steuerung' },
+    look: { value: 'Figur', options: ['Figur', 'Silhouette'], label: 'Personen als', folder: 'Karte' },
+    turn: { value: true, label: 'Figuren drehen sich mit (Schultern)', folder: 'Karte' },
+    stepLen: { value: 0.35, min: 0.15, max: 1, step: 0.05, label: 'Fußspur alle … m', folder: 'Karte' },
+    footLife: { value: 5, min: 0.5, max: 20, step: 0.5, label: 'Fußspuren bleiben (s)', folder: 'Karte' },
     jumpBoost: { value: true, label: 'Springen = Boost', folder: 'Steuerung' },
     jumpHint: { value: 'bis zum ersten Boost', options: ['bis zum ersten Boost', 'immer', 'aus'], label: 'Sprung-Hinweis (Männchen)', folder: 'Steuerung' },
     boostTime: { value: 5, min: 1, max: 20, step: 0.5, label: 'Boost hält (s)', folder: 'Steuerung' },
@@ -223,6 +245,7 @@ export default {
     flash: { value: 1, min: 0, max: 2, step: 0.05, label: 'Blitze', folder: 'Bild' },
     slowmo: { value: true, label: 'Zeitlupe bei großen Momenten', folder: 'Bild' },
     brightness: { value: 1, min: 0.2, max: 1.5, step: 0.05, label: 'Helligkeit', folder: 'Bild' },
+    fps: { value: '60', options: ['60', '30'], label: 'Bildrate (30 = mehr Luft fürs Tracking)', folder: 'Bild' },
     sound: { value: true, label: 'Ton', folder: 'Bild' },
     volume: { value: 0.5, min: 0, max: 1, step: 0.01, label: 'Lautstärke', folder: 'Bild' },
   },
@@ -263,6 +286,10 @@ export default {
       fx,
       fake: S.fake,
       params: ctx.params,
+      ctx,
+      get ms() {
+        return S.ms;
+      },
       get people() {
         return S.people;
       },
@@ -272,11 +299,13 @@ export default {
   frame(ctx) {
     const S = STATES.get(ctx);
     if (!S) return;
+    const t0 = performance.now();
     const p = ctx.params;
+    fpsCap = p.fps === '30' ? 30 : 0;
     const L = (S.layout = makeLayout(ctx, p));
     if (L.gameKey !== S.gameKey) {
       S.gameKey = L.gameKey;
-      S.pix.resize(L.AW, L.AH);
+      S.pix.resize(L.W, L.H, L.S, L.ox, L.oy);
       S.body.resize(L.AW, L.AH);
       S.game.setLayout(L);
       S.fogKey = '';
@@ -295,8 +324,10 @@ export default {
     fx.step(dt);
     if (!p.slowmo) fx.slowUntil = 0;
     const people = (S.people = collectPeople(ctx, S, p));
+    const t1 = performance.now();
     const game = S.game;
     game.step(dt, people, S.body, p, S.invCol);
+    const t2 = performance.now();
     if (p.sound) {
       S.sound.setVolume(p.volume);
       for (const e of game.events) S.sound.play(e, L.AW);
@@ -308,6 +339,7 @@ export default {
     drawArt(S, people, look);
     const nLights = collectLights(S, people, look, S.lights);
     for (let i = 0; i < nLights; i++) S.lights[i * 8 + 3] *= p.lights;
+    const t3 = performance.now();
     // ripples in LED pixels
     const pxm = L.sx * L.S;
     const ripples = fx.ripples.map((r) => {
@@ -332,6 +364,10 @@ export default {
       brightness: p.brightness,
       time: game.time,
     });
+    // main-thread time per frame (ms, smoothed): the tracker's workers and the pose model share the machine
+    const t4 = performance.now();
+    const ms = (S.ms ??= { body: 0, game: 0, draw: 0, render: 0, total: 0 });
+    for (const [key, v] of [['body', t1 - t0], ['game', t2 - t1], ['draw', t3 - t2], ['render', t4 - t3], ['total', t4 - t0]]) ms[key] += (v - ms[key]) * 0.05;
 
     const alive = game.sides.reduce((n, s) => n + s.count, 0);
     const arms = people.reduce((n, q) => n + q.arms.length, 0);

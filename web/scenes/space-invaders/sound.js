@@ -224,6 +224,12 @@ export class Sound {
         this.noiseBurst(2500, 0.75, 0.45, pan);
         this.tone(140, 70, 0.75, 0.25, pan, { type: 'sawtooth', lowpass: 900 });
         break;
+      case 'jump':
+        this.tone(280, 900, 0.16, 0.12, pan, { type: 'sine' });
+        break;
+      case 'jumpEmpty':
+        this.tone(160, 110, 0.18, 0.12, pan, { type: 'square', lowpass: 600, at: 0.08 });
+        break;
       case 'boost':
         [0, 7, 12, 19, 24].forEach((st, i) => this.tone(220 * 2 ** (st / 12), 220 * 2 ** (st / 12) * 1.02, 0.3, 0.12, pan, { type: 'sawtooth', lowpass: 4000, at: i * 0.035 }));
         this.tone(80, 400, 0.5, 0.3, pan, { type: 'sine' });

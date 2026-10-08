@@ -39,11 +39,12 @@
 // of one's own, slow motion for every enemy. More of them when the crowd struggles (the director),
 // repairs more likely when the city is low; the mothership and the battleship drop some.
 
-import { SPRITES, INVADER_TYPES, SHIP_W, SHIP_H, POWER_COLORS, neon } from './pixels.js';
+import { SPRITES, INVADER_TYPES, SHIP_W, SHIP_H, UFO_W, UFO_H, POWER_COLORS, neon } from './pixels.js';
+import { buildCity } from './city.js';
 
 const PX = 15; // formation cell (art px)
 const PY = 12;
-const SPRITE_H = 8;
+const SPRITE_H = 9;
 const POINTS = { squid: 30, crab: 20, octopus: 10 };
 const HP = { squid: 2, crab: 2, octopus: 1 };
 const WHITE = [1, 1, 1];
@@ -61,7 +62,7 @@ function lineDist(px, py, ax, ay, bx, by) {
   return Math.abs(dy * (px - ax) - dx * (py - ay)) / Math.max(1e-6, Math.hypot(dx, dy));
 }
 
-export const CITY = { EMPTY: 0, WALL: 1, TOWER: 2, HOUSE: 3, HOUSE2: 4, CORE: 5 };
+export { CITY } from './city.js';
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
@@ -98,53 +99,6 @@ function segBox(ax, ay, bx, by, x0, y0, x1, y1) {
   return true;
 }
 
-/** a walled city seen from above, w x h art px: energy walls with towers, blocks of houses, lit windows */
-function buildCity(w, h) {
-  const base = new Uint8Array(w * h);
-  const win = new Uint8Array(w * h);
-  const set = (x, y, t) => {
-    if (x >= 0 && y >= 0 && x < w && y < h) base[y * w + x] = t;
-  };
-  for (let y = 0; y < h; y++) {
-    set(0, y, CITY.WALL);
-    set(w - 1, y, CITY.WALL);
-  }
-  for (let y = 4; y < h - 3; y += 13) {
-    for (let j = 0; j < 4; j++) {
-      for (let i = 0; i < 3; i++) {
-        set(i, y + j, CITY.TOWER);
-        set(w - 1 - i, y + j, CITY.TOWER);
-      }
-    }
-  }
-  const x0 = 3;
-  const x1 = w - 4;
-  let y = 1;
-  while (y < h - 2) {
-    const bh = 3 + Math.floor(Math.random() * 3);
-    let x = x0;
-    while (x < x1) {
-      const bw = 3 + Math.floor(Math.random() * 4);
-      if (Math.random() > 0.22) {
-        const t = Math.random() < 0.55 ? CITY.HOUSE : CITY.HOUSE2;
-        for (let j = 0; j < bh && y + j < h - 1; j++) {
-          for (let i = 0; i < bw && x + i <= x1; i++) {
-            set(x + i, y + j, t);
-            // a few windows inside the roofs, never on the edge
-            if (j > 0 && i > 0 && j < bh - 1 && i < bw - 1 && Math.random() < 0.18) win[(y + j) * w + x + i] = 1;
-          }
-        }
-      }
-      x += bw + 1;
-    }
-    y += bh + 1;
-  }
-  // the palace at the top in the middle (where the Kinect stands)
-  const cw = Math.min(10, w - 8);
-  for (let j = 0; j < 6; j++) for (let i = 0; i < cw; i++) set(Math.floor((w - cw) / 2) + i, 1 + j, CITY.CORE);
-  return { base, win };
-}
-
 export class Game {
   constructor(fx) {
     this.fx = fx;
@@ -160,9 +114,22 @@ export class Game {
   /** layout: { AW, AH, sx, sy, cityX0, cityW } (art px); a new layout restarts the game */
   setLayout(L) {
     this.L = L;
-    const { base, win } = buildCity(L.cityW, L.AH);
+    const { base, img, lanes, lights, W, core, conduit } = buildCity(L.cityW, L.AH, L.S);
     const n = base.length;
-    this.city = { x0: L.cityX0, w: L.cityW, h: L.AH, base, win, alive: base.slice(), dead: [], deadAt: new Float32Array(n).fill(-99), born: new Float32Array(n).fill(-99), hitAt: -9, total: 0 };
+    this.city = { x0: L.cityX0, w: L.cityW, h: L.AH, S: L.S, base, img, imgW: W, lanes, lights, core, conduit, alive: base.slice(), dead: [], deadAt: new Float32Array(n).fill(-99), born: new Float32Array(n).fill(-99), hitAt: -9, total: 0 };
+    // hover gliders on the maglev streets (LED px along their lane)
+    const CAR_COLORS = [
+      [0.3, 0.95, 1],
+      [1, 0.35, 0.85],
+      [0.7, 0.55, 1],
+      [0.9, 0.95, 1],
+    ];
+    this.cars = [];
+    for (const ln of lanes) {
+      const len = ln.to - ln.from;
+      for (let k = 0; k < Math.max(1, Math.round(len / 70)); k++) this.cars.push({ lane: ln, pos: ln.from + Math.random() * len, speed: rand(35, 70), col: pick(CAR_COLORS) });
+    }
+    this.footprints = [];
     this.city.total = base.reduce((k, t) => k + (t ? 1 : 0), 0);
     this.resetAll();
   }
@@ -346,8 +313,8 @@ export class Game {
         if (fn({ side, i }, b[0], b[1], b[2], b[3]) === false) return;
       }
     }
-    for (const d of this.divers) if (fn({ diver: d }, d.x - 6, d.y - 4, 12, 8) === false) return;
-    if (withUfo && this.ufo && fn({ ufo: this.ufo }, this.ufo.x, this.ufo.y, 16, 7) === false) return;
+    for (const d of this.divers) if (fn({ diver: d }, d.x - 5.5, d.y - 4.5, 11, 9) === false) return;
+    if (withUfo && this.ufo && fn({ ufo: this.ufo }, this.ufo.x, this.ufo.y, UFO_W, UFO_H) === false) return;
     if (withUfo && this.ship) fn({ ship: this.ship }, this.ship.x, this.ship.y, SHIP_W, SHIP_H);
   }
 
@@ -366,7 +333,7 @@ export class Game {
   /** where a target is now (its center), or null when it is gone */
   targetPos(tg) {
     if (!tg) return null;
-    if (tg.ufo) return this.ufo === tg.ufo ? [tg.ufo.x + 8, tg.ufo.y + 3.5] : null;
+    if (tg.ufo) return this.ufo === tg.ufo ? [tg.ufo.x + UFO_W / 2, tg.ufo.y + UFO_H / 2] : null;
     if (tg.ship) return this.ship === tg.ship ? [tg.ship.x + SHIP_W / 2, tg.ship.y + SHIP_H / 2] : null;
     if (tg.diver) return this.divers.includes(tg.diver) ? [tg.diver.x, tg.diver.y] : null;
     if (!this.present(tg.side, tg.i)) return null;
@@ -514,7 +481,7 @@ export class Game {
 
   explodeDiver(d, col, slot, invCol) {
     const icol = invCol(d.type);
-    this.shatter(d.x - 6, d.y - 4, d.type, icol, col ?? RED, null, 1.4);
+    this.shatter(d.x - 5.5, d.y - 4.5, d.type, icol, col ?? RED, null, 1.4);
     this.burst(d.x, d.y, 20, ORANGE, 45, 0.6, WHITE);
     this.fx.light(d.x, d.y, 0.9, 2.2, ORANGE, 0.4);
     this.fx.ripple(d.x, d.y, 3, 5, 0.45);
@@ -534,18 +501,18 @@ export class Game {
     this.score += 100 + 50 * Math.floor(Math.random() * 5);
     this.best = Math.max(this.best, this.score);
     this.shatter(u.x, u.y, 'ufo', RED, col, null, 2);
-    this.burst(u.x + 8, u.y + 3, 80, WHITE, 80, 1.3, col);
-    this.burst(u.x + 8, u.y + 3, 40, ORANGE, 50, 1, RED);
+    this.burst(u.x + UFO_W / 2, u.y + UFO_H / 2, 80, WHITE, 80, 1.3, col);
+    this.burst(u.x + UFO_W / 2, u.y + UFO_H / 2, 40, ORANGE, 50, 1, RED);
     this.party = this.time + 1.5;
     // the reward: the city is repaired
     this.repair = (this.repair ?? 0) + Math.round(this.city.total * 0.18);
     this.fx.flash(WHITE, 0.35);
     this.fx.kick(3, 1.6);
-    this.fx.ripple(u.x + 8, u.y + 3, 9, 7, 1);
-    this.fx.light(u.x + 8, u.y + 3, 2.2, 3, RED, 0.8);
+    this.fx.ripple(u.x + UFO_W / 2, u.y + UFO_H / 2, 9, 7, 1);
+    this.fx.light(u.x + UFO_W / 2, u.y + UFO_H / 2, 2.2, 3, RED, 0.8);
     this.fx.slow(0.6, 0.25);
     this.events.push({ type: 'ufo', on: false, x: u.x });
-    this.events.push({ type: 'ufoKill', x: u.x + 8 });
+    this.events.push({ type: 'ufoKill', x: u.x + UFO_W / 2 });
     this.dropLater = (this.dropLater ?? 0) + 1;
   }
 
@@ -616,7 +583,7 @@ export class Game {
   state(p) {
     let s = this.players.get(p.id);
     if (!s) {
-      s = { slot: p.slot, fire: new Map(), lock: new Map(), auto: -9, autoTarget: null, speed: 0, fortified: false, fortAt: -9, stunUntil: -1, hitAt: -1, combo: 0, lastKill: -9, seen: this.time, power: { rapid: -9, spread: -9, mega: -9, shield: 0, shieldUntil: -9, megaTick: 0 }, mega: null, shieldHit: -9, boost: { charge: 1, active: false, at: -9, readyAt: -9, uses: 0 } };
+      s = { slot: p.slot, fire: new Map(), lock: new Map(), auto: -9, autoTarget: null, speed: 0, fortified: false, fortAt: -9, stunUntil: -1, hitAt: -1, combo: 0, lastKill: -9, seen: this.time, power: { rapid: -9, spread: -9, mega: -9, shield: 0, shieldUntil: -9, megaTick: 0 }, mega: null, shieldHit: -9, boost: { charge: 1, active: false, at: -9, readyAt: -9, uses: 0 }, jumpAt: -9, deniedAt: -9, launchAt: -9, launchFull: false };
       this.players.set(p.id, s);
     }
     s.slot = p.slot;
@@ -1440,7 +1407,7 @@ export class Game {
       // the mothership
       if (!this.ufo && t > this.nextUfo) {
         const fromLeft = Math.random() < 0.5;
-        this.ufo = { x: fromLeft ? -16 : L.AW, y: Math.round(rand(4, L.AH - 12)), vx: (fromLeft ? 1 : -1) * 1.1 * sx, t0: t };
+        this.ufo = { x: fromLeft ? -UFO_W : L.AW, y: Math.round(rand(4, L.AH - UFO_H - 3)), vx: (fromLeft ? 1 : -1) * 1.1 * sx, t0: t };
         this.nextUfo = t + P.ufoEvery * rand(0.7, 1.3) * (present ? 1 : 2);
         this.events.push({ type: 'ufo', on: true, x: this.ufo.x });
       }
@@ -1519,8 +1486,27 @@ export class Game {
         s.py = cy;
         s.stillSince = t;
       }
-      const v = Math.hypot((cx - s.px) / L.sx, (cy - s.py) / L.sy) / Math.max(dt, 1e-3);
+      const moved = Math.hypot((cx - s.px) / L.sx, (cy - s.py) / L.sy);
+      const v = moved / Math.max(dt, 1e-3);
       s.speed += (v - s.speed) * Math.min(1, dt * 5);
+      // walking (seen from above): the direction, the step phase of the feet, a footprint per step
+      if (moved > 1e-4) {
+        const dx = (cx - s.px) / moved;
+        const dy = (cy - s.py) / moved;
+        s.dir = s.dir ? [s.dir[0] + (dx - s.dir[0]) * 0.2, s.dir[1] + (dy - s.dir[1]) * 0.2] : [dx, dy];
+      }
+      s.phase = (s.phase ?? 0) + (moved / P.stepLen) * Math.PI;
+      s.stepAcc = (s.stepAcc ?? 0) + moved;
+      if (s.stepAcc >= P.stepLen && s.speed > 0.15) {
+        s.stepAcc = 0;
+        s.foot = s.foot ? 0 : 1;
+        const d = s.dir ?? [0, -1];
+        const n = Math.hypot(d[0], d[1]) || 1;
+        const side = s.foot ? 1 : -1;
+        const off = 0.07 * P.bodyScale * 1.6 * L.sx;
+        this.footprints.push({ x: cx - (d[1] / n) * side * off, y: cy + (d[0] / n) * side * off, dir: [d[0] / n, d[1] / n], t0: t, col: p.col });
+        if (this.footprints.length > 400) this.footprints.shift();
+      }
       s.px = cx;
       s.py = cy;
       if (s.speed > P.stillSpeed || stunned) s.stillSince = t;
@@ -1585,7 +1571,24 @@ export class Game {
           this.events.push({ type: 'boostReady', x: cx });
         }
       }
+      // every jump that is seen gets an answer (the unit hops, arrows, a "boing"), so people learn that
+      // jumping is read; with a full hexagon it starts the boost, else the bar flickers (not charged)
+      if (p.stomp && P.jumpBoost && !stunned) {
+        s.jumpAt = t;
+        this.events.push({ type: 'jump', x: cx });
+        if (!bo.active && bo.charge < 1) {
+          s.deniedAt = t;
+          this.events.push({ type: 'jumpEmpty', x: cx });
+        }
+      }
       if (p.stomp && P.jumpBoost && !stunned && !bo.active && bo.charge >= 1) {
+        // the jump hint figure (if it was showing) takes off and bursts into sparks
+        s.launchFull = P.jumpHint === 'immer' || (P.jumpHint !== 'aus' && bo.uses === 0);
+        s.launchAt = t;
+        if (s.launchFull) {
+          const r = 0.36 * P.bodyScale + 0.1;
+          this.burst(cx + r * L.sx * 0.75 + 3, cy - r * L.sy - 9, 24, WHITE, 45, 0.5, p.col);
+        }
         bo.active = true;
         bo.at = t;
         bo.uses++;
@@ -1870,6 +1873,14 @@ export class Game {
         this.events.push({ type: 'ufo', on: false, x: 0 });
       }
     }
+
+    // ---- cars drive along the streets; footprints fade
+    for (const car of this.cars) {
+      const ln = car.lane;
+      const len = ln.to - ln.from;
+      car.pos = ln.from + ((((car.pos - ln.from + car.speed * ln.dir * dt) % len) + len) % len);
+    }
+    this.footprints = this.footprints.filter((f) => t - f.t0 < P.footLife);
 
     // ---- debris slides over the floor and stops (seen from above: no gravity)
     const damp = Math.exp(-3.2 * dt);
