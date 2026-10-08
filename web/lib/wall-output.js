@@ -9,7 +9,6 @@
 
 import { loadDoc } from './wall-bus.js';
 import { normalizeShow, stepEntry } from './wall-show.js';
-import { acceptsParam } from './params.js';
 import { BONES, POINTS } from './persons.js';
 
 const TELEMETRY_MS = 250;
@@ -174,13 +173,9 @@ export function startOutput(api) {
     const sceneChanged = entry.scene !== current.scene;
     current = entry;
     if (sceneChanged) return void playEntry(entry, 'cut');
+    // only when they changed: the same values again leave a running glide alone (runtime retune())
     const inst = rt.current;
-    if (!inst || inst.name !== entry.scene) return;
-    inst.overrides = { ...entry.params };
-    for (const p of inst.params.list) {
-      const want = p.key in entry.params && acceptsParam(p, entry.params[p.key]) ? entry.params[p.key] : p.value;
-      if (inst.params.values[p.key] !== want) api.setParam(p.key, want);
-    }
+    if (inst?.name === entry.scene && JSON.stringify(inst.overrides) !== JSON.stringify(entry.params)) api.setParams({ ...entry.params });
   }
 
   async function loadShow() {
