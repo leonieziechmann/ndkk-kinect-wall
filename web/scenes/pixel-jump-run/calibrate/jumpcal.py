@@ -67,6 +67,8 @@ class Sig:
         return dict(rise=y - self.stand, v=self.v, y=y)
 
 
+GROUND_MAX = 0.45  # people.js: a person's lowest point came this near the floor once (no split-off body part)
+
 # the params of people.js (main.js defaults)
 DEFAULT = dict(jumpVy=0.45, jumpVy2=0.2, jumpRise=0.05, jumpDip=0.1, feetUp=0.02, minRise=0.06, pelvisMin=0.03, walkGate=0.55, jumpRest=0.15)
 
@@ -79,13 +81,15 @@ def detect(a, **P):
         t = r[COLS['t']]
         st = state.get(r[COLS['id']])
         if st is None:
-            st = state[r[COLS['id']]] = dict(body=Sig(), mean=Sig(), feet=Sig(4, 50), pel=Sig(), armed=True, armedAt=-9, cand=-9, born=t, walks=[], n=0)
+            st = state[r[COLS['id']]] = dict(body=Sig(), mean=Sig(), feet=Sig(4, 50), pel=Sig(), armed=True, armedAt=-9, cand=-9, born=t, walks=[], n=0, grounded=False)
         body = st['body'].add(t, r[COLS['med']])
         mean = st['mean'].add(t, r[COLS['mean']])
         feet = st['feet'].add(t, r[COLS['feet']])
         pel = st['pel'].add(t, r[COLS['raw']])
         st['walks'] = [w for w in st['walks'] if t - w[0] <= 0.3] + [(t, r[COLS['walk']])]
         walking = max(w[1] for w in st['walks'])
+        if not st['grounded'] and 0 < r[COLS['feet']] < GROUND_MAX:
+            st.update(grounded=True, born=t)  # becomes a player now
         if not body:
             continue
         st['n'] += 1
@@ -94,7 +98,7 @@ def detect(a, **P):
             st['cand'] = t
         feet_up = not feet or feet['rise'] > P['feetUp']
         pelvis_ok = not pel or pel['rise'] > P['pelvisMin']
-        can = st['armed'] and t - st['born'] > 1 and st['n'] >= 20
+        can = st['grounded'] and st['armed'] and t - st['born'] > 1 and st['n'] >= 20
         if can and t - st['cand'] < 0.35 and feet_up and body['rise'] > P['minRise'] and pelvis_ok:
             st.update(armed=False, armedAt=t, cand=-9)
             fires.append(i)

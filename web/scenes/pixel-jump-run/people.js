@@ -20,6 +20,11 @@ const HIST_MIN = -0.5; // m: height histogram per person, 1 cm bins
 const HIST_BINS = 300;
 const SLOTS = 17;
 const PLAY_HYST = 0.15; // m
+// m: a person's lowest point must have come this near the floor once. The tracker sometimes splits
+// off body parts (raised arms, the upper body) as persons of their own for a few seconds: they
+// float (lowest point 0.6-1.6 m) and are no people. Someone close to the sensor (0.8 m) shows
+// down to about 0.4 m, everyone else down to the floor.
+const GROUND_MAX = 0.45;
 
 // bones for the body parts: [from, to, part]; hands and forearms depend on the outfit
 const BONES = [
@@ -96,6 +101,7 @@ export class Figure {
     this.id = id;
     this.slot = slot;
     this.fake = fake;
+    this.grounded = fake; // touched the floor once (GROUND_MAX): before that, no person
     this.outfit = outfit(typeof id === 'number' ? id : [...String(id)].reduce((a, c) => a * 31 + c.charCodeAt(0), 7) & 0xffff, slot);
     this.born = time;
     this.seen = time;
@@ -208,7 +214,7 @@ export class PeopleLayer {
     this.hist = new Uint16Array(SLOTS * HIST_BINS);
     this.key = '';
     this.log = []; // jump signals (debugging and calibration)
-    this.logMax = 6000;
+    this.logMax = 30000; // 2-3 loops of a calibration recording, with short-lived ghost persons
     this.entered = [];
     this.jumped = [];
   }
@@ -245,7 +251,7 @@ export class PeopleLayer {
       // plays only within the play distance (further away the tracking is too rough): the others
       // stand in the background, smaller and dim. A little hysteresis against flicker at the edge.
       const m = f.player ? PLAY_HYST : -PLAY_HYST;
-      const play = q.dist >= p.playNear - m && q.dist <= p.playFar + m;
+      const play = f.grounded && q.dist >= p.playNear - m && q.dist <= p.playFar + m;
       if (play && !f.player) {
         f.born = time; // appears as a player
         this.entered.push(f);
@@ -288,7 +294,7 @@ export class PeopleLayer {
 
     const list = [];
     for (const f of this.figures.values()) {
-      if (!f.visible || !f.grid) continue;
+      if (!f.visible || !f.grid || !f.grounded) continue;
       f.instant = p.instant;
       f.headroom = p.headroom;
       f.updateLift(time, dt, L);
@@ -477,6 +483,7 @@ export class PeopleLayer {
         for (let k = 0; k < qs.length; k++) if (at[k] < 0 && acc >= total * qs[k]) at[k] = b + (c ? (total * qs[k] - before) / c : 0.5);
       }
       f.sig.feetY = HIST_MIN + at[0] / 100;
+      if (f.sig.feetY < GROUND_MAX) f.grounded = true;
       f.sig.p10 = HIST_MIN + at[1] / 100;
       f.sig.p25 = HIST_MIN + at[2] / 100;
       f.sig.medY = HIST_MIN + at[3] / 100;

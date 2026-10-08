@@ -1,12 +1,12 @@
 # Sprungerkennung kalibrieren
 
-So prüfen und justieren wir, ob `pixel-jump-run` Sprünge richtig erkennt: mit zwei Aufnahmen, in denen bekannt ist, wann jemand hüpft und wann nicht. Zuletzt am 2026-10-08 gemacht (Ergebnisse unten).
+So prüfen und justieren wir, ob `pixel-jump-run` Sprünge richtig erkennt: mit zwei Aufnahmen, in denen bekannt ist, wann jemand hüpft und wann nicht. Zuletzt am 2026-10-09 mit dem Personen-Tracking im Hub nachgeprüft (Ergebnisse unten).
 
 ## Wann
 
 - Wenn sich das Springen im Spiel falsch anfühlt (zu spät, verpasst, Fehlsprünge).
 - An einem neuen Ort oder mit einem anderen Kinect-Aufbau.
-- Nach Änderungen an der Personenerkennung (`web/lib/persons*`).
+- Nach Änderungen an der Personenerkennung (`web/lib/persons*`, `kinect-hub/src/tracking.rs`).
 
 ## 1. Aufnehmen (mit der Person vor der Kinect)
 
@@ -59,6 +59,7 @@ node scenes/pixel-jump-run/calibrate/probe.mjs --hub 8092 --seconds 150 --log --
 ```
 
 - Die Szene läuft live wie im Spiel und loggt pro Tracking-Ergebnis ihre Signale und ob sie einen Sprung ausgelöst hat.
+- Getrackt wird wie im Spiel: vom Hub (Stream `persons_live`), wenn er das kann, sonst im Browser. Zum Vergleich mit dem Browser-Tracker hängt man `&persons=local` an die URL in `probe.mjs`.
 - `--nospawn` schaltet die Hindernisse ab.
 - Danach dasselbe mit der zweiten Aufnahme (Hub stoppen, mit `nohops-…` neu starten) und `--out .cache/shots/nohops`.
 - Den Replay-Hub am Ende wieder stoppen.
@@ -97,6 +98,7 @@ Alles kommt aus der Maske der Person, also jedes Bild exakt, ungeglättet und un
    - Sie ist das 80. Perzentil der ruhigen Momente (|v| < 0,25 m/s) der letzten 8 s, bei den Füßen der Median der letzten 4 s.
    - Die erste Version nahm den höchsten Median und ließ ihn nur 3 mm/s sinken. Dabei blieb die Standhöhe nach ein paar Hüpfern bis zu 30 cm zu hoch hängen, und eine Minute lang zählte kein kleiner Hüpfer mehr.
 4. **Lauf-Filter:** Wer sich in den letzten 0,3 s schneller als 0,55 m/s über den Boden bewegt hat, springt nicht.
+5. **Bodenkontakt:** Eine Person zählt erst, wenn ihr tiefster Punkt einmal unter 0,45 m war (`GROUND_MAX`). Vorher wird sie nicht gezeichnet und spielt nicht mit. Der Tracker spaltet manchmal für ein paar Sekunden Körperteile als eigene Personen ab (hochgerissene Arme, der Oberkörper). Die schweben 0,6–1,6 m über dem Boden, haben kein Becken im Skelett und lösten Sprünge aus.
 
 ## Ergebnisse 2026-10-08
 
@@ -116,6 +118,19 @@ Je Aufnahme gab es drei Mess-Läufe mit unterschiedlicher GPU-Last, je zwei bis 
 - Verpasst wurden zwei sehr kleine Hüpfer: Die Füße hoben nur 1,8 cm ab.
 - Die Fehlsprünge kommen von hochgerissenen Armen, von schnellem Aufstehen aus tiefer Hocke und unter GPU-Last vom Hochkommen nach dem Ducken.
 - Ohne das Becken-Veto wären es 1,7–4,5 Fehlsprünge.
+
+## Nachprüfung 2026-10-09: Personen-Tracking im Hub
+
+Dieselben Aufnahmen, jetzt mit dem Tracker im Hub (Rust, Posenmodell nativ, Stream `persons_live`), Posenmodell 90–125 ms:
+
+| | Hüpfer | kleine Hüpfer | Verzögerung (Median) | Fehlsprünge (du) | Fehlsprünge (Schein-Personen) |
+|---|---|---|---|---|---|
+| Hub-Tracker, ohne Bodenkontakt-Filter | 35/36 | 10/10 | +0,10 s | 2,0 | 10 in 3 Durchläufen |
+| **Hub-Tracker mit Bodenkontakt-Filter**, von der Szene ausgelöst | 26/27 | 6/7 | +0,10 s | 2,3 | 0 |
+
+- Die Erkennung hält: Es fehlt derselbe winzige Hüpfer wie beim Browser-Tracker (Füße 2 cm hoch).
+- Der Hub-Tracker erzeugt in dieser Aufnahme deutlich mehr Schein-Personen als der Browser-Tracker: 90 IDs in 155 s statt 18–34. Fast alle haben keine Maske im Bild und stören nicht. Die mit Maske sind abgespaltene Körperteile, der Bodenkontakt-Filter hält sie aus dem Spiel.
+- Das Log fasst jetzt 30000 Zeilen (vorher 6000; mit den vielen Schein-Personen war es nach einer Minute voll).
 
 Gelernt:
 - Erst die Auswertung prüfen, dann die Regel: Zweimal sah die Erkennung schlecht aus, weil die Auswertung falsch zählte.
