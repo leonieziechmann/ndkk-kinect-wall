@@ -107,6 +107,7 @@ export class Figure {
     // the jump signals (see signals()): the mask's median and mean height, its feet, the raw pelvis
     this.track = { body: new Signal(8, 0.8), mean: new Signal(8, 0.8), feet: new Signal(4, 0.5), pelvis: new Signal(8, 0.8) };
     this.candidate = -9; // when the push-off of a possible jump was seen
+    this.candV = 0; // the fastest rise of the body since then (m/s)
     this.standH = 0;
     this.realRise = 0; // m on the wall: how far the real body is above where it stands
     this.sig = { pelvisY: 0, pelvisVy: 0, feetY: 0, medY: 0, meanY: 0, topY: 0, height: 0, base: 0 };
@@ -116,8 +117,7 @@ export class Figure {
     this.headCell = null; // [col, row] of the top of the head (before the lift)
     this.air = false; // jumping (game physics)
     this.h = 0; // m above the ground (game physics)
-    this.vy = 0; // m/s
-    this.g = 9.81;
+    this.jump = null; // the running jump (startJump)
     this.instant = 1; // the instant lift (param `instant`), see updateLift
     this.headroom = 0.1; // m the head may rise beyond the wall's top (param `headroom`)
     this.headTop = null; // m above the ground: the top of the head (before the lift)
@@ -137,45 +137,53 @@ export class Figure {
   }
 
   /**
-   * A jump: pushes the figure up with the boost (it reaches jumpHeight in jumpTime / 2 and lands
-   * after jumpTime). In the air another hop pushes it up again from where it is: air jumps.
+   * A jump with the boost: not higher, but longer in the air. The figure rises quickly (jumpUp s),
+   * hovers near the top, sinking a little, and comes down (jumpDown s); jumpTime s in all. A small
+   * hop goes jumpHeight m high (enough for every obstacle on the ground), a bigger one higher:
+   * jumpGain × how high the real body would fly with its takeoff speed `v` (v² / 2g). In the air
+   * another hop starts again from where the figure is: air jumps.
    * lead: s of the jump that already passed when it was detected (only on the ground).
    */
-  startJump(time, p, lead = 0) {
-    const v0 = (4 * p.jumpHeight) / p.jumpTime;
-    this.g = (8 * p.jumpHeight) / (p.jumpTime * p.jumpTime);
+  startJump(time, p, lead = 0, v = 0) {
+    const real = v > 0 ? (v * v) / 19.62 : 0;
+    const H = p.jumpHeight + p.jumpGain * real;
     this.airJumps = this.air ? this.airJumps + 1 : 0;
     // takes off from where the figure is drawn now (the instant lift may have raised it already)
-    this.h = Math.max(this.h, this.realRise * this.instant);
-    this.vy = v0;
-    if (!this.air && lead > 0) {
-      this.h += v0 * lead - 0.5 * this.g * lead * lead;
-      this.vy = v0 - this.g * lead;
-    }
+    const from = this.air ? this.h : Math.max(this.h, this.realRise * this.instant);
+    const up = Math.max(0.05, p.jumpUp);
+    const down = Math.max(0.05, p.jumpDown);
+    this.jump = { t0: time - (this.air ? 0 : lead), from, top: from + H, up, hang: Math.max(0, p.jumpTime - up - down), down };
     this.air = true;
     this.jumps++;
   }
 
-  /** the jump physics: rises, falls, lands; the figure never leaves the wall at the top */
+  /** the jump's height at `time`: up, hover, down, land; the head stays (about) on the wall */
   updateLift(time, dt, L) {
-    if (this.air) {
-      this.vy -= this.g * dt;
-      this.h += this.vy * dt;
+    if (this.air && this.jump) {
+      const j = this.jump;
       // the ceiling: the head may rise `headroom` m beyond the wall's top edge (raised hands may go
       // further out; they used to be the ceiling, and a hop with the arms up stayed tiny)
       const wallTop = L.groundRow * L.cellMy;
       const head = this.headTop ?? (this.headCell ? (L.groundRow - this.headCell[1]) * L.cellMy : 1.2);
       const ceil = Math.max(0.1, wallTop + this.headroom - head + this.realRise);
-      if (this.h > ceil) {
-        this.h = ceil;
-        if (this.vy > 0) this.vy = 0;
-      }
-      if (this.h <= 0 && this.vy < 0) {
-        this.h = 0;
-        this.vy = 0;
-        this.air = false;
-        this.landed = time;
-        this.justLanded = true;
+      const top = Math.min(j.top, Math.max(ceil, j.from));
+      const sink = 0.12 * (top - j.from); // hovering, it sinks a little
+      const t = time - j.t0;
+      if (t < j.up) {
+        const u = t / j.up;
+        this.h = j.from + (top - j.from) * (1 - (1 - u) * (1 - u)); // fast at first, slowing down
+      } else if (t < j.up + j.hang) {
+        this.h = top - sink * ((t - j.up) / Math.max(1e-3, j.hang));
+      } else {
+        const u = Math.min(1, (t - j.up - j.hang) / j.down);
+        this.h = (top - sink) * (1 - u * u); // falling faster and faster
+        if (u >= 1) {
+          this.h = 0;
+          this.air = false;
+          this.jump = null;
+          this.landed = time;
+          this.justLanded = true;
+        }
       }
     }
     // the figure rises with the real body already (its mask); `instant` lifts it more at once,
@@ -355,14 +363,17 @@ export class PeopleLayer {
       // the figure's own rise: the smaller of mask and pelvis (raised arms lift only the mask)
       f.realRise = Math.max(0, Math.min(body.rise, pelv ? pelv.rise : body.rise)) * f.k;
       const flies = body.rise > -p.jumpDip && body.rise + (body.v * body.v) / 19.62 > p.jumpRise;
-      if (body.v > p.jumpVy && (!mean || mean.v > p.jumpVy2) && flies && walking < p.walkGate) f.candidate = time;
+      if (body.v > p.jumpVy && (!mean || mean.v > p.jumpVy2) && flies && walking < p.walkGate) {
+        f.candV = time - f.candidate < 0.35 ? Math.max(f.candV, body.v) : body.v; // the takeoff speed
+        f.candidate = time;
+      }
       const feetUp = !feet || feet.rise > p.feetUp;
       const pelvisOk = !pelv || pelv.rise > p.pelvisMin;
       const can = f.player && f.alive !== false && f.armed && time - f.born > 1 && f.track.body.n >= 20;
       // every hop counts, also in the air (air jumps). One hop fires once: the next one needs the
       // body to have stopped rising first.
       if (can && time - f.candidate < 0.35 && feetUp && body.rise > p.minRise && pelvisOk) {
-        f.startJump(time, p, p.jumpLead);
+        f.startJump(time, p, p.jumpLead, Math.max(f.candV, body.v));
         f.armed = false;
         f.armedAt = time;
         f.candidate = -9;
