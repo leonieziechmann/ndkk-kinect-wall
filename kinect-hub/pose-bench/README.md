@@ -61,6 +61,40 @@ Vorbehalte:
 - `ort` 2.0 ist noch ein Release Candidate.
 - Die GPU bleibt geteilt: eine Szene, die die GPU sättigt, kostet die Pose weiterhin Zeit, und umgekehrt. Die Rate der Pose gehört deshalb begrenzbar gemacht (z. B. 15 Hz).
 
+## Größere Modelle: yolo11s und yolo11m (08.10.2026, abends)
+
+Anlass: Nachtrainiertes n verallgemeinert nicht, die Modellgröße ist der Hebel (Pose-mAP gegen yolo11x auf 283 ungesehenen Bildern: n@512 0,654, n@384 0,603, s@384 0,684, s@512 0,726, m@512 0,800; `pose-training/README.md` auf Branch `claude/focused-golick-2f20b5`). Modelle: `recordings/training/export-coco/` (lokal, fp16 wie `web/lib/models/README.md`). Gleiche Bilder und Bedingungen wie oben, alle fünf Modelle je Lastsitzung im Wechsel, je 15 s; der Hub dekodierte die Tiefe damals noch mit OpenCL.
+
+**GPU frei** (Modell je Lauf, Median (p90); GPU-Zeit je Pose = 3D-Auslastung / Rate):
+
+| | hintereinander | Rate | GPU je Pose | fest 15 Hz |
+|---|---|---|---|---|
+| n@512 | 20–24 ms (23–37) | 35–46 Hz | ~13 ms | 43 ms (74) |
+| n@384 | 12–14 ms (14–21) | 59–74 Hz | ~8 ms | 37 ms (70) |
+| **s@384** | **27–29 ms** (29–44) | 30–35 Hz | ~16 ms | **34 ms (64)** |
+| **s@512** | **46–49 ms** (52–66) | 18–21 Hz | ~26 ms | **55 ms (72)** |
+| m@512 | 118–165 ms (133–202) | 6–8 Hz | ~72 ms | nicht erreichbar (6,5 Hz) |
+
+**Unter Szenenlast** (`depth-shader` in 1920×1080, 2560×1440, 3840×2160; gruppiert nach der 3D-Auslastung der Szene allein, die je nach anderen Sitzungen schwankte). Modell je Lauf, Median (p90), Rate:
+
+| Szene allein | n@512 | n@384 | s@384 | s@512 | m@512 |
+|---|---|---|---|---|---|
+| ~40–50 % GPU (2 Runden) | 40–48 ms (70–73), 18–21 Hz | 26–27 ms, 34 Hz | 60–63 ms (110–119), 13–14 Hz | 95–118 ms (172), 8–9 Hz | 228–252 ms, 4 Hz |
+| ~62–68 % (3 Runden) | 45–83 ms (63–131), 10–20 Hz | 29–30 ms, 29–31 Hz | 51–117 ms (75–147), 8–17 Hz | 104–123 ms (144–172), 7–9 Hz | 233–250 ms, 4 Hz |
+| ~92 % (2 Runden) | 58–61 ms (82–96), 15–16 Hz | 33–37 ms, 22–24 Hz | 83–92 ms (112–137), 10–11 Hz | 145–169 ms (205–231), 6–7 Hz | 309–350 ms, 3 Hz |
+
+- **Sensor** (noch OpenCL-Dekodierung): bis ~68 % GPU mit allen Modellen 26–30 fps (s@384 einmal 22), bei ~92 % 24–28 fps (die Szene allein drückt ihn dort auf 15–18). Mit der CPU-Dekodierung (`fn2/fast_depth`) hängt der Sensor nicht mehr an der GPU.
+- **Szene:** bis ~68 % bleibt sie mit n und s bei 52–60 fps, m kostet 5–11 fps. Bei ~92 % kostet jedes Pose-Modell die Szene ~20 fps (n 37 fps, s@384 34–38, s@512 30–33, m 28–31 statt 52–59).
+- **Live im Hub** (Kinect, GPU zu 94 % durch zwei Browser mit Szenen): s@512 ~200 ms (4,5 Hz); s@384 mit n@384 als Ausweichmodell 59 ms bei 12 Hz.
+
+**Bewertung:**
+
+- **s@384 kostet bei freier GPU so viel wie heute n@512** (27–34 ms) und ist besser (0,684 statt 0,654). Bei 15 Hz passt es bequem.
+- **s@512 passt nur bei freier GPU**, und knapp: bei 15 Hz 55 ms Median, p90 72 ms über der Periode von 67 ms. Der Hub-Scheduler wechselt ab 60 ms (90 % der Periode) und kehrt erst unter 40 ms (60 %) zurück; das schafft s@512 nie, nach einem Wechsel bliebe er also auf dem kleinen Modell. Für s@512 ↔ s@384 muss die Rückkehrschwelle hoch (z. B. 85 % der Periode) oder `--pose-hz 12`.
+- **Unter Last skaliert s schlechter als n:** bei ~45 % GPU s@384 60 ms (≈ n@512 40–48), bei ~92 % 83–92 ms (10–11 Hz) statt n@512 58–61 ms (15–16 Hz). s@512 liegt unter jeder Last bei 95–170 ms (6–9 Hz).
+- **m@512 ist für live zu langsam** (118–165 ms bei freier GPU, 230–350 ms unter Last); nur offline, etwa als Lehrer.
+- Vorschlag für den Hub: drei Stufen s@512 → s@384 → n@384. s@512 läuft, solange die GPU frei ist. s@384 ist der Normalfall. n@384 hält unter Volllast 15 Hz (29–37 ms), mit schlechteren Posen. Heute kennt der Hub zwei Stufen: für den Live-Test laufen s@384 und n@384 (`--pose-model …/yolo11s-pose-384x320-fp16.onnx --pose-model-fast …/yolo11n-pose-384-fp16.onnx`).
+
 ## Einrichten
 
 1. ONNX Runtime mit DirectML: `kinect-hub/setup-onnxruntime.ps1` (dieselbe DLL wie für den Hub, nach `kinect-hub/onnxruntime/`). Oder von Hand: NuGet-Paket [Microsoft.ML.OnnxRuntime.DirectML 1.24.4](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime.DirectML/1.24.4) (12,5 MB), aus dem Zip (`.nupkg`) nur `runtimes/win-x64/native/onnxruntime.dll` nach `kinect-hub/pose-bench/ort/onnxruntime.dll` (git-ignoriert). Das ist die neueste ONNX Runtime mit DirectML; deshalb `api-24` in `Cargo.toml`.
