@@ -70,7 +70,7 @@ function sprite(rows, colors = C) {
   });
   return { w, h, px };
 }
-const frames = (list) => list.map((rows) => sprite(rows));
+const frames = (list, colors) => list.map((rows) => sprite(rows, colors ? { ...C, ...colors } : C));
 
 /** facing left: everything comes from the right (main.js mirrors them for the other direction) */
 export const SPRITES = {
@@ -104,7 +104,8 @@ export const SPRITES = {
   ]),
   star: frames([['...W...', '..WWW..', 'WWWWWWW', '.WWWWW.', '..WWW..', '.WW.WW.', 'W.....W']]),
   crown: frames([['Y.Y.Y', 'YYYYY', 'YRYBY']]),
-  heart: frames([['RR.RR', 'RRRRR', '.RRR.', '..R..']]),
+  heart: frames([['R.R', 'RRR', '.R.']]),
+  flag: frames([['WMWM', 'MWMW', 'W...', 'W...']], { W: '#ffffff', M: '#ff3fd0' }),
 };
 
 export const LOW = ['crawler', 'flame', 'crystal'];
@@ -124,6 +125,18 @@ const DIGITS = [
   '###', '#.#', '###', '#.#', '###',
   '###', '#.#', '###', '..#', '###',
 ];
+
+// letters for the countdown (3 x 5 like the digits)
+const GLYPHS = {
+  G: ['###', '#..', '#.#', '#.#', '###'],
+  O: ['###', '#.#', '#.#', '#.#', '###'],
+  '!': ['.#.', '.#.', '.#.', '...', '.#.'],
+};
+const glyph = (ch) => {
+  const d = ch.charCodeAt(0) - 48;
+  if (d >= 0 && d <= 9) return DIGITS.slice(d * 5, d * 5 + 5);
+  return GLYPHS[ch] ?? null;
+};
 
 // ---------- the pixel people ----------
 
@@ -213,17 +226,23 @@ export class Cells {
     }
   }
 
-  /** digits (3 x 5 cells, one cell apart); x, y = top left */
-  text(str, x, y, c, a = 1) {
+  /** digits and G O ! (3 x 5 cells, one cell apart), each cell as s x s cells; x, y = top left */
+  text(str, x, y, c, a = 1, s = 1) {
     let cx = Math.round(x);
+    y = Math.round(y);
     for (const ch of str) {
-      const d = ch.charCodeAt(0) - 48;
-      if (d >= 0 && d <= 9) {
-        for (let j = 0; j < 5; j++) for (let i = 0; i < 3; i++) if (DIGITS[d * 5 + j][i] === '#') this.put(cx + i, y + j, c, a);
+      const g = glyph(ch);
+      if (g) {
+        for (let j = 0; j < 5; j++) {
+          for (let i = 0; i < 3; i++) {
+            if (g[j][i] !== '#') continue;
+            for (let v = 0; v < s; v++) for (let u = 0; u < s; u++) this.put(cx + i * s + u, y + j * s + v, c, a);
+          }
+        }
       }
-      cx += 4;
+      cx += 4 * s;
     }
   }
 }
 
-export const textWidth = (str) => str.length * 4 - 1;
+export const textWidth = (str, s = 1) => (str.length * 4 - 1) * s;

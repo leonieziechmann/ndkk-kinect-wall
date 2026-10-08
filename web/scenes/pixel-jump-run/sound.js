@@ -127,6 +127,31 @@ export class Sound {
       case 'crownLost':
         [784, 622, 494].forEach((f, i) => this.tone(f, f, 0.1, 0.06, pan, { at: i * 0.08, type: 'triangle' }));
         break;
+      case 'airjump':
+        if (this.budget('jump', 3, 0.15)) this.tone(420, 1100, 0.14, 0.11, pan);
+        break;
+      case 'count':
+        this.tone(660, 660, 0.18, 0.14, 0);
+        break;
+      case 'go':
+        this.tone(1320, 1320, 0.4, 0.14, 0);
+        this.tone(990, 990, 0.4, 0.08, 0, { type: 'triangle' });
+        break;
+      case 'goalIn':
+        [1047, 1319, 1047, 1319].forEach((f, i) => this.tone(f, f, 0.08, 0.07, pan, { at: i * 0.09, type: 'triangle' }));
+        break;
+      case 'finish':
+        if (this.budget('finish', 3, 0.3)) [523, 659, 784, 1047].forEach((f, i) => this.tone(f, f, 0.1, 0.09, pan, { at: i * 0.07 }));
+        break;
+      case 'die':
+        if (this.budget('die', 2, 0.3)) {
+          this.tone(600, 150, 0.7, 0.12, pan, { type: 'triangle' });
+          this.tone(606, 152, 0.7, 0.06, pan, { type: 'square' });
+        }
+        break;
+      case 'end':
+        [784, 784, 784, 1047, 988, 1047, 1319].forEach((f, i) => this.tone(f, f, i === 6 ? 0.5 : 0.12, 0.1, 0, { at: [0, 0.13, 0.26, 0.42, 0.58, 0.71, 0.86][i] }));
+        break;
       case 'enter':
         if (this.budget('enter', 2, 0.5)) [392, 523, 659, 784].forEach((f, i) => this.tone(f, f * 1.01, 0.07, 0.06, pan, { at: i * 0.05 }));
         break;

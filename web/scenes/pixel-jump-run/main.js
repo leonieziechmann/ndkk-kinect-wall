@@ -13,12 +13,13 @@
 import { DEFAULT_DELAY } from '/lib/persons.js';
 import { Cells, SPRITES, PART, hash2, mix, scale, rainbow, textWidth } from './art.js';
 import { PeopleLayer } from './people.js';
-import { Game, flipOf } from './game.js';
+import { Game, flipOf, GOAL_W } from './game.js';
 import { Sound } from './sound.js';
 
 const STATES = new WeakMap(); // per ctx: the output window may run this scene twice at once
 const WHITE = [255, 255, 255];
 const RED = [255, 45, 85];
+const GOLD = [255, 210, 63];
 
 /** the mosaic on the LED image */
 function makeLayout(ctx, p) {
@@ -214,6 +215,58 @@ function drawFigure(S, f, p, t, liftRows, ghost) {
   }
 }
 
+/** a ghost (no lives left): the person's silhouette, pale and see-through, floating and bobbing */
+function drawGhost(S, f, t) {
+  const { cells, layout: L } = S;
+  const { GW, GH } = L;
+  const g = f.grid;
+  const [c0, r0, c1, r1] = f.bbox;
+  if (c1 < c0) return;
+  const ph = (typeof f.id === 'number' ? f.id : f.slot) * 1.7;
+  const up = Math.round((0.22 + 0.08 * Math.sin(t * 2.2 + ph)) / L.cellMy) + f.liftRows;
+  const dx = Math.round(Math.sin(t * 1.3 + ph) * 1.2);
+  const tail = r1 - Math.round((r1 - r0) * 0.3);
+  for (let y = r0; y <= r1; y++) {
+    const yy = y - up;
+    if (yy < 0 || yy >= GH) continue;
+    for (let x = c0; x <= c1; x++) {
+      if (!g[y * GW + x]) continue;
+      // a wavy, thinning tail at the bottom
+      if (y > tail && (x + y + Math.floor(t * 6)) % 2) continue;
+      const k = 0.55 + 0.15 * Math.sin(t * 3 + y * 0.4) - (y > tail ? 0.15 : 0);
+      cells.put(x + dx, yy, [170, 225, 255], k);
+    }
+  }
+  if (f.headCell) {
+    const [hx, hy] = f.headCell;
+    for (const ex of [hx - 1, hx + 1]) if (g[(hy + 2) * GW + ex]) cells.put(ex + dx, hy + 2 - up, [20, 10, 50]);
+  }
+}
+
+/** hearts (lives) and the crown of last round's best above a figure */
+function drawBadges(S, f, p, t, crown) {
+  const { cells, game } = S;
+  if (!f.headCell) return;
+  const [b0, , b1] = f.bbox;
+  const cx = Math.round((b0 + b1) / 2);
+  let y = f.headCell[1] - f.liftRows - 4;
+  if (f.alive && (game.phase === 'run' || game.phase === 'count') && f.round === game.round) {
+    const heart = SPRITES.heart[0];
+    for (let i = 0; i < p.lives; i++) {
+      const lost = i >= f.lives;
+      const justLost = lost && i === f.lives && t - f.hitAt < 0.8;
+      if (justLost && Math.floor(t * 12) % 2) continue;
+      const col = justLost ? WHITE : lost ? [60, 22, 80] : null;
+      cells.sprite(heart, cx - (p.lives * 4 - 1) / 2 + i * 4, y, col ? { tint: col } : {});
+    }
+    y -= 4;
+  }
+  if (crown) {
+    const cr = SPRITES.crown[0];
+    cells.sprite(cr, cx - 2, y - 1 + Math.round(Math.sin(t * 5) * 0.45));
+  }
+}
+
 function drawScene(S, figs, back, p, t) {
   const { cells, game, layout: L } = S;
   const { GW, groundRow } = L;
@@ -222,28 +275,22 @@ function drawScene(S, figs, back, p, t) {
 
   // shadows of figures in the air on the ground edge
   for (const f of figs) {
-    if (f.liftRows <= 0) continue;
+    if (f.liftRows <= 0 || f.alive === false) continue;
     const [c0, , c1] = f.bbox;
     const shrink = Math.min(2, Math.floor(f.liftRows / 4));
     for (let x = c0 + shrink; x <= c1 - shrink; x++) cells.put(x, groundRow, [40, 20, 90]);
   }
 
-  // things behind the people: none; obstacles and items are drawn over them (they hit you)
+  // the ghosts behind, the living in front; obstacles and items over them (they hit you)
+  for (const f of figs) if (f.alive === false) drawGhost(S, f, t);
   for (const f of figs) {
-    // afterimages of a jump
+    if (f.alive === false) continue;
     const h = f.liftHist;
     if (h && f.liftRows > 1) {
       drawFigure(S, f, p, t, h[h.length - 6] ?? 0, 0.16);
       drawFigure(S, f, p, t, h[h.length - 3] ?? 0, 0.28);
     }
     drawFigure(S, f, p, t, f.liftRows, 0);
-    // a crown for a streak
-    if (f.streak >= p.crownAt && f.headCell) {
-      const cr = SPRITES.crown[0];
-      const x = f.headCell[0] - 2;
-      const y = f.headCell[1] - f.liftRows - cr.h - 1 + Math.round(Math.sin(t * 6) * 0.4);
-      cells.sprite(cr, x, y);
-    }
   }
 
   // obstacles, coins, the star; warnings at the edge where something is about to come in
@@ -266,6 +313,16 @@ function drawScene(S, figs, back, p, t) {
     }
   }
 
+  // the goal: a checkered gate with a flag
+  if (game.goal) {
+    const gc = game.col(L, game.goal.x);
+    for (let y = 4; y < groundRow; y++) {
+      for (let i = 0; i < GOAL_W; i++) cells.put(gc + i, y, (Math.floor(y / 1) + i) % 2 ? [255, 63, 208] : [240, 240, 255]);
+    }
+    const fl = SPRITES.flag[0];
+    cells.sprite(fl, game.dir > 0 ? gc : gc + GOAL_W - 1 - fl.w + 1, 0, { flip: game.dir < 0 });
+  }
+
   // particles keep their color and blink out (fading yellow or red on violet looks brownish)
   for (const q of game.particles) {
     const u = (t - q.t0) / q.life;
@@ -274,24 +331,53 @@ function drawScene(S, figs, back, p, t) {
   }
   if (p.debug) drawSkeletons(S, figs);
 
-  // the score: coins + cleared obstacles of everybody (top right), the record (top left)
-  if (p.numbers) {
-    const panel = (x0, w) => {
-      for (let y = 0; y <= 6; y++) for (let x = x0 - 1; x <= x0 + w; x++) cells.put(x, y, [6, 2, 14]);
-    };
-    const sc = String(game.score);
-    if (figs.length || game.score) {
-      const x = GW - 1 - textWidth(sc);
-      panel(x - 6, textWidth(sc) + 6);
-      cells.text(sc, x, 1, [235, 245, 255]);
-      cells.sprite(SPRITES.coin[Math.floor(t * 6) % 4], x - 6, 1);
+  // lives and crowns; at the end of a round everybody's points, the crown drops onto the best
+  const ended = game.phase === 'end';
+  const et = t - game.phaseAt;
+  for (const f of figs) {
+    const crowned = game.crowns.has(f.id) && (!ended || et > 1.2);
+    drawBadges(S, f, p, t, crowned);
+    if (!ended || !p.numbers || !f.headCell) continue;
+    const r = game.results.find((q) => q.id === f.id);
+    if (!r) continue;
+    const str = String(r.score);
+    const [b0, , b1] = f.bbox;
+    const x = Math.round((b0 + b1) / 2 - textWidth(str) / 2);
+    let y = f.headCell[1] - (f.alive === false ? Math.round(0.25 / L.cellMy) : f.liftRows) - 7;
+    y = Math.max(0, y);
+    const col = r.best ? (Math.floor(t * 6) % 2 ? GOLD : WHITE) : f.outfit.shirt;
+    cells.text(str, x, y, col);
+    if (r.best && et <= 1.2) {
+      // the crown falls from the sky onto the winner
+      const cr = SPRITES.crown[0];
+      const u = Math.min(1, et / 1.2);
+      const ty = f.headCell[1] - f.liftRows - 5;
+      cells.sprite(cr, Math.round((b0 + b1) / 2) - 2, Math.round(-3 + (ty + 3) * (1 - (1 - u) ** 3)));
     }
-    if (game.best > 0) {
-      const b = String(game.best);
-      panel(1, 6 + textWidth(b));
-      cells.sprite(SPRITES.crown[0], 1, 2);
-      cells.text(b, 7, 1, [190, 120, 255]);
+  }
+
+  // the round: countdown, GO, the way to the goal along the top
+  if (game.phase === 'count') {
+    const pt = t - game.phaseAt;
+    const n = Math.max(1, Math.ceil(3 - pt));
+    const cols = [null, [255, 210, 63], [255, 122, 26], [255, 45, 85]];
+    const fresh = pt - Math.floor(pt) < 0.15;
+    const str = String(n);
+    cells.text(str, Math.round(GW / 2 - textWidth(str, 2) / 2), 1, fresh ? WHITE : cols[n], 1, 2);
+  } else if (game.phase === 'run') {
+    if (game.roundT < 0.9 && Math.floor(game.roundT * 8) % 2 === 0) cells.text('GO!', Math.round(GW / 2 - textWidth('GO!', 2) / 2), 2, [41, 230, 255], 1, 2);
+    const x0 = 6;
+    const x1 = GW - 7;
+    const u = Math.min(1, game.roundT / Math.max(1, p.roundSecs));
+    const head = Math.round(x0 + (x1 - x0) * (game.dir > 0 ? u : 1 - u));
+    for (let x = x0; x <= x1; x++) {
+      const done = game.dir > 0 ? x <= head : x >= head;
+      cells.put(x, 1, done ? [120, 80, 255] : [36, 18, 70]);
     }
+    cells.put(head, 1, WHITE);
+    cells.put(head, 0, WHITE);
+    const fx = game.dir > 0 ? x1 + 1 : x0 - 2;
+    for (let j = 0; j < 2; j++) for (let i = 0; i < 2; i++) cells.put(fx + i, j, (i + j) % 2 ? [255, 63, 208] : [240, 240, 255]);
   }
 }
 
@@ -345,26 +431,27 @@ export default {
   params: {
     live: { value: true, label: 'Live (weniger Verzögerung)', folder: 'Spiel' },
     speed: { value: 1.4, min: 0.5, max: 5, step: 0.05, label: 'Tempo am Anfang (m/s)', folder: 'Spiel' },
-    speedMax: { value: 1.8, min: 1, max: 3, step: 0.05, label: 'Tempo steigt bis (×)', folder: 'Spiel' },
-    rampTime: { value: 120, min: 10, max: 600, step: 5, label: 'Steigt über (s)', folder: 'Spiel' },
+    speedMax: { value: 1.6, min: 1, max: 3, step: 0.05, label: 'Tempo steigt in der Runde bis (×)', folder: 'Spiel' },
     density: { value: 1, min: 0.3, max: 3, step: 0.05, label: 'Dichte', folder: 'Spiel' },
     gap: { value: 0.9, min: 0.2, max: 3, step: 0.05, label: 'Reaktionszeit zwischen Hindernissen (s)', folder: 'Spiel' },
-    from: { value: 'rechts', options: ['rechts', 'links', 'abwechselnd'], label: 'Hindernisse kommen von', folder: 'Spiel' },
-    turnEvery: { value: 30, min: 5, max: 180, step: 5, label: 'Abwechselnd alle (s)', folder: 'Spiel' },
+    from: { value: 'rechts', options: ['rechts', 'links', 'abwechselnd'], label: 'Hindernisse kommen von (abwechselnd: jede Runde)', folder: 'Spiel' },
     warn: { value: 0.8, min: 0, max: 2, step: 0.05, label: 'Vorwarnung am Rand (s)', folder: 'Spiel' },
     grace: { value: 0.12, min: 0, max: 0.6, step: 0.01, label: 'Gnadenfrist: Treffer zählt erst nach (s)', folder: 'Spiel' },
     latency: { value: 0.2, min: 0, max: 0.6, step: 0.01, label: 'Latenzausgleich (s, + Verzögerung des Trackings)', folder: 'Spiel' },
     hitCells: { value: 3, min: 1, max: 8, step: 1, label: 'Treffer ab (Zellen)', folder: 'Spiel' },
     safeTime: { value: 1.2, min: 0, max: 4, step: 0.1, label: 'Nach Treffer geschützt (s)', folder: 'Spiel' },
     starTime: { value: 6, min: 1, max: 20, step: 0.5, label: 'Stern hält (s)', folder: 'Spiel' },
-    crownAt: { value: 5, min: 2, max: 30, step: 1, label: 'Krone ab (Hindernisse am Stück)', folder: 'Spiel' },
-    resetAfter: { value: 10, min: 2, max: 60, step: 1, label: 'Neue Runde nach (s leer)', folder: 'Spiel' },
+    lives: { value: 3, min: 1, max: 9, step: 1, label: 'Leben pro Person', folder: 'Runde' },
+    roundSecs: { value: 30, min: 10, max: 180, step: 1, label: 'Runde dauert (s, dann kommt das Ziel)', folder: 'Runde' },
+    goalBonus: { value: 5, min: 0, max: 30, step: 1, label: 'Punkte fürs Ziel', folder: 'Runde' },
+    waitFor: { value: 1.5, min: 0, max: 10, step: 0.5, label: 'Countdown, wenn jemand so lange da ist (s)', folder: 'Runde' },
+    endTime: { value: 6, min: 2, max: 20, step: 0.5, label: 'Ergebnis zeigen (s)', folder: 'Runde' },
 
     jumpHeight: { value: 0.75, min: 0.2, max: 1.2, step: 0.01, label: 'Sprung-Boost: Höhe auf der Wand (m)', folder: 'Springen' },
     jumpTime: { value: 1.1, min: 0.3, max: 2, step: 0.01, label: 'Sprung-Boost: Dauer in der Luft (s)', folder: 'Springen' },
     jumpVy: { value: 0.35, min: 0.15, max: 1.5, step: 0.01, label: 'Sprung ab: Becken steigt (m/s)', folder: 'Springen' },
     jumpRise: { value: 0.035, min: 0.01, max: 0.25, step: 0.005, label: 'und liegt über dem Stand (m)', folder: 'Springen' },
-    jumpRest: { value: 0.12, min: 0, max: 1, step: 0.01, label: 'Pause nach der Landung (s)', folder: 'Springen' },
+    jumpRest: { value: 0.15, min: 0, max: 1, step: 0.01, label: 'Mindestabstand zweier Sprünge (s)', folder: 'Springen' },
     jumpLead: { value: 0.05, min: 0, max: 0.3, step: 0.01, label: 'Sprung startet schon ein Stück im Bogen (s)', folder: 'Springen' },
 
     playNear: { value: 0.8, min: 0.3, max: 6, step: 0.05, label: 'Mitspielen ab (m vom Sensor)', folder: 'Mitspielen' },
@@ -466,7 +553,7 @@ export default {
       S.mouseFake.x = ctx.wall.pointer.x;
       fakes.push(S.mouseFake);
     }
-    const all = S.people.update(ctx, L, p, t, fakes);
+    const all = S.people.update(ctx, L, p, t, fakes, dt);
     const figs = all.filter((f) => f.player);
     const back = all.filter((f) => !f.player);
     for (const f of figs) {
@@ -475,7 +562,9 @@ export default {
     }
     // how far the figures lag behind the people: the set compensation plus the tracker's delay
     const lag = Math.min(0.8, p.latency + (ctx.persons?.delayMs ?? 0) / 1000);
-    game.step(dt, figs, L, p, S.people.entered, S.people.jumped, lag);
+    // ready: Kinect frames and the pose model ran once (or test figures)
+    const ready = fakes.length > 0 || (Boolean(ctx.kinect.depth) && (ctx.kinect.persons?.poseRuns ?? 0) > 0);
+    game.step(dt, figs, L, p, { ready, entered: S.people.entered.filter((f) => f.player), jumped: S.people.jumped, lag });
     if (p.sound) {
       S.sound.setVolume(p.volume);
       for (const e of game.events) S.sound.play(e, L.wallW);
@@ -508,7 +597,9 @@ export default {
 
     const snd = p.sound && !S.sound.ready ? ' · Ton: einmal klicken' : '';
     const jumps = figs.reduce((n, f) => n + f.jumps, 0);
-    ctx.status = `${figs.length} Spieler${back.length ? ` (+${back.length} dahinter)` : ''} · ${game.speed.toFixed(2)} m/s · ${game.score} Punkte (Rekord ${game.best}) · ${jumps} Sprünge${snd}`;
+    const phase = { wait: ready ? 'wartet auf Leute' : 'Tracking lädt', count: 'Countdown', run: `läuft ${Math.floor(game.roundT)} s`, end: 'Ergebnis' }[game.phase];
+    const alive = figs.filter((f) => f.alive !== false).length;
+    ctx.status = `Runde ${game.round}: ${phase} · ${figs.length} Spieler (${alive} leben)${back.length ? ` +${back.length} dahinter` : ''} · ${game.speed.toFixed(2)} m/s · ${jumps} Sprünge${snd}`;
   },
 
   dispose(ctx) {

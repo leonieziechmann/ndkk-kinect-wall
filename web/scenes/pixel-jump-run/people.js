@@ -115,8 +115,14 @@ export class Figure {
     this.bbox = [0, 0, -1, -1]; // c0, r0, c1, r1 (inclusive)
     this.cells = 0;
     this.headCell = null; // [col, row] of the top of the head (before the lift)
-    this.jump = null; // { t0, H, T }
-    this.lift = 0; // m
+    this.air = false; // jumping (game physics)
+    this.h = 0; // m above the ground (game physics)
+    this.vy = 0; // m/s
+    this.g = 9.81;
+    this.airJumps = 0;
+    this.armed = true; // the next hop may trigger a jump
+    this.armedAt = 0;
+    this.lift = 0; // m the figure is drawn higher than the person's mask
     this.liftRows = 0;
     this.landed = -1;
     this.jumps = 0;
@@ -128,32 +134,52 @@ export class Figure {
     this.coins = 0;
   }
 
-  /** starts a game jump (lead: how much of the arc already passed, s) */
+  /**
+   * A jump: pushes the figure up with the boost (it reaches jumpHeight in jumpTime / 2 and lands
+   * after jumpTime). In the air another hop pushes it up again from where it is: air jumps.
+   * lead: s of the jump that already passed when it was detected (only on the ground).
+   */
   startJump(time, p, lead = 0) {
-    this.jump = { t0: time - lead, H: p.jumpHeight, T: p.jumpTime };
+    const v0 = (4 * p.jumpHeight) / p.jumpTime;
+    this.g = (8 * p.jumpHeight) / (p.jumpTime * p.jumpTime);
+    this.airJumps = this.air ? this.airJumps + 1 : 0;
+    this.vy = v0;
+    if (!this.air && lead > 0) {
+      this.h = v0 * lead - 0.5 * this.g * lead * lead;
+      this.vy = v0 - this.g * lead;
+    }
+    this.air = true;
     this.jumps++;
   }
 
-  /** the lift of the jump arc at `time`: rises fast, hangs at the top, falls */
-  updateLift(time, L) {
-    let lift = 0;
-    if (this.jump) {
-      const u = (time - this.jump.t0) / this.jump.T;
-      if (u >= 1) {
-        this.jump = null;
+  /** the jump physics: rises, falls, lands; the figure never leaves the wall at the top */
+  updateLift(time, dt, L) {
+    if (this.air) {
+      this.vy -= this.g * dt;
+      this.h += this.vy * dt;
+      // the ceiling: one cell below the wall's top edge (the top cell may be a raised hand)
+      const ceil = this.headCell ? Math.max(0.1, (this.headCell[1] - 1) * L.cellMy + this.realRise) : 1;
+      if (this.h > ceil) {
+        this.h = ceil;
+        if (this.vy > 0) this.vy = 0;
+      }
+      if (this.h <= 0 && this.vy < 0) {
+        this.h = 0;
+        this.vy = 0;
+        this.air = false;
         this.landed = time;
         this.justLanded = true;
-      } else if (u > 0) lift = this.jump.H * Math.sin(Math.PI * u) ** 0.6;
+      }
     }
-    // the figure rises with the real body already: the arc only adds what is missing
-    lift = Math.max(0, lift - this.realRise);
+    // the figure rises with the real body already: the jump only adds what is missing
+    const lift = Math.max(0, this.h - this.realRise);
     this.lift = lift;
     this.liftRows = Math.round(lift / L.cellMy);
     return this.lift;
   }
 
   get airborne() {
-    return this.jump !== null;
+    return this.air;
   }
 }
 
@@ -171,7 +197,7 @@ export class PeopleLayer {
   }
 
   /** the figures for this frame; rasterizes the masks when a new tracking result came */
-  update(ctx, L, p, time, fakes) {
+  update(ctx, L, p, time, fakes, dt) {
     const wall = ctx.wall;
     const key = `${L.GW}x${L.GH}`;
     if (key !== this.key) {
@@ -227,10 +253,8 @@ export class PeopleLayer {
       f.k = 1;
       if (fk.jump) {
         fk.jump = false;
-        if (!f.airborne) {
-          f.startJump(time, p);
-          this.jumped.push(f);
-        }
+        f.startJump(time, p);
+        this.jumped.push(f);
       }
       this.makeFake(f, fk, L, p);
     }
@@ -247,7 +271,7 @@ export class PeopleLayer {
     const list = [];
     for (const f of this.figures.values()) {
       if (!f.visible || !f.grid) continue;
-      f.updateLift(time, L);
+      f.updateLift(time, dt, L);
       list.push(f);
     }
     list.sort((a, b) => b.dist - a.dist);
@@ -284,11 +308,15 @@ export class PeopleLayer {
       s.basePelvis = f.pelvis.stand(s.pelvisY, time);
       const rise = s.pelvisY - s.basePelvis;
       f.realRise = Math.max(0, rise) * f.k;
-      if (f.player && !f.airborne && time - f.landed > p.jumpRest && time - f.born > 1 && f.pelvis.n >= 20 && s.pelvisVy > p.jumpVy && rise > p.jumpRise) {
+      // every hop counts, also in the air (air jumps). One hop triggers once: the next one needs
+      // the pelvis to have stopped rising first.
+      if (f.player && f.alive !== false && f.armed && time - f.born > 1 && f.pelvis.n >= 20 && s.pelvisVy > p.jumpVy && rise > p.jumpRise) {
         f.startJump(time, p, p.jumpLead);
+        f.armed = false;
+        f.armedAt = time;
         this.jumped.push(f);
         jumped = true;
-      }
+      } else if (!f.armed && time - f.armedAt > p.jumpRest && (s.pelvisVy < 0.05 || rise < p.jumpRise * 0.5)) f.armed = true;
     } else f.realRise = 0;
     if (this.log.length < this.logMax) {
       this.log.push([+time.toFixed(3), f.id, +s.pelvisY.toFixed(3), +s.pelvisVy.toFixed(3), +s.feetY.toFixed(3), +s.topY.toFixed(3), +s.height.toFixed(3), +s.basePelvis.toFixed(3), 0, jumped ? 1 : 0]);
