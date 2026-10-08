@@ -7,6 +7,8 @@
 #   POSE_TEACH='yolo11x-pose@1024+768-flip yolo11x-pose-flip'  POSE_NEED=1.0  POSE_EPOCHS=80
 #   POSE_SECOND=1  a second run on the same VM: waits for the first one's labels instead of making them
 #   POSE_RESUME=1  goes on from runs/<name>/weights/resume.pt (uploaded from the laptop's backup after a lost VM)
+#   POSE_LABELS=-r5  a new label set (other teachers) on a VM that has one: its own ready marker, so the second
+#                    run and colab_eval.py wait for these labels and not the old ones
 # Colab ends a VM whose kernel stays idle, and the job runs outside the kernel: keep the VM busy from the
 # laptop (a tiny colab exec every few minutes) and back up resume.pt from there.
 import os
@@ -23,18 +25,19 @@ TEACH = os.environ.get('POSE_TEACH', 'yolo11x-pose@1024+768-flip yolo11x-pose-fl
 NEED = os.environ.get('POSE_NEED', '1.0')
 EPOCHS = os.environ.get('POSE_EPOCHS', '80')
 SECOND = os.environ.get('POSE_SECOND') == '1'
+READY = f"{T}/labels-ready{os.environ.get('POSE_LABELS', '')}"
 RESUME = os.environ.get('POSE_RESUME') == '1'
 AUG = '--ir-aug' if '--ir-aug' in ARGS else ''
 CASES = 'alle=,final=final-,alt=alt-,room=room-'
 
 PREP = f"""for z in {C}/kinect-pose-*.zip; do [ -e $z.unpacked ] || {{ unzip -q -o $z -d {C} && touch $z.unpacked; }}; done
     pip install -q ultralytics onnx onnxruntime onnxconverter-common onnxslim albumentations
-    python -u $P/ensemble.py --split val --raw {TEACH} --need {NEED}
-    python -u $P/ensemble.py --split train --raw {TEACH} --need {NEED}
-    python -u $P/ensemble.py --out {TT} --split val --raw {TEACH} --need {NEED}
+    python -u $P/ensemble.py --split val --raw {TEACH} --need {NEED} 2>&1 | tee -a {T}/ensemble{os.environ.get('POSE_LABELS', '')}.txt
+    python -u $P/ensemble.py --split train --raw {TEACH} --need {NEED} 2>&1 | tee -a {T}/ensemble{os.environ.get('POSE_LABELS', '')}.txt
+    python -u $P/ensemble.py --out {TT} --split val --raw {TEACH} --need {NEED} 2>&1 | tee -a {T}/ensemble{os.environ.get('POSE_LABELS', '')}.txt
     [ -e {T}/coco/images/train ] || python -u $P/coco.py --out {T}
-    touch {T}/labels-ready"""
-WAIT = f'until [ -e {T}/labels-ready ]; do sleep 20; done'
+    touch {READY}"""
+WAIT = f'until [ -e {READY} ]; do sleep 20; done'
 FIT = (f'python -u $P/train.py --resume --name {N} {AUG}' if RESUME else
        f'python -u $P/train.py --name {N} --epochs {EPOCHS} --workers $(( $(nproc) / 2 - 1 )) {ARGS} || python -u $P/train.py --resume --name {N} {AUG}')
 
