@@ -12,7 +12,26 @@ const FRAME_STREAMS = { depth: 'depth', depth_raw: 'depthRaw', ir: 'ir', points:
 const noneFresh = () => ({ depth: false, depthRaw: false, ir: false, points: false, meta: false, lut: false, persons: false });
 // GPU buffer of the person points: per slot (0..16) POINTS then one info entry, two vec4f each
 export const PERSON_POINTS = POINTS.length + 1;
-const EMPTY_VIEW = Object.freeze(Object.assign([], { all: [], entered: [], left: [], fresh: false, floor: null, seq: null, delayMs: 0, byId: () => null, bySlot: () => null }));
+const none = () => null;
+const EMPTY_VIEW = Object.freeze(
+  Object.assign([], {
+    all: [],
+    entered: [],
+    left: [],
+    fresh: false,
+    floor: null,
+    seq: null,
+    delayMs: 0,
+    byId: none,
+    bySlot: none,
+    mode: 'exact',
+    exact: null,
+    exactUpdates: [],
+    exactAt: none,
+    liveAt: none,
+  }),
+);
+const HISTORY = 90; // frames (3 s) of views kept for exactAt() / liveAt()
 
 let pinhole = null;
 /** Rays of an ideal pinhole Kinect (used until the hub sent the real undistortion table). */
@@ -45,8 +64,23 @@ export class KinectData {
     this.view = EMPTY_VIEW;
     /** -1 or 1 as ctx.xSign (set by the runtime): the world space of the view. */
     this.xSign = -1;
-    /** (result) => result, applied to every person tracking result before anybody sees it */
+    /** Live + exact (persons: { live: true }): the newest exact result, raw as `persons` but without masks */
+    this.personsExact = null;
+    /** (result, { exact }) => result, applied to every person tracking result before anybody sees it */
     this.personFilter = null;
+    this._exactNew = []; // exact results since the last animation frame
+    this._exactView = null;
+    this._exactViews = new Map(); // seq -> view of an exact result (live + exact)
+    // seq -> { result, view }: every result shown (or passed over between two animation frames);
+    // its view is the one shown, or made when asked for (exactAt / liveAt)
+    this._results = new Map();
+    this._exactAt = (seq) => this._exactViews.get(seq) ?? null;
+    this._shownAt = (seq) => {
+      const e = this._results.get(seq);
+      if (!e) return null;
+      e.view ??= personView(e.result, { xSign: this.xSign });
+      return e.view;
+    };
     this._viewSeq = null;
     this._viewSign = 0;
     this._personStream = null;
@@ -154,6 +188,9 @@ export class KinectData {
         // e.g. the LED wall's block zones (set by the runtime): may drop persons from the result
         this.persons = this.personFilter ? this.personFilter(result) : result;
         this._pending.persons = true;
+        // for liveAt / exactAt (the list stays valid, the masks are recycled: not kept)
+        const r = this.persons;
+        keep(this._results, r.seq, { result: { seq: r.seq, captureTimeUs: r.captureTimeUs, list: r.list, floor: r.floor, lag: r.lag }, view: null });
         if (!this._personStream.delayed) return;
         const h = this._held.get(result.seq);
         if (h) {
@@ -167,6 +204,13 @@ export class KinectData {
           this._held.delete(seq);
         }
       });
+      // live + exact: the exact skeletons of earlier frames (become ctx.persons.exact / exactUpdates)
+      this._personStream.onExact = (result) => {
+        const r = this.personFilter ? this.personFilter(result, { exact: true }) : result;
+        this.personsExact = r;
+        this._exactNew.push(r);
+        if (this._exactNew.length > 64) this._exactNew.shift();
+      };
       if (this.lut) this._personStream.setRays(this.lut.data);
       this._personStream.onWire = () => this._resubscribe();
       if (this._hubPersons !== undefined) this._personStream.setHub(this._hubPersons);
@@ -182,8 +226,7 @@ export class KinectData {
     else this._personStream?.stop();
     const wire = list.filter((s) => s !== 'persons');
     if (persons) wire.push('depth', 'ir');
-    const hub = persons ? this._personStream?.hubStream : null;
-    if (hub) wire.push(hub);
+    if (persons) wire.push(...this._personStream.hubStreams);
     const want = [...new Set(['lut', 'meta', 'status', ...wire])].sort();
     if (want.join() === this._streams) return;
     this._streams = want.join();
@@ -213,17 +256,77 @@ export class KinectData {
     // only count in the frame of the update
     const r = this.persons;
     if (r && (r.seq !== this._viewSeq || this.xSign !== this._viewSign)) {
+      if (this.xSign !== this._viewSign) {
+        // the mirror changed: the views of earlier frames are in the other world space
+        for (const e of this._results.values()) e.view = null;
+        this._exactViews.clear();
+        this._exactView = null;
+      }
       this.view = personView(r, { xSign: this.xSign, previous: this.view === EMPTY_VIEW ? null : this.view });
       this._viewSeq = r.seq;
       this._viewSign = this.xSign;
       this._viewFresh = true;
+      const e = this._results.get(r.seq);
+      if (e) e.view = this.view;
     } else if (this.view.fresh) {
       this.view.fresh = false;
       this.view.entered = [];
       this.view.left = [];
       this._viewFresh = false;
     }
+    this._updateExact();
     this.gpu?.upload(this);
+  }
+
+  /**
+   * ctx.persons.mode, .exact, .exactUpdates, .exactAt(seq), .liveAt(seq) (see PERSONS.md, "Live and
+   * exact"): with live + exact the exact results that came in become Person views; with the
+   * delayed output the views shown are the exact ones; live only has none.
+   */
+  _updateExact() {
+    const ps = this._personStream;
+    const dual = !!ps?.enabled && ps.dual;
+    const updates = [];
+    for (const r of this._exactNew.splice(0)) {
+      if (!dual) continue;
+      const v = personView(r, { xSign: this.xSign, previous: this._exactView });
+      v.exactAt = this._exactAt;
+      v.liveAt = this._shownAt;
+      this._exactView = v;
+      keep(this._exactViews, r.seq, v);
+      updates.push(v);
+    }
+    const v = this.view;
+    if (v === EMPTY_VIEW) return;
+    if (dual) {
+      v.mode = 'both';
+      v.exact = this._exactView;
+      v.exactUpdates = updates;
+      v.exactAt = this._exactAt;
+      v.liveAt = this._shownAt;
+    } else if (!ps?.enabled || ps.options.delay > 0) {
+      v.mode = 'exact';
+      v.exact = v;
+      v.exactUpdates = this._viewFresh ? [v] : [];
+      v.exactAt = this._shownAt;
+      v.liveAt = none;
+    } else {
+      v.mode = 'live';
+      v.exact = null;
+      v.exactUpdates = [];
+      v.exactAt = none;
+      v.liveAt = this._shownAt;
+    }
+  }
+}
+
+/** map.set(seq, value), keeping the last HISTORY frames. */
+function keep(map, seq, value) {
+  if (map.size && map.keys().next().value > seq) map.clear(); // the frame numbers started over (another hub)
+  map.set(seq, value);
+  for (const k of map.keys()) {
+    if (k > seq - HISTORY && map.size <= HISTORY) break;
+    map.delete(k);
   }
 }
 

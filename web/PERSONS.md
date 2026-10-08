@@ -37,6 +37,7 @@ persons: (p) => ({ mode: p.style === 'Strichmännchen' ? 'skeleton' : 'full' }),
 |---|---|---|
 | `mode` | `'full'` | `'full'`: masks and skeletons. `'skeleton'`: skeletons only, no masks. Much less work (1–2 ms instead of 6–30 ms per frame), and the skeletons are just as exact. The mask textures and buffers stay empty, and `pixels`/`area` are 0. Person ids are a bit less stable when people cross each other. |
 | `delay` | `12` | Frames the output may wait for a later pose (see above). `0` is **live**: the lowest latency. The masks are the same, but the skeletons follow the optical flow from the last pose, so they are less exact on fast hands and feet. The arms come from the mask of every frame once a pose has confirmed them (an arm reaching out: its far end is the hand), so they keep up with fast arms. Under GPU load (few poses a second) live arms lag more. |
+| `live` | `false` | `true` (with `delay` > 0): **live and exact together**. `ctx.persons` is live (as with `delay: 0`), and the exact skeletons of the same frames follow as `ctx.persons.exact`. See "Live and exact" below. |
 | `maxPersons` | `16` | At most this many persons get a slot. |
 | `maxDepth` | `4500` | mm: farther pixels are never a person. |
 | `minScore` | `0.45` | Pose confidence needed for a new person. |
@@ -100,6 +101,45 @@ An `Array` of the visible persons, sorted by slot, plus:
 The points 0–16 come from the pose model (COCO). The rest are derived: neck and pelvis are between the shoulders or hips, head is the center of the face points, and the hands lie beyond the wrists along the forearms (live: where the arm in the mask ends). `left`/`right` are the person's own sides. `BONES` (pairs of indices) draws a clean stick figure. `SKELETON` has the 18 COCO pairs with the face.
 
 From `/lib/persons.js`: `POINTS`, `POINT` (name → index), `BONES`, `SKELETON`, `JOINTS`, `PERSON_COLORS`, `personColor(slot)`, `toWorld(cameraMm, xSign)`, `roomFrame(floor, xSign)`, `MAX_PERSONS`.
+
+## Live and exact
+
+Simple things should react at once; scores and decisions should be right. `persons: { live: true }` gives a scene both:
+
+- `ctx.persons` is **live**: the newest frame, about 10 ms after the sensor (hub), with the live masks. `ctx.kinect.depth`, `ir` and the GPU copies show the newest frames too.
+- The **exact** skeletons of every frame follow when the pose of a later frame is in (100–250 ms later, often several frames at once). They are skeletons only: the masks of a frame are the same in both.
+
+| on `ctx.persons` | |
+|---|---|
+| `.mode` | `'both'` (live + exact), `'exact'` (the delayed output, the default) or `'live'` (`delay: 0`) |
+| `.exact` | the newest exact frame as a view like `ctx.persons` (Person objects, `.seq`, `.byId()`, …), `null` until the first. In `'exact'` mode it is `ctx.persons` itself, in `'live'` mode `null`. |
+| `.exactUpdates` | the exact frames that came in since the last animation frame, oldest first (usually 0–8). Look at all of them when you check events. |
+| `.exactAt(seq)`, `.liveAt(seq)` | the exact view and the live view of frame `seq` (the last 3 s), or `null`. Compare both to see what live got wrong. |
+
+`ctx.kinect.personsExact` is the newest exact result raw (as `ctx.kinect.persons`, without `labels`, `depth`, `indices`).
+
+**Decide on the exact data: `LiveCheck`.** React on the live data at once and record a claim; the exact frames around it confirm or overrule it:
+
+```js
+import { LiveCheck } from '/lib/persons.js';
+
+const pops = new LiveCheck((exact, c) => touches(exact.byId(c.id)?.joints.rightHand, c.bubble), { before: 2, after: 3 });
+
+frame(ctx) {
+  for (const p of ctx.persons) if (touches(p.joints.rightHand, bubble)) {
+    pop(bubble);                                        // at once, on the live data
+    pops.add(ctx.persons, { id: p.id, bubble });       // the claim: about this live frame
+  }
+  for (const c of pops.update(ctx.persons)) {          // every frame: the claims settled now
+    if (c.ok === false) unpop(c.bubble);               // the exact data say no
+    else if (c.ok) score++;                            // confirmed (c.exact: the exact frame that did)
+  }                                                     // c.ok === null: no exact data (live only, or none in time)
+}
+```
+
+`test(exact, claim)` sees the exact frames from `claim.seq - before` to `claim.seq + after` (live skeletons can be a frame or two early or late on fast moves). A claim is confirmed by the first frame that passes and overruled once all of them are in without one, typically 150–300 ms after it was made. The same code works in every mode: with the delayed output the claims settle on the frames shown, and with `delay: 0` they settle at once with `ok: null`.
+
+Measured live against exact, and how often a live decision holds: scene `live-exakt` (its status line). Live skeletons follow the optical flow between poses, so they are off most on fast hands and feet; the masks are the same.
 
 ## Raw data: ctx.kinect.persons
 
@@ -211,6 +251,7 @@ The figures in the table are mask cost per frame and output delay.
 | `full`, 4–5 persons | 10–30 ms | ~170–270 ms |
 | `skeleton` | 1–5 ms | ~150 ms |
 | `delay: 0` | the same | ~40–60 ms |
+| `live: true` | the same | live as `delay: 0`, exact as the default |
 
 - The pose model takes 60–110 ms per run on this GPU, in a worker of its own.
 - The tracking work runs in workers, so `frame()` is not affected. The GPU is shared, though: the pose model, the Kinect's depth decoding and your scene. Keep scenes light (the templates render at 60 fps next to it).

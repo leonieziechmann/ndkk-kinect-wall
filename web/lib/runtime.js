@@ -93,7 +93,7 @@ const panel = new ParamPanel();
 const wall = new WallMap();
 wall.output = OUTPUT && !EMBED;
 // block zones of the wall setup: nobody standing in one is tracked, for every scene
-kinect.personFilter = (result) => wall.filterPersons(result);
+kinect.personFilter = (result, opts) => wall.filterPersons(result, opts);
 const bus = new WallBus(OUTPUT ? 'output' : 'scene');
 let xSign = remember('kinect:xSign', -1) === 1 ? 1 : -1;
 let uiHidden = KIOSK || remember('kinect:uiHidden', false) === true;
@@ -957,6 +957,7 @@ function status() {
           poseRuns: kinect.persons?.poseRuns ?? 0,
           seq: kinect.persons?.seq ?? null,
           mode: kinect.personTracker.options.mode ?? 'full',
+          live: kinect.personTracker.dual, // live + exact: waitMs is how long the exact results take
           delayMs: kinect.persons ? Math.round(kinect.persons.lag) : null,
           waitMs: kinect.personTracker.waitStats(),
           provider: kinect.personTracker.provider,

@@ -131,7 +131,7 @@ export default {
 | `ctx.kinect.persons` | the raw data: `labels`, `depth`, `indices` (Uint arrays per pixel), `list` (camera frame, mm) |
 | templates | `person-mask` (2D masks), `person-skeleton` (stick figures, skeleton mode), `neon-room` (3D point clouds in a room) |
 
-**Delayed by default** (about 150–250 ms): every frame waits for a later pose, and its skeleton is interpolated, so it is as exact as a pose on every frame. The whole scene, including `ctx.kinect.depth` and `ir`, is shifted by the same time. `persons: { delay: 0 }` is live. The pose model shares the GPU with your scene: keep the scene light. Replays with people for testing: PERSONS.md, "Testing".
+**Delayed by default** (about 150–250 ms): every frame waits for a later pose, and its skeleton is interpolated, so it is as exact as a pose on every frame. The whole scene, including `ctx.kinect.depth` and `ir`, is shifted by the same time. `persons: { delay: 0 }` is live. `persons: { live: true }` is both: `ctx.persons` live, and the exact skeletons of the same frames follow as `ctx.persons.exact` / `.exactUpdates`, so a scene can react at once and confirm with `LiveCheck` (PERSONS.md, "Live and exact"; scene `live-exakt`). The pose model shares the GPU with your scene: keep the scene light. Replays with people for testing: PERSONS.md, "Testing".
 
 ## LED wall
 

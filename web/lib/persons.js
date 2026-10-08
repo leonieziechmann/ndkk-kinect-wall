@@ -36,6 +36,11 @@
 // flow from the last pose, the arms come from the mask of every frame; the same masks, a less exact
 // skeleton on fast limbs).
 //
+// Live and exact together (configure({ live: true }) with delay > 0): the live results are shown
+// at once (as with delay 0, ctx.kinect shows the newest frames), and the exact skeletons of every
+// frame follow a few frames later through onExact (skeletons only: the masks are the same as live).
+// A scene reacts on the live data and checks against the exact ones (LiveCheck).
+//
 // The arrays are valid until the next but one result: copy what you want to keep longer.
 // ?persons=local or ?persons=hub in the page's URL forces where the tracking runs (for comparisons).
 // GPU copies: ctx.kinect.gpu.personLabelTexture/-Buffer, personDepthTexture/-Buffer, personIndexBuffer.
@@ -48,7 +53,7 @@ const N = 512 * 424;
 /** Frames the output may wait for a later pose (0 = live). */
 export const DEFAULT_DELAY = 12;
 /** What a scene can set with `persons: {...}` (its defaults; see PERSONS.md). */
-export const PERSON_OPTIONS = Object.freeze({ ...CORE_DEFAULTS, delay: DEFAULT_DELAY });
+export const PERSON_OPTIONS = Object.freeze({ ...CORE_DEFAULTS, delay: DEFAULT_DELAY, live: false });
 
 /**
  * Every point of a person, in this order in Person.joints, in the GPU buffer and in WGSL (J_*):
@@ -171,7 +176,85 @@ export function personView(result, { xSign = -1, previous = null, smooth = SMOOT
     delayMs: result?.lag ?? 0,
     byId: (id) => all.find((p) => p.id === id) ?? null,
     bySlot: (slot) => all.find((p) => p.slot === slot) ?? null,
+    // live and exact (set by KinectData each animation frame, see PERSONS.md)
+    mode: 'exact',
+    exact: null,
+    exactUpdates: [],
+    exactAt: () => null,
+    liveAt: () => null,
   });
+}
+
+/**
+ * Decisions made on the live persons, checked against the exact ones of the same frames
+ * (persons: { live: true }): react at once on ctx.persons, then let the exact skeletons confirm or
+ * overrule it. add() a claim when the live data say something happened; update() once per
+ * animation frame returns the claims settled since the last call, each with `ok`:
+ *   true   an exact frame from seq - before to seq + after passes test(exact, claim)
+ *   false  all those exact frames are in and none passes
+ *   null   no exact data: live only (delay 0), or none came within maxWaitMs
+ *
+ *   const pops = new LiveCheck((exact, c) => touches(exact.byId(c.id)?.joints.rightHand, c.bubble));
+ *   pops.add(ctx.persons, { id: p.id, bubble });          // on the live data: pop at once
+ *   for (const c of pops.update(ctx.persons)) if (c.ok === false) unpop(c.bubble);
+ *
+ * The claim is the object passed to add(); add() sets seq (the live frame), ok (undefined until
+ * settled), exact (the exact frame that passed) and waitedMs. With the delayed output (live: false)
+ * the exact frames are the ones shown, so the same code works in every mode.
+ */
+export class LiveCheck {
+  /**
+   * @param {(exact, claim) => boolean} test  does this exact frame (a ctx.persons-like view) back the claim?
+   * @param {{ before?: number, after?: number, maxWaitMs?: number }} [o]  frames around the claim's frame to look at
+   */
+  constructor(test, { before = 2, after = 3, maxWaitMs = 1500 } = {}) {
+    this.test = test;
+    this.before = before;
+    this.after = after;
+    this.maxWaitMs = maxWaitMs;
+    /** the claims not settled yet */
+    this.pending = [];
+  }
+
+  /** A claim about the frame `persons` (ctx.persons) shows now; returns it. */
+  add(persons, claim = {}) {
+    const seq = persons?.seq ?? 0;
+    Object.assign(claim, { seq, ok: undefined, exact: null, waitedMs: 0 });
+    this.pending.push({ claim, next: seq - this.before, at: performance.now() });
+    return claim;
+  }
+
+  /** Tests the open claims on the exact frames that came in; returns those settled now. */
+  update(persons) {
+    const done = [];
+    const now = performance.now();
+    const newest = persons?.exact?.seq ?? null;
+    this.pending = this.pending.filter((e) => {
+      const c = e.claim;
+      if (!persons || persons.mode === 'live') c.ok = null;
+      else {
+        const last = Math.min(c.seq + this.after, newest ?? -Infinity);
+        for (; c.ok === undefined && e.next <= last; e.next++) {
+          const ex = persons.exactAt(e.next);
+          if (ex && this.test(ex, c)) {
+            c.ok = true;
+            c.exact = ex;
+          }
+        }
+        if (c.ok === undefined && newest !== null && newest >= c.seq + this.after) c.ok = false;
+        if (c.ok === undefined && now - e.at > this.maxWaitMs) c.ok = null;
+      }
+      if (c.ok === undefined) return true;
+      c.waitedMs = now - e.at;
+      done.push(c);
+      return false;
+    });
+    return done;
+  }
+
+  clear() {
+    this.pending = [];
+  }
 }
 
 /** One-Euro filter settings for the points (smooth when slow, quick when fast); null = raw. */
@@ -272,7 +355,9 @@ export class PersonStream {
     this.forced = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('persons') : null;
     this.hubKnown = false; // the hub's status said whether it tracks persons
     this.hubFrames = new Map(); // seq -> depth frame (the hub's results carry labels only)
-    this.hubPending = null; // the JSON of a hub result, waiting for its labels
+    this.hubPending = { persons: null, persons_live: null }; // the JSON of a hub result, waiting for its labels
+    /** (result) => void: the exact results of live + exact (skeletons; labels, depth, indices null) */
+    this.onExact = null;
     this.hubPool = [];
     this.worker = null;
     this.enabled = false;
@@ -313,7 +398,7 @@ export class PersonStream {
 
   /**
    * The hub can track persons (available) or not: takes its results, or runs the workers here.
-   * Returns true if the subscription has to change (see hubStream).
+   * Returns true if the subscription has to change (see hubStreams).
    */
   setHub(available) {
     this.hubKnown = true;
@@ -324,7 +409,7 @@ export class PersonStream {
     }
     this.source = want;
     for (const w of this.waiting.splice(0)) this._recycle(w);
-    this.hubPending = null;
+    this.hubPending = { persons: null, persons_live: null };
     this.hubFrames.clear();
     this.error = null;
     this.provider = want === 'hub' ? 'Hub' : null;
@@ -334,10 +419,16 @@ export class PersonStream {
     return true;
   }
 
-  /** The hub stream that brings this page's persons (null when they are tracked here). */
-  get hubStream() {
-    if (this.source !== 'hub' || !this.enabled) return null;
-    return this.options.delay > 0 ? 'persons' : 'persons_live';
+  /** The hub streams that bring this page's persons (none when they are tracked here). */
+  get hubStreams() {
+    if (this.source !== 'hub' || !this.enabled) return [];
+    if (this.dual) return ['persons_live', 'persons'];
+    return [this.options.delay > 0 ? 'persons' : 'persons_live'];
+  }
+
+  /** Live and exact together (live: true, delay > 0): the live results are shown, the exact ones follow (onExact). */
+  get dual() {
+    return this.options.live === true && this.options.delay > 0;
   }
 
   _startWorkers() {
@@ -382,18 +473,17 @@ export class PersonStream {
    * { delay: 0, maxDepth: 3500, maxPersons: 6 }.
    */
   configure(options) {
-    const stream = this.hubStream;
+    const streams = this.hubStreams.join();
+    const delayed = this.delayed;
     Object.assign(this.options, options);
     this.worker?.postMessage({ type: 'config', options });
-    if (this.hubStream !== stream) {
-      for (const w of this.waiting.splice(0)) this._recycle(w);
-      this.onWire?.();
-    }
+    if (this.delayed !== delayed) for (const w of this.waiting.splice(0)) this._recycle(w);
+    if (this.hubStreams.join() !== streams) this.onWire?.();
   }
 
   /** The output waits for later poses: ctx.kinect shows the frames that belong to the persons. */
   get delayed() {
-    return this.enabled && this.options.delay > 0;
+    return this.enabled && this.options.delay > 0 && !this.dual;
   }
 
   /** The hub's undistortion table. */
@@ -427,15 +517,34 @@ export class PersonStream {
 
   /** A JSON result of the hub (type persons or persons_live); its labels follow. */
   hubResult(msg) {
-    if (!this.enabled || msg.type !== this.hubStream) return;
-    this.hubPending = msg;
+    if (!this.enabled || !this.hubStreams.includes(msg.type)) return;
+    if (msg.type === 'persons' && this.dual) {
+      // the exact skeletons of an earlier frame: its masks came with the live result already
+      this._exact({
+        seq: msg.seq,
+        captureTimeUs: msg.capture_time_us,
+        list: msg.persons,
+        labels: null,
+        depth: null,
+        indices: null,
+        floor: msg.floor,
+        ms: msg.ms,
+        poseMs: msg.pose_ms ?? 0,
+        poseRuns: msg.pose_runs ?? 0,
+        arrived: this.hubFrames.get(msg.seq)?.receivedTimeMs ?? performance.now(),
+        lag: 0,
+      });
+      return;
+    }
+    this.hubPending[msg.type] = msg;
   }
 
   /** The labels of a hub result (binary kind 5 or 6: per run u8 slot, u16 length). */
   hubLabels(frame) {
-    const m = this.hubPending;
+    const type = frame.kind === 5 ? 'persons' : 'persons_live';
+    const m = this.hubPending[type];
     if (!this.enabled || !m || m.seq !== frame.seq) return;
-    this.hubPending = null;
+    this.hubPending[type] = null;
     const buf = this.hubPool.pop() ?? { labels: new Uint8Array(N), depth: new Uint16Array(N), indices: new Uint32Array(N) };
     const { labels, depth, indices } = buf;
     const rle = frame.data;
@@ -457,8 +566,9 @@ export class PersonStream {
       depth[i] = d ? d[i] : 0;
       indices[k++] = i;
     }
+    // kept a while longer: the exact results of live + exact come up to `delay` frames later
     for (const seq of this.hubFrames.keys()) {
-      if (seq >= m.seq - 20) break;
+      if (seq >= m.seq - 40) break;
       this.hubFrames.delete(seq);
     }
     this.results++;
@@ -478,7 +588,7 @@ export class PersonStream {
       lag: 0,
       buf,
     };
-    if (this.options.delay > 0) {
+    if (this.delayed) {
       this.lags.push(performance.now() - r.arrived);
       if (this.lags.length > 90) this.lags.shift();
       this.waiting.push(r);
@@ -524,10 +634,33 @@ export class PersonStream {
       }
       return;
     }
+    if (m.type === 'exact') {
+      // live + exact: the exact skeletons of a frame whose live result was shown before
+      if (m.input) this.inputs.push(m.input);
+      if (m.inputIr) this.irInputs.push(m.inputIr);
+      this.inFlight = Math.max(0, this.inFlight - 1);
+      this._exact({
+        seq: m.seq,
+        captureTimeUs: m.captureTimeUs,
+        list: m.persons,
+        labels: null,
+        depth: null,
+        indices: null,
+        floor: m.floor,
+        ms: m.ms,
+        poseMs: m.poseMs,
+        poseRuns: m.poseRuns,
+        arrived: m.arrived ?? performance.now(),
+        lag: 0,
+      });
+      this._pump();
+      return;
+    }
     if (m.type !== 'result') return;
     if (m.input) this.inputs.push(m.input);
     if (m.inputIr) this.irInputs.push(m.inputIr);
-    this.inFlight = Math.max(0, this.inFlight - 1);
+    // a live result of live + exact: its frame stays at the worker until its exact result
+    if (!m.live) this.inFlight = Math.max(0, this.inFlight - 1);
     this.results++;
     if (m.error) this.error = m.error;
     else if (this.provider) this.error = null; // the model runs (again)
@@ -545,7 +678,7 @@ export class PersonStream {
       arrived: m.arrived ?? performance.now(),
       lag: 0,
     };
-    if (this.options.delay > 0) {
+    if (this.delayed && !m.live) {
       // played out by tick(): note how long this frame took
       this.lags.push(performance.now() - r.arrived);
       if (this.lags.length > 90) this.lags.shift();
@@ -580,7 +713,16 @@ export class PersonStream {
     }
   }
 
-  /** ms from a frame's arrival to its result, recent frames: { p50, p95, max } (null when live). */
+  /** An exact result of live + exact (skeletons only). */
+  _exact(r) {
+    r.lag = performance.now() - r.arrived;
+    this.lags.push(r.lag);
+    if (this.lags.length > 90) this.lags.shift();
+    this.results++;
+    this.onExact?.(r);
+  }
+
+  /** ms from a frame's arrival to its (exact) result, recent frames: { p50, p95, max } (null when live). */
   waitStats() {
     if (!this.lags.length) return null;
     const a = this.lags.slice(-30).sort((x, y) => x - y);
@@ -612,7 +754,8 @@ export class PersonStream {
     const r = this.latest;
     if (!r || !this.provider) return 'Personen: lade das Pose-Modell …';
     const n = r.list.length;
-    const lag = this.options.delay > 0 ? ` · ${Math.round(this.playDelay)} ms verzögert` : '';
+    const exact = this.dual && this.lags.length ? this.waitStats().p50 : null;
+    const lag = this.dual ? ` · live, exakt nach ${exact ?? '…'} ms` : this.options.delay > 0 ? ` · ${Math.round(this.playDelay)} ms verzögert` : '';
     const mode = this.options.mode === 'skeleton' && this.source !== 'hub' ? ' · nur Skelett' : '';
     return `${n} ${n === 1 ? 'Person' : 'Personen'} · Pose ${r.poseMs.toFixed(0)} ms (${this.provider})${mode}${lag}`;
   }
