@@ -256,4 +256,15 @@ pub enum ClientRequest {
         #[serde(default)]
         t: Option<serde_json::Value>,
     },
+    /// About once a second from a page that renders a scene: its frame rate, the rate it wants and
+    /// whether it is visible (render.rs). No reply.
+    Render {
+        fps: f64,
+        #[serde(default)]
+        target: Option<f64>,
+        #[serde(default)]
+        visible: Option<bool>,
+        #[serde(default)]
+        scene: Option<String>,
+    },
 }

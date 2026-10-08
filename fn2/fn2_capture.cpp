@@ -411,13 +411,18 @@ int main(int argc, char **argv)
 
   libfreenect2::Freenect2 ctx;
   // fast: the depth is decoded by the listener, on the processing thread plus 3 helpers
-  // FN2_FAST_THREADS (helpers, default 3), FN2_FAST_PRIORITY=normal|low (default low: the helpers
-  // yield to the scenes when the CPU is short; measured under a GPU-saturating scene: sensor 29.8 fps
-  // and the scene 56 fps, against 29.3 / 53 at normal priority and 23-25 / 60 with OpenCL)
+  // (FN2_FAST_THREADS). The sensor comes first: the worker runs above normal priority, so a busy
+  // CPU (scenes, browsers) takes its time from them and not from the frames (FN2_PRIORITY=normal
+  // turns that off). FN2_FAST_PRIORITY=low puts the helpers below the rest of the worker: with 8 of
+  // 12 CPU threads busy elsewhere the sensor then fell to 8-16 fps.
   const char *env_threads = std::getenv("FN2_FAST_THREADS");
   const char *env_prio = std::getenv("FN2_FAST_PRIORITY");
+  const char *env_worker_prio = std::getenv("FN2_PRIORITY");
+#ifdef _WIN32
+  if (!env_worker_prio || std::string(env_worker_prio) != "normal") SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+#endif
   const int fast_threads = env_threads ? std::max(0, std::min(8, std::atoi(env_threads))) : 3;
-  const bool fast_low = !env_prio || std::string(env_prio) != "normal";
+  const bool fast_low = env_prio && std::string(env_prio) == "low";
   fastdepth::Decoder *fast = pipeline_name == "fast" ? new fastdepth::Decoder(fast_threads, fastdepth::Params(), fast_low) : nullptr;
   if (fast) std::fprintf(stderr, "fast depth: %d helper threads%s\n", fast_threads, fast_low ? ", low priority" : "");
   auto *dump = fast ? static_cast<libfreenect2::DumpPacketPipeline *>(shared) : nullptr;

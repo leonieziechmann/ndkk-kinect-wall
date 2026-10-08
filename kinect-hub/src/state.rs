@@ -13,6 +13,7 @@ use tokio::sync::{Semaphore, watch};
 use crate::config::Config;
 use crate::devservers::DevServers;
 use crate::pose::{PoseSet, PoseState};
+use crate::render::RenderReports;
 use crate::tracking::{PersonsSet, TrackingState};
 use crate::protocol::{HEIGHT, Stream, WIDTH};
 
@@ -232,12 +233,14 @@ pub struct Hub {
     pub persons: watch::Sender<Option<Arc<PersonsSet>>>,
     pub persons_live: watch::Sender<Option<Arc<PersonsSet>>>,
     pub tracking: TrackingState,
+    /// What the pages that render scenes report (render.rs).
+    pub render: RenderReports,
 }
 
 impl Hub {
     pub fn new(cfg: Arc<Config>) -> Arc<Hub> {
         let max_clients = cfg.max_clients;
-        let pose = PoseState::new(cfg.pose_hz, cfg.pose);
+        let pose = PoseState::new(cfg.pose_hz, cfg.pose_idle_hz, cfg.pose);
         let tracking = TrackingState::new(cfg.persons, cfg.persons_delay);
         Arc::new(Hub {
             cfg,
@@ -263,6 +266,7 @@ impl Hub {
             persons: watch::Sender::new(None),
             persons_live: watch::Sender::new(None),
             tracking,
+            render: RenderReports::default(),
         })
     }
 
@@ -351,6 +355,7 @@ impl Hub {
             "dev_servers": self.devservers.count(),
             "pose": self.pose.status_json(),
             "tracking": self.tracking.status_json(),
+            "render": self.render.status_json(),
             "subscribers": subscribers,
             "sent": {
                 "messages": self.messages_sent.load(Ordering::Relaxed),

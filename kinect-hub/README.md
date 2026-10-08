@@ -51,9 +51,10 @@ Nach dem Verbinden schickt der Hub `{"type":"hello",…}` mit allen Streams und 
 ```json
 {"type": "subscribe", "streams": ["depth", "lut", "meta"], "max_fps": 30}
 {"type": "ping", "t": 123}
+{"type": "render", "fps": 57.3, "target": 60, "visible": true, "scene": "neon-wall"}
 ```
 
-`subscribe` ersetzt das bisherige Abo. `max_fps` ist optional (z. B. 5 für ein Überwachungsskript). `ping` wird mit `{"type":"pong","t":…,"server_time_us":…}` beantwortet, das dient für Uhrabgleich und RTT.
+`subscribe` ersetzt das bisherige Abo. `max_fps` ist optional (z. B. 5 für ein Überwachungsskript). `ping` wird mit `{"type":"pong","t":…,"server_time_us":…}` beantwortet, das dient für Uhrabgleich und RTT. `render` schickt eine Seite, die eine Szene rendert, etwa einmal pro Sekunde (ohne Antwort): ihre fps, die fps, die sie will (Bildwiederholrate oder `maxFps`), und ob sie sichtbar ist. Rendert eine sichtbare Seite unter 85 % ihres Ziels (und über 5 fps, sonst ist sie nur gedrosselt), gibt das Pose-Modell nach (s. u. „Posen“). `/api/status` → `render` listet die Meldungen. Das `hello` nennt in `accepts`, welche Nachrichten der Hub kennt.
 
 | Stream | Nachricht |
 |---|---|
@@ -84,7 +85,8 @@ Der Worker dekodiert die Rohdaten der Kinect standardmäßig selbst auf der CPU 
 - **Qualität:** auf 233 aufgenommenen Rohpaketen gegen OpenCL im Median 0,00 mm Abweichung, 0,01 % der Pixel mehr als 1 mm, je Frame 2 Pixel weniger und 15 mehr gültig als OpenCL (`fn2/depth_bench`).
 - **Zeit:** 5,7 ms je Frame (4 Threads), 13,5 ms auf einem; OpenCL 7–12 ms GPU-Zeit.
 - **Unter einer Szene, die die GPU sättigt** (live gemessen, 3840×2160): Sensor 29,8 statt 23–25 fps mit OpenCL; die Szene verliert dabei 4 fps (56 statt 60), weil CPU und iGPU sich das Strombudget teilen, und der Worker braucht 1,8 statt 0,2 CPU-Kerne. Ohne GPU-Last 0,7 Kerne.
-- Die Helfer-Threads laufen mit niedriger Priorität und geben der Szene den Vortritt, wenn die CPU knapp ist (`FN2_FAST_THREADS`, `FN2_FAST_PRIORITY=normal` im Environment des Hubs ändern das).
+- **Der Sensor geht vor:** Der Worker läuft mit erhöhter Priorität (above normal). Ist die CPU knapp, nimmt sie Szenen und Browsern Zeit, nicht den Kinect-Bildern. Gemessen mit 8 bzw. 12 von 12 CPU-Threads voll ausgelastet: weiter 30 fps. Mit den Helfern auf niedriger Priorität, wie zuvor, waren es nur 8–16 fps, und der Sensor wurde wegen ausbleibender Bilder neu gestartet. Der Aufrufer wartet nur auf Zeilenblöcke, die ein Helfer wirklich übernommen hat. Ein Helfer, der spät aufwacht, hält also nichts auf.
+- Environment des Hubs: `FN2_FAST_THREADS` (Helfer, Standard 3), `FN2_PRIORITY=normal` (Worker ohne erhöhte Priorität), `FN2_FAST_PRIORITY=low` (Helfer unter dem Rest des Workers; nicht empfohlen).
 - Ohne AVX2/FMA nimmt der Worker OpenCL. `--pipeline cl` erzwingt OpenCL; ein älterer Worker kennt `fast` nicht und nimmt dann ebenfalls OpenCL.
 - Neue Rohdaten zum Vergleichen: `fn2/bin/fn2_rawdump.exe --out recordings/raw-NAME.k2raw --seconds 8` (braucht die Kinect, also Hub kurz stoppen), dann `fn2/bin/depth_bench.exe recordings/raw-NAME.k2raw` (vergleicht mit libfreenect2 OpenCL und misst die Zeit, ohne Kinect).
 
@@ -99,6 +101,8 @@ Der Hub erkennt die Körperhaltung der Menschen vor der Kinect selbst: YOLO11n-p
   - Fehlgeschlagene Versuche und Wechsel nach oben, die keine 20 s halten, verlängern die Pause bis zu dem Modell (bis 30 s); nach einer Minute auf einem Modell gilt wieder 3 s.
   - Jede Pose nennt ihr `model` (`s@384` = YOLO11s mit 384 px breitem Eingang). `/api/status` → `pose.models` zeigt je Modell die Zeit nach dem Laden und die ms je Lauf zuletzt.
   - Gemessen (`pose-bench/README.md`): GPU frei s@512 46–55 ms, s@384 27–34, n@384 12–14; unter hoher GPU-Last s@512 145–170 ms, s@384 83–92, n@384 33–37. `--pose-model` / `--pose-model-fast` gehen weiterhin (das beste und das nächste Modell).
+- **Die Szene geht vor:** Rendert eine sichtbare Seite 2 s lang unter 85 % ihrer Ziel-fps (Nachricht `render`, die Laufzeit schickt sie), übernimmt das nächstkleinere Modell, auch wenn das große die Pose-Rate noch schafft. Bis 8 s nach der letzten solchen Meldung probiert der Hub kein besseres. `/api/status` → `pose.pressure` nennt die Seite.
+- **Leerer Raum:** Hat 2 s lang keine Pose jemanden gefunden und verfolgt der Tracker niemanden, rechnet der Hub nur noch 3 Posen pro Sekunde mit dem kleinsten Modell (`--pose-idle-hz`, 0 = aus; `pose.quiet` im Status). Tauchen 1500 Pixel vor dem gelernten Hintergrund auf, die niemandem gehören, weckt der Tracker das Modell sofort. Gemessen mit Aufnahme „leerer Raum, dann kommt eine Gruppe“: Die erste Person erschien im selben Frame wie ohne Ruhemodus.
 - **ONNX Runtime** wird zur Laufzeit geladen: `onnxruntime.dll` neben der exe, sonst `kinect-hub/onnxruntime/` (füllt `setup-onnxruntime.ps1`: NuGet-Paket Microsoft.ML.OnnxRuntime.DirectML 1.24.4, die neueste Version mit DirectML; prüft Prüfsumme und Microsoft-Signatur; nicht im Git). `DirectML.dll` bringt Windows mit.
 - **Fehler:** Fehlen DLL oder Modell oder scheitert DirectML, läuft der Hub ohne Posen weiter. `/api/status` → `pose` sagt warum (`state`: `off`, `loading`, `idle`, `running`, `error`), und der Hub versucht es alle 10 s neu. Eine DLL oder ein Modell, das später dazukommt, wird also ohne Neustart übernommen. Abstürze im Pose-Thread werden abgefangen und gezählt.
 - **Status** (`pose` in `/api/status`): Gerät, geladene Modelle mit ihrer Zeit nach dem Laden, aktives Modell, Ziel- und erreichte Rate, ms je Lauf, Zahl der Wechsel und der Grund des letzten.

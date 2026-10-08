@@ -12,12 +12,17 @@
 //!   gets too slow, the next one takes over; every few seconds the next better one is tried (its
 //!   pose counts as well) and takes over once it fits with room to spare. Every pose says which
 //!   model made it.
+//! - The scenes come first: while a visible page renders slower than it wants (render.rs), the
+//!   next cheaper model takes over and no better one is tried.
+//! - Nobody in front of the sensor (no pose found anybody for a while and the tracker follows
+//!   nobody): a few poses a second (--pose-idle-hz) with the cheapest model, until the tracker sees
+//!   something new in front of the background, which wakes the model at once.
 //! - ONNX Runtime is a DLL loaded at run time (setup-onnxruntime.ps1). Without it, without a model,
 //!   or if DirectML fails, the hub runs on without poses, says why in /api/status and tries again
 //!   every 10 s (so the DLL or a new model can be added while the hub runs).
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -53,6 +58,14 @@ const PROBE_MAX: Duration = Duration::from_secs(30);
 const FLIP: Duration = Duration::from_secs(20);
 /// ... one that ran this long did: its tries start over at PROBE_EVERY.
 const STAY: Duration = Duration::from_secs(60);
+/// A visible page too slow for this long hands over to the next cheaper model ...
+const PRESSURE_FOR: Duration = Duration::from_secs(2);
+/// ... and no better one is tried until this long after the last slow report.
+const PRESSURE_HOLD: Duration = Duration::from_secs(8);
+/// No pose found anybody for this long (and the tracker follows nobody): the room is empty.
+const EMPTY_AFTER: Duration = Duration::from_secs(2);
+/// A wake (something new in front of the background) runs the model at most this often.
+const WAKE_GAP: Duration = Duration::from_millis(150);
 /// `GET /api/poses` keeps the model running this long for scripts that poll it.
 const HTTP_LEASE: Duration = Duration::from_secs(5);
 
@@ -90,6 +103,11 @@ pub struct PoseStatus {
     /// the model in use (its name, e.g. "s@384")
     pub active: Option<String>,
     pub target_hz: f64,
+    /// poses at the slow rate: nobody in front of the sensor
+    pub quiet: bool,
+    pub idle_hz: f64,
+    /// the visible page that renders too slowly, while it does (the pose model gives way)
+    pub pressure: Option<String>,
     /// poses per second, and ms per run of the active model (moving averages)
     pub hz: f64,
     pub ms: f64,
@@ -112,10 +130,14 @@ pub struct PoseState {
     job_ready: Condvar,
     /// when the next pose is due (the target rate)
     next_due: Mutex<Instant>,
+    /// when the last run started (wake() keeps WAKE_GAP to it)
+    last_start: Mutex<Instant>,
+    /// persons the tracker follows (visible), 0 without the tracker
+    pub tracked: AtomicUsize,
 }
 
 impl PoseState {
-    pub fn new(target_hz: f64, device: PoseDevice) -> PoseState {
+    pub fn new(target_hz: f64, idle_hz: f64, device: PoseDevice) -> PoseState {
         let off = device == PoseDevice::Off;
         PoseState {
             status: Mutex::new(PoseStatus {
@@ -129,6 +151,9 @@ impl PoseState {
                 models: Vec::new(),
                 active: None,
                 target_hz,
+                quiet: false,
+                idle_hz,
+                pressure: None,
                 hz: 0.0,
                 ms: 0.0,
                 runs: 0,
@@ -142,7 +167,17 @@ impl PoseState {
             job: Mutex::new(None),
             job_ready: Condvar::new(),
             next_due: Mutex::new(Instant::now()),
+            last_start: Mutex::new(Instant::now()),
+            tracked: AtomicUsize::new(0),
         }
+    }
+
+    /// Something new in front of the background (the tracker): while the room is quiet, the next
+    /// pose is due now (at most every WAKE_GAP).
+    pub fn wake(&self) {
+        let soonest = *self.last_start.lock().unwrap_or_else(PoisonError::into_inner) + WAKE_GAP;
+        let mut due = self.next_due.lock().unwrap_or_else(PoisonError::into_inner);
+        *due = (*due).min(soonest.max(Instant::now()));
     }
 
     /// The model is loaded and takes frames (submit).
@@ -334,18 +369,49 @@ struct Scheduler {
     fits: u32,
     last_probe: Instant,
     next_due: Instant,
+    /// the room is empty: runs at the idle period, the models stay as they are
+    quiet: bool,
+    idle_period: Option<Duration>,
+    /// since when a visible page has been too slow without a break, and when it last was
+    pressure_since: Option<Instant>,
+    last_pressure: Option<Instant>,
 }
 
 impl Scheduler {
-    fn new(hz: f64, levels: usize) -> Scheduler {
+    fn new(hz: f64, idle_hz: f64, levels: usize) -> Scheduler {
         let period = (hz > 0.0).then(|| Duration::from_secs_f64(1.0 / hz));
+        let idle_period = (idle_hz > 0.0 && (hz <= 0.0 || idle_hz < hz)).then(|| Duration::from_secs_f64(1.0 / idle_hz));
         let n = levels.max(1);
         let now = Instant::now();
-        Scheduler { period, cur: 0, avg: vec![0.0; n], wait: vec![PROBE_EVERY; n], runs: 0, since: now, fits: 0, last_probe: now, next_due: now }
+        Scheduler {
+            period,
+            cur: 0,
+            avg: vec![0.0; n],
+            wait: vec![PROBE_EVERY; n],
+            runs: 0,
+            since: now,
+            fits: 0,
+            last_probe: now,
+            next_due: now,
+            quiet: false,
+            idle_period,
+            pressure_since: None,
+            last_pressure: None,
+        }
+    }
+
+    /// A visible page renders too slowly: no better model is tried meanwhile.
+    fn held_back(&self) -> bool {
+        self.last_pressure.is_some_and(|t| t.elapsed() < PRESSURE_HOLD)
     }
 
     fn pick(&mut self) -> Pick {
-        if self.period.is_some() && self.cur > 0 {
+        // nobody there: the cheapest model (a newcomer is found soonest, the GPU stays free); the
+        // ladder goes on where it was once someone comes
+        if self.quiet {
+            return Pick { level: self.avg.len().saturating_sub(1), probe: false };
+        }
+        if self.period.is_some() && self.cur > 0 && !self.held_back() {
             let up = self.cur - 1;
             if self.last_probe.elapsed() >= self.wait.get(up).copied().unwrap_or(PROBE_EVERY) {
                 self.last_probe = Instant::now();
@@ -355,16 +421,40 @@ impl Scheduler {
         Pick { level: self.cur, probe: false }
     }
 
-    /// A run took `ms`; returns why when the model in use changes (see `cur`).
-    fn record(&mut self, pick: Pick, ms: f64) -> Option<String> {
+    /// A run took `ms` (`pressure`: a visible page renders too slowly); returns why when the
+    /// model in use changes (see `cur`).
+    fn record(&mut self, pick: Pick, ms: f64, pressure: Option<&str>) -> Option<String> {
         let now = Instant::now();
+        let Some(period) = self.period else {
+            if let Some(a) = self.avg.get_mut(pick.level) {
+                *a = if *a == 0.0 { ms } else { 0.85 * *a + 0.15 * ms };
+            }
+            return None;
+        };
+        // the next run is due one period after this one was due (or started, when it was woken
+        // early); a late run is not made up for
+        let pace = if self.quiet { self.idle_period.unwrap_or(period) } else { period };
+        self.next_due = (self.next_due.min(now) + pace).max(now);
+        if self.quiet {
+            // nobody there: the runs are rare and slow (the GPU clocks down), not a measure
+            self.pressure_since = None;
+            return None;
+        }
         if let Some(a) = self.avg.get_mut(pick.level) {
             *a = if *a == 0.0 { ms } else { 0.85 * *a + 0.15 * ms };
         }
-        let period = self.period?;
-        // the next run is due one period after this one was; a late run is not made up for
-        self.next_due = (self.next_due + period).max(now);
         let p = period.as_secs_f64() * 1000.0;
+        // the scenes first: a page too slow for a while hands over to the next cheaper model
+        match pressure {
+            Some(why) => {
+                self.last_pressure = Some(now);
+                let since = *self.pressure_since.get_or_insert(now);
+                if !pick.probe && self.cur + 1 < self.avg.len() && self.runs >= DOWN_RUNS && now.saturating_duration_since(since) >= PRESSURE_FOR {
+                    return Some(self.step_down(now, format!("{why} (the scene first)")));
+                }
+            }
+            None => self.pressure_since = None,
+        }
         if pick.probe {
             if ms < UP * p {
                 self.fits += 1;
@@ -385,6 +475,11 @@ impl Scheduler {
         if self.cur + 1 >= self.avg.len() || self.runs < DOWN_RUNS || avg <= DOWN * p {
             return None;
         }
+        Some(self.step_down(now, format!("{avg:.0} ms per run, {p:.0} ms per pose wanted")))
+    }
+
+    /// The next cheaper model takes over.
+    fn step_down(&mut self, now: Instant, why: String) -> String {
         // a takeover that did not last: try that model less often; after a long stay as at first
         let stayed = now.saturating_duration_since(self.since);
         if let Some(w) = self.wait.get_mut(self.cur) {
@@ -394,8 +489,8 @@ impl Scheduler {
                 *w = PROBE_EVERY;
             }
         }
-        (self.cur, self.runs, self.since, self.fits, self.last_probe) = (self.cur + 1, 0, now, 0, now);
-        Some(format!("{avg:.0} ms per run, {p:.0} ms per pose wanted"))
+        (self.cur, self.runs, self.since, self.fits, self.last_probe, self.pressure_since) = (self.cur + 1, 0, now, 0, now, None);
+        why
     }
 }
 
@@ -443,7 +538,8 @@ fn serve(hub: &Arc<Hub>, rt: &Handle) -> Result<(), String> {
     hub.pose.set_state("idle", "nobody wants poses");
     hub.pose.set_ready(true);
 
-    let mut sched = Scheduler::new(hub.cfg.pose_hz, models.len());
+    let mut sched = Scheduler::new(hub.cfg.pose_hz, hub.cfg.pose_idle_hz, models.len());
+    let mut last_person = Instant::now();
     let mut frames = hub.frames.subscribe();
     let mut last_seq: Option<u32> = None;
     let (mut ema_ms, mut ema_hz, mut last_run) = (0.0_f64, 0.0_f64, None::<Instant>);
@@ -482,15 +578,22 @@ fn serve(hub: &Arc<Hub>, rt: &Handle) -> Result<(), String> {
             hub.pose.busy.store(false, Ordering::SeqCst);
             continue;
         };
+        // nobody there: no pose found anybody for a while, and the tracker follows nobody
+        sched.quiet = sched.idle_period.is_some() && hub.pose.tracked.load(Ordering::Relaxed) == 0 && last_person.elapsed() > EMPTY_AFTER;
         let pick = sched.pick();
         let model = models.get_mut(pick.level).ok_or("no pose model at that level")?;
         let t = Instant::now();
+        *hub.pose.last_start.lock().unwrap_or_else(PoisonError::into_inner) = t;
         let poses = model.run(&ir)?;
         let ms = t.elapsed().as_secs_f64() * 1000.0;
+        if !poses.is_empty() {
+            last_person = Instant::now();
+        }
         let name = names.get(pick.level).cloned().unwrap_or_default();
         last_seq = Some(frame.seq);
         let before = sched.cur;
-        let switched = sched.record(pick, ms);
+        let pressure = hub.render.pressure();
+        let switched = sched.record(pick, ms, pressure.as_deref());
         *hub.pose.next_due.lock().unwrap_or_else(PoisonError::into_inner) = sched.next_due;
         publish(hub, &frame, &name, ms, poses);
         hub.pose.busy.store(false, Ordering::SeqCst);
@@ -508,6 +611,8 @@ fn serve(hub: &Arc<Hub>, rt: &Handle) -> Result<(), String> {
         last_run = Some(Instant::now());
         let mut s = hub.pose.status();
         s.runs += 1;
+        s.quiet = sched.quiet;
+        s.pressure = pressure;
         s.ms = (ema_ms * 10.0).round() / 10.0;
         s.hz = (ema_hz * 10.0).round() / 10.0;
         for (info, avg) in s.models.iter_mut().zip(&sched.avg) {
@@ -588,7 +693,7 @@ mod tests {
 
     fn run(s: &mut Scheduler, ms: f64) -> Option<String> {
         let p = s.pick();
-        s.record(Pick { probe: false, ..p }, ms)
+        s.record(Pick { probe: false, ..p }, ms, None)
     }
 
     /// Lets the next try come now.
@@ -598,7 +703,7 @@ mod tests {
 
     #[test]
     fn steps_down_one_model_at_a_time_and_up_after_good_tries() {
-        let mut s = Scheduler::new(15.0, 3); // 66.7 ms per pose
+        let mut s = Scheduler::new(15.0, 0.0, 3); // 66.7 ms per pose
         for _ in 0..DOWN_RUNS - 1 {
             assert!(run(&mut s, 120.0).is_none());
         }
@@ -617,29 +722,29 @@ mod tests {
         probe_now(&mut s);
         let p = s.pick();
         assert_eq!(p, Pick { level: 1, probe: true });
-        assert!(s.record(p, 70.0).is_none());
+        assert!(s.record(p, 70.0, None).is_none());
         for i in 0..UP_PROBES {
             probe_now(&mut s);
             let p = s.pick();
-            assert_eq!(s.record(p, 40.0).is_some(), i + 1 == UP_PROBES);
+            assert_eq!(s.record(p, 40.0, None).is_some(), i + 1 == UP_PROBES);
         }
         assert_eq!(s.cur, 1);
     }
 
     #[test]
     fn a_slow_run_now_and_then_does_not_switch() {
-        let mut s = Scheduler::new(15.0, 2);
+        let mut s = Scheduler::new(15.0, 0.0, 2);
         for _ in 0..40 {
-            assert!(s.record(RUN, 75.0).is_none());
-            assert!(s.record(RUN, 45.0).is_none());
-            assert!(s.record(RUN, 45.0).is_none());
+            assert!(s.record(RUN, 75.0, None).is_none());
+            assert!(s.record(RUN, 45.0, None).is_none());
+            assert!(s.record(RUN, 45.0, None).is_none());
         }
         assert_eq!(s.cur, 0);
     }
 
     #[test]
     fn a_takeover_that_does_not_last_backs_the_tries_off() {
-        let mut s = Scheduler::new(15.0, 2);
+        let mut s = Scheduler::new(15.0, 0.0, 2);
         for _ in 0..DOWN_RUNS {
             run(&mut s, 100.0);
         }
@@ -649,7 +754,7 @@ mod tests {
         for _ in 0..UP_PROBES {
             probe_now(&mut s);
             let p = s.pick();
-            s.record(p, 40.0);
+            s.record(p, 40.0, None);
         }
         assert_eq!(s.cur, 0);
         for _ in 0..2 * DOWN_RUNS {
@@ -661,12 +766,47 @@ mod tests {
 
     #[test]
     fn without_a_target_rate_it_keeps_the_best_model() {
-        let mut s = Scheduler::new(0.0, 3);
+        let mut s = Scheduler::new(0.0, 0.0, 3);
         for _ in 0..20 {
             assert_eq!(s.pick(), RUN);
-            assert!(s.record(RUN, 500.0).is_none());
+            assert!(s.record(RUN, 500.0, None).is_none());
         }
         assert_eq!(s.cur, 0);
+    }
+
+    #[test]
+    fn a_slow_scene_hands_over_to_the_cheaper_model_and_holds_the_tries_back() {
+        let mut s = Scheduler::new(15.0, 0.0, 3);
+        for _ in 0..DOWN_RUNS {
+            assert!(s.record(RUN, 40.0, None).is_none()); // fits by itself
+        }
+        s.pressure_since = Some(Instant::now() - PRESSURE_FOR);
+        let why = s.record(RUN, 40.0, Some("wall 40 of 60 fps"));
+        assert!(why.is_some_and(|w| w.contains("wall")));
+        assert_eq!(s.cur, 1);
+        // while it lasts (and a while after) no better model is tried
+        probe_now(&mut s);
+        assert_eq!(s.pick(), Pick { level: 1, probe: false });
+        s.last_pressure = Some(Instant::now() - PRESSURE_HOLD);
+        probe_now(&mut s);
+        assert_eq!(s.pick(), Pick { level: 0, probe: true });
+    }
+
+    #[test]
+    fn an_empty_room_runs_at_the_idle_rate_and_keeps_the_model() {
+        let mut s = Scheduler::new(15.0, 3.0, 3);
+        s.quiet = true;
+        let start = Instant::now();
+        for _ in 0..3 * DOWN_RUNS {
+            assert!(s.record(RUN, 300.0, Some("busy")).is_none());
+        }
+        assert_eq!(s.cur, 0, "slow runs while quiet do not count");
+        assert_eq!(s.pick(), Pick { level: 2, probe: false }, "the cheapest model while quiet");
+        assert!(s.next_due >= start + Duration::from_millis(300), "a third of a second apart");
+        s.quiet = false;
+        s.next_due = Instant::now();
+        s.record(RUN, 40.0, None);
+        assert!(s.next_due <= Instant::now() + Duration::from_millis(70), "back to the full rate");
     }
 
     #[test]

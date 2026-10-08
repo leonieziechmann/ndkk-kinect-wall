@@ -57,6 +57,8 @@ pub struct FrameResult {
     /// background, floor and person list
     pub stages: [f64; 8],
     pub tracks: usize,
+    /// pixels in front of the learned background that belong to nobody: someone new may come in
+    pub foreground: usize,
 }
 
 /// Names of FrameResult::stages.
@@ -258,6 +260,7 @@ impl PersonTracker {
             t.visible = if masks { t.pixels > 0 } else { q.is_some() && ((frame - t.last_pose) as f64) <= stale };
         }
         // the background is learned once the pose model runs (before, a person could become part of it)
+        self.foreground = 0;
         if masks && self.pose_results > 0 {
             self.learn(depth, &active);
         } else if !masks {
@@ -288,6 +291,7 @@ impl PersonTracker {
             ms: t0.elapsed().as_secs_f64() * 1000.0,
             stages,
             tracks: self.tracks.len(),
+            foreground: self.foreground,
         }
     }
 

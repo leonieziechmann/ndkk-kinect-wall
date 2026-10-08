@@ -7,6 +7,7 @@ mod devservers;
 mod lut;
 mod pipeline;
 mod pose;
+mod render;
 mod protocol;
 mod recording;
 mod replay;

@@ -31,6 +31,8 @@ usage: kinect-hub [options]
   --pose-model PATH      the best model, --pose-model-fast PATH|none the next one (older form of
                          --pose-models)
   --pose-hz HZ           target pose rate (default 15; 0 = as often as possible, best model only)
+  --pose-idle-hz HZ      pose rate while nobody is in front of the sensor (default 3; new movement
+                         wakes it at once; 0 = always --pose-hz)
   --persons on|off       person tracking (streams `persons`, `persons_live`; default on)
   --persons-delay N      frames the `persons` stream may wait for a later pose (default 12)
   --onnxruntime PATH     onnxruntime.dll (default: next to the hub, else kinect-hub/onnxruntime/,
@@ -83,6 +85,7 @@ pub struct Config {
     /// `Some(None)`: `--pose-model-fast none`
     pub pose_model_fast: Option<Option<PathBuf>>,
     pub pose_hz: f64,
+    pub pose_idle_hz: f64,
     pub onnxruntime: Option<PathBuf>,
     pub persons: bool,
     pub persons_delay: u32,
@@ -106,6 +109,7 @@ impl Config {
             pose_model: None,
             pose_model_fast: None,
             pose_hz: 15.0,
+            pose_idle_hz: 3.0,
             onnxruntime: None,
             persons: true,
             persons_delay: 12,
@@ -173,6 +177,13 @@ impl Config {
                 "--pose-model-fast" => {
                     let v = value("--pose-model-fast")?;
                     cfg.pose_model_fast = Some((v != "none").then(|| PathBuf::from(v)));
+                }
+                "--pose-idle-hz" => {
+                    let v = value("--pose-idle-hz")?;
+                    cfg.pose_idle_hz = v.parse().map_err(|e| format!("--pose-idle-hz {v}: {e}"))?;
+                    if !(0.0..=60.0).contains(&cfg.pose_idle_hz) {
+                        return Err("--pose-idle-hz must be between 0 and 60".to_string());
+                    }
                 }
                 "--pose-hz" => {
                     let v = value("--pose-hz")?;

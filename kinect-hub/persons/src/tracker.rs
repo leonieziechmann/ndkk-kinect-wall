@@ -206,6 +206,8 @@ pub struct PersonTracker {
     /// the background margin as an integer threshold per depth, and the options it was made for
     pub(crate) bg_tol: Vec<u16>,
     pub(crate) bg_tol_for: (f64, f64),
+    /// pixels of the last frame in front of the learned background that belong to nobody
+    pub(crate) foreground: usize,
 }
 
 impl Default for PersonTracker {
@@ -259,6 +261,7 @@ impl PersonTracker {
             arm_cells: [vec![0; g], vec![0; g]],
             bg_tol: Vec::new(),
             bg_tol_for: (f64::NAN, f64::NAN),
+            foreground: 0,
         };
         t.options.max_persons = jround(t.options.max_persons).clamp(1.0, crate::MAX_PERSONS as f64);
         t.set_rays(&pinhole_rays());

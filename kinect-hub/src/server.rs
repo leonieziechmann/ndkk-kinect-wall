@@ -422,6 +422,7 @@ async fn api_index(State(hub): State<Arc<Hub>>) -> Response {
             "client_messages": {
                 "subscribe": {"type": "subscribe", "streams": ["depth", "lut"], "max_fps": 30},
                 "ping": {"type": "ping", "t": "anything, echoed back"},
+                "render": {"type": "render", "fps": 57.3, "target": 60, "visible": true, "scene": "neon-wall", "note": "about once a second from a page that renders a scene, no reply; while a visible page renders below 85 % of its target the pose model steps down"},
             },
             "server_text_messages": ["hello", "subscribed", "status", "params", "frame", "poses", "persons", "persons_live", "pong", "error"],
             "binary_header": {

@@ -36,6 +36,9 @@ use crate::source::{panic_message, sleep_unless_stopping};
 use crate::state::{Hub, ParamSet, now_us};
 
 /// After a pause this long the persons are forgotten (they may have left); the background stays.
+/// Pixels in front of the background that belong to nobody: from this many on, someone new may
+/// be coming in (a person at 4 m covers about 7000).
+const WAKE_PIXELS: usize = 1500;
 const IDLE_RESET: Duration = Duration::from_secs(2);
 /// `GET /api/persons` keeps the tracker running this long for scripts that poll it.
 const HTTP_LEASE: Duration = Duration::from_secs(5);
@@ -144,6 +147,7 @@ fn run(hub: &Arc<Hub>, rt: &Handle) {
     while !hub.stopping() {
         let result = catch_unwind(AssertUnwindSafe(|| serve(hub, rt)));
         hub.pose.wanted_inside.store(false, Ordering::Relaxed);
+        hub.pose.tracked.store(0, Ordering::Relaxed);
         if let Err(p) = result {
             let msg = panic_message(p.as_ref());
             error!("person tracking crashed ({msg}), starting over");
@@ -205,6 +209,7 @@ fn serve(hub: &Arc<Hub>, rt: &Handle) -> Result<(), String> {
         if !hub.persons_wanted() {
             if !idle {
                 hub.pose.wanted_inside.store(false, Ordering::Relaxed);
+                hub.pose.tracked.store(0, Ordering::Relaxed);
                 let mut s = hub.tracking.status();
                 s.state = "idle";
                 s.detail = "nobody subscribes".to_string();
@@ -303,6 +308,11 @@ fn serve(hub: &Arc<Hub>, rt: &Handle) -> Result<(), String> {
             s.stages = ema_stages.map(|v| (v * 100.0).round() / 100.0);
             s.persons = result.persons.iter().filter(|p| p.visible).count();
             s.tracks = result.tracks;
+            hub.pose.tracked.store(s.persons, Ordering::Relaxed);
+        }
+        // something new in front of the background while nobody is followed: a pose now
+        if result.foreground >= WAKE_PIXELS && hub.pose.tracked.load(Ordering::Relaxed) == 0 {
+            hub.pose.wake();
         }
         held.push_back(Held { seq, capture_time_us: frame.capture_time_us, result, out });
         flush(hub, &mut tracker, &mut held, &mut pool, posed_up_to, last_seq, delay);
