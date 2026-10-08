@@ -1,5 +1,5 @@
 # The whole training on a Google Colab VM (GPU), started with the colab CLI (README.md, "On Colab"):
-#   colab upload -s pose <data zip> /content/kinect-pose-daten.zip    (kaggle.py packs it)
+#   colab upload -s pose <data zip> /content/kinect-pose-daten.zip    (kaggle.py packs it; more: kinect-pose-<x>.zip)
 #   colab upload -s pose pose-training/<each script> /content/pose-training/<script>
 #   colab exec -s pose -f pose-training/colab_job.py                   starts it in the background, returns
 #   echo "print(open('/content/job.log').read()[-3000:])" | colab exec -s pose     progress
@@ -8,6 +8,7 @@
 # and averaged), trains the browser model at 512 (as now) and at 384 (faster in the browser), evaluates
 # old against new, exports both, and packs ergebnis.zip. The steps run in a shell of their own (nohup), so
 # a lost connection to the CLI does not stop them; a step that is done is skipped when started again.
+import glob
 import os
 import subprocess
 import textwrap
@@ -16,8 +17,11 @@ C = '/content'
 K = f'{C}/kinect'
 EPOCHS = int(os.environ.get('POSE_EPOCHS', '40'))
 
-if not os.path.exists(f'{K}/recordings/training/images'):
-    subprocess.run(['unzip', '-q', '-o', f'{C}/kinect-pose-daten.zip', '-d', C], check=True)
+# every data zip: kinect-pose-daten.zip (kaggle.py) and those packed later (kaggle.py --only <prefix>)
+for z in sorted(glob.glob(f'{C}/kinect-pose-*.zip')):
+    if not os.path.exists(f'{z}.unpacked'):
+        subprocess.run(['unzip', '-q', '-o', z, '-d', C], check=True)
+        open(f'{z}.unpacked', 'w').close()
 os.makedirs(f'{K}/pose-training', exist_ok=True)
 subprocess.run(f'cp {C}/pose-training/*.py {K}/pose-training/', shell=True, check=True)
 

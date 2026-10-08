@@ -9,7 +9,9 @@
 #   val    multi-155317, multi-150835 and multi-150334 from 2:20 on (two people, sitting, occlusion, chair),
 #          hops-2026-10-08 (jumping, a take of its own)
 # The jumping and moving recordings (hops*, nohops: fast moves on announced cues, <name>.cues.csv) are taken
-# densely around each cue (every 3rd frame within 1.6 s), elsewhere every 9th frame.
+# densely around each cue (every 3rd frame within 1.6 s), elsewhere every 9th frame. The T-pose recordings
+# (spinning on the spot with arms out, aiming while turning: the game space-invaders) every 3rd frame; the
+# last 20 s of tpose-zielen are held out for validation.
 #   never  final-*, alt-* (the person tracker's backtest: stays a fair test of the new model)
 import argparse, json, os, sys
 import numpy as np
@@ -60,6 +62,7 @@ MULTI = ['145333', '145834', '150334', '150835', '153816', '154316', '154817', '
 VAL = {'155317': None, '150835': None, '150334': (140.0, None)}  # recording: (from s, to s) or the whole
 OTHER = ['wand-solo', 'wand-kleid', 'wand-kleid2']
 MOVES = {'hops2-2026-10-08': 'train', 'nohops-2026-10-08': 'train', 'hops-2026-10-08': 'val'}
+TPOSE = {'tpose-dreh-2026-10-08': None, 'tpose-zielen-2026-10-08': 20.0}  # recording: seconds held out at the end
 
 
 def cue_times(name):
@@ -109,6 +112,11 @@ def main():
             near = any(abs(r.time(i) - c) <= 1.6 for c in cues)
             if i % (3 if near else 9) == 0:
                 listing.append((split, name, r, i))
+    for name, held in TPOSE.items():
+        r = k2.Rec(os.path.join(REC, name + '.k2rec'))
+        end = r.time(len(r) - 1)
+        for i in range(0, len(r), 3):
+            listing.append(('val' if held and r.time(i) > end - held else 'train', name, r, i))
     n = {'train': 0, 'val': 0}
     for split, name, r, i in listing:
         d = os.path.join(a.out, 'images', split)

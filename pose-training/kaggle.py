@@ -13,15 +13,18 @@ from frames import MAIN, REC  # noqa: E402
 SCRIPTS = ['frames.py', 'teacher.py', 'train.py', 'eval.py', 'export.py', 'compare.py']
 
 
-def pack(out):
-    dst = os.path.join(out, 'kaggle', 'kinect-pose-daten.zip')
+def pack(out, only=''):
+    """All frames with the weights and the browser model; with `only`, just the frames whose name starts so
+    (data recorded later, packed on their own: kinect-pose-<only>.zip, unpacked next to the first)."""
+    dst = os.path.join(out, 'kaggle', f'kinect-pose-{only}.zip' if only else 'kinect-pose-daten.zip')
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     files = []
     for split in ('train', 'val'):
-        files += [(p, f'kinect/recordings/training/images/{split}/{os.path.basename(p)}') for p in sorted(glob.glob(os.path.join(out, 'images', split, '*.png')))]
-    for w in ('yolo11x-pose.pt', 'yolo11n-pose.pt'):
-        files.append((os.path.join(out, 'weights', w), f'kinect/recordings/training/weights/{w}'))
-    files.append((os.path.join(MAIN, 'web', 'lib', 'models', 'yolo11n-pose-fp16.onnx'), 'kinect/web/lib/models/yolo11n-pose-fp16.onnx'))
+        files += [(p, f'kinect/recordings/training/images/{split}/{os.path.basename(p)}') for p in sorted(glob.glob(os.path.join(out, 'images', split, f'{only}*.png')))]
+    if not only:
+        for w in ('yolo11x-pose.pt', 'yolo11n-pose.pt'):
+            files.append((os.path.join(out, 'weights', w), f'kinect/recordings/training/weights/{w}'))
+        files.append((os.path.join(MAIN, 'web', 'lib', 'models', 'yolo11n-pose-fp16.onnx'), 'kinect/web/lib/models/yolo11n-pose-fp16.onnx'))
     with zipfile.ZipFile(dst, 'w', zipfile.ZIP_STORED) as z:  # PNG and weights do not compress further
         for src, arc in files:
             z.write(src, arc)
@@ -96,7 +99,11 @@ def main():
     ap.add_argument('--out', default=os.path.join(REC, 'training'))
     ap.add_argument('--epochs', type=int, default=40)
     ap.add_argument('--no-zip', action='store_true', help='only the notebook (after a change to the scripts)')
+    ap.add_argument('--only', default='', help='pack only the frames whose name starts so (data added later), no notebook')
     a = ap.parse_args()
+    if a.only:
+        pack(a.out, a.only)
+        return
     if not a.no_zip:
         pack(a.out)
     notebook(a.out, a.epochs)
