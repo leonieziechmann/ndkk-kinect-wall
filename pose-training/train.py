@@ -10,7 +10,7 @@ import argparse, os, shutil, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from frames import REC, THREADS, be_nice  # noqa: E402
+from frames import REC, THREADS, be_nice, device  # noqa: E402
 from teacher import FLIP  # noqa: E402
 
 
@@ -48,7 +48,7 @@ def main():
         shutil.copyfile(trainer.last, os.path.join(os.path.dirname(trainer.last), 'resume.pt'))
 
     def maybe_stop(trainer):
-        if os.path.exists(stop_file):
+        if not trainer.stop and os.path.exists(stop_file):
             print(f'{stop_file} found: stopping after epoch {trainer.epoch + 1}; go on with: python train.py --resume --name {a.name}', flush=True)
             trainer.stop = True
 
@@ -71,7 +71,7 @@ def main():
         epochs=a.epochs,
         batch=a.batch,
         fraction=a.fraction,
-        device='cpu',
+        device=device(),
         workers=a.workers,
         project=os.path.join(a.out, 'runs'),
         name=a.name,

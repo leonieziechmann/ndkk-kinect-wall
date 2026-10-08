@@ -14,7 +14,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from frames import REC, THREADS, be_nice  # noqa: E402
+from frames import REC, THREADS, be_nice, device  # noqa: E402
 
 # COCO-17: index of the same point on the other side
 FLIP = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]
@@ -34,20 +34,20 @@ def detect(model, paths, flip):
     """Per image: [{box: [x0, y0, x1, y1], score, kp: [17 x [x, y, conf]]}] in image pixels."""
     from PIL import Image
     imgs = [np.array(Image.open(p).convert('RGB')) for p in paths]
-    res = model.predict(imgs, imgsz=512, conf=0.25, iou=0.5, device='cpu', verbose=False)
+    res = model.predict(imgs, imgsz=512, conf=0.25, iou=0.5, device=device(), verbose=False)
     out = []
     for r in res:
-        b = r.boxes.xyxy.numpy().tolist()
-        s = r.boxes.conf.numpy().tolist()
-        k = r.keypoints.data.numpy().tolist() if r.keypoints is not None else [[] for _ in b]
+        b = r.boxes.xyxy.cpu().numpy().tolist()
+        s = r.boxes.conf.cpu().numpy().tolist()
+        k = r.keypoints.data.cpu().numpy().tolist() if r.keypoints is not None else [[] for _ in b]
         out.append([{'box': b[j], 'score': s[j], 'kp': k[j]} for j in range(len(b))])
     if not flip:
         return out
-    res = model.predict([im[:, ::-1].copy() for im in imgs], imgsz=512, conf=0.25, iou=0.5, device='cpu', verbose=False)
+    res = model.predict([im[:, ::-1].copy() for im in imgs], imgsz=512, conf=0.25, iou=0.5, device=device(), verbose=False)
     for i, r in enumerate(res):
-        fb = [[W - 1 - x1, y0, W - 1 - x0, y1] for x0, y0, x1, y1 in r.boxes.xyxy.numpy().tolist()]
-        fs = r.boxes.conf.numpy().tolist()
-        fk = r.keypoints.data.numpy().tolist() if r.keypoints is not None else [[] for _ in fb]
+        fb = [[W - 1 - x1, y0, W - 1 - x0, y1] for x0, y0, x1, y1 in r.boxes.xyxy.cpu().numpy().tolist()]
+        fs = r.boxes.conf.cpu().numpy().tolist()
+        fk = r.keypoints.data.cpu().numpy().tolist() if r.keypoints is not None else [[] for _ in fb]
         for p in out[i]:
             j = max(range(len(fb)), key=lambda j: iou(p['box'], fb[j]), default=None)
             if j is None or iou(p['box'], fb[j]) < 0.5:

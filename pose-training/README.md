@@ -31,6 +31,17 @@ $PY pose-training/export.py                                 # ONNX + float16 lik
 - **eval.py**: pose mAP (keypoint similarity, OKS) and box mAP on the validation frames against the teacher, per model.
 - **export.py**: ONNX for 448×512, then float16, and a check against the current browser model (same input and output, run with the browser's preprocessing). The result goes into `web/lib/models/` only after the backtest (`recordings/backtest/`) and a check in the browser.
 
+## On Kaggle (free GPU)
+
+`kaggle.py` packs everything for a Kaggle notebook into `recordings/training/kaggle/`: `kinect-pose-daten.zip` (the frames, the weights, the browser's current model; ~1 GB) and `kinect-pose-training.ipynb` (the scripts inside, so it needs nothing from the repository).
+
+1. kaggle.com → Datasets → New Dataset: upload the zip, **Private**, name `kinect-pose-daten`.
+2. Code → New Notebook → File → Import Notebook: the `.ipynb`. Settings: Accelerator *GPU T4 x2*, Internet *on* (needs a verified phone number), Add Input: the dataset.
+3. *Save Version → Save & Run All*: it runs in the background (about 1–2 h), labels, trains, evaluates, exports, and deletes the copied frames at the end.
+4. Output: download `ergebnis.zip` (raw labels, runs with weights and plots, ONNX export, `eval.txt`) and unpack it into `recordings/training/`.
+
+After a change to the scripts: `kaggle.py --no-zip` rebuilds only the notebook. The scripts use the GPU when there is one (`POSE_DEVICE` overrides it).
+
 ## Stopping and going on
 
 Everything can stop at any time and go on later:

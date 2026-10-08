@@ -39,13 +39,22 @@ def be_nice():
         os.nice(19)
 
 
-# CPU threads for the models: a quarter of the cores, the rest stays free for work and the live setup
-THREADS = max(1, (os.cpu_count() or 4) // 4)
+# CPU threads for the models: a quarter of the cores, the rest stays free for work and the live setup;
+# POSE_THREADS on a machine of its own (a cloud VM: all of them)
+THREADS = int(os.environ.get('POSE_THREADS') or 0) or max(1, (os.cpu_count() or 4) // 4)
 
+def device():
+    """POSE_DEVICE, else the first CUDA GPU if there is one (Kaggle, Colab), else the CPU."""
+    if os.environ.get('POSE_DEVICE'):
+        return os.environ['POSE_DEVICE']
+    import torch
+    return '0' if torch.cuda.is_available() else 'cpu'
+
+
+# KINECT_MAIN: the folder with recordings/ (on a machine without the repository, e.g. a cloud VM that
+# has only recordings/training)
 MAIN = main_checkout()
 REC = os.path.join(MAIN, 'recordings')
-sys.path.insert(0, os.path.join(REC, 'katalog', 'werkzeuge'))
-import k2  # noqa: E402  (the catalog's reader for .k2rec)
 
 MULTI = ['145333', '145834', '150334', '150835', '153816', '154316', '154817', '155317', '155817']
 VAL = {'155317': None, '150835': None, '150334': (140.0, None)}  # recording: (from s, to s) or the whole
@@ -69,6 +78,9 @@ def main():
     ap.add_argument('--stride', type=int, default=12, help='every n-th frame for training')
     ap.add_argument('--val-stride', type=int, default=15)
     a = ap.parse_args()
+    sys.path.insert(0, os.path.join(REC, 'katalog', 'werkzeuge'))
+    import k2  # the catalog's reader for .k2rec
+
     listing = []
     for tag in MULTI:
         name = f'multi-2026-10-08-{tag}'
