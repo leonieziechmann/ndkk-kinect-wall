@@ -37,6 +37,8 @@ def main():
     ap.add_argument('--resume', action='store_true')
     ap.add_argument('--train-split', default='train', help='images/<split> to train on (val: a quick test of the pipeline)')
     ap.add_argument('--threads', type=int, default=THREADS, help='CPU threads (the rest stays free)')
+    ap.add_argument('--lr0', type=float, default=0.0005)
+    ap.add_argument('--patience', type=int, default=0, help='stop after so many epochs without a better validation (0: never; the validation is noisy while the learning rate is high, the best epochs come when it decays)')
     a = ap.parse_args()
     be_nice()
     import torch
@@ -79,11 +81,11 @@ def main():
         exist_ok=True,
         # fine-tuning: a small learning rate, the COCO knowledge stays
         optimizer='AdamW',
-        lr0=0.0005,
+        lr0=a.lr0,
         lrf=0.1,
         warmup_epochs=1,
         cos_lr=True,
-        patience=8,
+        patience=a.patience,
         # infrared is gray: no hue or saturation, but brightness varies (distance to the emitter)
         hsv_h=0.0,
         hsv_s=0.0,
