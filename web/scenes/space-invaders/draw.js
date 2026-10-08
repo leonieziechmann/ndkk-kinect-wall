@@ -2,7 +2,7 @@
 // Retro sprites, lit like a modern game: everything that glows also lights the map around it.
 
 import { CITY } from './game.js';
-import { SPRITES, EYES, SHIP, SHIP_W, SHIP_H, ICONS, POWER_COLORS, rgb, neon } from './pixels.js';
+import { SPRITES, EYES, SHIP, SHIP_W, SHIP_H, ICONS, POWER_COLORS, JUMP_HINT, rgb, neon } from './pixels.js';
 import { MAX_LIGHTS } from './render.js';
 
 export const WHITE = [1, 1, 1];
@@ -78,6 +78,16 @@ export function ellipse(pix, cx, cy, rx, ry, col, a, dashes = 0, turn = 0) {
     ly = y;
     pix.put(x, y, col, a);
   }
+}
+
+/**
+ * The jump hint for a unit whose boost is ready: 'full' (figure and arrow) until its first boost,
+ * 'arrow' (only an arrow) after that, null when not ready or switched off.
+ */
+function jumpHint(P, bo, t) {
+  if (!P.jumpBoost || P.jumpHint === 'aus' || bo.active || bo.charge < 1 || t - bo.readyAt < 0.5) return null;
+  if (P.jumpHint === 'immer' || !bo.uses) return 'full';
+  return 'arrow';
 }
 
 /** the corners of a pointy-top hexagon, clockwise from the top */
@@ -325,13 +335,16 @@ export function drawArt(S, people, look) {
     const r = 0.36 * S.P.bodyScale + 0.1;
     const rx = r * L.sx;
     const ry = r * L.sy;
-    const bo = s?.boost ?? { charge: 1, active: false, at: -9, readyAt: -9 };
+    const bo = s?.boost ?? { charge: 1, active: false, at: -9, readyAt: -9, uses: 0 };
+    // ready and not used yet: the hexagon hops along with the jump hint (see below)
+    const hint = jumpHint(S.P, bo, t);
+    const hop = hint === 'full' && (t * 1.1) % 1 > 0.5 ? -2 : 0;
     if (s?.fortified) {
       const u = Math.min(1, (t - s.fortAt) / 0.25);
       hexagon(pix, cx, cy, rx * (1 + 0.4 * (1 - u) ** 2), ry * (1 + 0.4 * (1 - u) ** 2), lk.col, 0, 0.1);
       for (const [x, y] of hexPoints(cx, cy, rx, ry)) pix.rect(Math.round(x) - 1, Math.round(y) - 1, 2, 2, mix(lk.col, WHITE, 0.5), lk.a);
     }
-    hexArc(pix, cx, cy, rx, ry, 1, lk.col, 0.12 * lk.a);
+    hexArc(pix, cx, cy + hop, rx, ry, 1, lk.col, 0.12 * lk.a);
     let col = lk.col;
     let a = 0.4;
     if (bo.active) {
@@ -343,7 +356,26 @@ export function drawArt(S, people, look) {
       col = mix(lk.col, WHITE, 0.15 + 0.15 * Math.sin(t * 4) + ready * 0.7);
       a = 0.75 + 0.25 * Math.sin(t * 4);
     }
-    hexArc(pix, cx, cy, rx, ry, bo.charge, col, a * lk.a);
+    hexArc(pix, cx, cy + hop, rx, ry, bo.charge, col, a * lk.a);
+    // the jump hint, no text: a little figure crouching and jumping, an arrow up (until the first boost)
+    if (hint) {
+      const ph = (t * 1.1) % 1;
+      const hx = Math.round(cx + rx * 0.75);
+      const above = cy - ry - 13 >= 0;
+      const hy = Math.round(above ? cy - ry - 13 : cy + ry + 3);
+      const hcol = mix(lk.col, WHITE, 0.55);
+      if (hint === 'full') {
+        const up = ph > 0.5;
+        pix.sprite(up ? JUMP_HINT.jump : JUMP_HINT.crouch, hx, hy + (up ? -2 : 1), hcol, 0.95 * lk.a);
+        if (!up && ph < 0.12) {
+          pix.put(hx, hy + 10, hcol, 0.6);
+          pix.put(hx + 6, hy + 10, hcol, 0.6);
+        }
+      }
+      // the arrow rises and fades, again and again
+      const ay = hint === 'full' ? hy - 5 - Math.round(ph * 3) : Math.round(cy - ry - 5 - ph * 3 + hop);
+      pix.sprite(JUMP_HINT.arrow, hint === 'full' ? hx : Math.round(cx - 3), ay, hcol, (1 - ph) * lk.a);
+    }
     // the end of the bar
     if (bo.charge > 0 && bo.charge < 1) {
       const [ex, ey] = hexAt(cx, cy, rx, ry, bo.charge);

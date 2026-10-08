@@ -165,6 +165,7 @@ export default {
     homing: { value: 5, min: 0, max: 20, step: 0.5, label: 'Schüsse lenken nach (rad/s)', folder: 'Steuerung' },
     bodyScale: { value: 0.6, min: 0.3, max: 1, step: 0.05, label: 'Personen-Größe', folder: 'Steuerung' },
     jumpBoost: { value: true, label: 'Springen = Boost', folder: 'Steuerung' },
+    jumpHint: { value: 'bis zum ersten Boost', options: ['bis zum ersten Boost', 'immer', 'aus'], label: 'Sprung-Hinweis (Männchen)', folder: 'Steuerung' },
     boostTime: { value: 5, min: 1, max: 20, step: 0.5, label: 'Boost hält (s)', folder: 'Steuerung' },
     boostRecharge: { value: 12, min: 2, max: 60, step: 1, label: 'Boost lädt auf (s)', folder: 'Steuerung' },
     boostFire: { value: 2.5, min: 1, max: 6, step: 0.1, label: 'Boost: Feuer schneller (×)', folder: 'Steuerung' },

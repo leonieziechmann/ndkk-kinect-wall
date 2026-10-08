@@ -616,7 +616,7 @@ export class Game {
   state(p) {
     let s = this.players.get(p.id);
     if (!s) {
-      s = { slot: p.slot, fire: new Map(), lock: new Map(), auto: -9, autoTarget: null, speed: 0, fortified: false, fortAt: -9, stunUntil: -1, hitAt: -1, combo: 0, lastKill: -9, seen: this.time, power: { rapid: -9, spread: -9, mega: -9, shield: 0, shieldUntil: -9, megaTick: 0 }, mega: null, shieldHit: -9, boost: { charge: 1, active: false, at: -9, readyAt: -9 } };
+      s = { slot: p.slot, fire: new Map(), lock: new Map(), auto: -9, autoTarget: null, speed: 0, fortified: false, fortAt: -9, stunUntil: -1, hitAt: -1, combo: 0, lastKill: -9, seen: this.time, power: { rapid: -9, spread: -9, mega: -9, shield: 0, shieldUntil: -9, megaTick: 0 }, mega: null, shieldHit: -9, boost: { charge: 1, active: false, at: -9, readyAt: -9, uses: 0 } };
       this.players.set(p.id, s);
     }
     s.slot = p.slot;
@@ -1588,6 +1588,7 @@ export class Game {
       if (p.stomp && P.jumpBoost && !stunned && !bo.active && bo.charge >= 1) {
         bo.active = true;
         bo.at = t;
+        bo.uses++;
         this.burst(cx, cy, 40, p.col, 60, 0.7, WHITE);
         this.fx.ripple(cx, cy, 6, 5, 0.5);
         this.fx.light(cx, cy, 1.2, 2.5, p.col, 0.5);

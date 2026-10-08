@@ -232,3 +232,10 @@ export const POWER_COLORS = {
   mega: rgb('#ffd6f4'),
   slow: rgb('#b07cff'),
 };
+
+/** the jump hint (no text): a little figure crouching and jumping, an arrow up; 7 x 9 art px */
+export const JUMP_HINT = {
+  crouch: parse([['..###..', '..###..', '...#...', '.#####.', '#..#..#', '...#...', '..#.#..', '.#...#.', '.##.##.']])[0],
+  jump: parse([['#.###.#', '#.###.#', '.#.#.#.', '..###..', '...#...', '...#...', '..#.#..', '.#...#.', '#.....#']])[0],
+  arrow: parse([['...#...', '..#.#..', '.#...#.']])[0],
+};
