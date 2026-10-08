@@ -449,10 +449,14 @@ export default {
 
     jumpHeight: { value: 0.75, min: 0.2, max: 1.2, step: 0.01, label: 'Sprung-Boost: Höhe auf der Wand (m)', folder: 'Springen' },
     jumpTime: { value: 1.1, min: 0.3, max: 2, step: 0.01, label: 'Sprung-Boost: Dauer in der Luft (s)', folder: 'Springen' },
-    jumpVy: { value: 0.35, min: 0.15, max: 1.5, step: 0.01, label: 'Sprung ab: Becken steigt (m/s)', folder: 'Springen' },
-    jumpRise: { value: 0.035, min: 0.01, max: 0.25, step: 0.005, label: 'und liegt über dem Stand (m)', folder: 'Springen' },
+    jumpVy: { value: 0.45, min: 0.15, max: 1.5, step: 0.01, label: 'Sprung ab: Körper (Maske) steigt schneller als (m/s)', folder: 'Springen' },
+    jumpVy2: { value: 0.35, min: 0, max: 1.5, step: 0.01, label: 'und das Becken schneller als (m/s)', folder: 'Springen' },
+    walkGate: { value: 0.55, min: 0.1, max: 3, step: 0.05, label: 'kein Sprung beim Gehen schneller als (m/s)', folder: 'Springen' },
+    jumpRise: { value: 0.05, min: 0.01, max: 0.25, step: 0.005, label: 'und würde so hoch fliegen (m über dem Stand)', folder: 'Springen' },
+    jumpDip: { value: 0.1, min: 0, max: 0.4, step: 0.01, label: 'Absprung darf so tief beginnen (m unter dem Stand)', folder: 'Springen' },
+    instant: { value: 2, min: 1, max: 4, step: 0.1, label: 'Figur hebt sofort mit (× echter Hub)', folder: 'Springen' },
     jumpRest: { value: 0.15, min: 0, max: 1, step: 0.01, label: 'Mindestabstand zweier Sprünge (s)', folder: 'Springen' },
-    jumpLead: { value: 0.05, min: 0, max: 0.3, step: 0.01, label: 'Sprung startet schon ein Stück im Bogen (s)', folder: 'Springen' },
+    jumpLead: { value: 0.03, min: 0, max: 0.3, step: 0.01, label: 'Sprung startet schon ein Stück im Bogen (s)', folder: 'Springen' },
 
     playNear: { value: 0.8, min: 0.3, max: 6, step: 0.05, label: 'Mitspielen ab (m vom Sensor)', folder: 'Mitspielen' },
     playFar: { value: 3.2, min: 0.5, max: 8, step: 0.05, label: 'Mitspielen bis (m vom Sensor)', folder: 'Mitspielen' },

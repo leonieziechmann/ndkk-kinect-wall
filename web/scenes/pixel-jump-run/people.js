@@ -82,6 +82,30 @@ class Ring {
   }
 }
 
+/** one height signal: its standing level (Ring.stand), the rise above it, its velocity */
+class Signal {
+  constructor() {
+    this.ring = new Ring(30);
+    this.v = 0;
+    this.y = null;
+    this.t = 0;
+  }
+  get n() {
+    return this.ring.n;
+  }
+  /** adds a value (null: nothing measured); returns { stand, rise, v } or null */
+  add(y, time) {
+    if (!y) return null;
+    const dt = time - this.t;
+    // velocity by finite difference, lightly smoothed; a gap in the results starts over
+    this.v = this.y !== null && dt > 1e-3 && dt < 0.3 ? 0.4 * this.v + 0.6 * ((y - this.y) / dt) : 0;
+    this.y = y;
+    this.t = time;
+    const stand = this.ring.stand(y, time);
+    return { stand, rise: y - stand, v: this.v };
+  }
+}
+
 /** distance from (px, py) to the segment a-b */
 function segDist(px, py, ax, ay, bx, by) {
   const dx = bx - ax;
@@ -107,10 +131,10 @@ export class Figure {
     this.cx = 0; // wall x of the body center (m from the left edge)
     this.dist = 3;
     this.heights = new Ring(30); // 1 s at 30 fps: the standing height (Ring.stand)
-    this.pelvis = new Ring(30); // the standing level of the pelvis
+    this.track = { body: new Signal(), pelvis: new Signal() }; // the jump signals (see signals())
     this.standH = 0;
     this.realRise = 0; // m on the wall: how far the real body is above where it stands
-    this.sig = { pelvisY: 0, pelvisVy: 0, feetY: 0, topY: 0, height: 0, basePelvis: 0 };
+    this.sig = { pelvisY: 0, pelvisVy: 0, feetY: 0, medY: 0, meanY: 0, topY: 0, height: 0, base: 0 };
     this.grid = null; // part per cell (before the jump lift), see PeopleLayer
     this.bbox = [0, 0, -1, -1]; // c0, r0, c1, r1 (inclusive)
     this.cells = 0;
@@ -119,6 +143,7 @@ export class Figure {
     this.h = 0; // m above the ground (game physics)
     this.vy = 0; // m/s
     this.g = 9.81;
+    this.instant = 1; // the instant lift (param `instant`), see updateLift
     this.airJumps = 0;
     this.armed = true; // the next hop may trigger a jump
     this.armedAt = 0;
@@ -143,9 +168,11 @@ export class Figure {
     const v0 = (4 * p.jumpHeight) / p.jumpTime;
     this.g = (8 * p.jumpHeight) / (p.jumpTime * p.jumpTime);
     this.airJumps = this.air ? this.airJumps + 1 : 0;
+    // takes off from where the figure is drawn now (the instant lift may have raised it already)
+    this.h = Math.max(this.h, this.realRise * this.instant);
     this.vy = v0;
     if (!this.air && lead > 0) {
-      this.h = v0 * lead - 0.5 * this.g * lead * lead;
+      this.h += v0 * lead - 0.5 * this.g * lead * lead;
       this.vy = v0 - this.g * lead;
     }
     this.air = true;
@@ -171,8 +198,9 @@ export class Figure {
         this.justLanded = true;
       }
     }
-    // the figure rises with the real body already: the jump only adds what is missing
-    const lift = Math.max(0, this.h - this.realRise);
+    // the figure rises with the real body already (its mask); `instant` lifts it more at once,
+    // before the jump is detected; the jump only adds what is missing
+    const lift = Math.max(0, Math.max(this.h, this.realRise * this.instant) - this.realRise);
     this.lift = lift;
     this.liftRows = Math.round(lift / L.cellMy);
     return this.lift;
@@ -271,6 +299,7 @@ export class PeopleLayer {
     const list = [];
     for (const f of this.figures.values()) {
       if (!f.visible || !f.grid) continue;
+      f.instant = p.instant;
       f.updateLift(time, dt, L);
       list.push(f);
     }
@@ -289,11 +318,17 @@ export class PeopleLayer {
   }
 
   /**
-   * The jump detection (once per tracking result). Measured on final-solo in live mode: a real jump
-   * lifts the pelvis 10-50 cm above where it stands, at over 0.5 m/s; jumping jacks lift it 5-9 cm.
-   * Bobbing knees and standing up from a crouch bring it back to the standing level and hardly above
-   * (standing up reaches 2 m/s, so the speed alone says nothing). The standing level is the highest
-   * 1 s median of the last seconds and sinks only 3 mm/s: it stays put while someone crouches.
+   * The jump detection, once per tracking result. Two signals must agree:
+   * - the median height of the person's mask: exact in every frame, not smoothed, independent of
+   *   the pose model; but raised arms shift it by 10-25 cm;
+   * - the raw pelvis of the skeleton (not the smoothed one, which lags 0.1-0.2 s): blind to arms,
+   *   noisy on its own.
+   * Position and velocity together (ballistic): a jump fires as soon as the body moves up fast
+   * enough near where it stands that it would fly (height + v² / 2g above the standing level), so
+   * during the push-off. Measured on final-solo in live mode: the big jump fires 0.6 s before its top
+   * (the old rule on the smoothed pelvis: 0.05 s), every hop of the jumping jacks fires. Standing up
+   * from a crouch slows down before it reaches the standing level; walking (moving sideways) never
+   * fires. The standing levels are the highest 1 s medians and sink only 3 mm/s (crouching).
    */
   signals(f, P, wall, p, time) {
     const m = wall.room.matrix;
@@ -301,25 +336,47 @@ export class PeopleLayer {
     s.height = P.height ?? 0;
     const pel = P.room?.joints?.pelvis;
     const mv = P.motion?.pelvis;
-    let jumped = false;
     if (pel) {
       s.pelvisY = pel[1];
       s.pelvisVy = mv ? m[1] * mv[0] + m[5] * mv[1] + m[9] * mv[2] : 0;
-      s.basePelvis = f.pelvis.stand(s.pelvisY, time);
-      const rise = s.pelvisY - s.basePelvis;
-      f.realRise = Math.max(0, rise) * f.k;
-      // every hop counts, also in the air (air jumps). One hop triggers once: the next one needs
-      // the pelvis to have stopped rising first.
-      if (f.player && f.alive !== false && f.armed && time - f.born > 1 && f.pelvis.n >= 20 && s.pelvisVy > p.jumpVy && rise > p.jumpRise) {
+    }
+    // the raw pelvis in the room
+    const raw = P.camera?.extra?.[1];
+    s.rawY = 0;
+    if (raw && raw[3] > 0) {
+      const wx = (wall.xSign * raw[0]) / 1000;
+      const wy = -raw[1] / 1000;
+      const wz = raw[2] / 1000;
+      s.rawY = m[1] * wx + m[5] * wy + m[9] * wz + m[13];
+    }
+    // how fast the person moves over the floor (walking): the most of the last 0.3 s
+    const vel = P.velocity;
+    s.walk = vel ? Math.hypot(vel[0], vel[2]) : 0;
+    const walks = (f.walks ??= []);
+    walks.push([time, s.walk]);
+    while (walks.length && time - walks[0][0] > 0.3) walks.shift();
+    const walking = Math.max(...walks.map((w) => w[1]));
+    let jumped = false;
+    const body = f.track.body.add(s.medY, time);
+    const pelv = s.rawY ? f.track.pelvis.add(s.rawY, time) : null;
+    if (body) {
+      s.base = body.stand;
+      // the figure's own rise: the smaller of both (raised arms lift only the mask)
+      f.realRise = Math.max(0, Math.min(body.rise, pelv ? pelv.rise : body.rise)) * f.k;
+      // every hop counts, also in the air (air jumps). One hop fires once: the next one needs the
+      // body to have stopped rising first.
+      const flies = body.rise > -p.jumpDip && body.rise + (body.v * body.v) / 19.62 > p.jumpRise;
+      const pelvisUp = !pelv || pelv.v > p.jumpVy2;
+      if (f.player && f.alive !== false && f.armed && time - f.born > 1 && f.track.body.n >= 20 && body.v > p.jumpVy && pelvisUp && flies && walking < p.walkGate) {
         f.startJump(time, p, p.jumpLead);
         f.armed = false;
         f.armedAt = time;
         this.jumped.push(f);
         jumped = true;
-      } else if (!f.armed && time - f.armedAt > p.jumpRest && (s.pelvisVy < 0.05 || rise < p.jumpRise * 0.5)) f.armed = true;
+      } else if (!f.armed && time - f.armedAt > p.jumpRest && (body.v < 0.05 || body.rise < p.jumpRise * 0.35)) f.armed = true;
     } else f.realRise = 0;
     if (this.log.length < this.logMax) {
-      this.log.push([+time.toFixed(3), f.id, +s.pelvisY.toFixed(3), +s.pelvisVy.toFixed(3), +s.feetY.toFixed(3), +s.topY.toFixed(3), +s.height.toFixed(3), +s.basePelvis.toFixed(3), 0, jumped ? 1 : 0]);
+      this.log.push([+time.toFixed(3), f.id, +s.pelvisY.toFixed(3), +s.pelvisVy.toFixed(3), +s.feetY.toFixed(3), +s.topY.toFixed(3), +s.height.toFixed(3), +(s.base ?? 0).toFixed(3), +(f.track.body.v ?? 0).toFixed(3), jumped ? 1 : 0, +(s.meanY ?? 0).toFixed(3), +(s.medY ?? 0).toFixed(3), +s.rawY.toFixed(3), +(s.p10 ?? 0).toFixed(3), +(s.p25 ?? 0).toFixed(3), +s.walk.toFixed(2)]);
     }
   }
 
@@ -356,6 +413,8 @@ export class PeopleLayer {
     }
     const hist = this.hist;
     hist.fill(0);
+    const sumY = new Float64Array(SLOTS);
+    const cntY = new Uint32Array(SLOTS);
 
     const shift = wall.shift;
     const invF2 = 1 / (FOCAL * FOCAL);
@@ -381,6 +440,8 @@ export class PeopleLayer {
       const ry = m[1] * wx + m[5] * wy + m[9] * z + m[13];
       const hb = Math.floor((ry - HIST_MIN) * 100);
       if (hb >= 0 && hb < HIST_BINS) hist[s * HIST_BINS + hb]++;
+      sumY[s] += ry;
+      cntY[s]++;
       const lat = side * rx;
       const x = center + (perPerson ? lat + shift[s] : lat * wall.k(lat, rz));
       const k = f.k;
@@ -399,16 +460,23 @@ export class PeopleLayer {
       let total = 0;
       for (let b = 0; b < HIST_BINS; b++) total += hist[s * HIST_BINS + b];
       if (total < 50) continue;
+      // percentiles of the height of all the person's pixels, interpolated inside the 1 cm bins
+      const qs = [0.03, 0.1, 0.25, 0.5, 0.99];
+      const at = qs.map(() => -1);
       let acc = 0;
-      let lo = -1;
-      let hi = -1;
       for (let b = 0; b < HIST_BINS; b++) {
-        acc += hist[s * HIST_BINS + b];
-        if (lo < 0 && acc >= total * 0.03) lo = b;
-        if (hi < 0 && acc >= total * 0.99) hi = b;
+        const c = hist[s * HIST_BINS + b];
+        const before = acc;
+        acc += c;
+        for (let k = 0; k < qs.length; k++) if (at[k] < 0 && acc >= total * qs[k]) at[k] = b + (c ? (total * qs[k] - before) / c : 0.5);
       }
-      f.sig.feetY = HIST_MIN + lo / 100;
+      f.sig.feetY = HIST_MIN + at[0] / 100;
+      f.sig.p10 = HIST_MIN + at[1] / 100;
+      f.sig.p25 = HIST_MIN + at[2] / 100;
+      f.sig.medY = HIST_MIN + at[3] / 100;
+      const hi = Math.floor(at[4]);
       f.sig.topY = HIST_MIN + hi / 100;
+      f.sig.meanY = cntY[s] ? sumY[s] / cntY[s] : 0;
     }
 
     const need = p.fill * L.cellMx * L.cellMy;
