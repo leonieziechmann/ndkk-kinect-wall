@@ -10,7 +10,7 @@ Everything about the wall lives in one shared core, so scenes do not each emulat
 | **`ctx.wall`** | the setup plus the mapping Kinect → wall, in JavaScript and WGSL (`lib/wall.js`). |
 | **`wall: true`** | the scene renders the LED image: canvas = LED pixels (1008 × 336), the page shows it scaled to fit. |
 | **Output window** `/wall/` | what goes to the LED controller: the LED image pixel-exact on the screen, plays the show, switches scenes with a crossfade. |
-| **Control center** `/control/` | the presenter: the show (playlist with params per entry), next/previous, blackout, test images, the wall setup with a top view of the room. |
+| **Control center** `/control/` | the presenter: the show (playlist with params per entry), next/previous, blackout, test images, a live preview, the wall setup with a top view of the room and block zones. |
 
 Both pages exist on every dev server: `http://127.0.0.1:<port>/control/` and `/wall/`.
 
@@ -70,6 +70,14 @@ Set in the control center, tab "Wand-Setup", folder "Zuordnung":
 - **Zone** (`zone.near`..`zone.far`, m from the sensor): `wallPerson()` and `inZone` only count people inside it.
 - **Floor:** detected by the person tracker (`sensor.floor: 'auto'`), or the sensor's height and tilt by hand.
 
+## Block zones (Sperrzonen)
+
+Places on the floor where nobody is tracked: the bar, a walkway behind the audience, the technician's desk, a reflecting surface. Drawn as polygons in the control center ("Wand-Setup" → top view → "Sperrzone zeichnen"), on top of a floor plan of the room ("Grundriss aktualisieren": one Kinect frame projected straight down onto the floor in 5 cm cells, showing what stands between 15 cm and 2 m: walls, tables, other stations, people; the floor faintly, the ceiling left out). Corners can be dragged; a zone can be switched off or deleted.
+
+- Stored in the setup as `blocks: [{ id, name, enabled, points: [[x, z], ...] }]` on the **floor plan**: x = m from the wall's left edge (as the audience sees it, where people really stand), z = m in front of the wall. They do not depend on mirror or stretch.
+- A person whose **feet** (the floor point below them) stand in a zone is removed from the tracking result before any scene sees it: `ctx.persons`, `ctx.kinect.persons` (labels, depth, indices, list), the GPU masks and skeletons, `wallPerson()`. Scenes need nothing for it (`ctx.wall.filterPersons()`, hooked in by the runtime as `ctx.kinect.personFilter`).
+- `ctx.wall.blockedPersons`: who was removed in the last result (`{ id, slot, x, z }`); the top view shows them as gray crosses. `ctx.wall.plan(room)`, `ctx.wall.blockAt(x, z)` for scenes that want the floor plan.
+
 ## ctx.wall (JavaScript)
 
 Updated by the runtime before every `frame()`. Points are arrays; methods take an optional `out` array.
@@ -90,6 +98,7 @@ Updated by the runtime before every `frame()`. Points are arrays; methods take a
 | `near(dist)` | 1 at the zone's near end … 0 at its far end |
 | `k(lat, z)` | the stretch factor at distance z on the side of `lat` |
 | `room` | `{ matrix, inverse, found, height, source }` world → room actually used |
+| `plan(room)`, `blockAt(x, z)`, `blockedPersons` | floor plan `[x, z]` (m from the left edge, m in front of the wall), the block zone there, who a block zone removed |
 | `pointer` | the mouse on the wall: `{ x, y, u, v, down, inside }` (for testing without people) |
 | `mirror(p)` | wall point → mirror world behind the wall for 3D: x from the wall center, y up, z = −distance |
 | `buffer(device)` | the uniform buffer for your own pipelines (WGSL: `wallWgsl(group, binding)` from `/lib/wall.js`) |
@@ -133,6 +142,8 @@ wallPersonAt(uv) -> u32      // slot, 0 = nobody
 
 - **Kiosk-Fenster auf dem LED-Bildschirm** starts a browser of its own (Chrome/Edge, own profile in `web/.cache/wall-browser/` of the main checkout) borderless on the screen chosen in "Wand-Setup → Bildschirm für die Ausgabe wählen" (Chrome asks once for permission to list the screens). It forces one CSS pixel per screen pixel. The same from a terminal: `npm run wall` (or `npm run wall -- --screen 1920,0,1920,1080`). Close it with Alt+F4 or "Ausgabe schließen".
 - **Fenster in diesem Browser** opens `/wall/` as a popup; click into it or press `f` for fullscreen.
+
+**Live preview without a window:** with "Live-Vorschau hier abspielen" the control center plays the show itself, in its preview area (`/wall/?embed` in a frame: a full output with its own Kinect connection and person tracking). As soon as an output window runs, the preview switches back to that window's picture, so the GPU never runs both. Handy while developing: the "▶" on a scene in the list shows it at once without adding it to the show.
 
 The output window places the LED image at "Versatz x/y" with "Abbildung: pixelgenau" (what LED controllers expect: they take a region of the HDMI picture, usually from the top left). Set the LED screen to 100 % scaling in Windows. "Fenster füllen" stretches it over the whole window for controllers that scale the full input.
 

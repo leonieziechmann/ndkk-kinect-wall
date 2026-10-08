@@ -89,8 +89,8 @@ export function startOutput(api) {
     const out = wall.setup.output;
     const dpr = devicePixelRatio || 1;
     let css;
-    if (out.fit === 'pixel') css = [out.x / dpr, out.y / dpr, led.w / dpr, led.h / dpr];
-    else if (out.fit === 'stretch') css = [0, 0, innerWidth, innerHeight];
+    if (out.fit === 'pixel' && !api.embedded) css = [out.x / dpr, out.y / dpr, led.w / dpr, led.h / dpr];
+    else if (out.fit === 'stretch' && !api.embedded) css = [0, 0, innerWidth, innerHeight];
     else {
       const s = Math.min(innerWidth / led.w, innerHeight / led.h);
       css = [(innerWidth - led.w * s) / 2, (innerHeight - led.h * s) / 2, led.w * s, led.h * s];
@@ -168,7 +168,7 @@ export function startOutput(api) {
     if (!current) return;
     const entry = show.entries.find((e) => e.id === current.id);
     if (!entry) {
-      current = { ...current, removed: true };
+      if (current.id !== 'adhoc') current = { ...current, removed: true };
       return;
     }
     const sceneChanged = entry.scene !== current.scene;
@@ -191,7 +191,8 @@ export function startOutput(api) {
   // ---------- commands ----------
 
   bus.on('play', (d) => {
-    const entry = show.entries.find((e) => e.id === d.entry);
+    // an entry of the show, or just a scene to look at (not in the show: id 'adhoc')
+    const entry = d.scene ? { id: 'adhoc', scene: String(d.scene), label: '', duration: 300, enabled: true, params: {} } : show.entries.find((e) => e.id === d.entry);
     if (entry) playEntry(entry, d.transition ?? show.transition);
   });
   bus.on('next', () => step(1));
@@ -215,15 +216,17 @@ export function startOutput(api) {
     over = !!d.over;
     telemetry();
   });
-  bus.on('preview', (d) => {
+  bus.on('preview', (d, msg) => {
+    // the control center that embeds this preview sees it live: pictures only for the others
+    if (api.embedded && msg.from === api.owner) return;
     previewUntil = d.on === false ? 0 : performance.now() + PREVIEW_FOR_MS;
   });
   bus.on('reload', () => location.reload());
-  bus.on('close', () => window.close());
+  bus.on('close', () => !api.embedded && window.close());
   bus.on('ping', () => telemetry());
 
   addEventListener('pointerdown', () => {
-    if (!document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
+    if (!api.embedded && !document.fullscreenElement) document.documentElement.requestFullscreen?.().catch(() => {});
   });
 
   // ---------- every frame ----------
@@ -307,8 +310,12 @@ export function startOutput(api) {
           inZone: p.inZone,
           top: p.top,
         })),
-        room: { found: wall.room.found, height: wall.room.height, source: wall.room.source, pitch: kinect.view.floor?.pitchDeg ?? null },
+        room: { found: wall.room.found, height: wall.room.height, source: wall.room.source, pitch: kinect.view.floor?.pitchDeg ?? null, matrix: [...wall.room.matrix] },
+        xSign: api.xSign,
         tanH: wall.tanH,
+        blocked: wall.blockedPersons,
+        embedded: api.embedded,
+        owner: api.owner || null,
         errors: rt.errors.slice(-6).map(({ where, message, count, at, scene }) => ({ where, message, count, at, scene })),
         blackout,
         pattern,

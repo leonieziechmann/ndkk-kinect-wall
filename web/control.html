@@ -28,10 +28,15 @@
 
 <main class="c-main">
   <section class="c-live">
-    <div class="preview-wrap">
+    <div class="preview-wrap" id="previewWrap">
       <img id="preview" alt="">
+      <div id="embedBox" class="embed-box" hidden></div>
       <div id="previewNote" class="preview-note">Keine Ausgabe verbunden</div>
       <div id="previewBadge" class="preview-badge" hidden>BLACKOUT</div>
+    </div>
+    <div class="row preview-row">
+      <label title="Spielt die Show direkt hier in der Steuerzentrale ab. Sobald ein Ausgabefenster läuft, zeigt sie stattdessen dessen Bild (keine doppelte GPU-Last)."><input type="checkbox" id="embedOn"> Live-Vorschau hier abspielen, solange kein Ausgabefenster läuft</label>
+      <span id="embedNote" class="muted"></span>
     </div>
     <div class="now">
       <div>
@@ -102,12 +107,20 @@
         </div>
       </div>
       <div>
-        <h2>Draufsicht <span class="muted">(Wand oben, Publikum unten)</span></h2>
-        <canvas id="plan" class="plan"></canvas>
-        <div class="muted legend">
-          Grau: was die Kinect sieht, hell: die Zone. Gestrichelt: der Bezugsabstand und wohin sein Sichtfeld auf der Wand fällt.
-          Punkte: die Personen, wo sie stehen; die Linie zeigt, wo die Wand sie zeigt. Testbild „Kalibrierung“ zeigt dasselbe auf der Wand.
+        <h2>Grundriss <span class="muted">(von oben, maßstabsgetreu · Wand oben, Publikum unten)</span></h2>
+        <div class="row">
+          <button id="shotBtn" class="btn small">Grundriss aktualisieren</button>
+          <button id="blockBtn" class="btn small">Sperrzone zeichnen</button>
+          <span id="planNote" class="muted"></span>
         </div>
+        <canvas id="plan" class="plan" tabindex="0"></canvas>
+        <div class="muted legend">
+          <b>Grundriss:</b> ein Kinect-Bild senkrecht von oben auf den Boden projiziert, in 5-cm-Feldern: alles, was zwischen 15 cm und 2 m hoch steht (Wände, Tische, andere Stationen, Personen); hell = hoch. Schwach blau: der Boden, den die Kinect sieht. Die Decke ist ausgeblendet.
+          Punktiert: das Sichtfeld der Kinect, hellblau: die Zone. Gelb gestrichelt: der Bezugsabstand und wohin sein Sichtfeld auf der Wand fällt.
+          Punkte: die Personen, wo sie stehen; die Linie zeigt, wo die Wand sie zeigt.
+          <b>Sperrzonen</b> (rot): wer mit den Füßen darin steht, wird nicht getrackt – in keiner Szene. Eckpunkte lassen sich ziehen, Entf löscht die gewählte Zone.
+        </div>
+        <div id="blocks" class="blocks"></div>
       </div>
     </div>
   </section>

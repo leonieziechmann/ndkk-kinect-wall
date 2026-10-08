@@ -25,6 +25,10 @@ import './runtime.css';
 const query = new URLSearchParams(location.search);
 /** /wall/: the output window for the LED controller (no UI, plays the show) */
 const OUTPUT = /^\/wall\/?$/.test(location.pathname);
+/** /wall/?embed: the same as a live preview inside the control center (fits its frame) */
+const EMBED = OUTPUT && query.has('embed');
+/** the control center page that embeds this preview (its wall bus id) */
+const OWNER = EMBED ? (query.get('owner') ?? '') : '';
 const URL_NAME = decodeURIComponent(/\/scenes\/([^/]+)\/?/.exec(location.pathname)?.[1] ?? query.get('scene') ?? '');
 const HUB = hubUrl();
 const KIOSK = OUTPUT || query.has('kiosk');
@@ -87,7 +91,9 @@ kinect.connect();
 const camera = new OrbitCamera();
 const panel = new ParamPanel();
 const wall = new WallMap();
-wall.output = OUTPUT;
+wall.output = OUTPUT && !EMBED;
+// block zones of the wall setup: nobody standing in one is tracked, for every scene
+kinect.personFilter = (result) => wall.filterPersons(result);
 const bus = new WallBus(OUTPUT ? 'output' : 'scene');
 let xSign = remember('kinect:xSign', -1) === 1 ? 1 : -1;
 let uiHidden = KIOSK || remember('kinect:uiHidden', false) === true;
@@ -356,8 +362,8 @@ function layout(inst) {
     const out = wall.setup.output;
     const dpr = devicePixelRatio || 1;
     let css;
-    if (OUTPUT && out.fit === 'pixel') css = [out.x / dpr, out.y / dpr, led.w / dpr, led.h / dpr];
-    else if (OUTPUT && out.fit === 'stretch') css = [0, 0, innerWidth, innerHeight];
+    if (OUTPUT && !EMBED && out.fit === 'pixel') css = [out.x / dpr, out.y / dpr, led.w / dpr, led.h / dpr];
+    else if (OUTPUT && !EMBED && out.fit === 'stretch') css = [0, 0, innerWidth, innerHeight];
     else {
       const pad = OUTPUT ? 0 : 16;
       const s = Math.min(Math.max(1, innerWidth - 2 * pad) / led.w, Math.max(1, innerHeight - 2 * pad) / led.h);
@@ -881,6 +887,8 @@ function status() {
 
 /** What lib/wall-output.js may use. */
 const outputApi = {
+  embedded: EMBED,
+  owner: OWNER,
   kinect,
   wall,
   bus,

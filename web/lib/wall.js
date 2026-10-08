@@ -19,6 +19,10 @@
 // per person, from the body center); with 'points' every point is stretched (bodies get wider).
 // Camera image effects (kinectUv() on the LED image, wallToKinect()) see the image as it falls on the
 // wall at the reference distance: in true proportions, or (image 'stretch') as wide as the mapping.
+//
+// Block zones (setup.blocks): polygons on the floor plan (m from the wall's left edge, m in front of
+// the wall). A person whose feet stand in one is removed from the tracking result before any scene
+// sees it (ctx.persons, the masks, the skeletons, wallPerson): filterPersons(), used by the runtime.
 
 export const WALL_DEFAULTS = Object.freeze({
   led: { w: 1008, h: 336 }, // LED pixels
@@ -31,6 +35,9 @@ export const WALL_DEFAULTS = Object.freeze({
   zone: { near: 0.5, far: 4.5 }, // m from the sensor
   map: { mode: 'fit', factor: 1.5, distance: 3, depth: 0, apply: 'person', clamp: true, margin: 0.3, lift: 0, scaleY: 1, image: 'true' },
   color: { brightness: 1, gamma: 1, r: 1, g: 1, b: 1 },
+  // block zones: nobody standing in one is tracked. Polygons on the floor plan: [x, z] = m from the
+  // wall's left edge (as the audience sees it, real place) and m in front of the wall
+  blocks: [],
 });
 
 /** Every setting with its range and label (the control center builds its form from this). */
@@ -119,11 +126,45 @@ export function normalizeSetup(raw) {
   out.led.w = Math.round(out.led.w);
   out.led.h = Math.round(out.led.h);
   if (out.zone.far <= out.zone.near) out.zone.far = out.zone.near + 0.5;
+  out.blocks = normalizeBlocks(raw?.blocks);
   const w = raw?.output?.window;
   if (w && ['left', 'top', 'width', 'height'].every((k) => Number.isFinite(w[k]))) {
     out.output.window = { left: Math.round(w.left), top: Math.round(w.top), width: Math.max(1, Math.round(w.width)), height: Math.max(1, Math.round(w.height)), label: String(w.label ?? '').slice(0, 80) };
   }
   return out;
+}
+
+const MAX_BLOCKS = 32;
+const MAX_BLOCK_POINTS = 64;
+
+/** Valid block zones: { id, name, enabled, points: [[x, z], ...] } with 3..64 points. */
+export function normalizeBlocks(raw) {
+  const out = [];
+  for (const b of Array.isArray(raw) ? raw.slice(0, MAX_BLOCKS) : []) {
+    const points = (Array.isArray(b?.points) ? b.points : [])
+      .slice(0, MAX_BLOCK_POINTS)
+      .filter((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]))
+      .map((p) => [Math.round(p[0] * 1000) / 1000, Math.round(p[1] * 1000) / 1000]);
+    if (points.length < 3) continue;
+    out.push({
+      id: typeof b.id === 'string' && /^[a-z0-9]{1,32}$/i.test(b.id) ? b.id : Math.random().toString(36).slice(2, 10),
+      name: typeof b.name === 'string' ? b.name.slice(0, 60) : '',
+      enabled: b.enabled !== false,
+      points,
+    });
+  }
+  return out;
+}
+
+/** Is [x, z] inside the polygon (list of [x, z])? */
+export function inPolygon(x, z, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, zi] = poly[i];
+    const [xj, zj] = poly[j];
+    if (zi > z !== zj > z && x < ((xj - xi) * (z - zi)) / (zj - zi) + xi) inside = !inside;
+  }
+  return inside;
 }
 
 /** World -> room without a found floor: the sensor `height` m above the floor, tilted down by `tiltDeg`. */
@@ -288,6 +329,8 @@ export class WallMap {
     this.visible = new Uint8Array(SLOTS);
     /** per visible person: where it is on the wall (see place()) */
     this.persons = [];
+    /** persons removed by a block zone in the last tracking result: [{ id, slot, x, z }] (floor plan) */
+    this.blockedPersons = [];
     /** the mouse on the wall: x, y (m), u, v, down; set by the runtime */
     this.pointer = { x: 0, y: 0, u: 0, v: 0, down: false, inside: false };
     this.version = 0; // +1 whenever the setup changes
@@ -515,13 +558,65 @@ export class WallMap {
     return out;
   }
 
+  /** room point -> floor plan [x, z]: m from the wall's left edge (real place), m in front of the wall */
+  plan(r, out = [0, 0]) {
+    out[0] = this.setup.size.w / 2 + this.setup.sensor.x + this.xSign * r[0];
+    out[1] = this.setup.sensor.front + r[2];
+    return out;
+  }
+
+  /** the enabled block zone at floor plan [x, z], or null */
+  blockAt(x, z) {
+    for (const b of this.setup.blocks) if (b.enabled && inPolygon(x, z, b.points)) return b;
+    return null;
+  }
+
+  /**
+   * Removes everybody standing in a block zone from a person tracking result (in place: list,
+   * labels, depth, indices). Their feet decide (the point on the floor below them).
+   */
+  filterPersons(result) {
+    if (!result?.list?.length || !this.setup.blocks.some((b) => b.enabled)) {
+      if (result) this.blockedPersons = [];
+      return result;
+    }
+    const blocked = new Uint8Array(256);
+    const gone = [];
+    const r = [0, 0, 0];
+    const xz = [0, 0];
+    for (const c of result.list) {
+      const p = c.ground ?? c.centroid;
+      if (!p) continue;
+      this.toRoom([(this.xSign * p[0]) / 1000, -p[1] / 1000, p[2] / 1000], r);
+      this.plan(r, xz);
+      if (!this.blockAt(xz[0], xz[1])) continue;
+      blocked[c.slot & 255] = 1;
+      gone.push({ id: c.id, slot: c.slot, x: xz[0], z: xz[1] });
+    }
+    this.blockedPersons = gone;
+    if (!gone.length) return result;
+    result.list = result.list.filter((c) => !blocked[c.slot & 255]);
+    const { labels, depth, indices } = result;
+    let n = 0;
+    for (let k = 0; k < indices.length; k++) {
+      const i = indices[k];
+      if (blocked[labels[i]]) {
+        labels[i] = 0;
+        depth[i] = 0;
+      } else indices[n++] = i;
+    }
+    result.indices = indices.subarray(0, n);
+    return result;
+  }
+
   _place(person) {
     const c = person?.center ?? person?.joints?.center ?? person?.ground;
     if (!c) return null;
     const s = this.setup;
     const r = this.toRoom(c);
-    const lat = this.side * r[0];
-    const real = s.sensor.x + lat; // m from the wall center
+    const lat = this.side * r[0]; // beside the sensor, in the wall's direction (mirror)
+    const physical = this.xSign * r[0]; // beside the sensor as the audience sees it, whatever the mirror
+    const real = s.sensor.x + lat; // m from the wall center, before stretching
     let mapped = s.sensor.x + lat * this.k(lat, r[2]);
     if (s.map.apply === 'person' && s.map.clamp) {
       const lim = Math.max(0, s.size.w / 2 - s.map.margin);
@@ -548,8 +643,8 @@ export class WallMap {
       y, // m above the floor (body center)
       z: s.sensor.front + r[2], // m in front of the wall
       dist: r[2], // m from the sensor along the floor
-      lateral: lat, // m beside the sensor, as the audience sees it (real)
-      real: s.size.w / 2 + real, // m from the left edge where the person really is
+      lateral: physical, // m beside the sensor, as the audience sees it (+ = right)
+      real: s.size.w / 2 + s.sensor.x + physical, // m from the left edge where the person really stands
       shift, // m: how far the person is moved on the wall
       shiftRate, // m/s: how fast that changes
       vx: vLat + shiftRate, // m/s: the person's speed across the wall (stretched walk included)

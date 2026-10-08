@@ -6,7 +6,7 @@
 
 import GUI from 'lil-gui';
 import { WallBus, loadDoc, saveDoc, debounce } from './wall-bus.js';
-import { WallMap, SETUP_FIELDS, WALL_DEFAULTS, normalizeSetup, getPath, setPath } from './wall.js';
+import { WallMap, SETUP_FIELDS, WALL_DEFAULTS, normalizeSetup, getPath, setPath, manualRoom, inPolygon } from './wall.js';
 import { normalizeShow, newEntry, PATTERNS, TRANSITIONS } from './wall-show.js';
 import { normalizeParams, acceptsParam, readStore, storeKey } from './params.js';
 import { hubUrl, getJson, localScenes, allDevServers, devServer } from './hub.js';
@@ -75,7 +75,12 @@ function outputs() {
   const now = Date.now();
   return [...state.outputs.entries()].filter(([, o]) => now - o.at < OUTPUT_ALIVE_MS).map(([id, o]) => ({ id, ...o.data }));
 }
-const out = () => outputs()[0] ?? null;
+/** output windows (previews embedded in a control center do not count) */
+const external = () => outputs().filter((o) => !o.embedded);
+/** every output but the preview embedded in this page */
+const others = () => outputs().filter((o) => o.owner !== bus.id);
+/** the output whose state is shown: an output window, else another preview, else the one here */
+const out = () => external()[0] ?? others()[0] ?? outputs()[0] ?? null;
 
 bus.on('telemetry', (data, msg) => {
   state.outputs.set(msg.from, { data, at: Date.now() });
@@ -83,8 +88,68 @@ bus.on('telemetry', (data, msg) => {
 });
 bus.on('frame', (data) => {
   $('preview').src = data.jpeg;
-  $('preview').style.aspectRatio = `${data.w} / ${data.h}`;
+  $('previewWrap').style.aspectRatio = `${data.w} / ${data.h}`;
 });
+
+// ---------- live preview embedded here (an output of its own, while no output window runs) ----------
+
+const EMBED_KEY = 'kinect-wall:embed';
+let embedFrame = null;
+try {
+  $('embedOn').checked = localStorage.getItem(EMBED_KEY) !== '0';
+} catch {
+  $('embedOn').checked = true;
+}
+$('embedOn').onchange = () => {
+  try {
+    localStorage.setItem(EMBED_KEY, $('embedOn').checked ? '1' : '0');
+  } catch {
+    // not remembered
+  }
+  syncEmbed();
+};
+
+// decided only after the outputs had a moment to report (no iframe that is gone again at once)
+let embedReady = false;
+setTimeout(() => {
+  embedReady = true;
+  syncEmbed();
+}, 1200);
+
+// a hidden tab stops its preview after a moment: its person tracking would keep the GPU busy
+let hiddenSince = 0;
+document.addEventListener('visibilitychange', () => {
+  hiddenSince = document.visibilityState === 'hidden' ? performance.now() : 0;
+  if (hiddenSince) setTimeout(syncEmbed, 3100);
+  else syncEmbed();
+});
+
+function syncEmbed() {
+  // at most one output per dev server: none here while a window or another tab's preview runs
+  const visible = !hiddenSince || performance.now() - hiddenSince < 3000;
+  // two tabs that started at the same time: the preview of the smaller page id stays
+  const blockers = others().filter((o) => !o.embedded || !embedFrame || String(o.owner) < bus.id);
+  const want = embedReady && visible && $('embedOn').checked && blockers.length === 0;
+  if (want && !embedFrame) {
+    const hub = new URLSearchParams(location.search).get('hub');
+    embedFrame = el('iframe', '', $('embedBox'));
+    embedFrame.title = 'Live-Vorschau der LED-Wand';
+    embedFrame.src = `/wall/?embed&owner=${encodeURIComponent(bus.id)}${hub ? `&hub=${encodeURIComponent(hub)}` : ''}`;
+  } else if (!want && embedFrame) {
+    embedFrame.remove();
+    embedFrame = null;
+  }
+  $('embedBox').hidden = !embedFrame;
+  $('preview').hidden = !!embedFrame;
+  if (embedFrame) $('previewWrap').style.aspectRatio = `${state.setup.led.w} / ${state.setup.led.h}`;
+  $('embedNote').textContent = embedFrame
+    ? '· läuft hier live (eigene Kinect-Verbindung und Personenerkennung)'
+    : $('embedOn').checked && external().length
+      ? '· aus, weil ein Ausgabefenster läuft (zeigt dessen Bild)'
+      : $('embedOn').checked && others().length
+        ? '· aus, weil die Vorschau schon in einem anderen Tab läuft (zeigt deren Bild)'
+        : '';
+}
 // files changed by someone else (another control center, another worktree's dev server)
 bus.on('file', async (d) => {
   if (Date.now() - (lastLocalEdit[d.kind] ?? 0) < 3000) return; // our own save
@@ -97,6 +162,7 @@ bus.on('setup', (d) => {
   state.setup = normalizeSetup(d.setup);
   map.setSetup(state.setup);
   setupGui?.refresh();
+  renderBlocks();
   drawPlan();
 });
 bus.on('show', (d) => {
@@ -220,20 +286,21 @@ try {
 let lastLiveKey = '';
 let booted = false; // show and scenes loaded: the playing entry may be selected
 function renderLive() {
-  const list = outputs();
-  const o = list[0] ?? null;
+  syncEmbed();
+  const windows = external();
+  const o = out();
   const pill = $('outPill');
   if (!o) {
     pill.className = 'pill bad';
     pill.textContent = 'keine Ausgabe';
-    $('previewNote').hidden = false;
-    $('previewNote').textContent = 'Keine Ausgabe verbunden – „Ausgabe öffnen“';
+    $('previewNote').hidden = !!embedFrame;
+    $('previewNote').textContent = 'Keine Ausgabe verbunden – „Ausgabe öffnen“ oder die Live-Vorschau einschalten';
     $('preview').removeAttribute('src');
   } else {
     pill.className = `pill ${o.problem || o.errors?.length ? 'warn' : 'ok'}`;
-    pill.textContent = `Ausgabe ${o.fps.toFixed(0)} fps${list.length > 1 ? ` (${list.length} Fenster)` : ''}`;
+    pill.textContent = o.embedded ? `Vorschau hier ${o.fps.toFixed(0)} fps` : `Ausgabe ${o.fps.toFixed(0)} fps${windows.length > 1 ? ` (${windows.length} Fenster)` : ''}`;
     pill.title = o.problem ?? '';
-    $('previewNote').hidden = !!$('preview').getAttribute('src');
+    $('previewNote').hidden = !!embedFrame || !!$('preview').getAttribute('src');
   }
   $('peoplePill').textContent = o ? `${o.persons.length} Person${o.persons.length === 1 ? '' : 'en'}` : '–';
   $('previewBadge').hidden = !o?.blackout;
@@ -409,6 +476,9 @@ async function loadScenes() {
       showChanged();
       selectEntry(e.id);
     };
+    const look = el('button', 'btn small scene-play', card, '▶');
+    look.title = 'Jetzt auf der Wand zeigen, ohne sie in den Ablauf aufzunehmen';
+    look.onclick = () => bus.send('play', { scene: s.name }, 'output');
     const open = el('a', 'scene-open', card, '↗');
     open.href = `/scenes/${s.name}/`;
     open.target = '_blank';
@@ -645,6 +715,7 @@ $('importFile').onchange = async () => {
       state.setup = normalizeSetup(doc.setup);
       setupGui.refresh();
       setupChanged();
+      renderBlocks();
     }
     if (doc.show) {
       state.show = normalizeShow(doc.show);
@@ -658,14 +729,111 @@ $('importFile').onchange = async () => {
   $('importFile').value = '';
 };
 $('defaultsBtn').onclick = () => {
-  if (!confirm('Wand-Setup auf die Standardwerte (6 × 2 m, 1008 × 336) zurücksetzen?')) return;
-  const win = state.setup.output.window;
-  state.setup = normalizeSetup({ output: { window: win } });
+  if (!confirm('Wand-Setup auf die Standardwerte (6 × 2 m, 1008 × 336) zurücksetzen? Bildschirm und Sperrzonen bleiben.')) return;
+  state.setup = normalizeSetup({ output: { window: state.setup.output.window }, blocks: state.setup.blocks });
   setupGui.refresh();
   setupChanged();
 };
 
-// ---------- top view of the room ----------
+// ---------- top view of the room: mapping, room picture, block zones ----------
+
+// the plan's transform (set by drawPlan): floor plan m (x from the wall's left edge, z in front of
+// the wall) <-> canvas CSS px
+const view = { ox: 0, oy: 14, scale: 50, w: 0, h: 0 };
+const toPx = (x, z) => [view.ox + x * view.scale, view.oy + z * view.scale];
+const toPlan = (px, py) => [(px - view.ox) / view.scale, (py - view.oy) / view.scale];
+const BLOCK_RGB = '255, 59, 79';
+const edit = { drawing: null, drag: null, hover: null, selected: null, mouse: null }; // block zone editing
+let roomShot = null; // the floor plan: { x0, z0, nx, nz, hits, top, floor, at, source } (see loadRoomShot)
+let shotCanvas = null;
+let shotKey = '';
+
+// The floor plan of the room: one depth frame of the hub, every point put on the floor (orthographic,
+// from straight above) into cells of 5 cm. A cell is drawn when something stands there between
+// 15 cm and 2 m above the floor (walls, tables, other stations, people): a wall becomes a line, a
+// table a block. The floor the sensor sees is shown faintly; the ceiling is left out.
+const PLAN_CELL = 0.05; // m
+const OBSTACLE = [0.15, 2.0]; // m above the floor
+async function loadRoomShot() {
+  const o = out();
+  const hub = o?.kinect?.hub ?? HUB;
+  $('planNote').textContent = 'lade Grundriss …';
+  try {
+    const r = await fetch(`${hub}/api/frame/points`, { cache: 'no-store', signal: AbortSignal.timeout(4000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const pts = new Int16Array(await r.arrayBuffer());
+    // the room as the output sees it (floor found by the person tracking), else the sensor by hand
+    const s = state.setup;
+    const xSign = o?.xSign ?? -1;
+    const m = o?.room?.matrix?.length === 16 ? o.room.matrix : manualRoom(s.sensor.height, s.sensor.tilt);
+    const x0 = -4;
+    const z0 = 0;
+    const nx = Math.ceil((s.size.w + 8) / PLAN_CELL);
+    const nz = Math.ceil((s.sensor.front + 9) / PLAN_CELL);
+    const hits = new Uint16Array(nx * nz); // points between OBSTACLE[0] and OBSTACLE[1]
+    const top = new Float32Array(nx * nz); // the highest of them
+    const floor = new Uint16Array(nx * nz); // points on the floor
+    for (let k = 0; k < pts.length; k += 3) {
+      const z = pts[k + 2];
+      if (!z) continue;
+      const wx = (xSign * pts[k]) / 1000;
+      const wy = -pts[k + 1] / 1000;
+      const wz = z / 1000;
+      const ry = m[1] * wx + m[5] * wy + m[9] * wz + m[13]; // height above the floor
+      if (ry > OBSTACLE[1] || ry < -0.15) continue;
+      const rx = m[0] * wx + m[4] * wy + m[8] * wz + m[12];
+      const rz = m[2] * wx + m[6] * wy + m[10] * wz + m[14];
+      const cx = Math.floor((s.size.w / 2 + s.sensor.x + xSign * rx - x0) / PLAN_CELL);
+      const cz = Math.floor((s.sensor.front + rz - z0) / PLAN_CELL);
+      if (cx < 0 || cx >= nx || cz < 0 || cz >= nz) continue;
+      const c = cz * nx + cx;
+      if (ry < OBSTACLE[0]) floor[c]++;
+      else {
+        hits[c]++;
+        if (ry > top[c]) top[c] = ry;
+      }
+    }
+    roomShot = { x0, z0, nx, nz, hits, top, floor, at: Date.now(), source: o?.room?.found ? 'erkannter Boden' : 'Boden von Hand' };
+    shotKey = '';
+    $('planNote').textContent = `Grundriss von ${new Date().toLocaleTimeString()} (${roomShot.source})`;
+  } catch (e) {
+    $('planNote').textContent = `Grundriss ging nicht: ${e.message} (läuft der Hub?)`;
+  }
+  drawPlan();
+}
+$('shotBtn').onclick = loadRoomShot;
+
+/** the floor plan at the current transform (cached): cells colored by how high things stand there */
+function shotLayer(cssW, cssH, dpr) {
+  if (!roomShot) return null;
+  const key = `${cssW}x${cssH}@${dpr}:${view.ox.toFixed(2)},${view.scale.toFixed(3)}:${roomShot.at}`;
+  if (key === shotKey && shotCanvas) return shotCanvas;
+  shotKey = key;
+  shotCanvas ??= document.createElement('canvas');
+  shotCanvas.width = Math.round(cssW * dpr);
+  shotCanvas.height = Math.round(cssH * dpr);
+  const g = shotCanvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, cssW, cssH);
+  const { x0, z0, nx, nz, hits, top, floor } = roomShot;
+  const size = PLAN_CELL * view.scale + 0.5; // a hair larger: no seams between cells
+  for (let cz = 0; cz < nz; cz++) {
+    for (let cx = 0; cx < nx; cx++) {
+      const c = cz * nx + cx;
+      if (!hits[c] && !floor[c]) continue;
+      const [px, py] = toPx(x0 + cx * PLAN_CELL, z0 + cz * PLAN_CELL);
+      if (px > cssW || py > cssH || px + size < 0 || py + size < 0) continue;
+      if (hits[c] >= 2) {
+        // low (tables, chairs) dark teal .. tall (walls, stations, people) light
+        const t = Math.min(1, (top[c] - OBSTACLE[0]) / (OBSTACLE[1] - OBSTACLE[0]));
+        g.fillStyle = `rgb(${Math.round(40 + 170 * t)}, ${Math.round(120 + 110 * t)}, ${Math.round(140 + 100 * t)})`;
+      } else if (floor[c]) g.fillStyle = 'rgba(110, 130, 170, 0.16)';
+      else continue;
+      g.fillRect(px, py, size, size);
+    }
+  }
+  return shotCanvas;
+}
 
 function drawPlan() {
   const canvas = $('plan');
@@ -685,31 +853,37 @@ function drawPlan() {
     canvas.height = Math.round(cssH * dpr);
     canvas.style.height = `${cssH}px`;
   }
-  const scale = Math.min(ppm, (cssH - 20) / depth);
+  view.scale = Math.min(ppm, (cssH - 20) / depth);
+  view.ox = cssW / 2 - (s.size.w / 2) * view.scale;
+  view.oy = 14;
+  view.w = cssW;
+  view.h = cssH;
+  const scale = view.scale;
   const g = canvas.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.fillStyle = '#101014';
   g.fillRect(0, 0, cssW, cssH);
-  // wall x (m from the left edge) and distance from the wall (m) -> canvas
-  const ox = cssW / 2 - (s.size.w / 2) * scale;
-  const X = (x) => ox + x * scale;
-  const Y = (z) => 14 + z * scale;
-  // meters
-  g.strokeStyle = '#1d1d24';
+  const X = (x) => view.ox + x * scale;
+  const Y = (z) => view.oy + z * scale;
+  // the floor plan of the room, then a 1 m grid over it (true to scale: x and z alike)
+  const shot = shotLayer(cssW, cssH, dpr);
+  if (shot) g.drawImage(shot, 0, 0, cssW, cssH);
+  g.strokeStyle = 'rgba(255,255,255,0.07)';
   g.lineWidth = 1;
-  for (let x = Math.floor(-ox / scale); x * scale + ox < cssW; x++) {
+  g.fillStyle = '#5a5a68';
+  g.font = '11px system-ui, sans-serif';
+  for (let x = Math.ceil(-view.ox / scale); x * scale + view.ox < cssW; x++) {
     g.beginPath();
-    g.moveTo(X(x), Y(0));
-    g.lineTo(X(x), cssH);
+    g.moveTo(X(x) + 0.5, Y(0));
+    g.lineTo(X(x) + 0.5, cssH);
     g.stroke();
+    g.fillText(`${x} m`, X(x) + 3, cssH - 4);
   }
-  for (let z = 1; Y(z) < cssH; z++) {
+  for (let z = 1; Y(z) < cssH - 14; z++) {
     g.beginPath();
-    g.moveTo(0, Y(z));
-    g.lineTo(cssW, Y(z));
+    g.moveTo(0, Y(z) + 0.5);
+    g.lineTo(cssW, Y(z) + 0.5);
     g.stroke();
-    g.fillStyle = '#4a4a56';
-    g.font = '11px system-ui, sans-serif';
     g.fillText(`${z} m`, 4, Y(z) - 3);
   }
   // the sensor's view (gray) and the zone (lighter)
@@ -726,8 +900,16 @@ function drawPlan() {
     g.closePath();
     g.fill();
   };
-  wedge(0, depth, 'rgba(255,255,255,0.05)');
-  wedge(s.zone.near, s.zone.far, 'rgba(120,170,255,0.13)');
+  wedge(s.zone.near, s.zone.far, 'rgba(120,170,255,0.08)');
+  g.strokeStyle = 'rgba(255,255,255,0.28)';
+  g.setLineDash([2, 3]);
+  g.beginPath();
+  for (const side of [-1, 1]) {
+    g.moveTo(X(sx), Y(sz));
+    g.lineTo(X(sx + side * depth * t), Y(sz + depth));
+  }
+  g.stroke();
+  g.setLineDash([]);
   // the wall and the sensor
   g.fillStyle = '#8fc1ff';
   g.fillRect(X(0), Y(0) - 4, s.size.w * scale, 4);
@@ -761,6 +943,7 @@ function drawPlan() {
     }
   }
   g.setLineDash([]);
+  drawBlocks(g);
   // the people: where they stand -> where the wall shows them
   for (const p of o?.persons ?? []) {
     const px = X(p.real);
@@ -781,9 +964,245 @@ function drawPlan() {
     g.fillText(`${p.dist.toFixed(1)} m${Math.abs(p.shift) > 0.05 ? ` · ${p.shift > 0 ? '+' : ''}${p.shift.toFixed(1)} m` : ''}`, px + 10, py + 4);
     g.globalAlpha = 1;
   }
+  // people standing in a block zone: not tracked (gray cross)
+  for (const b of o?.blocked ?? []) {
+    const [px, py] = toPx(b.x, b.z);
+    g.strokeStyle = 'rgba(230,230,235,0.85)';
+    g.lineWidth = 2;
+    g.beginPath();
+    g.moveTo(px - 6, py - 6);
+    g.lineTo(px + 6, py + 6);
+    g.moveTo(px + 6, py - 6);
+    g.lineTo(px - 6, py + 6);
+    g.stroke();
+    g.fillStyle = 'rgba(230,230,235,0.85)';
+    g.textAlign = 'left';
+    g.fillText('gesperrt', px + 10, py + 4);
+  }
   g.textAlign = 'left';
+  g.lineWidth = 1;
 }
 addEventListener('resize', drawPlan);
+
+const polyPath = (g, points) => {
+  g.beginPath();
+  points.forEach(([x, z], i) => {
+    const [px, py] = toPx(x, z);
+    if (i) g.lineTo(px, py);
+    else g.moveTo(px, py);
+  });
+};
+
+function drawBlocks(g) {
+  for (const b of state.setup.blocks) {
+    const sel = edit.selected === b.id;
+    polyPath(g, b.points);
+    g.closePath();
+    g.fillStyle = `rgba(${BLOCK_RGB}, ${b.enabled ? (sel ? 0.32 : 0.22) : 0.07})`;
+    g.fill();
+    g.setLineDash(b.enabled ? [] : [4, 4]);
+    g.strokeStyle = `rgba(${BLOCK_RGB}, ${b.enabled ? 0.95 : 0.5})`;
+    g.lineWidth = sel ? 2 : 1.5;
+    g.stroke();
+    g.setLineDash([]);
+    b.points.forEach(([x, z], i) => {
+      const [px, py] = toPx(x, z);
+      const hot = edit.hover?.id === b.id && edit.hover.i === i;
+      const r = hot ? 4 : 3;
+      g.fillStyle = hot ? '#fff' : `rgb(${BLOCK_RGB})`;
+      g.fillRect(px - r, py - r, 2 * r, 2 * r);
+    });
+    const c = b.points.reduce((a, p) => [a[0] + p[0] / b.points.length, a[1] + p[1] / b.points.length], [0, 0]);
+    const [cx, cy] = toPx(c[0], c[1]);
+    g.fillStyle = '#ffd0d5';
+    g.font = '12px system-ui, sans-serif';
+    g.textAlign = 'center';
+    g.fillText(b.name || 'Sperrzone', cx, cy + 4);
+  }
+  // the zone being drawn, with a line to the mouse
+  const d = edit.drawing;
+  if (d?.length) {
+    polyPath(g, d);
+    if (edit.mouse) g.lineTo(edit.mouse[0], edit.mouse[1]);
+    g.fillStyle = `rgba(${BLOCK_RGB}, 0.15)`;
+    if (d.length > 1) g.fill();
+    g.strokeStyle = `rgb(${BLOCK_RGB})`;
+    g.lineWidth = 2;
+    g.stroke();
+    d.forEach(([x, z], i) => {
+      const [px, py] = toPx(x, z);
+      g.fillStyle = i === 0 ? '#fff' : `rgb(${BLOCK_RGB})`;
+      g.fillRect(px - 4, py - 4, 8, 8);
+    });
+  }
+  g.textAlign = 'left';
+}
+
+function renderBlocks() {
+  const root = $('blocks');
+  root.replaceChildren();
+  state.setup.blocks.forEach((b, i) => {
+    const row = el('div', `block${edit.selected === b.id ? ' selected' : ''}`, root);
+    el('span', 'swatch', row);
+    const name = el('input', '', row);
+    name.value = b.name;
+    name.placeholder = `Sperrzone ${i + 1}`;
+    name.onchange = () => {
+      b.name = name.value;
+      setupChanged();
+    };
+    const lab = el('label', 'muted', row);
+    const on = el('input', '', lab);
+    on.type = 'checkbox';
+    on.checked = b.enabled;
+    lab.append(' aktiv');
+    on.onchange = () => {
+      b.enabled = on.checked;
+      setupChanged();
+      drawPlan();
+    };
+    const del = el('button', 'icon', row, '✕');
+    del.title = 'Löschen';
+    del.onclick = () => {
+      state.setup.blocks.splice(i, 1);
+      if (edit.selected === b.id) edit.selected = null;
+      setupChanged();
+      renderBlocks();
+    };
+    row.onclick = (e) => {
+      if (e.target.closest('input, button, label')) return;
+      edit.selected = edit.selected === b.id ? null : b.id;
+      renderBlocks();
+      drawPlan();
+    };
+  });
+}
+
+/** the block zone corner under the mouse (within 9 px): { id, i } or null */
+function cornerAt(px, py) {
+  for (const b of state.setup.blocks) {
+    for (let i = 0; i < b.points.length; i++) {
+      const [x, y] = toPx(b.points[i][0], b.points[i][1]);
+      if (Math.hypot(x - px, y - py) <= 9) return { id: b.id, i };
+    }
+  }
+  return null;
+}
+
+function startDrawing() {
+  edit.drawing = [];
+  edit.selected = null;
+  $('plan').classList.add('drawing');
+  $('plan').focus({ preventScroll: true });
+  $('blockBtn').textContent = 'Zeichnen abbrechen';
+  $('planNote').textContent = 'Eckpunkte in die Draufsicht klicken · Doppelklick oder Klick auf den ersten Punkt schließt · Esc bricht ab';
+  drawPlan();
+}
+
+function stopDrawing(save) {
+  const pts = edit.drawing;
+  edit.drawing = null;
+  edit.mouse = null;
+  $('plan').classList.remove('drawing');
+  $('blockBtn').textContent = 'Sperrzone zeichnen';
+  $('planNote').textContent = '';
+  if (save && pts && pts.length >= 3) {
+    const id = Math.random().toString(36).slice(2, 10);
+    state.setup.blocks.push({ id, name: `Sperrzone ${state.setup.blocks.length + 1}`, enabled: true, points: pts });
+    edit.selected = id;
+    setupChanged(); // to every page at once, and saved
+  }
+  renderBlocks();
+  drawPlan();
+}
+
+$('blockBtn').onclick = () => (edit.drawing ? stopDrawing(false) : startDrawing());
+
+const planCanvas = $('plan');
+const mouseOf = (e) => {
+  const r = planCanvas.getBoundingClientRect();
+  return [e.clientX - r.left, e.clientY - r.top];
+};
+const roundPlan = (px, py) => toPlan(px, py).map((v) => Math.round(v * 100) / 100);
+
+planCanvas.addEventListener('pointerdown', (e) => {
+  const [px, py] = mouseOf(e);
+  if (edit.drawing) {
+    const first = edit.drawing[0];
+    if (first && edit.drawing.length >= 3) {
+      const [fx, fy] = toPx(first[0], first[1]);
+      if (Math.hypot(fx - px, fy - py) <= 10) {
+        stopDrawing(true);
+        return;
+      }
+    }
+    edit.drawing.push(roundPlan(px, py));
+    drawPlan();
+    return;
+  }
+  const hit = cornerAt(px, py);
+  if (hit) {
+    edit.drag = hit;
+    edit.selected = hit.id;
+    planCanvas.setPointerCapture(e.pointerId);
+    renderBlocks();
+    return;
+  }
+  // a click into a zone selects it (Entf deletes it)
+  const [x, z] = toPlan(px, py);
+  const inside = [...state.setup.blocks].reverse().find((b) => inPolygon(x, z, b.points));
+  edit.selected = inside?.id ?? null;
+  renderBlocks();
+  drawPlan();
+});
+
+planCanvas.addEventListener('pointermove', (e) => {
+  const [px, py] = mouseOf(e);
+  if (edit.drawing) {
+    edit.mouse = [px, py];
+    drawPlan();
+    return;
+  }
+  if (edit.drag) {
+    const b = state.setup.blocks.find((z) => z.id === edit.drag.id);
+    if (b) b.points[edit.drag.i] = roundPlan(px, py);
+    drawPlan();
+    return;
+  }
+  const hover = cornerAt(px, py);
+  if (hover?.id !== edit.hover?.id || hover?.i !== edit.hover?.i) {
+    edit.hover = hover;
+    planCanvas.style.cursor = hover ? 'grab' : '';
+    drawPlan();
+  }
+});
+
+planCanvas.addEventListener('pointerup', () => {
+  if (!edit.drag) return;
+  edit.drag = null;
+  setupChanged(); // to every page at once, and saved
+});
+
+planCanvas.addEventListener('dblclick', (e) => {
+  if (!edit.drawing) return;
+  e.preventDefault();
+  // the double click added its point twice: drop the copy
+  const d = edit.drawing;
+  if (d.length >= 2 && d.at(-1)[0] === d.at(-2)[0] && d.at(-1)[1] === d.at(-2)[1]) d.pop();
+  stopDrawing(true);
+});
+
+planCanvas.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && edit.drawing) stopDrawing(false);
+  else if (e.key === 'Enter' && edit.drawing) stopDrawing(true);
+  else if ((e.key === 'Delete' || e.key === 'Backspace') && edit.selected && !edit.drawing) {
+    state.setup.blocks = state.setup.blocks.filter((b) => b.id !== edit.selected);
+    edit.selected = null;
+    setupChanged();
+    renderBlocks();
+  } else return;
+  e.preventDefault();
+});
 
 // ---------- status ----------
 
@@ -827,6 +1246,7 @@ async function loadSetup() {
   map.setSetup(state.setup);
   if (setupGui) setupGui.refresh();
   else buildSetupGui();
+  renderBlocks();
   renderSetupNote();
   renderScreenNote();
   drawPlan();
@@ -839,6 +1259,9 @@ async function loadShow() {
   renderShowSettings();
   if (state.selected && !state.show.entries.some((e) => e.id === state.selected)) selectEntry(null);
 }
+
+/** For debugging and tests. */
+globalThis.__wallControl = { state, toPx, toPlan, outputs, edit, view };
 
 await Promise.all([loadSetup(), loadShow(), loadScenes()]);
 booted = true;

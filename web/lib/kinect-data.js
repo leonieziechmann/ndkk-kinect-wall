@@ -45,6 +45,8 @@ export class KinectData {
     this.view = EMPTY_VIEW;
     /** -1 or 1 as ctx.xSign (set by the runtime): the world space of the view. */
     this.xSign = -1;
+    /** (result) => result, applied to every person tracking result before anybody sees it */
+    this.personFilter = null;
     this._viewSeq = null;
     this._viewSign = 0;
     this._personStream = null;
@@ -136,7 +138,8 @@ export class KinectData {
   get personTracker() {
     if (!this._personStream) {
       this._personStream = new PersonStream((result) => {
-        this.persons = result;
+        // e.g. the LED wall's block zones (set by the runtime): may drop persons from the result
+        this.persons = this.personFilter ? this.personFilter(result) : result;
         this._pending.persons = true;
         if (!this._personStream.delayed) return;
         const h = this._held.get(result.seq);

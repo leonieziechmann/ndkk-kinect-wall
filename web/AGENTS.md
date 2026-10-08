@@ -140,7 +140,7 @@ The scenes are for a **6 × 2 m LED wall (1008 × 336 LEDs)**. Its setup (size, 
 - `wall: true` in the scene: the canvas is the LED image (`ctx.width × ctx.height` = LED pixels); the page shows it scaled to fit.
 - `ctx.wall`: `fromWorld(p, person.slot)` → wall meters, `place(person)` (where a person is on the wall), `joint(person, 'rightHand')`, `uv()`, `px()`, `velocity()`, `persons`. Never hard-code wall size, LED resolution, sensor height or a stretch factor.
 - WGSL (`createShaderPass`): `wallPerson(uv)` = the people as they fall on the wall (covered, distance, slot, IR); `wallFromWorld(p, slot)`, `wallUv()`, `wallVelocity()`, `WALL.*`. On the LED image `kinectUv()` shows the camera image calibrated to the wall.
-- Control center `/control/` and output window `/wall/` on your dev server: the show (playlist with params per entry), test images, calibration view, the setup with a top view of the room. `npm run wall` opens the output as a kiosk window on the LED screen.
+- Control center `/control/` and output window `/wall/` on your dev server: the show (playlist with params per entry), a live preview (no extra window needed; "▶" on a scene shows it at once), test images, calibration view, the setup with a top view of the room and block zones (nobody standing there is tracked, in every scene). `npm run wall` opens the output as a kiosk window on the LED screen.
 - Demo: scene `wand-spiegel`. Porting a scene that emulates the wall itself (its own `ledW`, `wallW`, `stretch`, `viewMode`, ...): WALL.md, "Porting".
 
 ## three.js
