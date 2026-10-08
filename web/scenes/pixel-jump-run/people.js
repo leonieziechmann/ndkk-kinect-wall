@@ -19,6 +19,7 @@ const FOCAL = 366; // Kinect v2 depth camera, px: a pixel at z m covers (z / FOC
 const HIST_MIN = -0.5; // m: height histogram per person, 1 cm bins
 const HIST_BINS = 300;
 const SLOTS = 17;
+const PLAY_HYST = 0.15; // m
 
 // bones for the body parts: [from, to, part]; hands and forearms depend on the outfit
 const BONES = [
@@ -189,8 +190,8 @@ export class PeopleLayer {
       let f = this.figures.get(q.id);
       if (!f) {
         f = new Figure(q.id, q.slot, time);
+        f.player = false;
         this.figures.set(q.id, f);
-        this.entered.push(f);
       }
       seen.add(q.id);
       f.slot = q.slot;
@@ -198,6 +199,15 @@ export class PeopleLayer {
       f.cx = q.x;
       f.dist = q.dist;
       f.q = q;
+      // plays only within the play distance (further away the tracking is too rough): the others
+      // stand in the background, smaller and dim. A little hysteresis against flicker at the edge.
+      const m = f.player ? PLAY_HYST : -PLAY_HYST;
+      const play = q.dist >= p.playNear - m && q.dist <= p.playFar + m;
+      if (play && !f.player) {
+        f.born = time; // appears as a player
+        this.entered.push(f);
+      }
+      f.player = play;
       if (fresh) this.scale(f, q.person, p, time);
     }
     // test figures (no Kinect): see makeFake()
@@ -209,6 +219,7 @@ export class PeopleLayer {
         this.figures.set(id, f);
         this.entered.push(f);
       }
+      f.player = !fk.back; // back: stands too far away to play
       seen.add(id);
       f.seen = time;
       f.cx = fk.x;
@@ -249,7 +260,7 @@ export class PeopleLayer {
     const h = P.height ?? 0;
     if (h > 0.5) f.standH = f.heights.stand(h, time);
     const standH = Math.min(2.2, Math.max(0.9, f.standH || h || 1.7));
-    const kT = p.sameSize ? p.figH / standH : p.figH / 1.75;
+    const kT = (p.sameSize ? p.figH / standH : p.figH / 1.75) * (f.player ? 1 : p.bgScale);
     f.k = f.k ? f.k + (kT - f.k) * 0.08 : kT;
   }
 
@@ -273,7 +284,7 @@ export class PeopleLayer {
       s.basePelvis = f.pelvis.stand(s.pelvisY, time);
       const rise = s.pelvisY - s.basePelvis;
       f.realRise = Math.max(0, rise) * f.k;
-      if (!f.airborne && time - f.landed > p.jumpRest && time - f.born > 1 && f.pelvis.n >= 20 && s.pelvisVy > p.jumpVy && rise > p.jumpRise) {
+      if (f.player && !f.airborne && time - f.landed > p.jumpRest && time - f.born > 1 && f.pelvis.n >= 20 && s.pelvisVy > p.jumpVy && rise > p.jumpRise) {
         f.startJump(time, p, p.jumpLead);
         this.jumped.push(f);
         jumped = true;
@@ -483,8 +494,9 @@ export class PeopleLayer {
     if (!f.grid || f.grid.length !== n) f.grid = new Uint8Array(n);
     const g = f.grid;
     g.fill(0);
-    const H = p.figH * (1 - 0.42 * (fk.crouch ?? 0));
-    const W = p.figH * p.wide;
+    const sc = fk.back ? p.bgScale : 1;
+    const H = p.figH * sc * (1 - 0.42 * (fk.crouch ?? 0));
+    const W = p.figH * sc * p.wide;
     const cx = fk.x;
     const put = (x0, x1, y0, y1, part) => {
       for (let gy = y0; gy < y1; gy += L.cellMy * 0.5) {

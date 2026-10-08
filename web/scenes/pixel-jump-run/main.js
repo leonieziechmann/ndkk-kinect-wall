@@ -155,6 +155,24 @@ function partColor(o, part) {
   }
 }
 
+// someone too far away to play: a violet silhouette (dimmed outfit colors would turn olive/brown)
+const BACK_LUM = { [PART.HAIR]: 0.55, [PART.SKIN]: 0.95, [PART.SHIRT]: 0.8, [PART.SLEEVE]: 0.8, [PART.PANTS]: 0.6, [PART.SHOES]: 0.5 };
+
+function drawBackFigure(S, f, p) {
+  const { cells, layout: L } = S;
+  const { GW } = L;
+  const g = f.grid;
+  const [c0, r0, c1, r1] = f.bbox;
+  for (let y = r0; y <= r1; y++) {
+    for (let x = c0; x <= c1; x++) {
+      const part = g[y * GW + x];
+      if (!part) continue;
+      const lum = (BACK_LUM[part] ?? 0.8) * (0.9 + 0.16 * hash2(x * 3 + f.slot, y * 7));
+      cells.put(x, y, scale([150, 120, 255], p.bgPeople * lum));
+    }
+  }
+}
+
 function drawFigure(S, f, p, t, liftRows, ghost) {
   const { cells, layout: L } = S;
   const { GW, GH } = L;
@@ -196,10 +214,11 @@ function drawFigure(S, f, p, t, liftRows, ghost) {
   }
 }
 
-function drawScene(S, figs, p, t) {
+function drawScene(S, figs, back, p, t) {
   const { cells, game, layout: L } = S;
   const { GW, groundRow } = L;
   drawWorld(S, p, t);
+  if (p.bgPeople > 0) for (const f of back) drawBackFigure(S, f, p);
 
   // shadows of figures in the air on the ground edge
   for (const f of figs) {
@@ -325,7 +344,7 @@ export default {
 
   params: {
     live: { value: true, label: 'Live (weniger Verzögerung)', folder: 'Spiel' },
-    speed: { value: 1.6, min: 0.5, max: 5, step: 0.05, label: 'Tempo am Anfang (m/s)', folder: 'Spiel' },
+    speed: { value: 1.4, min: 0.5, max: 5, step: 0.05, label: 'Tempo am Anfang (m/s)', folder: 'Spiel' },
     speedMax: { value: 1.8, min: 1, max: 3, step: 0.05, label: 'Tempo steigt bis (×)', folder: 'Spiel' },
     rampTime: { value: 120, min: 10, max: 600, step: 5, label: 'Steigt über (s)', folder: 'Spiel' },
     density: { value: 1, min: 0.3, max: 3, step: 0.05, label: 'Dichte', folder: 'Spiel' },
@@ -333,18 +352,25 @@ export default {
     from: { value: 'rechts', options: ['rechts', 'links', 'abwechselnd'], label: 'Hindernisse kommen von', folder: 'Spiel' },
     turnEvery: { value: 30, min: 5, max: 180, step: 5, label: 'Abwechselnd alle (s)', folder: 'Spiel' },
     warn: { value: 0.8, min: 0, max: 2, step: 0.05, label: 'Vorwarnung am Rand (s)', folder: 'Spiel' },
-    hitCells: { value: 2, min: 1, max: 8, step: 1, label: 'Treffer ab (Zellen)', folder: 'Spiel' },
+    grace: { value: 0.12, min: 0, max: 0.6, step: 0.01, label: 'Gnadenfrist: Treffer zählt erst nach (s)', folder: 'Spiel' },
+    latency: { value: 0.2, min: 0, max: 0.6, step: 0.01, label: 'Latenzausgleich (s, + Verzögerung des Trackings)', folder: 'Spiel' },
+    hitCells: { value: 3, min: 1, max: 8, step: 1, label: 'Treffer ab (Zellen)', folder: 'Spiel' },
     safeTime: { value: 1.2, min: 0, max: 4, step: 0.1, label: 'Nach Treffer geschützt (s)', folder: 'Spiel' },
     starTime: { value: 6, min: 1, max: 20, step: 0.5, label: 'Stern hält (s)', folder: 'Spiel' },
     crownAt: { value: 5, min: 2, max: 30, step: 1, label: 'Krone ab (Hindernisse am Stück)', folder: 'Spiel' },
     resetAfter: { value: 10, min: 2, max: 60, step: 1, label: 'Neue Runde nach (s leer)', folder: 'Spiel' },
 
-    jumpHeight: { value: 0.6, min: 0.2, max: 1.2, step: 0.01, label: 'Sprunghöhe auf der Wand (m)', folder: 'Springen' },
-    jumpTime: { value: 0.85, min: 0.3, max: 1.6, step: 0.01, label: 'Sprungdauer (s)', folder: 'Springen' },
-    jumpVy: { value: 0.5, min: 0.15, max: 1.5, step: 0.01, label: 'Sprung ab: Becken steigt (m/s)', folder: 'Springen' },
-    jumpRise: { value: 0.06, min: 0.02, max: 0.25, step: 0.005, label: 'und liegt über dem Stand (m)', folder: 'Springen' },
+    jumpHeight: { value: 0.75, min: 0.2, max: 1.2, step: 0.01, label: 'Sprung-Boost: Höhe auf der Wand (m)', folder: 'Springen' },
+    jumpTime: { value: 1.1, min: 0.3, max: 2, step: 0.01, label: 'Sprung-Boost: Dauer in der Luft (s)', folder: 'Springen' },
+    jumpVy: { value: 0.35, min: 0.15, max: 1.5, step: 0.01, label: 'Sprung ab: Becken steigt (m/s)', folder: 'Springen' },
+    jumpRise: { value: 0.035, min: 0.01, max: 0.25, step: 0.005, label: 'und liegt über dem Stand (m)', folder: 'Springen' },
     jumpRest: { value: 0.12, min: 0, max: 1, step: 0.01, label: 'Pause nach der Landung (s)', folder: 'Springen' },
-    jumpLead: { value: 0.1, min: 0, max: 0.3, step: 0.01, label: 'Vorlauf (s, gleicht Verzögerung aus)', folder: 'Springen' },
+    jumpLead: { value: 0.05, min: 0, max: 0.3, step: 0.01, label: 'Sprung startet schon ein Stück im Bogen (s)', folder: 'Springen' },
+
+    playNear: { value: 0.8, min: 0.3, max: 6, step: 0.05, label: 'Mitspielen ab (m vom Sensor)', folder: 'Mitspielen' },
+    playFar: { value: 3.2, min: 0.5, max: 8, step: 0.05, label: 'Mitspielen bis (m vom Sensor)', folder: 'Mitspielen' },
+    bgPeople: { value: 0.4, min: 0, max: 1, step: 0.05, label: 'Leute dahinter: Helligkeit (0 = aus)', folder: 'Mitspielen' },
+    bgScale: { value: 0.8, min: 0.4, max: 1, step: 0.05, label: 'Leute dahinter: Größe (×)', folder: 'Mitspielen' },
 
     figH: { value: 1.2, min: 0.6, max: 1.8, step: 0.01, label: 'Figurhöhe auf der Wand (m)', folder: 'Figuren' },
     sameSize: { value: true, label: 'Alle gleich groß (Kinder wie Erwachsene)', folder: 'Figuren' },
@@ -440,19 +466,23 @@ export default {
       S.mouseFake.x = ctx.wall.pointer.x;
       fakes.push(S.mouseFake);
     }
-    const figs = S.people.update(ctx, L, p, t, fakes);
+    const all = S.people.update(ctx, L, p, t, fakes);
+    const figs = all.filter((f) => f.player);
+    const back = all.filter((f) => !f.player);
     for (const f of figs) {
       (f.liftHist ??= []).push(f.liftRows);
       if (f.liftHist.length > 8) f.liftHist.shift();
     }
-    game.step(dt, figs, L, p, S.people.entered, S.people.jumped);
+    // how far the figures lag behind the people: the set compensation plus the tracker's delay
+    const lag = Math.min(0.8, p.latency + (ctx.persons?.delayMs ?? 0) / 1000);
+    game.step(dt, figs, L, p, S.people.entered, S.people.jumped, lag);
     if (p.sound) {
       S.sound.setVolume(p.volume);
       for (const e of game.events) S.sound.play(e, L.wallW);
     } else S.sound.stopAll();
     game.events.length = 0;
 
-    drawScene(S, figs, p, game.time);
+    drawScene(S, figs, back, p, game.time);
     S.cellG.putImageData(S.cells.img, 0, 0);
     const g = S.g;
     g.setTransform(1, 0, 0, 1, 0, 0);
@@ -478,7 +508,7 @@ export default {
 
     const snd = p.sound && !S.sound.ready ? ' · Ton: einmal klicken' : '';
     const jumps = figs.reduce((n, f) => n + f.jumps, 0);
-    ctx.status = `${figs.length} Spieler · ${game.speed.toFixed(2)} m/s · ${game.score} Punkte (Rekord ${game.best}) · ${jumps} Sprünge${snd}`;
+    ctx.status = `${figs.length} Spieler${back.length ? ` (+${back.length} dahinter)` : ''} · ${game.speed.toFixed(2)} m/s · ${game.score} Punkte (Rekord ${game.best}) · ${jumps} Sprünge${snd}`;
   },
 
   dispose(ctx) {

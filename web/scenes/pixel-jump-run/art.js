@@ -74,17 +74,17 @@ const frames = (list) => list.map((rows) => sprite(rows));
 
 /** facing left: everything comes from the right (main.js mirrors them for the other direction) */
 export const SPRITES = {
-  // on the ground: jump over them
+  // on the ground: jump over them (low: 5-6 cells, a small hop with the boost clears them)
   crawler: frames([
-    ['..O..O..', '.ORO.RO.', 'ORRRRRRO', 'RWKRRRRR', 'RRRRRRRR', 'RRRRRRRR', '.D..D..D'],
-    ['..O..O..', '.ORO.RO.', 'ORRRRRRO', 'RWKRRRRR', 'RRRRRRRR', 'RRRRRRRR', 'D..D..D.'],
+    ['.O.O.O.', 'ORORORO', 'RWKRRRR', 'RRRRRRR', '.D.D.D.'],
+    ['.O.O.O.', 'ORORORO', 'RWKRRRR', 'RRRRRRR', 'D.D.D.D'],
   ]),
   flame: frames([
-    ['...R..', '..RR..', '..ROR.', '.ROOR.', 'RROYOR', 'ROYyYR', 'ROYyOR', '.RYYR.'],
-    ['..R...', '..RR.R', '.RORR.', '.ROOR.', 'ROOYRR', 'ROYyYR', 'RYyyOR', '.RYYR.'],
-    ['....R.', '.R.RR.', '.RROR.', 'RROOR.', 'ROYOOR', 'ROYyYR', 'ROyYOR', '.RYYR.'],
+    ['..R..', '.ROR.', 'ROYOR', 'RYyYR', 'RYyYR', '.RYR.'],
+    ['.R...', '.RRR.', 'ROYOR', 'ROyYR', 'RYyOR', '.RYR.'],
+    ['...R.', '.RRR.', 'RROOR', 'RYyYR', 'ROyYR', '.RYR.'],
   ]),
-  crystal: frames([['...M...', '..MPM..', '..MPM.M', 'M.MPMMP', 'MPMMMPM', 'MPMPMMM', 'MMMMMMM']]),
+  crystal: frames([['..M...', '..MP.M', 'M.MPMP', 'MPMMPM', 'MMMMMM']]),
   // in the air at head height: duck under them
   bat: frames([
     ['V.........V', 'VV..V.V..VV', 'VVVVVVVVVVV', '.VVVPVPVVV.', '....VVV....'],

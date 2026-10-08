@@ -113,7 +113,7 @@ export class Game {
       const span = air * 0.8;
       for (let i = 0; i < n; i++) {
         const u = i / (n - 1);
-        coin(along(x, ow / 2 - span / 2 + u * span), p.figH * 0.95 + p.jumpHeight * 0.6 * Math.sin(u * Math.PI));
+        coin(along(x, ow / 2 - span / 2 + u * span), p.figH * 0.9 + p.jumpHeight * 0.5 * Math.sin(u * Math.PI));
       }
       len = Math.max(ow, span);
     } else if (kind === 'highLow') {
@@ -132,9 +132,10 @@ export class Game {
   }
 
   /**
-   * One step. figs: the figures (people.js) on the wall now, L: the mosaic layout, p: the params.
+   * One step. figs: the figures (people.js) on the wall now, L: the mosaic layout, p: the params,
+   * lag: s the figures lag behind the people (latency compensation).
    */
-  step(dt, figs, L, p, entered, jumped) {
+  step(dt, figs, L, p, entered, jumped, lag = 0) {
     this.time += dt;
     const t = this.time;
     const people = figs.length > 0;
@@ -185,9 +186,15 @@ export class Game {
       }
     }
 
-    // move, animate, collide
+    // move, animate, collide.
+    // Latency compensation: a figure shows the person as they were `lag` seconds ago (tracking, jump
+    // detection, display). So the figures are checked against where the obstacles were back then:
+    // shifted `back` cells towards where they come from. Whoever jumped or ducked in time on the
+    // obstacles they saw is safe, even if the figure goes up a moment late. Coins and stars count at
+    // either place (generous).
     const GW = L.GW;
     const GH = L.GH;
+    const back = Math.round((this.dir * this.speed * Math.max(0, lag)) / L.cellMx);
     const keep = [];
     for (const th of this.things) {
       th.x -= this.dir * move;
@@ -202,13 +209,18 @@ export class Game {
       const gone = this.dir > 0 ? c0 + fr.w < -2 : c0 > GW + 2;
       if (gone || th.dead) continue;
       keep.push(th);
-      if (c0 + fr.w < 0 || c0 >= GW) continue;
+      const obstacle = th.kind === 'obstacle';
+      const cc = obstacle ? c0 + back : c0; // where it is checked
+      const lo = obstacle ? cc : Math.min(c0, c0 + back);
+      const hi = (obstacle ? cc : Math.max(c0, c0 + back)) + fr.w - 1;
+      if (hi < 0 || lo >= GW) continue;
+      const flip = flipOf(this, th);
       for (const f of figs) {
         const [b0, , b1] = f.bbox;
-        if (c0 > b1 || c0 + fr.w - 1 < b0) {
+        if (lo > b1 || hi < b0) {
           // past this figure without a hit: it cleared the obstacle
-          if (th.kind === 'obstacle' && !th.hit.has(f.id) && !th.passed.has(f.id)) {
-            const past = this.dir > 0 ? c0 + fr.w - 1 < b0 : c0 > b1;
+          if (obstacle && !th.hit.has(f.id) && !th.passed.has(f.id)) {
+            const past = this.dir > 0 ? hi < b0 : lo > b1;
             if (past && th.near?.has(f.id)) {
               th.passed.add(f.id);
               f.streak++;
@@ -220,21 +232,27 @@ export class Game {
           }
           continue;
         }
-        if (th.kind === 'obstacle') (th.near ??= new Set()).add(f.id);
-        const hits = this.overlap(th, fr, f, L, flipOf(this, th));
+        if (obstacle) (th.near ??= new Set()).add(f.id);
+        let hits = this.overlap(th, fr, f, L, flip, cc);
+        let at = cc;
+        if (!obstacle && !hits.n && back) {
+          hits = this.overlap(th, fr, f, L, flip, c0 + back);
+          at = c0 + back;
+        }
         if (!hits.n) continue;
+        const vc = hits.c - (at - c0); // the cell on the wall now (for effects)
         if (th.kind === 'coin') {
           th.dead = true;
           f.coins++;
           this.score += 1;
-          this.sparkle(L, hits.c, hits.r - f.liftRows, [255, 210, 63], 10);
+          this.sparkle(L, vc, hits.r - f.liftRows, [255, 210, 63], 10);
           this.events.push({ type: 'coin', x: f.cx });
           break;
         }
         if (th.kind === 'star') {
           th.dead = true;
           f.starUntil = t + p.starTime;
-          this.sparkle(L, hits.c, hits.r - f.liftRows, [255, 255, 255], 24, true);
+          this.sparkle(L, vc, hits.r - f.liftRows, [255, 255, 255], 24, true);
           this.events.push({ type: 'star', x: f.cx });
           break;
         }
@@ -247,12 +265,19 @@ export class Game {
           break;
         }
         if (th.hit.has(f.id) || hits.n < p.hitCells || t < f.safeUntil) continue;
+        // grace: a contact only counts when the figure still touches the obstacle a moment later;
+        // a jump (or duck) in between saves it
+        const contact = (th.contact ??= new Map()).get(f.id);
+        if (contact === undefined || t - contact > 1) {
+          th.contact.set(f.id, t);
+          if (p.grace > 0) continue;
+        } else if (t - contact < p.grace) continue;
         th.hit.add(f.id);
         f.hitAt = t;
         f.safeUntil = t + p.safeTime;
         if (f.streak >= p.crownAt) this.events.push({ type: 'crownLost', x: f.cx });
         f.streak = 0;
-        this.sparkle(L, hits.c, hits.r - f.liftRows, [255, 45, 85], 14);
+        this.sparkle(L, vc, hits.r - f.liftRows, [255, 45, 85], 14);
         this.events.push({ type: 'hit', x: f.cx, high: th.high });
       }
     }
@@ -274,7 +299,7 @@ export class Game {
   }
 
   /** cells where a thing overlaps a figure (lifted by its jump): count and one of them */
-  overlap(th, fr, f, L, flip) {
+  overlap(th, fr, f, L, flip, c0 = th.c0) {
     const g = f.grid;
     const GW = L.GW;
     const GH = L.GH;
@@ -282,7 +307,7 @@ export class Game {
     let hc = 0;
     let hr = 0;
     for (const [sx, sy] of fr.px) {
-      const c = th.c0 + (flip ? fr.w - 1 - sx : sx);
+      const c = c0 + (flip ? fr.w - 1 - sx : sx);
       const r = th.r0 + sy + f.liftRows;
       if (c < 0 || c >= GW || r < 0 || r >= GH) continue;
       if (g[r * GW + c]) {
