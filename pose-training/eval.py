@@ -2,7 +2,7 @@
 # Ultralytics' pose metrics (mAP over keypoint similarity, OKS) at the browser's input size, per model, on
 # all held-out frames and on the cases on their own: T-pose (spinning, aiming: space-invaders), jumping, the
 # multi-user recordings (groups, sitting, occlusion).
-# Usage: python eval.py [model[@imgsz] ...]   default: the COCO model at 512 and 384 (the browser now, and
+# Usage: python eval.py [model[@imgsz] ...]   (without @: the width in the checkpoint's train_args, else 512); default: the COCO model at 512 and 384 (the browser now, and
 #   downscaled) and every runs/*/weights/best.pt at the input width it was trained for
 import argparse, glob, os, sys
 
@@ -49,9 +49,11 @@ def main():
     print(f'{"model":44s}' + ''.join(f'{c:>16s}' for c in cases))
     for spec in models:
         m, _, size = spec.partition('@')
-        row = f'{os.path.relpath(m, a.out) + "@" + (size or "512"):44s}'
+        if not size:  # the input width it was trained for (fine-tuned checkpoints; the COCO weights say 640: give @)
+            size = str((getattr(YOLO(m), 'ckpt', None) or {}).get('train_args', {}).get('imgsz', 512))
+        row = f'{os.path.relpath(m, a.out) + "@" + size:44s}'
         for case, (y, _) in cases.items():
-            r = YOLO(m).val(data=y, split='val', imgsz=int(size or 512), batch=16, device=device(), plots=False, verbose=False)
+            r = YOLO(m).val(data=y, split='val', imgsz=int(size), batch=16, device=device(), plots=False, verbose=False)
             row += f'{r.pose.map:9.3f} / {r.box.map:.3f}'
         print(row, flush=True)
 
