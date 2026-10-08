@@ -119,6 +119,8 @@ export class Figure {
     this.vy = 0; // m/s
     this.g = 9.81;
     this.instant = 1; // the instant lift (param `instant`), see updateLift
+    this.headroom = 0.1; // m the head may rise beyond the wall's top (param `headroom`)
+    this.headTop = null; // m above the ground: the top of the head (before the lift)
     this.airJumps = 0;
     this.armed = true; // the next hop may trigger a jump
     this.armedAt = 0;
@@ -159,8 +161,11 @@ export class Figure {
     if (this.air) {
       this.vy -= this.g * dt;
       this.h += this.vy * dt;
-      // the ceiling: one cell below the wall's top edge (the top cell may be a raised hand)
-      const ceil = this.headCell ? Math.max(0.1, (this.headCell[1] - 1) * L.cellMy + this.realRise) : 1;
+      // the ceiling: the head may rise `headroom` m beyond the wall's top edge (raised hands may go
+      // further out; they used to be the ceiling, and a hop with the arms up stayed tiny)
+      const wallTop = L.groundRow * L.cellMy;
+      const head = this.headTop ?? (this.headCell ? (L.groundRow - this.headCell[1]) * L.cellMy : 1.2);
+      const ceil = Math.max(0.1, wallTop + this.headroom - head + this.realRise);
       if (this.h > ceil) {
         this.h = ceil;
         if (this.vy > 0) this.vy = 0;
@@ -177,6 +182,7 @@ export class Figure {
     // before the jump is detected; the jump only adds what is missing
     const lift = Math.max(0, Math.max(this.h, this.realRise * this.instant) - this.realRise);
     this.lift = lift;
+    this.maxLift = Math.max(this.maxLift ?? 0, this.h); // for tests
     this.liftRows = Math.round(lift / L.cellMy);
     return this.lift;
   }
@@ -276,6 +282,7 @@ export class PeopleLayer {
     for (const f of this.figures.values()) {
       if (!f.visible || !f.grid) continue;
       f.instant = p.instant;
+      f.headroom = p.headroom;
       f.updateLift(time, dt, L);
       list.push(f);
     }
@@ -569,6 +576,8 @@ export class PeopleLayer {
     }
     f.cells = count;
     f.headCell = count ? [topCol, topRow] : null;
+    // the top of the head (the skeleton's head, else the figure's top: then raised hands count)
+    f.headTop = head ? head[1] + headR : count ? (L.groundRow - topRow) * L.cellMy : null;
   }
 
   /** a test figure without the Kinect: { x (m), h (m, real), crouch 0..1, arms: 'up' | 'side' | '' } */
@@ -630,5 +639,6 @@ export class PeopleLayer {
     f.bbox = [c0, r0, c1, r1];
     f.cells = count;
     f.headCell = top;
+    f.headTop = H;
   }
 }

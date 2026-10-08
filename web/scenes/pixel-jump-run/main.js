@@ -447,8 +447,9 @@ export default {
     waitFor: { value: 1.5, min: 0, max: 10, step: 0.5, label: 'Countdown, wenn jemand so lange da ist (s)', folder: 'Runde' },
     endTime: { value: 6, min: 2, max: 20, step: 0.5, label: 'Ergebnis zeigen (s)', folder: 'Runde' },
 
-    jumpHeight: { value: 0.75, min: 0.2, max: 1.2, step: 0.01, label: 'Sprung-Boost: Höhe auf der Wand (m)', folder: 'Springen' },
-    jumpTime: { value: 1.1, min: 0.3, max: 2, step: 0.01, label: 'Sprung-Boost: Dauer in der Luft (s)', folder: 'Springen' },
+    jumpHeight: { value: 0.85, min: 0.2, max: 1.4, step: 0.01, label: 'Sprung-Boost: Höhe auf der Wand (m)', folder: 'Springen' },
+    jumpTime: { value: 1.3, min: 0.3, max: 2.5, step: 0.01, label: 'Sprung-Boost: Dauer in der Luft (s)', folder: 'Springen' },
+    headroom: { value: 0.1, min: 0, max: 1, step: 0.01, label: 'Kopf darf oben aus der Wand (m)', folder: 'Springen' },
     jumpVy: { value: 0.45, min: 0.15, max: 1.5, step: 0.01, label: 'Absprung: Körper (Maske) steigt schneller als (m/s)', folder: 'Springen' },
     jumpVy2: { value: 0.2, min: 0, max: 1.5, step: 0.01, label: 'und der Mittelwert der Maske schneller als (m/s)', folder: 'Springen' },
     jumpRise: { value: 0.05, min: 0.01, max: 0.25, step: 0.005, label: 'und würde so hoch fliegen (m über dem Stand)', folder: 'Springen' },
@@ -459,14 +460,14 @@ export default {
     walkGate: { value: 0.55, min: 0.1, max: 3, step: 0.05, label: 'kein Sprung beim Gehen schneller als (m/s)', folder: 'Springen' },
     instant: { value: 2, min: 1, max: 4, step: 0.1, label: 'Figur hebt sofort mit (× echter Hub)', folder: 'Springen' },
     jumpRest: { value: 0.15, min: 0, max: 1, step: 0.01, label: 'Mindestabstand zweier Sprünge (s)', folder: 'Springen' },
-    jumpLead: { value: 0.03, min: 0, max: 0.3, step: 0.01, label: 'Sprung startet schon ein Stück im Bogen (s)', folder: 'Springen' },
+    jumpLead: { value: 0.08, min: 0, max: 0.3, step: 0.01, label: 'Sprung startet schon ein Stück im Bogen (s)', folder: 'Springen' },
 
     playNear: { value: 0.8, min: 0.3, max: 6, step: 0.05, label: 'Mitspielen ab (m vom Sensor)', folder: 'Mitspielen' },
     playFar: { value: 3.2, min: 0.5, max: 8, step: 0.05, label: 'Mitspielen bis (m vom Sensor)', folder: 'Mitspielen' },
     bgPeople: { value: 0.4, min: 0, max: 1, step: 0.05, label: 'Leute dahinter: Helligkeit (0 = aus)', folder: 'Mitspielen' },
     bgScale: { value: 0.8, min: 0.4, max: 1, step: 0.05, label: 'Leute dahinter: Größe (×)', folder: 'Mitspielen' },
 
-    figH: { value: 1.2, min: 0.6, max: 1.8, step: 0.01, label: 'Figurhöhe auf der Wand (m)', folder: 'Figuren' },
+    figH: { value: 1.1, min: 0.6, max: 1.8, step: 0.01, label: 'Figurhöhe auf der Wand (m)', folder: 'Figuren' },
     sameSize: { value: true, label: 'Alle gleich groß (Kinder wie Erwachsene)', folder: 'Figuren' },
     duckAt: { value: 0.72, min: 0.4, max: 0.95, step: 0.01, label: 'Flieger fliegen ab (× Figurhöhe)', folder: 'Figuren' },
     wide: { value: 1.25, min: 1, max: 2, step: 0.05, label: 'Figuren breiter (×, Pixel-Look)', folder: 'Figuren' },

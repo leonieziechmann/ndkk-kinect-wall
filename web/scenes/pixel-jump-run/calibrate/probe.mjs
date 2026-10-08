@@ -95,7 +95,7 @@ try {
       speed: J.game.speed,
       things: J.game.things.length,
       phase: J.game.phase, round: J.game.round, results: J.game.results, crowns: [...J.game.crowns],
-      figs: J.people.list.map((f) => ({ id: f.id, cells: f.cells, jumps: f.jumps, lives: f.lives, alive: f.alive, score: f.roundScore, round: f.round, player: f.player })),
+      figs: J.people.list.map((f) => ({ id: f.id, cells: f.cells, jumps: f.jumps, lives: f.lives, alive: f.alive, score: f.roundScore, round: f.round, player: f.player, maxLift: f.maxLift })),
       log: J.people.log,
     };
   });
