@@ -31,7 +31,9 @@ Only one process can open the Kinect at a time. **kinect-hub** owns it and serve
 - Never stop a hub you did not start yourself.
 - Do **not** start `fn2_capture.exe`, `fn2_reconnect.exe`, `viewer.py --fn2` or `pointcloud.py` without `--hub` while the hub runs; they would fight over the sensor. `viewer.py --hub` / `pointcloud.py --hub` are fine.
 - Recorded people instead of an empty room, or reproducible tests: use a **replay hub** on a separate port. It loops a recording at the original frame rate and never touches the Kinect.
-  - `ls "$MAIN/recordings"` lists the recordings (`*.k2rec`).
+  - `ls "$MAIN/recordings"` lists the recordings (`*.k2rec`). `recordings/README.md` says what each one shows.
+  - Multi-user recordings sorted by use case (occlusion, groups, sitting, empty room, …): `$MAIN/recordings/katalog/KATALOG.md`, with the time ranges in `katalog.json`.
+  - Ready-cut and labelled clips: `$MAIN/recordings/clips/<case>/INDEX.md`. Each clip comes with `.json` (persons and occlusions every 6th frame) and `.png` (preview). Cut and label more clips with `recordings/katalog/werkzeuge/clip.py` and `label_clips.py`.
   - `curl -s http://127.0.0.1:8091/api/status`: if it answers with `"source":"replay"`, use that hub. Otherwise start one in the background: `"$MAIN/kinect-hub/target/release/kinect-hub.exe" --source replay "$MAIN/recordings/<name>.k2rec" --bind 127.0.0.1:8091`. If another kind of hub holds 8091, take 8092, 8093, ….
   - Scenes then use `?hub=8091`; for `npm run check`, append `-- --hub 8091`.
   - No recording yet: `--source synthetic` instead of `--source replay <file>` gives moving spheres in a room.
