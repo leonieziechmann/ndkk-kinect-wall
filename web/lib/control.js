@@ -542,6 +542,8 @@ async function selectEntry(id) {
   gui.domElement.style.width = '100%';
   const folders = new Map();
   const controllers = [];
+  // showChanged() and reloads replace the entry objects in state.show: always write into the current one
+  const current = () => state.show.entries.find((e) => e.id === id);
   for (const p of specs) {
     let parent = gui;
     if (p.folder) {
@@ -557,16 +559,21 @@ async function selectEntry(id) {
     const mark = () => c.domElement.classList.toggle('changed', values[p.key] !== p.value);
     mark();
     c.onChange((v) => {
-      if (v === p.value) delete entry.params[p.key];
-      else entry.params[p.key] = v;
+      const cur = current();
+      if (!cur) return;
+      const n = Object.keys(cur.params).length;
+      if (v === p.value) delete cur.params[p.key];
+      else cur.params[p.key] = v;
       mark();
-      showChanged({ rerender: false });
+      showChanged({ rerender: Object.keys(cur.params).length !== n }); // the row shows how many are adjusted
     });
     controllers.push({ c, p, mark });
   }
   paramGui = gui;
   $('paramsReset').onclick = () => {
-    entry.params = {};
+    const cur = current();
+    if (!cur) return;
+    cur.params = {};
     for (const { c, p, mark } of controllers) {
       values[p.key] = p.value;
       c.updateDisplay();
@@ -576,13 +583,15 @@ async function selectEntry(id) {
   };
   $('paramsFromPage').onclick = () => {
     // what the scene's own page (/scenes/<name>/) remembers in this browser
+    const cur = current();
+    if (!cur) return;
     const stored = readStore(storeKey(entry.scene));
     let n = 0;
     for (const { c, p, mark } of controllers) {
       if (!(p.key in stored) || !acceptsParam(p, stored[p.key])) continue;
       values[p.key] = stored[p.key];
-      if (stored[p.key] === p.value) delete entry.params[p.key];
-      else entry.params[p.key] = stored[p.key];
+      if (stored[p.key] === p.value) delete cur.params[p.key];
+      else cur.params[p.key] = stored[p.key];
       c.updateDisplay();
       mark();
       n++;
