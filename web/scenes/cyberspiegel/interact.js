@@ -8,7 +8,8 @@
 //   upload    standing still for a few seconds: 0..1, back to 0 quickly when moving
 //   arcs      hands of two people close to each other: a link, 'touch' when they meet
 //   near      how close the nearest person is to the wall: 0..1
-// Events and positions are in the world space of ctx.persons (m); main.js maps them to the mirror.
+// Events and positions are in the world space of ctx.persons (m), with the slot of the person they
+// belong to; main.js maps them to the mirror (each person is shifted on the wall on their own).
 
 const clamp01 = (x) => Math.min(1, Math.max(0, x));
 const smooth = (a, b, x) => {
@@ -40,7 +41,7 @@ export function createInteractions() {
     /**
      * persons: ctx.persons; front: the Kinect's distance from the wall (m). Returns
      * { events: [{ type, at (world), strength, id, slot }], people: [{ id, slot, charge, open, upload }],
-     *   arcs: [{ a, b (world), strength }], near }
+     *   arcs: [{ a, b (world), sa, sb (their slots), strength }], near }; a 'touch' event also has a, b, sa, sb
      */
     update(persons, t, dt, front) {
       const events = [];
@@ -153,10 +154,11 @@ export function createInteractions() {
             touching.delete(key);
             continue;
           }
-          arcs.push({ a: best.a, b: best.b, strength: smooth(1.1, 0.25, best.d) });
+          const arc = { a: best.a, b: best.b, sa: A.slot, sb: B.slot, strength: smooth(1.1, 0.25, best.d) };
+          arcs.push(arc);
           if (best.d < 0.15 && !touching.has(key)) {
             touching.add(key);
-            events.push({ type: 'touch', at: mid(best.a, best.b), strength: 1, id: A.id, slot: A.slot });
+            events.push({ type: 'touch', at: mid(best.a, best.b), strength: 1, id: A.id, slot: A.slot, a: arc.a, b: arc.b, sa: arc.sa, sb: arc.sb });
           } else if (best.d > 0.3) touching.delete(key);
         }
       }

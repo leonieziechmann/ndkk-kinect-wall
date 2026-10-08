@@ -1,7 +1,7 @@
 // The people of the mirror, as point clouds from the original depth data (like the three.js
 // particles): every person pixel (or every 2nd/3rd, so the rows stay visible on the LEDs) is a
-// glowing dot at its mirrored place, colored by its distance from the wall and brightened by the
-// infrared image. Behind the dots an almost black body hides the world, so everyone stands in front
+// glowing dot where the wall mapping puts it (mirror.js: ctx.wall with the stretched walk, then
+// into the mirror world), colored by its distance from the wall and brightened by the infrared image. Behind the dots an almost black body hides the world, so everyone stands in front
 // of it as a dark self. The contour is brighter, bands of the body glitch sideways now and then, and
 // whoever comes in is scanned in from the head down.
 //
@@ -117,10 +117,11 @@ export function createPeople() {
     /**
      * One person tracking result -> particles.
      * k: ctx.kinect.persons, rays: ctx.kinect.rays, ir: Uint8Array or null,
-     * xf: camera frame (m) -> mirror world (see mirrorTransform() in main.js),
-     * o: { fx, step (1..3), near, far (m from the wall, colors), dotLed (dot size on the wall, m), eyeDist, front }
+     * mirror: camera frame (m) -> mirror world (MirrorMap in mirror.js, updated for this frame),
+     * o: { fx, step (1..3), near, far (m from the wall, colors), dotLed (dot size on the wall, m),
+     *      spread (how much wider than real the mapping draws the points: closes the gaps) }
      */
-    build(k, rays, ir, xf, o) {
+    build(k, rays, ir, mirror, o) {
       const lab = k.labels;
       const dep = k.depth;
       const idx = k.indices;
@@ -139,6 +140,8 @@ export function createPeople() {
       const edgeAt = (i, u, v, s, d, e) =>
         (u >= e && far(i - e, s, d)) || (u + e < W && far(i + e, s, d)) || (v >= e && far(i - e * W, s, d)) || (v + e < H && far(i + e * W, s, d));
       const span = Math.max(0.1, o.far - o.near);
+      const D = mirror.eye[2];
+      const p = [0, 0, 0];
       let n = 0;
       let nc = 0;
       for (let t = 0; t < idx.length && n < MAX_POINTS; t++) {
@@ -162,19 +165,20 @@ export function createPeople() {
         const jy = (((h >>> 10) & 1023) / 1023 - 0.5) * 0.66 * st;
         const rx = rays[2 * i] + (jx * (rays[2 * i + 2] - rays[2 * i] || 0.0027));
         const ry = rays[2 * i + 1] + (jy * (v + 1 < H ? rays[2 * i + 2 * W + 1] - rays[2 * i + 1] : 0.0027));
-        const X = z * (xf[0] * rx + xf[1] * ry + xf[2]) + xf[3];
-        const Y = z * (xf[4] * rx + xf[5] * ry + xf[6]) + xf[7];
-        const Z = z * (xf[8] * rx + xf[9] * ry + xf[10]) + xf[11];
+        mirror.fromCamera(rx * z, ry * z, z, s, p);
+        const X = p[0];
+        const Y = p[1];
+        const Z = p[2];
         pos[3 * n] = X;
         pos[3 * n + 1] = Y;
         pos[3 * n + 2] = Z;
         info[4 * n] = edge;
         info[4 * n + 1] = ir ? Math.min(1, ir[i] / 160) : 0.5;
         info[4 * n + 2] = s + ((h >>> 20) / 4095) * 0.49;
-        info[4 * n + 3] = Math.min(1, Math.max(0, (z + o.front - o.near) / span));
+        info[4 * n + 3] = Math.min(1, Math.max(0, (mirror.distance(Z) - o.near) / span));
         // dot: a fixed size on the wall; body: closes the gaps between the dots
-        size[2 * n] = (o.dotLed * (o.eyeDist - Z)) / o.eyeDist;
-        size[2 * n + 1] = (1.9 * st * z) / o.fx;
+        size[2 * n] = (o.dotLed * (D - Z)) / D;
+        size[2 * n + 1] = (1.9 * st * z * o.spread * mirror.scale(Z)) / o.fx;
         if (edge >= 1) {
           if (nc < contour.length) contour[nc++] = n;
           const r = reservoir[s];

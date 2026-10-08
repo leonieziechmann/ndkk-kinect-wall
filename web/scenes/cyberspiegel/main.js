@@ -1,13 +1,18 @@
-// Cyberspiegel: the LED wall (6 m x 2 m, 1008 x 336) as a dark mirror into cyberspace.
+// Cyberspiegel: the LED wall as a dark mirror into cyberspace.
 //
 // Only the people come from the Kinect: their mask pixels (person tracking, delayed mode: exact
 // skeletons) become point clouds like the three.js particles, at their mirrored place. Everything
 // else is virtual and made of particles too: an arena of heaving particle walls (Blackwall) with a
 // glowing tear of light in the middle, dunes of dots, flickering streaks, drifting motes.
 //
+// A wall scene of the shared LED wall core (wall: true, ../../WALL.md): the canvas is the LED image,
+// and the wall's size, the Kinect's place and how people are mapped onto the wall (mirrored, the walk
+// stretched over the whole wall) come from the control center, through ctx.wall (mirror.js).
 // The wall is the mirror plane: a camera at the viewer's place looks through the wall rectangle
-// (off-axis frustum) into the mirrored world, whose floor continues the real floor at the bottom
-// edge of the wall. Step closer and you grow, step aside and your image follows, like in a mirror.
+// (offAxisProjection) into the mirrored world, whose floor continues the real floor at the bottom
+// edge of the wall. "Echte Größe" puts the people's picture where the wall mapping puts them (real
+// size, as the calibration test image shows them); at 0 they shrink with their distance as in a
+// real mirror.
 //
 // Things to try, without any hint on the wall (interact.js reads them from the skeletons):
 //   hands and feet stir a swarm of particles in the air     jump: a quake runs through the floor
@@ -17,20 +22,21 @@
 // And everyone hangs on marionette strings (head and hands) from a puppeteer above (strings.js).
 //
 // Rendering (three.js WebGPURenderer): the scene at LED resolution x supersampling -> bloom, RGB
-// split, glitches at LED resolution -> the LED image (1008 x 336) -> the canvas: scaled to fit
-// ("Vorschau") or one LED per canvas pixel at the top left ("LED pixelgenau", for the LED controller).
+// split, glitches at LED resolution -> the canvas (= the LED image).
 //
-// Files: world.js (the surroundings), people.js (the person point clouds), fx.js (particles, swarm),
-// interact.js (gestures), strings.js (marionette strings).
+// Files: mirror.js (wall mapping -> mirror world), world.js (the surroundings), people.js (the person
+// point clouds), fx.js (particles, swarm), interact.js (gestures), strings.js (marionette strings).
 
 import * as THREE from 'three/webgpu';
 import { Fn, abs, exp, float, floor, hash, smoothstep, texture, uniform, uv, vec2, vec3, vec4 } from 'three/tsl';
 import { bloom } from 'three/addons/tsl/display/BloomNode.js';
+import { offAxisProjection } from '/lib/wall.js';
 import { createWorld, MAX_MARKS, MAX_QUAKES, mulberry } from './world.js';
 import { createPeople } from './people.js';
 import { Sparks, Swarm } from './fx.js';
 import { createInteractions } from './interact.js';
 import { createStrings } from './strings.js';
+import { MirrorMap } from './mirror.js';
 
 const FACE = ['leftEye', 'rightEye'];
 const HANDS = ['leftHand', 'rightHand'];
@@ -39,7 +45,10 @@ const CORE = [0, 9, -68]; // the glowing core in the mirror world (uploads fly t
 
 let S = null; // everything setup() creates
 
-/** A camera whose frustum goes exactly through the wall rectangle (`frustum` = l, r, t, b at distance 1). */
+/**
+ * A camera whose frustum goes exactly through the wall rectangle (`frustum` = l, r, t, b at distance 1,
+ * from offAxisProjection()); three.js builds the matrix for its own depth conventions.
+ */
 class WallCamera extends THREE.PerspectiveCamera {
   constructor() {
     super(50, 3, 0.05, 400);
@@ -56,76 +65,18 @@ class WallCamera extends THREE.PerspectiveCamera {
   }
 }
 
-/** World -> room without a found floor: the sensor camH above the floor, tilted down by tiltDeg. */
-function manualRoom(camH, tiltDeg) {
-  const t = (tiltDeg * Math.PI) / 180;
-  const up = [0, Math.cos(t), -Math.sin(t)];
-  const fwd = [0, Math.sin(t), Math.cos(t)];
-  const m = new Float32Array(16);
-  for (let j = 0; j < 3; j++) {
-    m[j * 4] = j === 0 ? 1 : 0;
-    m[j * 4 + 1] = up[j];
-    m[j * 4 + 2] = fwd[j];
-  }
-  m[13] = camH;
-  m[15] = 1;
-  return m;
-}
-
-/**
- * Coefficients from the Kinect camera frame (m: x right, y down, z forward) to the mirror world:
- * world = (xSign x, -y, z) -> room (matrix M) -> X = camX - room.x, Y = room.y, Z = shift - room.z.
- * X is flipped: with the default xSign (-1) the world's +x is the person's left, and a mirror shows
- * the left side on the left. Key m (xSign) switches to the camera view.
- * For a ray (rx, ry) at depth z: X = z (xf0 rx + xf1 ry + xf2) + xf3, and so on.
- */
-function mirrorTransform(M, xSign, camX, shift) {
-  return [
-    -M[0] * xSign, M[4], -M[8], camX - M[12],
-    M[1] * xSign, -M[5], M[9], M[13],
-    -M[2] * xSign, M[6], -M[10], shift - M[14],
-  ];
-}
-
-/** world direction (velocity) -> mirror world */
-function dirToMirror(M, v, out = [0, 0, 0]) {
-  out[0] = -(M[0] * v[0] + M[4] * v[1] + M[8] * v[2]);
-  out[1] = M[1] * v[0] + M[5] * v[1] + M[9] * v[2];
-  out[2] = -(M[2] * v[0] + M[6] * v[1] + M[10] * v[2]);
-  return out;
-}
-
-/** world point (m, as ctx.persons) -> mirror world */
-function worldToMirror(M, camX, shift, w, out = [0, 0, 0]) {
-  out[0] = camX - (M[0] * w[0] + M[4] * w[1] + M[8] * w[2] + M[12]);
-  out[1] = M[1] * w[0] + M[5] * w[1] + M[9] * w[2] + M[13];
-  out[2] = shift - (M[2] * w[0] + M[6] * w[1] + M[10] * w[2] + M[14]);
-  return out;
-}
-
 export default {
+  wall: true, // the canvas is the LED image (ctx.width x ctx.height = ctx.wall.led)
   streams: ['persons'], // depth and ir come with it
   persons: { mode: 'full' }, // default delay: exact skeletons; the whole scene shows the same moment
-  pixelRatio: 1, // canvas pixels = screen pixels: "LED pixelgenau" is one LED per pixel
   // the pose model and the Kinect's depth decoding share the GPU; the people come at 30 Hz anyway
   // (?fps=60 in the URL for more)
   maxFps: 30,
 
   params: {
-    viewMode: { value: 0, options: { Vorschau: 0, 'LED pixelgenau': 1 }, label: 'Ansicht', folder: 'Wand' },
-    ledW: { value: 1008, min: 64, max: 4096, step: 1, label: 'LEDs breit', folder: 'Wand' },
-    ledH: { value: 336, min: 32, max: 2048, step: 1, label: 'LEDs hoch', folder: 'Wand' },
-    wallW: { value: 6, min: 1, max: 20, step: 0.1, label: 'Wand breit (m)', folder: 'Wand' },
-    wallH: { value: 2, min: 0.5, max: 8, step: 0.1, label: 'Wand hoch (m)', folder: 'Wand' },
-    wallBottom: { value: 0, min: 0, max: 3, step: 0.05, label: 'Wand Unterkante (m)', folder: 'Wand' },
-    camX: { value: 0, min: -10, max: 10, step: 0.05, label: 'Kinect seitlich (m)', folder: 'Wand' },
-    front: { value: 0.1, min: 0, max: 3, step: 0.05, label: 'Kinect vor der Wand (m)', folder: 'Wand' },
-    camH: { value: 0.85, min: 0, max: 4, step: 0.05, label: 'Kinect-Höhe ohne Boden (m)', folder: 'Wand' },
-    camTilt: { value: 0, min: -45, max: 45, step: 0.5, label: 'Neigung ohne Boden (°)', folder: 'Wand' },
-    ss: { value: 2, options: { '1×': 1, '2×': 2, '3×': 3 }, label: 'Supersampling', folder: 'Wand' },
-
     eyeDist: { value: 3, min: 0.8, max: 10, step: 0.05, label: 'Blickpunkt vor der Wand (m)', folder: 'Spiegel' },
     eyeH: { value: 1.1, min: 0.3, max: 3, step: 0.01, label: 'Augenhöhe (m)', folder: 'Spiegel' },
+    real: { value: 1, min: 0, max: 1, step: 0.01, label: 'Echte Größe (0 = perspektivisch)', folder: 'Spiegel' },
     pull: { value: 1.2, min: 0, max: 3, step: 0.05, label: 'Spiegelbild näher (m)', folder: 'Spiegel' },
     follow: { value: 0.25, min: 0, max: 1, step: 0.01, label: 'Parallaxe (folgt den Personen)', folder: 'Spiegel' },
 
@@ -182,6 +133,7 @@ export default {
     glitchImage: { value: 0.5, min: 0, max: 1, step: 0.01, label: 'Bild-Glitch', folder: 'Bild' },
     vignette: { value: 0.35, min: 0, max: 1, step: 0.01, label: 'Vignette', folder: 'Bild' },
     exposure: { value: 1.5, min: 0.2, max: 4, step: 0.01, label: 'Belichtung', folder: 'Bild' },
+    ss: { value: 2, options: { '1×': 1, '2×': 2, '3×': 3 }, label: 'Supersampling', folder: 'Bild' },
   },
 
   async setup(ctx) {
@@ -199,7 +151,7 @@ export default {
     const swarm = new Swarm(2600);
     scene.add(world.group, people.body, people.dots, swarm.sprite, sparks.sprite);
 
-    // post: scene (supersampled) -> bloom, RGB split, glitch at LED resolution -> LED image -> canvas
+    // post: scene (supersampled) -> bloom, RGB split, glitch at LED resolution -> the canvas (LED image)
     const post = {
       exposure: uniform(1.2),
       ca: uniform(0), // RGB split in uv units
@@ -231,9 +183,6 @@ export default {
       const vig = float(1).sub(smoothstep(0.28, 0.5, abs(dx)).mul(post.vignette));
       return vec4(vec3(1).sub(exp(c.negate())).mul(vig), 1); // soft shoulder, black stays black
     })();
-    const ledTex = texture(new THREE.Texture());
-    const screenMat = new THREE.NodeMaterial();
-    screenMat.fragmentNode = vec4(ledTex.sample(uv()).rgb, 1);
 
     S = {
       renderer,
@@ -249,16 +198,15 @@ export default {
       stringColor: new THREE.Color(),
       post,
       sceneTex,
-      ledTex,
       bloomNode,
       quadLed: new THREE.QuadMesh(ledMat),
-      quadScreen: new THREE.QuadMesh(screenMat),
-      mats: [ledMat, screenMat],
-      led: null, // render targets, see ensureTargets()
+      mats: [ledMat],
+      led: null, // render target, see ensureTargets()
+      mirror: new MirrorMap(), // wall mapping -> mirror world
       viewKey: '',
       eye: { x: 0 },
       energy: 0,
-      marks: new Map(), // person id -> { x, z, alpha, slot, seen }
+      marks: new Map(), // person id -> { x, z (floor), depth (color), alpha, seen }
       idSlot: new Map(),
       hands: new Map(), // `${id}:${hand}` -> last position
       glitch: { next: 2, until: 0, seed: 0, change: 0, image: false },
@@ -286,43 +234,47 @@ export default {
 
   frame(ctx) {
     const p = ctx.params;
-    const { renderer, camera, world, people, sparks } = S;
+    const wall = ctx.wall;
+    const { renderer, camera, world, people, sparks, mirror } = S;
     const dt = Math.min(Math.max(ctx.dt, 0.001), 0.1);
     const t = ctx.time;
-    const led = ensureTargets(p);
+    const led = ensureTargets(wall.led, p);
+    const size = wall.size;
+    const wallTop = wall.setup.bottom + size.h;
 
-    // ---------- the mirror geometry ----------
+    // ---------- the mirror geometry (the wall setup: ctx.wall) ----------
     const persons = ctx.persons;
-    const roomM = persons.room?.found ? persons.room.matrix : manualRoom(p.camH, p.camTilt);
-    const shift = p.pull - p.front;
-    const wall = { l: -p.wallW / 2, r: p.wallW / 2, b: p.wallBottom, t: p.wallBottom + p.wallH };
-    // parallax: the point of view drifts a little towards the people
+    // parallax: the point of view drifts a little towards the people (where the wall shows them)
     let hx = 0;
     let hn = 0;
     for (const q of persons) {
       if (!q.head) continue;
-      hx += worldToMirror(roomM, p.camX, shift, q.head, S.tmp)[0];
+      hx += wall.mirror(wall.fromWorld(q.head, q.slot, S.tmp), S.tmp)[0];
       hn++;
     }
-    const targetX = hn ? Math.max(wall.l, Math.min(wall.r, (hx / hn) * p.follow)) : 0;
+    const half = size.w / 2;
+    const targetX = hn ? Math.max(-half, Math.min(half, (hx / hn) * p.follow)) : 0;
     S.eye.x += (targetX - S.eye.x) * Math.min(1, dt / 1.5);
     const D = p.eyeDist;
+    // the people are placed for the steady eye: in a quake they shake with the picture
+    mirror.update(wall, [S.eye.x, p.eyeH, D], p.pull, p.real);
     // a quake shakes the point of view
     const sk = S.shake * S.shake * 0.04 * p.shake;
     const ex = S.eye.x + Math.sin(t * 57) * sk;
     const ey = p.eyeH + Math.sin(t * 43 + 1) * sk * 0.7;
+    const { frustum } = offAxisProjection([ex, ey, D], size.w, size.h, wall.setup.bottom, camera.near, camera.far);
     camera.position.set(ex, ey, D);
-    camera.frustum = [(wall.l - ex) / D, (wall.r - ex) / D, (wall.t - ey) / D, (wall.b - ey) / D];
+    camera.frustum = [frustum.l, frustum.r, frustum.t, frustum.b];
     camera.updateProjectionMatrix();
     camera.updateMatrixWorld();
-    const ledPx = p.wallH / led.h; // m per LED on the wall
+    const ledPx = size.h / led.h; // m per LED on the wall
 
     // the world's dots are spaced for the view
-    const key = `${p.eyeH}:${D}:${ledPx}:${p.wallW}`;
+    const key = `${p.eyeH}:${D}:${ledPx}:${size.w}`;
     if (key !== S.viewKey) {
       S.viewKey = key;
-      world.build({ eyeH: p.eyeH, eyeDist: D, ledPx, wallW: p.wallW });
-      S.swarm.build({ eyeDist: D, ledPx, wallW: p.wallW }, mulberry(5));
+      world.build({ eyeH: p.eyeH, eyeDist: D, ledPx, wallW: size.w });
+      S.swarm.build({ eyeDist: D, ledPx, wallW: size.w }, mulberry(5));
     }
 
     // ---------- uniforms ----------
@@ -330,7 +282,7 @@ export default {
     S.farColor.set(p.farColor);
     const span = Math.max(0.1, p.farDist - p.nearDist);
     // color of a point in the mirror world at depth Z (as the people's dots)
-    S.colorAt = (Z, out = new THREE.Color()) => out.copy(S.nearColor).lerp(S.farColor, Math.min(1, Math.max(0, (shift - Z + p.front - p.nearDist) / span)));
+    S.colorAt = (Z, out = new THREE.Color()) => out.copy(S.nearColor).lerp(S.farColor, Math.min(1, Math.max(0, (mirror.distance(Z) - p.nearDist) / span)));
     const U = people.U;
     U.time.value = t;
     U.near.value.copy(S.nearColor);
@@ -366,34 +318,35 @@ export default {
     // ---------- the people ----------
     const k = ctx.kinect;
     if (k.fresh.persons && k.persons) {
-      const xf = mirrorTransform(roomM, ctx.xSign, p.camX, shift);
-      people.build(k.persons, k.rays, k.ir?.data ?? null, xf, {
+      const map = wall.setup.map;
+      // the mapping draws points wider than real ("alle Punkte" stretched, height scaled): no gaps
+      const wide = map.apply === 'points' ? Math.max(wall.k(1, map.distance), wall.k(-1, map.distance)) : 1;
+      people.build(k.persons, k.rays, k.ir?.data ?? null, mirror, {
         fx: k.params?.fx ?? 365.5,
         step: Number(p.density) || 3,
         near: p.nearDist,
         far: p.farDist,
         dotLed: p.dotSize * ledPx,
-        eyeDist: D,
-        front: p.front,
+        spread: Math.max(1, wide, map.scaleY),
       });
       const since = Math.min(0.1, t - S.lastUpdate || 1 / 30);
       S.lastUpdate = t;
       shedDust(p, since, ledPx);
-      handTrails(ctx, p, roomM, shift, since, ledPx);
+      handTrails(ctx, p, since, ledPx);
       leaving(ctx, p, ledPx);
     }
-    updateMarks(ctx, p, roomM, shift, dt);
+    updateMarks(ctx, p, dt);
 
     // ---------- what the people do ----------
-    interaction(ctx, p, roomM, shift, ledPx, dt);
+    interaction(ctx, p, ledPx, dt);
 
     // ---------- particles ----------
     sparks.update(dt, t);
-    eyes(ctx, p, roomM, shift, ledPx);
-    arcs(p, roomM, shift, ledPx);
-    marionette(ctx, p, roomM, shift, ledPx, wall.t, dt);
+    eyes(ctx, p, ledPx);
+    arcs(p, ledPx);
+    marionette(ctx, p, ledPx, wallTop, dt);
     sparks.upload();
-    swarmStep(ctx, p, roomM, shift, dt);
+    swarmStep(ctx, p, dt);
 
     // ---------- render ----------
     S.bloomNode.strength.value = p.bloom;
@@ -405,26 +358,10 @@ export default {
     S.post.vignette.value = p.vignette;
     renderer.setRenderTarget(led.scene);
     renderer.render(S.scene, camera);
-    renderer.setRenderTarget(led.image);
+    renderer.setRenderTarget(null); // the canvas is the LED image
     S.quadLed.render(renderer);
-    renderer.setRenderTarget(null);
-    renderer.setViewport(0, 0, ctx.width, ctx.height);
-    renderer.clear(); // black around the LED image
-    renderer.autoClear = false;
-    let rect; // the LED image on the canvas: x, y from the top left, w, h
-    if (Number(p.viewMode) === 1) rect = [0, 0, led.w, led.h];
-    else {
-      const s = Math.min(ctx.width / led.w, ctx.height / led.h);
-      const w = Math.round(led.w * s);
-      const h = Math.round(led.h * s);
-      rect = [Math.floor((ctx.width - w) / 2), Math.floor((ctx.height - h) / 2), w, h];
-    }
-    renderer.setViewport(rect[0], ctx.height - rect[1] - rect[3], rect[2], rect[3]);
-    S.quadScreen.render(renderer);
-    renderer.autoClear = true;
-    renderer.setViewport(0, 0, ctx.width, ctx.height);
 
-    const floor = persons.room?.found ? `Boden ${persons.room.height.toFixed(2)} m` : `kein Boden: Kinect ${p.camH} m`;
+    const floor = wall.room.found ? `Boden ${wall.room.height.toFixed(2)} m` : `Boden von Hand: Kinect ${wall.room.height.toFixed(2)} m`;
     ctx.status = `${persons.length} Person(en) · ${Math.round(people.count / 1000)}k Punkte · ${sparks.n} Partikel · ${floor} · Verzögerung ${Math.round(persons.delayMs || 0)} ms${S.lastEvent ? ` · ${S.lastEvent}` : ''}`;
   },
 
@@ -435,20 +372,16 @@ export default {
 
 // ---------- helpers that use S ----------
 
-function ensureTargets(p) {
-  const w = Math.round(p.ledW);
-  const h = Math.round(p.ledH);
+/** the scene's render target: the LED image (ctx.wall.led) x supersampling */
+function ensureTargets(ledSize, p) {
+  const w = ledSize.w;
+  const h = ledSize.h;
   const ss = Number(p.ss) || 2;
   if (S.led && S.led.w === w && S.led.h === h && S.led.ss === ss) return S.led;
   S.led?.scene.dispose();
-  S.led?.image.dispose();
   const scene = new THREE.RenderTarget(w * ss, h * ss, { type: THREE.HalfFloatType, depthBuffer: true });
-  const image = new THREE.RenderTarget(w, h, { type: THREE.HalfFloatType, depthBuffer: false });
-  image.texture.minFilter = THREE.NearestFilter;
-  image.texture.magFilter = THREE.NearestFilter;
   S.sceneTex.value = scene.texture;
-  S.ledTex.value = image.texture;
-  S.led = { w, h, ss, scene, image };
+  S.led = { w, h, ss, scene };
   return S.led;
 }
 
@@ -485,6 +418,8 @@ function glitchNow(t, duration, image) {
   g.next = Math.max(g.next, g.until + 1.5);
 }
 
+const mid3 = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2];
+
 /** how many of something with an expected count (fractions on average) */
 function poisson(x) {
   const n = Math.floor(x);
@@ -509,20 +444,23 @@ function burst(at, count, speed, ttl, ledPx, color, bright, gravity = 0) {
 }
 
 /** events (jumps, claps, eruptions, touches) and the poses held (charge, open, upload) */
-function interaction(ctx, p, M, shift, ledPx, dt) {
+function interaction(ctx, p, ledPx, dt) {
   const t = ctx.time;
-  const I = S.interact.update(ctx.persons, t, dt, p.front);
+  const M = S.mirror;
+  const I = S.interact.update(ctx.persons, t, dt, ctx.wall.setup.sensor.front);
   const W = S.world.U;
   const c = new THREE.Color();
   const hot = new THREE.Color();
   S.kicks.length = 0;
   for (const e of I.events) {
-    const at = worldToMirror(M, p.camX, shift, e.at, [0, 0, 0]);
+    // a touch: between the hands as the wall shows them (each person has their own shift)
+    const at = e.type === 'touch' ? mid3(M.fromWorld(e.a, e.sa), M.fromWorld(e.b, e.sb)) : M.fromWorld(e.at, e.slot, [0, 0, 0]);
     S.colorAt(at[2], c);
     hot.copy(c).lerp(WHITE, 0.5);
     if (e.type === 'jump' && p.quake > 0) {
       const s = e.strength * p.quake;
-      W.quakes.array[S.quakeIndex++ % MAX_QUAKES].set(at[0], at[2], t, s);
+      const f = M.floor(e.at, e.slot); // on the floor where the feet are seen
+      W.quakes.array[S.quakeIndex++ % MAX_QUAKES].set(f[0], f[2], t, s);
       S.quakes.push({ t, s });
       S.shake = Math.min(1.2, Math.max(S.shake, 0.2 + 0.8 * s * s));
       S.slack = Math.max(S.slack, 0.4 + 0.6 * e.strength);
@@ -534,11 +472,11 @@ function interaction(ctx, p, M, shift, ledPx, dt) {
         const v = 0.6 + Math.random() * 1.4;
         const b = 0.8 + Math.random();
         S.sparks.spawn(
-          at[0] + Math.cos(a) * r, 0.02, at[2] + Math.sin(a) * r, Math.cos(a) * v, 0.8 + Math.random() * 2.2 * s, Math.sin(a) * v,
+          f[0] + Math.cos(a) * r, 0.02, f[2] + Math.sin(a) * r, Math.cos(a) * v, 0.8 + Math.random() * 2.2 * s, Math.sin(a) * v,
           0.6 + Math.random() * 0.6, ledPx * (1.2 + Math.random()), hot.r * b, hot.g * b, hot.b * b, -6, 0.2,
         );
       }
-      S.kicks.push({ p: [at[0], 0.3, at[2]], r: 2.2, s: 2.5 * s, up: 1 });
+      S.kicks.push({ p: [f[0], 0.3, f[2]], r: 2.2, s: 2.5 * s, up: 1 });
     } else if (e.type === 'clap' && p.clap > 0) {
       const s = (0.5 + 0.5 * e.strength) * p.clap;
       burst(at, Math.round(170 * s), 3.2, 0.5, ledPx, hot, 2.2);
@@ -578,7 +516,7 @@ function interaction(ctx, p, M, shift, ledPx, dt) {
       for (const h of HANDS) {
         const j = person.joints[h];
         if (!j) continue;
-        const m = worldToMirror(M, p.camX, shift, j, [0, 0, 0]);
+        const m = M.fromWorld(j, person.slot, [0, 0, 0]);
         // particles spiral in from all around (more and brighter the fuller it gets) and a glow in the hand
         const n = poisson((120 + q.charge * 380) * p.charge * dt);
         for (let i = 0; i < n; i++) {
@@ -646,11 +584,11 @@ function interaction(ctx, p, M, shift, ledPx, dt) {
 }
 
 /** crackling arcs between the hands of two people */
-function arcs(p, M, shift, ledPx) {
+function arcs(p, ledPx) {
   if (!S.arcs.length || p.arcs <= 0) return;
   for (const arc of S.arcs) {
-    const a = worldToMirror(M, p.camX, shift, arc.a, [0, 0, 0]);
-    const b = worldToMirror(M, p.camX, shift, arc.b, [0, 0, 0]);
+    const a = S.mirror.fromWorld(arc.a, arc.sa, [0, 0, 0]);
+    const b = S.mirror.fromWorld(arc.b, arc.sb, [0, 0, 0]);
     const L = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
     const N = 40;
     const amp = 0.05 + 0.12 * Math.sqrt(L) * (1 - 0.5 * arc.strength);
@@ -672,13 +610,15 @@ function arcs(p, M, shift, ledPx) {
 }
 
 /** strings from head and hands up to the puppeteer */
-function marionette(ctx, p, M, shift, ledPx, wallTop, dt) {
+function marionette(ctx, p, ledPx, wallTop, dt) {
+  const M = S.mirror;
   const c = S.stringColor.set(p.stringColor);
+  const at = (q, name) => (name === 'head' ? q.head : q.joints[name]);
   const joint = (q, name) => {
-    const j = name === 'head' ? q.head : q.joints[name];
-    return j ? worldToMirror(M, p.camX, shift, j, [0, 0, 0]) : null;
+    const j = at(q, name);
+    return j ? M.fromWorld(j, q.slot, [0, 0, 0]) : null;
   };
-  const motion = (q, name) => (q.motion[name] ? dirToMirror(M, q.motion[name], [0, 0, 0]) : null);
+  const motion = (q, name) => (q.motion[name] && at(q, name) ? M.velocity(at(q, name), q.motion[name], q.slot, [0, 0, 0]) : null);
   S.strings.update(
     ctx.persons, ctx.time, dt, joint, motion,
     { eyeH: p.eyeH, eyeDist: p.eyeDist, wallTop, ledPx },
@@ -688,7 +628,8 @@ function marionette(ctx, p, M, shift, ledPx, wallTop, dt) {
 }
 
 /** the swarm in the air follows hands and feet */
-function swarmStep(ctx, p, M, shift, dt) {
+function swarmStep(ctx, p, dt) {
+  const M = S.mirror;
   const movers = [];
   if (p.swarm > 0) {
     for (const q of ctx.persons) {
@@ -696,7 +637,7 @@ function swarmStep(ctx, p, M, shift, dt) {
         const j = q.joints[name];
         const v = q.motion[name];
         if (!j || !v) continue;
-        movers.push({ p: worldToMirror(M, p.camX, shift, j, [0, 0, 0]), v: dirToMirror(M, v, [0, 0, 0]) });
+        movers.push({ p: M.fromWorld(j, q.slot, [0, 0, 0]), v: M.velocity(j, v, q.slot, [0, 0, 0]) });
       }
     }
   }
@@ -725,7 +666,7 @@ function shedDust(p, since, ledPx) {
 }
 
 /** light trails behind fast hands */
-function handTrails(ctx, p, M, shift, since, ledPx) {
+function handTrails(ctx, p, since, ledPx) {
   const { sparks, hands } = S;
   const seen = new Set();
   const c = new THREE.Color();
@@ -736,7 +677,7 @@ function handTrails(ctx, p, M, shift, since, ledPx) {
       const key = `${q.id}:${h}`;
       if (!j) continue;
       seen.add(key);
-      const cur = worldToMirror(M, p.camX, shift, j, [0, 0, 0]);
+      const cur = S.mirror.fromWorld(j, q.slot, [0, 0, 0]);
       const last = hands.get(key);
       hands.set(key, cur);
       const m = q.motion[h];
@@ -783,31 +724,33 @@ function leaving(ctx, p, ledPx) {
 }
 
 /** glowing eyes: two small lights in the face of everyone looking at the wall */
-function eyes(ctx, p, M, shift, ledPx) {
+function eyes(ctx, p, ledPx) {
   if (p.eyes <= 0) return;
   for (const q of ctx.persons) {
     if ((q.confidence.nose ?? 0) < 0.4) continue;
     for (const e of FACE) {
       const j = q.joints[e];
       if (!j || (q.confidence[e] ?? 0) < 0.45) continue;
-      const m = worldToMirror(M, p.camX, shift, j, S.tmp);
+      const m = S.mirror.fromWorld(j, q.slot, S.tmp);
       const b = 4 * p.eyes;
       S.sparks.point(m[0], m[1], m[2] + 0.04, ledPx * 2.4, b, 0.25 * b, 0.35 * b);
     }
   }
 }
 
-/** ripples on the floor around everyone's feet, fading in and out */
-function updateMarks(ctx, p, M, shift, dt) {
+/** ripples on the floor around everyone's feet (where the feet are seen), fading in and out */
+function updateMarks(ctx, p, dt) {
   const marks = S.marks;
   const now = ctx.time;
   for (const q of ctx.persons) {
     if (!q.ground) continue;
-    const g = worldToMirror(M, p.camX, shift, q.ground, S.tmp);
+    const depth = S.mirror.fromWorld(q.ground, q.slot, S.tmp)[2]; // the color goes by the distance
+    const g = S.mirror.floor(q.ground, q.slot, S.tmp);
     let m = marks.get(q.id);
-    if (!m) marks.set(q.id, (m = { x: g[0], z: g[2], alpha: 0, seen: now }));
+    if (!m) marks.set(q.id, (m = { x: g[0], z: g[2], depth, alpha: 0, seen: now }));
     m.x += (g[0] - m.x) * Math.min(1, dt * 8);
     m.z += (g[2] - m.z) * Math.min(1, dt * 8);
+    m.depth += (depth - m.depth) * Math.min(1, dt * 8);
     m.seen = now;
   }
   const U = S.world.U;
@@ -821,7 +764,7 @@ function updateMarks(ctx, p, M, shift, dt) {
     }
     if (i < MAX_MARKS) {
       U.marks.array[i].set(m.x, m.z, m.alpha, 0);
-      S.colorAt(m.z, U.markColors.array[i]).multiplyScalar(p.ripples);
+      S.colorAt(m.depth, U.markColors.array[i]).multiplyScalar(p.ripples);
       i++;
     }
   }
@@ -831,7 +774,6 @@ function updateMarks(ctx, p, M, shift, dt) {
 function destroyAll() {
   if (!S) return;
   S.led?.scene.dispose();
-  S.led?.image.dispose();
   S.world.dispose();
   S.people.dispose();
   S.sparks.dispose();
