@@ -2,7 +2,8 @@
 # teachers that see the person agree on it, at their mean position. Disagreement (one sure, one not, or too
 # far apart) leaves it unlabeled, so the student is not taught a guess. The persons come from the first raw
 # file (e.g. the teacher at 1024, which finds far persons); a person the other teachers miss keeps its labels.
-# Agreement: OKS >= 0.5 between each two, with the COCO keypoint sigmas and the person's box size.
+# Agreement: within the OKS-0.5 distance of the teachers' median point (COCO keypoint sigmas, the
+# person's box size); --need sets how many of the teachers must agree (default all).
 # Usage: python ensemble.py --split train --raw yolo11x-pose@1024+768-flip yolo11x-pose-flip [--out ...]
 import argparse, glob, json, math, os, sys
 
@@ -14,8 +15,9 @@ from teacher import MIN_BOX, MIN_KP, iou, label_lines  # noqa: E402
 SIGMA = [0.026, 0.025, 0.025, 0.035, 0.035, 0.079, 0.079, 0.072, 0.072, 0.062, 0.062, 0.107, 0.107, 0.087, 0.087, 0.089, 0.089]
 
 
-def agree(p, others):
-    """p with its keypoints merged with the matching persons of the other teachers (conf 1 agreed, 0 not)."""
+def agree(p, others, need=1.0):
+    """p with its keypoints merged with the matching persons of the other teachers (conf 1 agreed, 0 not):
+    labeled where at least `need` of the teachers that see the person are sure and lie near their median."""
     x0, y0, x1, y1 = p['box']
     s = math.sqrt(max(1.0, (x1 - x0) * (y1 - y0)))
     got = [p['kp']]
@@ -27,12 +29,12 @@ def agree(p, others):
     for k in range(17):
         pts = [g[k] for g in got]
         sure = [q for q in pts if q[2] >= MIN_KP]
-        ok = len(sure) == len(pts)
-        tol = s * 2 * SIGMA[k] * math.sqrt(2 * math.log(2))  # distance where OKS falls to 0.5
-        if ok:
-            ok = all(math.dist(a[:2], b[:2]) <= tol for i, a in enumerate(sure) for b in sure[i + 1 :])
-        n = len(pts)
-        kp.append([sum(q[0] for q in pts) / n, sum(q[1] for q in pts) / n, 1.0 if ok else 0.0])
+        tol = s * 2 * SIGMA[k] * math.sqrt(2 * math.log(2))  # the distance where OKS falls to 0.5
+        med = (sorted(q[0] for q in sure)[len(sure) // 2], sorted(q[1] for q in sure)[len(sure) // 2]) if sure else (0, 0)
+        near = [q for q in sure if math.dist(q[:2], med) <= tol]
+        ok = len(near) >= max(1, math.ceil(need * len(pts) - 1e-9)) and (len(pts) == 1 or len(near) >= 2)
+        use = near if ok else pts
+        kp.append([sum(q[0] for q in use) / len(use), sum(q[1] for q in use) / len(use), 1.0 if ok else 0.0])
     return {**p, 'kp': kp}, len(got)
 
 
@@ -41,6 +43,7 @@ def main():
     ap.add_argument('--out', default=os.path.join(REC, 'training'))
     ap.add_argument('--split', default='train')
     ap.add_argument('--raw', nargs='+', required=True, help='raw tags (raw/<tag>-<split>.json); the first gives the persons')
+    ap.add_argument('--need', type=float, default=1.0, help='share of the teachers that must agree on a keypoint (1: all; 0.6: 2 of 3, 3 of 4)')
     a = ap.parse_args()
     raws = [json.load(open(os.path.join(a.out, 'raw', f'{t}-{a.split}.json'))) for t in a.raw]
     paths = sorted(glob.glob(os.path.join(a.out, 'images', a.split, '*.png')))
@@ -55,7 +58,7 @@ def main():
         for p in raws[0][name]:
             if p['score'] < MIN_BOX:
                 continue
-            q, n = agree(p, [r[name] for r in raws[1:]])
+            q, n = agree(p, [r[name] for r in raws[1:]], a.need)
             merged.append(q)
             persons += 1
             single += n == 1
