@@ -2,6 +2,8 @@
 // mirrored, in real size, with the walk stretched over the wall (shared wall core, see WALL.md).
 // Each person gets an outfit by their tracking id (hair, skin, shirt, pants, shoes); the skeleton
 // decides which body part a tile shows. Fast hands and feet throw off small pixel sparks.
+// Depth layers: by their distance everybody stands on a front, middle or back layer. Front means
+// coarse tiles, back fine ones (in the same colors), and front layers cover back layers.
 // shade.wgsl draws the tiles, sparks.js the sparks on top, palettes.js holds the outfits.
 
 import { createShaderPass } from '/lib/shader-pass.js';
@@ -31,6 +33,11 @@ export default {
     grid: { value: 0.55, min: 0, max: 1.5, step: 0.01, label: 'Raster-Helligkeit' },
     twinkle: { value: 0.6, min: 0, max: 2, step: 0.05, label: 'Raster funkeln' },
     bg: { value: '#2a1650', label: 'Rasterfarbe' },
+    layerNear: { value: 2.3, min: 1, max: 4, step: 0.05, label: 'vorne bis (m)', folder: 'Tiefen-Ebenen' },
+    layerFar: { value: 3.3, min: 1.5, max: 5, step: 0.05, label: 'hinten ab (m)', folder: 'Tiefen-Ebenen' },
+    layerHold: { value: 0.12, min: 0, max: 0.5, step: 0.01, label: 'Wechsel erst nach (m)', folder: 'Tiefen-Ebenen' },
+    nearScale: { value: 1.35, min: 1, max: 2.5, step: 0.05, label: 'Kacheln vorne ×', folder: 'Tiefen-Ebenen' },
+    farScale: { value: 0.6, min: 0.3, max: 1, step: 0.05, label: 'Kacheln hinten ×', folder: 'Tiefen-Ebenen' },
     exact: { value: false, label: 'Exakte Skelette (+150 ms)' },
     debug: { value: false, label: 'Skelett einblenden (Test)' },
   },

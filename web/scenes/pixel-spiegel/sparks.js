@@ -56,6 +56,7 @@ export async function createSparks(ctx) {
   const group = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: resBuf } }] });
 
   const list = []; // { x, y, vx, vy (wall m, m/s), life, age, size (m), rgb }
+  const layers = new Map(); // id -> depth layer, the same rule as slotLayer() in shade.wgsl
   const carry = new Map(); // fractional spawns per person and limb
   const v = [0, 0, 0];
   const at = [0, 0, 0];
@@ -68,6 +69,20 @@ export async function createSparks(ctx) {
   }
   const light = (c) => c.map((x) => x + (1 - x) * 0.45);
 
+  function layerOf(q, p) {
+    const z = q.dist;
+    const fresh = z < p.layerNear ? 0 : z < p.layerFar ? 1 : 2;
+    const was = layers.get(q.id);
+    let l = fresh;
+    if (was !== undefined) {
+      const lo = was === 0 ? -Infinity : (was === 1 ? p.layerNear : p.layerFar) - p.layerHold;
+      const hi = was === 2 ? Infinity : (was === 0 ? p.layerNear : p.layerFar) + p.layerHold;
+      if (z >= lo && z <= hi) l = was;
+    }
+    layers.set(q.id, l);
+    return l;
+  }
+
   function update() {
     const p = ctx.params;
     const wall = ctx.wall;
@@ -79,6 +94,7 @@ export async function createSparks(ctx) {
     for (const q of wall.persons) {
       const person = q.person;
       const o = outfit(q.id);
+      const scale = [p.nearScale, 1, p.farScale][layerOf(q, p)]; // sparks as fine as the person's tiles
       const colors = [hexRgb(o.shirt), hexRgb(o.skin), hexRgb(o.hair), [1, 1, 1]];
       for (const name of LIMBS) {
         const key = `${q.id}:${name}`;
@@ -92,7 +108,7 @@ export async function createSparks(ctx) {
         while (n >= 1) {
           n -= 1;
           const rgb = colors[Math.floor(Math.random() * colors.length)];
-          spawn(pos[0], pos[1], vel[0] * 0.45, vel[1] * 0.45, rgb, cell * (0.38 + Math.random() * 0.25));
+          spawn(pos[0], pos[1], vel[0] * 0.45, vel[1] * 0.45, rgb, cell * scale * (0.38 + Math.random() * 0.25));
         }
         carry.set(key, n);
       }
@@ -106,11 +122,12 @@ export async function createSparks(ctx) {
         if (!pos) continue;
         const rgb = light(colors[Math.floor(Math.random() * 3)]);
         const x = pos[0] + (Math.random() < 0.5 ? -1 : 1) * (0.14 + Math.random() * 0.22); // beside the body
-        spawn(x, pos[1] + (Math.random() - 0.5) * 0.2, 0, 0.12 + Math.random() * 0.15, rgb, cell * (0.22 + Math.random() * 0.18), 0.12, 1.8 + Math.random() * 1.6);
+        spawn(x, pos[1] + (Math.random() - 0.5) * 0.2, 0, 0.12 + Math.random() * 0.15, rgb, cell * scale * (0.22 + Math.random() * 0.18), 0.12, 1.8 + Math.random() * 1.6);
       }
       carry.set(key, n);
     }
     for (const key of carry.keys()) if (!seen.has(key)) carry.delete(key);
+    for (const id of layers.keys()) if (!wall.persons.some((q) => q.id === id)) layers.delete(id);
 
     // move: drag, a slow drift upwards
     const drag = Math.exp(-2.2 * dt);
