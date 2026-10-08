@@ -33,7 +33,7 @@ fn load_lut(path: &Path) -> Res<Vec<f32>> {
     if !header.contains("<f4") {
         return Err(format!("{}: not f4", path.display()).into());
     }
-    Ok(b[off + hlen..].chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    Ok(b[off + hlen..].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect())
 }
 
 fn load_poses(path: &Path) -> Res<Vec<Vec<PoseIn>>> {
@@ -100,6 +100,7 @@ struct Measure {
 }
 
 impl Measure {
+    #[allow(clippy::too_many_arguments)]
     fn add(&mut self, seq: i64, f: usize, r: &FrameResult, labels: &[u8], depth_all: &[u16], poses: &[Vec<PoseIn>], ms: f64) {
         let depth = &depth_all[f * N..(f + 1) * N];
         if seq > 5 {
@@ -213,7 +214,7 @@ fn run() -> Res<()> {
     };
     let t_load = Instant::now();
     let depth_bytes = std::fs::read(with_ext(".depth"))?;
-    let depth: Vec<u16> = depth_bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    let depth: Vec<u16> = depth_bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
     drop(depth_bytes);
     let ir = std::fs::read(with_ext(".ir"))?;
     let lut = load_lut(&with_ext("_lut.npy"))?;

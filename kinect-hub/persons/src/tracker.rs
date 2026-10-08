@@ -203,6 +203,9 @@ pub struct PersonTracker {
     pub(crate) arm_queue: Vec<i32>,
     pub(crate) arm_tip_dist: Vec<f32>,
     pub(crate) arm_cells: [Vec<i32>; 2],
+    /// the background margin as an integer threshold per depth, and the options it was made for
+    pub(crate) bg_tol: Vec<u16>,
+    pub(crate) bg_tol_for: (f64, f64),
 }
 
 impl Default for PersonTracker {
@@ -254,6 +257,8 @@ impl PersonTracker {
             arm_queue: vec![0; g],
             arm_tip_dist: vec![0.0; g],
             arm_cells: [vec![0; g], vec![0; g]],
+            bg_tol: Vec::new(),
+            bg_tol_for: (f64::NAN, f64::NAN),
         };
         t.options.max_persons = jround(t.options.max_persons).clamp(1.0, crate::MAX_PERSONS as f64);
         t.set_rays(&pinhole_rays());

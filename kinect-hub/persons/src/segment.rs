@@ -1,7 +1,7 @@
 //! Step 3: segmentation, and step 4: background (persons-core.js, "3. segmentation" and
 //! "4. background").
 
-use crate::skeleton::{BEHIND, fit, seg};
+use crate::skeleton::{BEHIND, Body, seg};
 use crate::tracker::{CAP, NJ, NP, PARTS, PersonTracker, Track};
 use crate::{H, N, W, hypot2, jround};
 
@@ -38,6 +38,7 @@ impl PersonTracker {
     pub(crate) fn segment(&mut self, depth: &[u16], active: &[usize]) -> usize {
         let PersonTracker { options: o, rays, owner, part_of, queue, prev_uid, prev_list, prev_count, prev_depth, bg, uid_index: index, tracks, floor, .. } = self;
         let persons: Vec<&Track> = active.iter().map(|&i| &tracks[i]).collect();
+        let bodies: Vec<Body> = persons.iter().map(|t| Body::new(&t.capsules)).collect();
         let (min_depth, max_depth) = (o.min_depth, o.max_depth);
         let (join_margin, join_slope, bg_margin, bg_slope) = (o.join_margin, o.join_slope, o.bg_margin, o.bg_slope);
         owner.fill(-1);
@@ -117,10 +118,10 @@ impl PersonTracker {
                 if x < b[0] || x > b[3] || y < b[1] || y > b[4] || z < b[2] || z > b[5] {
                     continue;
                 }
-                if fit(&persons[r].capsules, 0, x, y, z, true) < 0 {
+                if bodies[r].fit(0, x, y, z, true) < 0 {
                     continue;
                 }
-                return fit(&persons[q].capsules, 0, x, y, z, true) < 0;
+                return bodies[q].fit(0, x, y, z, true) < 0;
             }
             false
         };
@@ -225,7 +226,7 @@ impl PersonTracker {
             let di = f64::from(depth[i]);
             let tol = join_margin + join_slope * di;
             let t = persons[q];
-            let c = &t.capsules;
+            let body = &bodies[q];
             let uid = t.uid;
             let bx = &boxes[q];
             let v = i / W;
@@ -255,7 +256,7 @@ impl PersonTracker {
                 if has_floor && fx * x + fy * y + fz * dj + fd < 0.0 {
                     continue; // on the floor
                 }
-                let p = fit(c, i32::from(part_of[i]), x, y, dj, bd == 0 && i32::from(prev_uid[jj]) != uid);
+                let p = body.fit(i32::from(part_of[i]), x, y, dj, bd == 0 && i32::from(prev_uid[jj]) != uid);
                 if p < 0 || (!others[q].is_empty() && foreign(q, x, y, dj)) {
                     continue;
                 }
@@ -285,13 +286,18 @@ impl PersonTracker {
     /// unknown background takes as long as something new (the person's sleeve or dress that the
     /// segmentation missed must not become background while they stand still).
     pub(crate) fn learn(&mut self, depth: &[u16], active: &[usize]) {
-        let PersonTracker { options: o, rays, owner, prev_depth: prev, near_person: near, bg, bg_cand: cand, bg_count: count, still, tracks, frame, .. } = self;
-        let (bg_margin, bg_slope) = (o.bg_margin, o.bg_slope);
+        // the margins as integer thresholds per depth (|d - b| is an integer: comparing with the
+        // floor of the margin is the same test)
+        if self.bg_tol_for != (self.options.bg_margin, self.options.bg_slope) {
+            let (m, sl) = (self.options.bg_margin, self.options.bg_slope);
+            self.bg_tol = (0..=u16::MAX).map(|b| (m + sl * f64::from(b)).floor().clamp(0.0, 65535.0) as u16).collect();
+            self.bg_tol_for = (m, sl);
+        }
+        let PersonTracker { options: o, rays, owner, prev_depth: prev, near_person: near, bg, bg_cand: cand, bg_count: count, still, tracks, frame, bg_tol: tol, .. } = self;
         // every pixel is visited every second frame (half the work): counts are in visits
-        let still_frames = jround(o.static_seconds * o.fps / 2.0);
-        let learn_v = (o.learn_frames / 2.0).ceil();
-        let far_v = (o.far_frames / 2.0).ceil();
-        let near_v = (o.near_frames / 2.0).ceil();
+        let still_frames = jround(o.static_seconds * o.fps / 2.0).clamp(0.0, 65535.0) as u16;
+        let need_of = |frames: f64| (frames / 2.0).ceil().clamp(0.0, 255.0) as u8;
+        let (learn_v, far_v, near_v) = (need_of(o.learn_frames), need_of(o.far_frames), need_of(o.near_frames));
         near.fill(0);
         for t in tracks.iter() {
             if t.pixels == 0 {
@@ -300,6 +306,10 @@ impl PersonTracker {
             let (Some(b), Some(pos)) = (t.bbox, t.pos) else { continue };
             mark_box(near, b, pos[2]);
         }
+        let bodies: Vec<Body> = active.iter().map(|&ti| Body::new(&tracks[ti].capsules)).collect();
+        let (owner, depth, prev, near) = (&owner[..N], &depth[..N], &prev[..N], &near[..N]);
+        let (bg, cand, count, still) = (&mut bg[..N], &mut cand[..N], &mut count[..N], &mut still[..N]);
+        let tol = &tol[..65536];
         let mut i = (*frame & 1) as usize;
         while i < N {
             let q = owner[i];
@@ -313,20 +323,20 @@ impl PersonTracker {
                     i += 2;
                     continue; // no measurement: the count waits
                 }
-                let (dpf, ef) = (f64::from(dp), f64::from(e));
-                if (dpf - ef).abs() > 20.0 + 0.01 * ef {
+                // |dp - e| > 20 + 0.01 e
+                if f64::from(dp.abs_diff(e)) > 20.0 + 0.01 * f64::from(e) {
                     still[i] = 0;
                     i += 2;
                     continue;
                 }
                 still[i] = still[i].wrapping_add(1);
-                if f64::from(still[i]) < still_frames {
+                if still[i] < still_frames {
                     i += 2;
                     continue;
                 }
                 still[i] = 0;
-                let t = &tracks[active[q as usize]];
-                if fit(&t.capsules, 0, f64::from(rays[2 * i]) * dpf, f64::from(rays[2 * i + 1]) * dpf, dpf, true) < 0 {
+                let dpf = f64::from(dp);
+                if bodies[q as usize].fit(0, f64::from(rays[2 * i]) * dpf, f64::from(rays[2 * i + 1]) * dpf, dpf, true) < 0 {
                     bg[i] = dp;
                 }
                 i += 2;
@@ -334,19 +344,18 @@ impl PersonTracker {
             }
             let d = if depth[i] != 0 { depth[i] } else { FAR };
             let b = bg[i];
-            let (df, bf) = (f64::from(d), f64::from(b));
-            if b != 0 && (df - bf).abs() <= bg_margin + bg_slope * bf {
+            if b != 0 && d.abs_diff(b) <= tol[usize::from(b)] {
                 if b != FAR {
-                    bg[i] = (bf + jround((df - bf) / 8.0)) as u16;
+                    // b + Math.round((d - b) / 8) in integers
+                    bg[i] = (i32::from(b) + ((i32::from(d) - i32::from(b) + 4) >> 3)) as u16;
                 }
                 count[i] = 0;
                 i += 2;
                 continue;
             }
             let c = cand[i];
-            let cf = f64::from(c);
             let n = count[i];
-            if n != 0 && (df - cf).abs() <= bg_margin + bg_slope * cf {
+            if n != 0 && d.abs_diff(c) <= tol[usize::from(c)] {
                 if n < 255 {
                     count[i] = n + 1;
                 }
@@ -364,7 +373,7 @@ impl PersonTracker {
             } else {
                 far_v
             };
-            if f64::from(count[i]) >= need {
+            if count[i] >= need {
                 bg[i] = cand[i];
                 count[i] = 0;
             }

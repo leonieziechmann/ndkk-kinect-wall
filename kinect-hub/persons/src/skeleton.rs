@@ -603,3 +603,95 @@ impl PersonTracker {
         capsules(&self.options, &t.joints, &mut t.capsules)
     }
 }
+
+/// One body part of a Body: the capsule prepared for many point tests.
+#[derive(Clone, Copy)]
+struct Part {
+    p: i32,
+    a: [f64; 3],
+    /// bone vector b - a and 1 / its squared length (0 for a point)
+    d: [f64; 3],
+    inv_len2: f64,
+    r2: f64,
+    reach2: f64,
+    /// boxes around the capsule, inflated by its radius and by its reach: a point outside is no
+    /// part of it (a few comparisons instead of the distance)
+    lo: [f64; 3],
+    hi: [f64; 3],
+    rlo: [f64; 3],
+    rhi: [f64; 3],
+}
+
+/// The body parts of a skeleton prepared once per frame for the segmentation's many point tests
+/// (fit() with a precomputed 1 / bone length² and a quick box test first).
+pub(crate) struct Body {
+    parts: Vec<Part>,
+    /// index into parts by capsule number, -1 = not valid
+    at: [i8; NP],
+}
+
+impl Body {
+    pub fn new(c: &Capsules) -> Body {
+        let mut parts = Vec::with_capacity(NP);
+        let mut at = [-1_i8; NP];
+        for (p, slot) in at.iter_mut().enumerate() {
+            let o = CAP * p;
+            if c[o + 8] == 0.0 {
+                continue;
+            }
+            let a = [c[o], c[o + 1], c[o + 2]];
+            let b = [c[o + 3], c[o + 4], c[o + 5]];
+            let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+            let (r, rr) = (c[o + 6].sqrt(), c[o + 7].sqrt());
+            let lo = [0, 1, 2].map(|k| a[k].min(b[k]));
+            let hi = [0, 1, 2].map(|k| a[k].max(b[k]));
+            *slot = parts.len() as i8;
+            parts.push(Part {
+                p: p as i32,
+                a,
+                d,
+                inv_len2: if len2 > 0.0 { 1.0 / len2 } else { 0.0 },
+                r2: c[o + 6],
+                reach2: c[o + 7],
+                lo: lo.map(|v| v - r),
+                hi: hi.map(|v| v + r),
+                rlo: lo.map(|v| v - rr),
+                rhi: hi.map(|v| v + rr),
+            });
+        }
+        Body { parts, at }
+    }
+
+    #[inline]
+    fn test(q: &Part, x: f64, y: f64, z: f64, strict: bool) -> bool {
+        let (lo, hi) = if strict { (&q.lo, &q.hi) } else { (&q.rlo, &q.rhi) };
+        if x < lo[0] || x > hi[0] || y < lo[1] || y > hi[1] || z < lo[2] || z > hi[2] {
+            return false;
+        }
+        let (px, py, pz) = (x - q.a[0], y - q.a[1], z - q.a[2]);
+        let s = ((px * q.d[0] + py * q.d[1] + pz * q.d[2]) * q.inv_len2).clamp(0.0, 1.0);
+        let dx = px - s * q.d[0];
+        let dy = py - s * q.d[1];
+        let dz = pz - s * q.d[2];
+        let d2 = dx * dx + dy * dy + dz * dz;
+        if strict { d2 <= q.r2 && dz <= BEHIND } else { d2 <= q.reach2 }
+    }
+
+    /// As fit(): the body part a point (mm) belongs to, -1 if none; `hint` is tried first.
+    #[inline]
+    pub fn fit(&self, hint: i32, x: f64, y: f64, z: f64, strict: bool) -> i32 {
+        if let Some(&h) = usize::try_from(hint).ok().and_then(|h| self.at.get(h))
+            && h >= 0
+            && Body::test(&self.parts[h as usize], x, y, z, strict)
+        {
+            return hint;
+        }
+        for q in &self.parts {
+            if q.p != hint && Body::test(q, x, y, z, strict) {
+                return q.p;
+            }
+        }
+        -1
+    }
+}
