@@ -4,8 +4,11 @@
 // people's camera image, turned into meters per second with the depth. Every motion sample is put
 // into the room (the tracker finds the floor) and projected straight onto the wall. Where a person
 // stands and how fast they move counts in meters: standing closer to the sensor gives no more
-// influence, standing still shows nothing. The skeleton says which pixels are arms: they count more
-// and reach further. Dye is colored by distance by default. Dragging the mouse works too.
+// influence, standing still shows nothing. The wall is a mirror, and walking is stretched: every
+// person is shifted so that their body center moves `stretch` times (1.5) as far on the wall as in
+// the room (the sensor's view then spans the whole wall), while the body keeps its size. The skeleton says which
+// pixels are arms: they count more and reach further. Dye is colored by distance by default.
+// Dragging the mouse works too.
 //
 // Per person tracking result (camera.wgsl, kinect.wgsl, sim.wgsl):
 //   prep -> camSignal -> down, down -> lkCoarse -> lkRefine -> lkFinal   optical flow, 3 levels
@@ -26,7 +29,7 @@ import SIM from './sim.wgsl?raw';
 const FIELDS = [
   'simW', 'simH', 'dyeW', 'dyeH', 'gridW', 'gridH', 'screenW', 'screenH',
   'mouseX', 'mouseY', 'mouseDX', 'mouseDY', 'mouseDown', 'dt', 'time', 'xSign',
-  'wallW', 'wallH', 'wallBottom', 'camX', 'zoneNear', 'zoneFar',
+  'wallW', 'wallH', 'wallBottom', 'camX', 'wallSign', 'stretch', 'zoneNear', 'zoneFar',
   'threshold', 'flowGain', 'force', 'wallSmooth', 'irMix', 'motionOn', 'armGain', 'armBrush',
   'coherence', 'lambda', 'flowSmooth', 'frameStep',
   'fillTarget', 'balanceOn', 'hueBySpeed', 'personHue',
@@ -44,10 +47,12 @@ const HEAD = [
   `var<private> BONES: array<vec2u, ${BONES.length}> = array<vec2u, ${BONES.length}>(${BONES.map(([a, b]) => `vec2u(${a}u, ${b}u)`).join(', ')});`,
   '',
 ].join('\n');
-// skeleton buffer (see common.wgsl): room matrix, then per slot 0..16 and point one vec4f, then per slot one
+// skeleton buffer (see common.wgsl): room matrix, then per slot 0..16 and point one vec4f, then per
+// slot one for the color and one for the body center
 const SKEL_JOINTS = 4;
 const SKEL_PERSONS = SKEL_JOINTS + 17 * POINTS.length;
-const SKEL_SIZE = (SKEL_PERSONS + 17) * 16;
+const SKEL_PLACE = SKEL_PERSONS + 17;
+const SKEL_SIZE = (SKEL_PLACE + 17) * 16;
 const DEPTH = { w: 512, h: 424 };
 const FLOW = { w: 128, h: 106 }; // optical flow, finest level; then 64x53 and 32x27
 const GRID_ROWS = 64; // wall cells: 64 rows = about 3 cm per cell on a 2 m wall
@@ -77,6 +82,7 @@ function half(x) {
   return x & 0x8000 ? -v : v;
 }
 const roomPoint = (m, w) => [0, 1, 2].map((r) => m[r] * w[0] + m[4 + r] * w[1] + m[8 + r] * w[2] + m[12 + r]);
+const roomVector = (m, w) => [0, 1, 2].map((r) => m[r] * w[0] + m[4 + r] * w[1] + m[8 + r] * w[2]);
 
 export default {
   streams: ['persons'], // depth and ir come with it
@@ -95,6 +101,8 @@ export default {
     wallH: { value: 2, min: 0.5, max: 8, step: 0.1, label: 'Wand hoch (m)', folder: 'Wand' },
     wallBottom: { value: 0, min: 0, max: 3, step: 0.05, label: 'Wand Unterkante (m)', folder: 'Wand' },
     camX: { value: 0, min: -10, max: 10, step: 0.05, label: 'Kinect seitlich (m)', folder: 'Wand' },
+    mirror: { value: true, label: 'Spiegeln', folder: 'Wand' },
+    stretch: { value: 1.5, min: 1, max: 3, step: 0.05, label: 'Laufweg dehnen (×)', folder: 'Wand' },
     zoneNear: { value: 0.3, min: 0.3, max: 4, step: 0.05, label: 'Zone ab (m)', folder: 'Wand' },
     zoneFar: { value: 4.5, min: 1, max: 8, step: 0.1, label: 'Zone bis (m)', folder: 'Wand' },
     camH: { value: 0.8, min: 0, max: 4, step: 0.05, label: 'Kinect Höhe (ohne Boden, m)', folder: 'Wand' },
@@ -343,7 +351,7 @@ export default {
         };
         return this.r;
       },
-      // the room matrix and every visible person's joints (room m)
+      // the room matrix, every visible person's joints and body center (room m)
       writeSkeletons(ctx) {
         const p = ctx.params;
         const persons = ctx.persons;
@@ -362,6 +370,11 @@ export default {
             d.set([...roomPoint(m, w), Math.max(0.01, person.confidence[name] ?? 1)], (SKEL_JOINTS + s * POINTS.length + j) * 4);
           }
           d.set([...person.color, 1], (SKEL_PERSONS + s) * 4);
+          // where the walk is stretched from: the center of the mask (steady), and how fast it moves
+          if (person.center) {
+            const vx = roomVector(m, person.velocity ?? [0, 0, 0])[0];
+            d.set([roomPoint(m, person.center)[0], Math.max(-3, Math.min(3, vx || 0))], (SKEL_PLACE + s) * 4);
+          }
         }
         device.queue.writeBuffer(skelBuf, 0, d);
       },
@@ -420,6 +433,8 @@ export default {
       screenW: ctx.width, screenH: ctx.height,
       mouseX: m.x, mouseY: m.y, mouseDX: m.vx, mouseDY: m.vy, mouseDown: ctx.pointer.down ? 1 : 0,
       dt, time: ctx.time, xSign: ctx.xSign, motionOn: motionOn ? 1 : 0, frameStep, lambda: p.denoise * 0.001,
+      // a mirror whichever way the view is turned (key m): room x is xSign times the camera's x
+      wallSign: (p.mirror ? 1 : -1) * ctx.xSign,
       colorMode: Number(p.colorMode) || 0, viewMode: Number(p.viewMode) || 0,
       showPeople: p.showPeople ? 1 : 0, showSkeleton: p.showSkeleton ? 1 : 0, showFlow: p.showFlow ? 1 : 0, balanceOn: p.balanceOn ? 1 : 0,
       tintR: ((tint >> 16) & 255) / 255, tintG: ((tint >> 8) & 255) / 255, tintB: (tint & 255) / 255,

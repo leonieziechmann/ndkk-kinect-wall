@@ -321,8 +321,8 @@ fn skeletonDist(px: vec2f, r: vec4f) -> vec2f {
       let a = joint(s, BONES[b].x);
       let c = joint(s, BONES[b].y);
       if (a.w <= 0.0 || c.w <= 0.0) { continue; }
-      let pa = r.xy + wallUv(a.xy) * r.zw;
-      let pc = r.xy + wallUv(c.xy) * r.zw;
+      let pa = r.xy + wallUv(a.xy, s) * r.zw;
+      let pc = r.xy + wallUv(c.xy, s) * r.zw;
       let ab = pc - pa;
       let t = saturate(dot(px - pa, ab) / max(dot(ab, ab), 1e-6));
       let d = length(px - (pa + t * ab));
@@ -354,7 +354,7 @@ fn skeletonDist(px: vec2f, r: vec4f) -> vec2f {
   c = 1.0 - exp(-c * U.exposure);
 
   if (U.showPeople > 0.5) {
-    // the people, projected onto the wall, and a 1 m grid to check positions and sizes
+    // the people, projected onto the wall, and a 1 m grid on the wall (from the Kinect) to check sizes
     c += vec3f(0.35) * textureSampleLevel(texC, samp, uv, 0.0).r;
     let pxPerM = r.z / U.wallW;
     let m = vec2f((uv.x - 0.5) * U.wallW - U.camX, U.wallBottom + (1.0 - uv.y) * U.wallH);

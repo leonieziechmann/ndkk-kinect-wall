@@ -6,7 +6,8 @@
 //   collect   wall cells -> wall image (what is there, how near, whose)
 //   vcollect  wall cells -> wall motion (mean velocity per cell), arms separately
 // Every person point is projected straight (orthographically) onto the wall: a person covers as much
-// wall as they are wide and their speed counts in meters, whether near the sensor or far away.
+// wall as they are wide and their speed counts in meters, whether near the sensor or far away. The
+// wall mirrors, and each person is shifted so that their walk is stretched (common.wgsl wallX).
 // The motion is measured on the masks, which are exact in every frame. The skeleton only says which
 // pixels are arms (they count more): in live mode it can jump, the masks do not.
 @group(0) @binding(1) var personDepth: texture_2d<f32>; // m, person pixels only
@@ -46,11 +47,11 @@ fn prep(@builtin(global_invocation_id) id: vec3u) {
 }
 
 struct Hit { cell: u32, mm: u32, ok: bool };
-// room point -> wall cell and distance in mm; ok = inside the wall and the zone
-fn hitWall(room: vec3f) -> Hit {
+// room point of person `slot` -> wall cell and distance in mm; ok = inside the wall and the zone
+fn hitWall(room: vec3f, slot: u32) -> Hit {
   var h = Hit(0u, 0u, false);
   if (room.z < U.zoneNear || room.z > U.zoneFar) { return h; }
-  let uv = wallUv(room.xy);
+  let uv = wallUv(room.xy, slot);
   if (any(uv < vec2f(0.0)) || any(uv >= vec2f(1.0))) { return h; }
   let g = vec2u(uv * vec2f(gridSize()));
   h.cell = g.y * gridSize().x + g.x;
@@ -63,7 +64,7 @@ fn personPixel(p: vec2i) -> Pixel {
   let slot = textureLoad(personLabel, p, 0).r;
   let z = textureLoad(personDepth, p, 0).r;
   if (slot == 0u || z < 0.1) { return Pixel(Hit(0u, 0u, false), 0u); }
-  return Pixel(hitWall(toRoom(worldPoint(p, z))), slot);
+  return Pixel(hitWall(toRoom(worldPoint(p, z)), slot), slot);
 }
 
 // ---- wall image, pass 1: nearest person point per wall cell (the slot rides along in the low
@@ -133,11 +134,19 @@ fn scene(@builtin(global_invocation_id) id: vec3u) {
   }
   if (z > 100.0) { return; }
   let scale = vec2f(textureDimensions(lutTex)) / vec2f(size);
+  // whose motion: the nearest person in that cell's pixels (each person is shifted differently)
   var slot = 0u;
+  var near = 1e9;
   let block = vec2i(vec2f(at) * scale);
   for (var y = 0; y < 4; y++) {
     for (var x = 0; x < 4; x++) {
-      slot = max(slot, textureLoad(personLabel, clamp(block + vec2i(x, y), vec2i(0), vec2i(textureDimensions(personLabel)) - 1), 0).r);
+      let q = clamp(block + vec2i(x, y), vec2i(0), vec2i(textureDimensions(personLabel)) - 1);
+      let s = textureLoad(personLabel, q, 0).r;
+      let d = textureLoad(personDepth, q, 0).r;
+      if (s > 0u && d > 0.1 && d < near) {
+        near = d;
+        slot = s;
+      }
     }
   }
   // pixels -> meters: how much the camera ray turns per pixel here, times the depth
@@ -165,19 +174,20 @@ fn scene(@builtin(global_invocation_id) id: vec3u) {
   let dz = own - before;
   let vz = select(0.0, dz * KINECT_FPS / U.frameStep, own > 0.1 && before > 0.1 && abs(dz) < 0.2);
   // camera (x right, y down) -> world (x mirrored by xSign, y up) -> room
-  var v = roomVector(vec3f(U.xSign * side.x, -side.y, vz));
+  let v = roomVector(vec3f(U.xSign * side.x, -side.y, vz));
   let room = toRoom(worldPoint(c, z));
 
-  let h = hitWall(room);
+  let h = hitWall(room, slot);
   if (!h.ok || h.mm > (atomicLoad(&cells[h.cell * 4u]) >> 5u) + FRONT_MM) { return; }
   // arms count armGain times and get a wider reach on the wall (sim.wgsl wallMotion)
   let arm = slot > 0u && onArm(slot, room);
-  v *= select(1.0, U.armGain, arm);
+  // motion on the wall: x mirrored, walking stretched; y down; z (towards the wall) only for the speed
+  let w = vec3f(wallVx(v.x, slot), -v.y, v.z) * select(1.0, U.armGain, arm);
   let i = h.cell * 8u + select(0u, 4u, arm);
   atomicAdd(&vcells[i], 1);
-  atomicAdd(&vcells[i + 1u], i32(v.x * 1000.0));
-  atomicAdd(&vcells[i + 2u], i32(-v.y * 1000.0));
-  atomicAdd(&vcells[i + 3u], i32(length(v) * 1000.0));
+  atomicAdd(&vcells[i + 1u], i32(w.x * 1000.0));
+  atomicAdd(&vcells[i + 2u], i32(w.y * 1000.0));
+  atomicAdd(&vcells[i + 3u], i32(length(w) * 1000.0));
 }
 
 // ---- wall cells -> wall image, and clears the cells for the next result.
