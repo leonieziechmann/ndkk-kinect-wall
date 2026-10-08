@@ -14,6 +14,7 @@ mod server;
 mod source;
 mod state;
 mod synthetic;
+mod tracking;
 mod ws;
 mod yolo;
 
@@ -74,12 +75,14 @@ async fn run(cfg: Arc<Config>) {
     // the source (and with it the Kinect) and the pose model only start once this instance owns the port
     let source_slot = Arc::new(Mutex::new(None));
     let pose_slot = Arc::new(Mutex::new(None));
+    let tracking_slot = Arc::new(Mutex::new(None));
     let start_source: Box<dyn FnOnce() + Send> = {
-        let (slot, pose, hub) = (source_slot.clone(), pose_slot.clone(), hub.clone());
+        let (slot, pose, tracking, hub) = (source_slot.clone(), pose_slot.clone(), tracking_slot.clone(), hub.clone());
         let rt = tokio::runtime::Handle::current();
         Box::new(move || {
             *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(source::spawn(hub.clone()));
-            *pose.lock().unwrap_or_else(PoisonError::into_inner) = Some(pose::spawn(hub, rt));
+            *pose.lock().unwrap_or_else(PoisonError::into_inner) = Some(pose::spawn(hub.clone(), rt.clone()));
+            *tracking.lock().unwrap_or_else(PoisonError::into_inner) = Some(tracking::spawn(hub, rt));
         })
     };
     server::serve(hub.clone(), shutdown, Some(start_source)).await;
@@ -90,6 +93,10 @@ async fn run(cfg: Arc<Config>) {
     let pose = pose_slot.lock().unwrap_or_else(PoisonError::into_inner).take();
     if let Some(pose) = pose {
         pose.stop(Duration::from_secs(4)).await;
+    }
+    let tracking = tracking_slot.lock().unwrap_or_else(PoisonError::into_inner).take();
+    if let Some(tracking) = tracking {
+        tracking.stop(Duration::from_secs(4)).await;
     }
     info!("bye");
 }

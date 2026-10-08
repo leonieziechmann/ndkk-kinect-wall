@@ -92,10 +92,12 @@ pub enum Stream {
     Meta,
     Status,
     Poses,
+    Persons,
+    PersonsLive,
 }
 
 impl Stream {
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 10;
     pub const ALL: [Stream; Stream::COUNT] = [
         Stream::Depth,
         Stream::DepthRaw,
@@ -105,6 +107,8 @@ impl Stream {
         Stream::Meta,
         Stream::Status,
         Stream::Poses,
+        Stream::Persons,
+        Stream::PersonsLive,
     ];
     /// Streams that carry one message per sensor frame, in the order they are sent.
     pub const PER_FRAME: [Stream; 5] = [Stream::Depth, Stream::DepthRaw, Stream::Ir, Stream::Points, Stream::Meta];
@@ -119,6 +123,8 @@ impl Stream {
             Stream::Meta => 5,
             Stream::Status => 6,
             Stream::Poses => 7,
+            Stream::Persons => 8,
+            Stream::PersonsLive => 9,
         }
     }
 
@@ -136,6 +142,8 @@ impl Stream {
             Stream::Meta => "meta",
             Stream::Status => "status",
             Stream::Poses => "poses",
+            Stream::Persons => "persons",
+            Stream::PersonsLive => "persons_live",
         }
     }
 
@@ -151,6 +159,8 @@ impl Stream {
             Stream::Ir => Some(3),
             Stream::Points => Some(4),
             Stream::Lut => Some(16),
+            Stream::Persons => Some(5),
+            Stream::PersonsLive => Some(6),
             Stream::Meta | Stream::Status | Stream::Poses => None,
         }
     }
@@ -165,6 +175,8 @@ impl Stream {
             Stream::Meta => "JSON {type:'frame'} per frame: seq, timestamps, depth statistics",
             Stream::Status => "JSON {type:'status'} once per second: sensor state, fps, latency, clients",
             Stream::Poses => "JSON {type:'poses'} at the pose rate (--pose-hz): seq and capture_time_us of the frame, model, ms, poses [{score, box: [u0,v0,u1,v1], kp: 17 x (u, v, confidence)}] in depth-image pixels (mirrored, as the frames); the model runs only while someone subscribes",
+            Stream::Persons => "JSON {type:'persons'} + binary kind 5 per frame: the person tracking (persons list, floor), delayed until a later pose made its skeletons exact (--persons-delay frames at most); kind 5 = labels, run-length coded (per run u8 slot, u16 length)",
+            Stream::PersonsLive => "JSON {type:'persons_live'} + binary kind 6 per frame: the same at once (skeletons follow the optical flow between poses)",
         }
     }
 }

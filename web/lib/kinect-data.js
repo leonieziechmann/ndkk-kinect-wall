@@ -91,6 +91,19 @@ export class KinectData {
       this.meta = e.detail;
       this._pending.meta = true;
     });
+    // the hub's person tracking (persons / persons_live: JSON, then the labels as kind 5 / 6)
+    for (const type of ['persons', 'persons_live']) this.stream.addEventListener(type, (e) => this._personStream?.hubResult(e.detail));
+    for (const kind of ['kind5', 'kind6']) this.stream.addEventListener(kind, (e) => this._personStream?.hubLabels(e.detail));
+    // whether the hub tracks persons: its streams, and its tracker and pose model not off or broken
+    const check = () => {
+      const s = this.stream.status;
+      const offers = !!this.stream.hello?.streams?.some((x) => x.name === 'persons');
+      const ok = offers && s?.tracking && !['off', 'error'].includes(s.tracking.state) && !['off', 'error'].includes(s.pose?.state);
+      if (this._personStream?.setHub(!!ok)) this._resubscribe();
+      this._hubPersons = !!ok;
+    };
+    this.stream.addEventListener('hello', check);
+    this.stream.addEventListener('status', check);
   }
 
   connect() {
@@ -155,21 +168,31 @@ export class KinectData {
         }
       });
       if (this.lut) this._personStream.setRays(this.lut.data);
+      this._personStream.onWire = () => this._resubscribe();
+      if (this._hubPersons !== undefined) this._personStream.setHub(this._hubPersons);
     }
     return this._personStream;
   }
 
   /** Runtime: subscribes the streams the scene needs (+ lut, meta, status). 'persons' implies depth and ir. */
   setStreams(list) {
+    this._wanted = list;
     const persons = list.includes('persons');
     if (persons) this.personTracker.start();
     else this._personStream?.stop();
     const wire = list.filter((s) => s !== 'persons');
     if (persons) wire.push('depth', 'ir');
+    const hub = persons ? this._personStream?.hubStream : null;
+    if (hub) wire.push(hub);
     const want = [...new Set(['lut', 'meta', 'status', ...wire])].sort();
     if (want.join() === this._streams) return;
     this._streams = want.join();
     this.stream.subscribe(want);
+  }
+
+  /** Subscribes again (the hub stream of the person tracking changed). */
+  _resubscribe() {
+    if (this._wanted) this.setStreams(this._wanted);
   }
 
   /** Runtime: once per animation frame, before the scene's frame(). */

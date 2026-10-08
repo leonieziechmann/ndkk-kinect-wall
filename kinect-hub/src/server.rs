@@ -86,6 +86,7 @@ fn router(hub: Arc<Hub>) -> Router {
         .route("/api/lut", get(api_lut))
         .route("/api/frame/{stream}", get(api_frame))
         .route("/api/poses", get(api_poses))
+        .route("/api/persons", get(api_persons))
         .route(
             "/api/devservers",
             get(devservers_list).post(devservers_register).delete(devservers_remove).layer(DefaultBodyLimit::max(64 * 1024)),
@@ -214,6 +215,7 @@ async fn api_frame(State(hub): State<Arc<Hub>>, Path(name): Path<String>, Query(
         Stream::Lut => error(StatusCode::BAD_REQUEST, "use /api/lut"),
         Stream::Status => error(StatusCode::BAD_REQUEST, "use /api/status"),
         Stream::Poses => error(StatusCode::BAD_REQUEST, "use /api/poses"),
+        Stream::Persons | Stream::PersonsLive => error(StatusCode::BAD_REQUEST, "use /api/persons"),
         Stream::Points => {
             if png {
                 return error(StatusCode::BAD_REQUEST, "points are only available raw (i16 x,y,z in mm)");
@@ -272,6 +274,25 @@ async fn api_poses(State(hub): State<Arc<Hub>>) -> Response {
             "type": "poses",
             "poses": null,
             "hint": "the pose model starts with this request; ask again in a moment (status below)",
+            "pose": hub.pose.status_json(),
+        }))
+        .into_response(),
+    }
+}
+
+/// The newest person tracking result (the delayed `persons` stream's JSON, without labels). The
+/// tracker only runs while someone wants it: a request keeps it running for a few seconds.
+async fn api_persons(State(hub): State<Arc<Hub>>) -> Response {
+    hub.tracking.touch_http();
+    let latest = hub.persons.borrow().clone();
+    match latest {
+        Some(p) => ([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], p.json.as_str().to_string())
+            .into_response(),
+        None => Json(json!({
+            "type": "persons",
+            "persons": null,
+            "hint": "the person tracking starts with this request; ask again in a moment (status below)",
+            "tracking": hub.tracking.status_json(),
             "pose": hub.pose.status_json(),
         }))
         .into_response(),
@@ -388,6 +409,7 @@ async fn api_index(State(hub): State<Arc<Hub>>) -> Response {
             "GET /api/params": "depth camera intrinsics + distortion (JSON)",
             "GET /api/lut": "undistortion table: f32 x,y per pixel (binary)",
             "GET /api/frame/{depth|depth_raw|ir|points|meta}": "latest frame; ?format=png for depth/depth_raw (16-bit mm) and ir (8-bit)",
+            "GET /api/persons": "newest result of the person tracking as the persons stream sends it (JSON, without the labels); a request keeps the tracker running for 5 s",
             "GET /api/poses": "newest poses of the pose model as the poses stream sends them (JSON); a request keeps the model running for 5 s, the first one may get poses: null",
             "GET /ws": "WebSocket stream (see websocket)",
             "GET /api/devservers": "scene dev servers (Vite, one per worktree) that announced themselves, with their scenes (JSON)",
@@ -401,11 +423,11 @@ async fn api_index(State(hub): State<Arc<Hub>>) -> Response {
                 "subscribe": {"type": "subscribe", "streams": ["depth", "lut"], "max_fps": 30},
                 "ping": {"type": "ping", "t": "anything, echoed back"},
             },
-            "server_text_messages": ["hello", "subscribed", "status", "params", "frame", "poses", "pong", "error"],
+            "server_text_messages": ["hello", "subscribed", "status", "params", "frame", "poses", "persons", "persons_live", "pong", "error"],
             "binary_header": {
                 "bytes": CLIENT_HEADER_LEN,
                 "layout": "u32 magic 'K2H1' (0x3148324B) | u8 kind | u8 version | u16 header_len | u32 seq | u16 width | u16 height | u64 capture_time_us | u64 publish_time_us, little-endian; payload follows",
-                "kinds": {"1": "depth u16", "2": "depth_raw u16", "3": "ir u8", "4": "points i16 x3", "16": "lut f32 x2"},
+                "kinds": {"1": "depth u16", "2": "depth_raw u16", "3": "ir u8", "4": "points i16 x3", "5": "persons labels, run-length coded (u8 slot, u16 length per run)", "6": "persons_live labels, the same", "16": "lut f32 x2"},
             },
             "streams": streams,
             "notes": [

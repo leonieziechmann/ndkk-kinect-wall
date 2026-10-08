@@ -4,7 +4,9 @@
 //! per pose, the same poses.
 //!
 //! - A thread of its own takes the newest frame whenever the next pose is due (--pose-hz, default
-//!   15 Hz); the frames never wait for it. It only runs while someone wants poses.
+//!   15 Hz); the frames never wait for it. It only runs while someone wants poses. While the
+//!   person tracker runs (tracking.rs), the tracker hands it the frames instead (submit()): it must
+//!   know which frame a pose belongs to before it processes that frame.
 //! - Two model sizes: when the full model (512x448) runs late for the target rate, the smaller one
 //!   (384x320) takes over. Every few seconds the full one is tried again (its pose counts as well)
 //!   and comes back once it fits with room to spare. Every pose says which model made it.
@@ -14,7 +16,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -46,7 +48,12 @@ const HTTP_LEASE: Duration = Duration::from_secs(5);
 
 /// The poses of one frame, ready to send.
 pub struct PoseSet {
+    /// the frame they were computed on
+    pub seq: u32,
     pub capture_time_us: u64,
+    pub poses: Vec<Pose>,
+    /// ms the model took
+    pub ms: f64,
     /// `{"type":"poses",...}` text message (shared, cloning is free).
     pub json: Utf8Bytes,
 }
@@ -81,8 +88,16 @@ pub struct PoseStatus {
 pub struct PoseState {
     status: Mutex<PoseStatus>,
     http_lease: Mutex<Option<Instant>>,
-    /// set by the tracker (later) or anyone else inside the hub that needs poses
+    /// set by the person tracker while it runs: it then hands the frames in (submit)
     pub wanted_inside: AtomicBool,
+    /// the model is loaded and takes frames
+    ready: AtomicBool,
+    /// a frame handed in is being worked on (one at a time)
+    busy: AtomicBool,
+    job: Mutex<Option<Arc<FrameSet>>>,
+    job_ready: Condvar,
+    /// when the next pose is due (the target rate)
+    next_due: Mutex<Instant>,
 }
 
 impl PoseState {
@@ -108,6 +123,47 @@ impl PoseState {
             }),
             http_lease: Mutex::new(None),
             wanted_inside: AtomicBool::new(false),
+            ready: AtomicBool::new(false),
+            busy: AtomicBool::new(false),
+            job: Mutex::new(None),
+            job_ready: Condvar::new(),
+            next_due: Mutex::new(Instant::now()),
+        }
+    }
+
+    /// The model is loaded and takes frames (submit).
+    pub fn available(&self) -> bool {
+        self.ready.load(Ordering::SeqCst)
+    }
+
+    /// No frame is being worked on, and the next pose is due.
+    pub fn idle_and_due(&self) -> bool {
+        !self.busy.load(Ordering::SeqCst) && Instant::now() >= *self.next_due.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Hands a frame to the model (the tracker does, see the module notes); false if the model
+    /// is not loaded or still busy. Its poses come on Hub::poses with that frame's seq.
+    pub fn submit(&self, frame: Arc<FrameSet>) -> bool {
+        if !self.available() || self.busy.swap(true, Ordering::SeqCst) {
+            return false;
+        }
+        *self.job.lock().unwrap_or_else(PoisonError::into_inner) = Some(frame);
+        self.job_ready.notify_one();
+        true
+    }
+
+    /// The frame handed in, waiting up to `timeout` for one.
+    fn take_job(&self, timeout: Duration) -> Option<Arc<FrameSet>> {
+        let guard = self.job.lock().unwrap_or_else(PoisonError::into_inner);
+        let (mut guard, _) = self.job_ready.wait_timeout_while(guard, timeout, |j| j.is_none()).unwrap_or_else(PoisonError::into_inner);
+        guard.take()
+    }
+
+    fn set_ready(&self, ready: bool) {
+        self.ready.store(ready, Ordering::SeqCst);
+        if !ready {
+            self.busy.store(false, Ordering::SeqCst);
+            self.job.lock().unwrap_or_else(PoisonError::into_inner).take();
         }
     }
 
@@ -174,7 +230,9 @@ pub fn spawn(hub: Arc<Hub>, rt: Handle) -> PoseHandle {
 
 fn run(hub: &Arc<Hub>, rt: &Handle) {
     while !hub.stopping() {
-        match catch_unwind(AssertUnwindSafe(|| serve(hub, rt))) {
+        let result = catch_unwind(AssertUnwindSafe(|| serve(hub, rt)));
+        hub.pose.set_ready(false);
+        match result {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 warn!("pose model: {e} (trying again in {} s)", RETRY.as_secs());
@@ -325,6 +383,7 @@ fn serve(hub: &Arc<Hub>, rt: &Handle) -> Result<(), String> {
         s.active = Some(full.size_name());
     }
     hub.pose.set_state("idle", "nobody wants poses");
+    hub.pose.set_ready(true);
 
     let mut fast = fast.map(|(m, _)| m);
     let mut sched = Scheduler::new(hub.cfg.pose_hz, fast.is_some());
@@ -346,11 +405,26 @@ fn serve(hub: &Arc<Hub>, rt: &Handle) -> Result<(), String> {
             idle = false;
             last_run = None;
         }
-        if let Some(wait) = sched.next_due.checked_duration_since(Instant::now()) {
-            sleep_unless_stopping(hub, wait);
-        }
-        let Some(frame) = newest_frame(hub, rt, &mut frames, last_seq) else { continue };
-        let Some(ir) = frame.ir.as_ref().map(payload) else { continue };
+        let driven = hub.pose.wanted_inside.load(Ordering::Relaxed);
+        let frame = if driven {
+            // the tracker hands the frames in when a pose is due
+            match hub.pose.take_job(Duration::from_millis(100)) {
+                Some(f) => f,
+                None => continue,
+            }
+        } else {
+            if let Some(wait) = sched.next_due.checked_duration_since(Instant::now()) {
+                sleep_unless_stopping(hub, wait);
+            }
+            match newest_frame(hub, rt, &mut frames, last_seq) {
+                Some(f) => f,
+                None => continue,
+            }
+        };
+        let Some(ir) = frame.ir.as_ref().map(payload) else {
+            hub.pose.busy.store(false, Ordering::SeqCst);
+            continue;
+        };
         let pick = sched.pick();
         let model = match (pick, fast.as_mut()) {
             (Pick::Fast, Some(m)) => m,
@@ -361,9 +435,11 @@ fn serve(hub: &Arc<Hub>, rt: &Handle) -> Result<(), String> {
         let ms = t.elapsed().as_secs_f64() * 1000.0;
         let size = model.size_name();
         last_seq = Some(frame.seq);
-        publish(hub, &frame, &size, ms, &poses);
-
         let switched = sched.record(pick, ms);
+        *hub.pose.next_due.lock().unwrap_or_else(PoisonError::into_inner) = sched.next_due;
+        publish(hub, &frame, &size, ms, poses);
+        hub.pose.busy.store(false, Ordering::SeqCst);
+
         let ema = |old: f64, new: f64| if old == 0.0 { new } else { 0.8 * old + 0.2 * new };
         if pick != Pick::Probe {
             ema_ms = ema(ema_ms, ms);
@@ -417,7 +493,7 @@ fn round(v: f32, scale: f64) -> f64 {
     (f64::from(v) * scale).round() / scale
 }
 
-fn publish(hub: &Hub, frame: &FrameSet, model: &str, ms: f64, poses: &[Pose]) {
+fn publish(hub: &Hub, frame: &FrameSet, model: &str, ms: f64, poses: Vec<Pose>) {
     let list: Vec<Value> = poses
         .iter()
         .map(|p| {
@@ -440,7 +516,7 @@ fn publish(hub: &Hub, frame: &FrameSet, model: &str, ms: f64, poses: &[Pose]) {
     })
     .to_string()
     .into();
-    hub.poses.send_replace(Some(Arc::new(PoseSet { capture_time_us: frame.capture_time_us, json })));
+    hub.poses.send_replace(Some(Arc::new(PoseSet { seq: frame.seq, capture_time_us: frame.capture_time_us, poses, ms, json })));
 }
 
 #[cfg(test)]

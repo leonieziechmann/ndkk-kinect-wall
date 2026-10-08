@@ -1,5 +1,8 @@
 // persons.js — person tracking for scenes. A scene asks for it with `streams: ['persons']` (depth
-// and infrared come with it). The runtime then runs one PersonStream per page, in two Web Workers:
+// and infrared come with it). If the hub tracks persons itself (kinect-hub with its pose model:
+// streams `persons` / `persons_live`), the page takes the hub's results: computed once for every
+// page, natively (kinect-hub/persons, the same tracker in Rust). Otherwise (an older hub, or the
+// hub's pose model is missing) the runtime runs one PersonStream per page, in two Web Workers:
 // a pose model (YOLO-pose, persons-pose.js in persons-pose-worker.js) finds the skeletons in the
 // infrared image, a few times a second; every depth frame is cut out on its own (persons-worker.js,
 // persons-core.js: the persons
@@ -34,6 +37,7 @@
 // skeleton on fast limbs).
 //
 // The arrays are valid until the next but one result: copy what you want to keep longer.
+// ?persons=local or ?persons=hub in the page's URL forces where the tracking runs (for comparisons).
 // GPU copies: ctx.kinect.gpu.personLabelTexture/-Buffer, personDepthTexture/-Buffer, personIndexBuffer.
 
 import { MAX_PERSONS, JOINTS, EXTRA, SKELETON, DEFAULTS as CORE_DEFAULTS } from './persons-core.js';
@@ -261,6 +265,15 @@ export class PersonStream {
   /** @param {(result) => void} onResult  called with every new result */
   constructor(onResult) {
     this.onResult = onResult;
+    // where the tracking runs: 'local' (the workers here) or 'hub' (its streams persons /
+    // persons_live); onWire is called when the hub stream to subscribe changes
+    this.source = 'local';
+    this.onWire = null;
+    this.forced = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('persons') : null;
+    this.hubKnown = false; // the hub's status said whether it tracks persons
+    this.hubFrames = new Map(); // seq -> depth frame (the hub's results carry labels only)
+    this.hubPending = null; // the JSON of a hub result, waiting for its labels
+    this.hubPool = [];
     this.worker = null;
     this.enabled = false;
     this.latest = null;
@@ -285,7 +298,50 @@ export class PersonStream {
   start() {
     if (this.enabled) return;
     this.enabled = true;
-    if (this.worker) return;
+    if (this.hubKnown || this.forced === 'local') {
+      this._startWorkers();
+      return;
+    }
+    // the hub may track persons itself: its status says so within a second (the workers here
+    // would load a pose model on the GPU for nothing)
+    setTimeout(() => {
+      if (this.hubKnown) return;
+      this.hubKnown = true;
+      if (this.enabled) this._startWorkers();
+    }, 2000);
+  }
+
+  /**
+   * The hub can track persons (available) or not: takes its results, or runs the workers here.
+   * Returns true if the subscription has to change (see hubStream).
+   */
+  setHub(available) {
+    this.hubKnown = true;
+    const want = this.forced === 'local' ? 'local' : this.forced === 'hub' || available ? 'hub' : 'local';
+    if (want === this.source) {
+      if (want === 'local' && this.enabled) this._startWorkers();
+      return false;
+    }
+    this.source = want;
+    for (const w of this.waiting.splice(0)) this._recycle(w);
+    this.hubPending = null;
+    this.hubFrames.clear();
+    this.error = null;
+    this.provider = want === 'hub' ? 'Hub' : null;
+    this.inFlight = 0;
+    this.sentSeq = -1;
+    if (want === 'local' && this.enabled) this._startWorkers();
+    return true;
+  }
+
+  /** The hub stream that brings this page's persons (null when they are tracked here). */
+  get hubStream() {
+    if (this.source !== 'hub' || !this.enabled) return null;
+    return this.options.delay > 0 ? 'persons' : 'persons_live';
+  }
+
+  _startWorkers() {
+    if (this.source === 'hub' || this.worker) return;
     try {
       this.worker = new Worker(new URL('./persons-worker.js', import.meta.url), { type: 'module', name: 'persons' });
       this.poseWorker = new Worker(new URL('./persons-pose-worker.js', import.meta.url), { type: 'module', name: 'persons-pose' });
@@ -326,8 +382,13 @@ export class PersonStream {
    * { delay: 0, maxDepth: 3500, maxPersons: 6 }.
    */
   configure(options) {
+    const stream = this.hubStream;
     Object.assign(this.options, options);
     this.worker?.postMessage({ type: 'config', options });
+    if (this.hubStream !== stream) {
+      for (const w of this.waiting.splice(0)) this._recycle(w);
+      this.onWire?.();
+    }
   }
 
   /** The output waits for later poses: ctx.kinect shows the frames that belong to the persons. */
@@ -347,14 +408,84 @@ export class PersonStream {
 
   /** A new depth frame (KinectStream frame). */
   push(frame) {
+    if (this.source === 'hub') {
+      // kept for the hub's results of this frame: their masked depth is cut from it
+      this.hubFrames.set(frame.seq, frame);
+      if (this.hubFrames.size > 48) this.hubFrames.delete(this.hubFrames.keys().next().value);
+      return;
+    }
     this.depthFrame = frame;
     this._pump();
   }
 
   /** A new infrared frame (the pose model looks at it). */
   pushIr(frame) {
+    if (this.source === 'hub') return;
     this.irFrame = frame;
     this._pump();
+  }
+
+  /** A JSON result of the hub (type persons or persons_live); its labels follow. */
+  hubResult(msg) {
+    if (!this.enabled || msg.type !== this.hubStream) return;
+    this.hubPending = msg;
+  }
+
+  /** The labels of a hub result (binary kind 5 or 6: per run u8 slot, u16 length). */
+  hubLabels(frame) {
+    const m = this.hubPending;
+    if (!this.enabled || !m || m.seq !== frame.seq) return;
+    this.hubPending = null;
+    const buf = this.hubPool.pop() ?? { labels: new Uint8Array(N), depth: new Uint16Array(N), indices: new Uint32Array(N) };
+    const { labels, depth, indices } = buf;
+    const rle = frame.data;
+    let at = 0;
+    for (let i = 0; i + 2 < rle.length && at < N; i += 3) {
+      const end = Math.min(N, at + (rle[i + 1] | (rle[i + 2] << 8)));
+      labels.fill(rle[i], at, end);
+      at = end;
+    }
+    if (at < N) labels.fill(0, at);
+    // the depth of the person pixels and their list, from this frame's depth
+    const d = this.hubFrames.get(m.seq)?.data;
+    let k = 0;
+    for (let i = 0; i < N; i++) {
+      if (!labels[i]) {
+        depth[i] = 0;
+        continue;
+      }
+      depth[i] = d ? d[i] : 0;
+      indices[k++] = i;
+    }
+    for (const seq of this.hubFrames.keys()) {
+      if (seq >= m.seq - 20) break;
+      this.hubFrames.delete(seq);
+    }
+    this.results++;
+    this.error = null;
+    const r = {
+      seq: m.seq,
+      captureTimeUs: m.capture_time_us,
+      list: m.persons,
+      labels,
+      depth,
+      indices: indices.subarray(0, k),
+      floor: m.floor,
+      ms: m.ms,
+      poseMs: m.pose_ms ?? 0,
+      poseRuns: m.pose_runs ?? 0,
+      arrived: this.hubFrames.get(m.seq)?.receivedTimeMs ?? performance.now(),
+      lag: 0,
+      buf,
+    };
+    if (this.options.delay > 0) {
+      this.lags.push(performance.now() - r.arrived);
+      if (this.lags.length > 90) this.lags.shift();
+      this.waiting.push(r);
+    } else {
+      for (const w of this.waiting.splice(0)) this._recycle(w);
+      this._show(r);
+    }
   }
 
   _pump() {
@@ -466,6 +597,10 @@ export class PersonStream {
   }
 
   _recycle(r) {
+    if (r.buf) {
+      if (this.hubPool.length < 32) this.hubPool.push(r.buf);
+      return;
+    }
     if (!this.worker || !r.labels.buffer.byteLength) return;
     const bufs = [r.labels.buffer, r.depth.buffer, r.indices.buffer];
     this.worker.postMessage({ type: 'recycle', labels: bufs[0], depth: bufs[1], indices: bufs[2] }, bufs);
@@ -478,7 +613,7 @@ export class PersonStream {
     if (!r || !this.provider) return 'Personen: lade das Pose-Modell …';
     const n = r.list.length;
     const lag = this.options.delay > 0 ? ` · ${Math.round(this.playDelay)} ms verzögert` : '';
-    const mode = this.options.mode === 'skeleton' ? ' · nur Skelett' : '';
+    const mode = this.options.mode === 'skeleton' && this.source !== 'hub' ? ' · nur Skelett' : '';
     return `${n} ${n === 1 ? 'Person' : 'Personen'} · Pose ${r.poseMs.toFixed(0)} ms (${this.provider})${mode}${lag}`;
   }
 }

@@ -28,6 +28,8 @@ usage: kinect-hub [options]
                          smaller model taken while the full one cannot keep --pose-hz
                          (default web/lib/models/yolo11n-pose-384-fp16.onnx if it exists)
   --pose-hz HZ           target pose rate (default 15; 0 = as often as possible, full model only)
+  --persons on|off       person tracking (streams `persons`, `persons_live`; default on)
+  --persons-delay N      frames the `persons` stream may wait for a later pose (default 12)
   --onnxruntime PATH     onnxruntime.dll (default: next to the hub, else kinect-hub/onnxruntime/,
                          which kinect-hub/setup-onnxruntime.ps1 fills)
   -h, --help             this text
@@ -77,6 +79,8 @@ pub struct Config {
     pub pose_model_fast: Option<Option<PathBuf>>,
     pub pose_hz: f64,
     pub onnxruntime: Option<PathBuf>,
+    pub persons: bool,
+    pub persons_delay: u32,
 }
 
 impl Config {
@@ -97,6 +101,8 @@ impl Config {
             pose_model_fast: None,
             pose_hz: 15.0,
             onnxruntime: None,
+            persons: true,
+            persons_delay: 12,
         };
         let mut args = args;
         while let Some(arg) = args.next() {
@@ -167,6 +173,20 @@ impl Config {
                     }
                 }
                 "--onnxruntime" => cfg.onnxruntime = Some(PathBuf::from(value("--onnxruntime")?)),
+                "--persons" => {
+                    cfg.persons = match value("--persons")?.as_str() {
+                        "on" => true,
+                        "off" => false,
+                        other => return Err(format!("--persons {other}: expected on or off")),
+                    }
+                }
+                "--persons-delay" => {
+                    let v = value("--persons-delay")?;
+                    cfg.persons_delay = v.parse().map_err(|e| format!("--persons-delay {v}: {e}"))?;
+                    if cfg.persons_delay > 60 {
+                        return Err("--persons-delay must be between 0 and 60".to_string());
+                    }
+                }
                 other => return Err(format!("unknown option {other}")),
             }
         }
