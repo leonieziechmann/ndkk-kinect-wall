@@ -23,9 +23,6 @@ use ort::value::Tensor;
 
 const W: usize = 512;
 const H: usize = 424;
-const IN_W: usize = 512;
-const IN_H: usize = 448;
-const PAD_Y: usize = (IN_H - H) / 2;
 const MAX_POSES: usize = 16;
 const MIN_SCORE: f32 = 0.35;
 const NMS_IOU: f64 = 0.5;
@@ -130,15 +127,68 @@ pose-bench --extract OUT_DIR a.k2rec b.k2rec   (the middle infrared frame of eac
 
 // ---- input and output, as web/lib/persons-pose.js -------------------------------------------------
 
+/// How the 512x424 image sits in the model input: scaled to fit, gray bands around it (as in
+/// training). At 512x448 the scale is 1 and the bands are 12 rows above and below.
+#[derive(Clone, Copy, Debug)]
+struct Letterbox {
+    in_w: usize,
+    in_h: usize,
+    scale: f64,
+    /// image size in the input and its offset, in input pixels
+    w: usize,
+    h: usize,
+    pad_x: usize,
+    pad_y: usize,
+}
+
+impl Letterbox {
+    fn new(in_w: usize, in_h: usize) -> Self {
+        let scale = (in_w as f64 / W as f64).min(in_h as f64 / H as f64);
+        let (w, h) = (((W as f64 * scale).round() as usize).min(in_w), ((H as f64 * scale).round() as usize).min(in_h));
+        Self { in_w, in_h, scale, w, h, pad_x: (in_w - w) / 2, pad_y: (in_h - h) / 2 }
+    }
+
+    /// A point of the model input back to pixels of the (mirrored) depth image.
+    fn to_image(self, x: f64, y: f64) -> (f64, f64) {
+        ((W - 1) as f64 - (x - self.pad_x as f64) / self.scale, (y - self.pad_y as f64) / self.scale)
+    }
+}
+
 /// The model input: gray letterbox bands, the image mirrored back, gray in all three channels, 0..1.
-/// The values are rounded the way JavaScript stores them in a Float32Array.
-fn preprocess(ir: &[u8], x: &mut [f32], lut: &[f32; 256]) {
-    let plane = IN_W * IN_H;
+/// At scale 1 the values are rounded the way JavaScript stores them in a Float32Array (exactly as
+/// persons-pose.js); smaller inputs are scaled bilinearly like the training's letterbox.
+fn preprocess(ir: &[u8], x: &mut [f32], lut: &[f32; 256], lb: &Letterbox) {
+    let plane = lb.in_w * lb.in_h;
     x.fill((114.0_f64 / 255.0) as f32);
     let (p0, rest) = x.split_at_mut(plane.min(x.len()));
-    for (dst, src) in p0.as_chunks_mut::<IN_W>().0.iter_mut().skip(PAD_Y).zip(ir.as_chunks::<W>().0) {
-        for (d, s) in dst.iter_mut().zip(src.iter().rev()) {
-            *d = lut.get(usize::from(*s)).copied().unwrap_or(0.0);
+    let rows = p0.chunks_exact_mut(lb.in_w).skip(lb.pad_y).take(lb.h);
+    if lb.w == W && lb.h == H {
+        for (dst, src) in rows.zip(ir.as_chunks::<W>().0) {
+            for (d, s) in dst.iter_mut().skip(lb.pad_x).zip(src.iter().rev()) {
+                *d = lut.get(usize::from(*s)).copied().unwrap_or(0.0);
+            }
+        }
+    } else {
+        // per input row/column: the two source rows/columns and the weight of the second
+        let taps = |n: usize, len: usize| -> Vec<(usize, usize, f32)> {
+            (0..n)
+                .map(|i| {
+                    let s = ((i as f64 + 0.5) / lb.scale - 0.5).clamp(0.0, (len - 1) as f64);
+                    let i0 = s.floor() as usize;
+                    (i0, (i0 + 1).min(len - 1), (s - i0 as f64) as f32)
+                })
+                .collect()
+        };
+        let cols = taps(lb.w, W);
+        // the image is mirrored back: input column c reads source column W - 1 - c
+        let px = |row: &[u8], c: usize| f32::from(row.get(W - 1 - c).copied().unwrap_or(0));
+        for (dst, (r0, r1, fy)) in rows.zip(taps(lb.h, H)) {
+            let (Some(a), Some(b)) = (ir.get(r0 * W..(r0 + 1) * W), ir.get(r1 * W..(r1 + 1) * W)) else { continue };
+            for (d, (c0, c1, fx)) in dst.iter_mut().skip(lb.pad_x).zip(&cols) {
+                let top = px(a, *c0) * (1.0 - fx) + px(a, *c1) * fx;
+                let bottom = px(b, *c0) * (1.0 - fx) + px(b, *c1) * fx;
+                *d = (top * (1.0 - fy) + bottom * fy) / 255.0;
+            }
         }
     }
     for p in rest.chunks_exact_mut(plane) {
@@ -171,7 +221,7 @@ fn at(ch: &[f32], a: usize) -> f64 {
 }
 
 /// Candidates above MIN_SCORE, greedy non-maximum suppression, at most 16, back to image pixels.
-fn decode(data: &[f32], channels: usize, anchors: usize) -> Vec<Pose> {
+fn decode(data: &[f32], channels: usize, anchors: usize, lb: &Letterbox) -> Vec<Pose> {
     let score = chan(data, anchors, 4);
     let mut cands: Vec<(usize, f64, [f64; 4])> = Vec::new();
     for (a, s) in score.iter().enumerate() {
@@ -192,8 +242,6 @@ fn decode(data: &[f32], channels: usize, anchors: usize) -> Vec<Pose> {
             break;
         }
     }
-    let unmirror = |px: f64| (W - 1) as f64 - px;
-    let pad = PAD_Y as f64;
     keep.into_iter()
         .map(|(a, score, b)| {
             let mut kp = [0.0_f32; 51];
@@ -201,11 +249,12 @@ fn decode(data: &[f32], channels: usize, anchors: usize) -> Vec<Pose> {
                 if 5 + 3 * k + 2 >= channels {
                     break;
                 }
-                *u = unmirror(at(chan(data, anchors, 5 + 3 * k), a)) as f32;
-                *v = (at(chan(data, anchors, 6 + 3 * k), a) - pad) as f32;
+                let (x, y) = lb.to_image(at(chan(data, anchors, 5 + 3 * k), a), at(chan(data, anchors, 6 + 3 * k), a));
+                (*u, *v) = (x as f32, y as f32);
                 *conf = at(chan(data, anchors, 7 + 3 * k), a) as f32;
             }
-            Pose { score, bbox: [unmirror(b[2]), b[1] - pad, unmirror(b[0]), b[3] - pad], kp }
+            let ((u0, v0), (u1, v1)) = (lb.to_image(b[2], b[1]), lb.to_image(b[0], b[3]));
+            Pose { score, bbox: [u0, v0, u1, v1], kp }
         })
         .collect()
 }
@@ -348,6 +397,7 @@ struct Model {
     input_name: String,
     output_name: String,
     lut: [f32; 256],
+    lb: Letterbox,
 }
 
 impl Model {
@@ -355,12 +405,17 @@ impl Model {
         let session = session(model, e)?;
         let input_name = session.inputs().first().map(|i| i.name().to_string()).ok_or("Modell ohne Eingang")?;
         let output_name = session.outputs().first().map(|i| i.name().to_string()).ok_or("Modell ohne Ausgang")?;
-        let input = Tensor::from_array(([1_usize, 3, IN_H, IN_W], vec![0.0_f32; 3 * IN_H * IN_W]))?;
+        let dims: Vec<i64> = session.inputs().first().and_then(|i| i.dtype().tensor_shape()).map(|s| s.iter().copied().collect()).unwrap_or_default();
+        let lb = match dims.as_slice() {
+            [1, 3, h, w] if *h > 0 && *w > 0 => Letterbox::new(usize::try_from(*w)?, usize::try_from(*h)?),
+            d => return Err(format!("unerwartete Eingabeform {d:?}").into()),
+        };
+        let input = Tensor::from_array(([1_usize, 3, lb.in_h, lb.in_w], vec![0.0_f32; 3 * lb.in_h * lb.in_w]))?;
         let mut lut = [0.0_f32; 256];
         for (i, v) in lut.iter_mut().enumerate() {
             *v = (i as f64 / 255.0) as f32;
         }
-        Ok(Self { session, input, input_name, output_name, lut })
+        Ok(Self { session, input, input_name, output_name, lut, lb })
     }
 
     /// One run; returns the raw output [C, A] flattened, its channel and anchor count, and the
@@ -368,7 +423,7 @@ impl Model {
     fn run(&mut self, ir: &[u8]) -> Res<(Vec<f32>, usize, usize, Duration, Duration)> {
         let t0 = Instant::now();
         let (_, x) = self.input.extract_tensor_mut();
-        preprocess(ir, x, &self.lut);
+        preprocess(ir, x, &self.lut, &self.lb);
         let t1 = Instant::now();
         let outputs = self.session.run(ort::inputs![self.input_name.as_str() => &self.input])?;
         let out = outputs.get(self.output_name.as_str()).ok_or("keine Ausgabe")?;
@@ -407,12 +462,17 @@ fn bench(o: &Opts, e: Ep, frames: &[Frame]) -> Res<()> {
         let f = frames.get(k % frames.len()).unwrap_or(first);
         m.run(&f.ir)?;
     }
-    println!("{e:<9} Modell geladen in {load_ms:.0} ms, erster Lauf {first_ms:.0} ms ({})", o.model.file_name().map(|n| n.to_string_lossy()).unwrap_or_default());
+    println!(
+        "{e:<9} Modell geladen in {load_ms:.0} ms, erster Lauf {first_ms:.0} ms ({}, Eingang {}x{})",
+        o.model.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
+        m.lb.in_w,
+        m.lb.in_h
+    );
 
     if o.compare {
         for f in frames {
             let (out, channels, anchors, _, _) = m.run(&f.ir)?;
-            compare(f, &out, channels, anchors);
+            compare(f, &out, channels, anchors, &m.lb);
         }
     }
 
@@ -453,7 +513,7 @@ fn bench(o: &Opts, e: Ep, frames: &[Frame]) -> Res<()> {
         let f = frames.get(k % frames.len()).unwrap_or(first);
         let (out, channels, anchors, p, r) = m.run(&f.ir)?;
         let t = Instant::now();
-        found += decode(&out, channels, anchors).len();
+        found += decode(&out, channels, anchors, &m.lb).len();
         post.push(ms(t.elapsed()));
         pre.push(ms(p));
         run.push(ms(r));
@@ -491,7 +551,7 @@ fn bench(o: &Opts, e: Ep, frames: &[Frame]) -> Res<()> {
 
 /// Compares this run with the browser's of the same frame (<name>.browser.f32 / .browser.txt from
 /// web/tools/pose-ref.mjs, next to the frame).
-fn compare(f: &Frame, out: &[f32], channels: usize, anchors: usize) {
+fn compare(f: &Frame, out: &[f32], channels: usize, anchors: usize, lb: &Letterbox) {
     let Some(path) = &f.path else { return };
     let Ok(raw) = std::fs::read(path.with_extension("browser.f32")) else {
         println!("          {}: keine Browser-Referenz", f.name);
@@ -525,8 +585,8 @@ fn compare(f: &Frame, out: &[f32], channels: usize, anchors: usize) {
             d_conf = d_conf.max(d(7 + 3 * k));
         }
     }
-    let native = decode(out, channels, anchors);
-    let from_browser_raw = decode(&reference, channels, anchors);
+    let native = decode(out, channels, anchors, lb);
+    let from_browser_raw = decode(&reference, channels, anchors, lb);
     let js = read_poses(&path.with_extension("browser.txt"));
     let pose_diff = |a: &[Pose], b: &[Pose]| -> String {
         let mut used = vec![false; b.len()];
