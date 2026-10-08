@@ -35,6 +35,7 @@ Before you start, `curl -s http://127.0.0.1:8090/api/status` must answer. If it 
 
 ```js
 export default {
+  wall: true,                       // optional: an LED wall scene, the canvas is the LED image (see WALL.md)
   streams: ['depth'],               // what to receive: depth, depth_raw, ir, points, persons; or (params) => [...]
   persons: { mode: 'full' },        // optional, with 'persons' in streams: see PERSONS.md
   params: {                         // sliders in the page; the user's changes persist
@@ -73,6 +74,7 @@ export default {
 | `ctx.xSign` | -1 or +1. Multiply Kinect x by it: key `m` mirrors every scene. |
 | `ctx.pointer` | `{ x, y, down }` in canvas pixels |
 | `ctx.persons` | the tracked people (with `streams: ['persons']`), see People below |
+| `ctx.wall` | the LED wall: setup and mapping Kinect → wall (`fromWorld`, `place(person)`, `joint`, `uv`, `px`, `persons`, ...), see LED wall below |
 | `ctx.kinectToScreen(u, v)` | depth image pixel -> canvas pixels as `kinectUv()` (2D scenes); `ctx.worldToScreen([x, y, z])` for 3D scenes |
 | `ctx.dom` | a div over the canvas for your own HTML (`pointer-events: none`; set it to `auto` on your elements) |
 | `ctx.on(target, type, fn)` | `addEventListener` that is removed again on hot swap |
@@ -131,6 +133,16 @@ export default {
 
 **Delayed by default** (about 150–250 ms): every frame waits for a later pose, and its skeleton is interpolated, so it is as exact as a pose on every frame. The whole scene, including `ctx.kinect.depth` and `ir`, is shifted by the same time. `persons: { delay: 0 }` is live. The pose model shares the GPU with your scene: keep the scene light. Replays with people for testing: PERSONS.md, "Testing".
 
+## LED wall
+
+The scenes are for a **6 × 2 m LED wall (1008 × 336 LEDs)**. Its setup (size, LED pixels, where the Kinect stands, how people are mapped: mirrored, real size, walk stretched over the whole wall) is shared by every scene and edited in the control center. **Full reference: [WALL.md](WALL.md).**
+
+- `wall: true` in the scene: the canvas is the LED image (`ctx.width × ctx.height` = LED pixels); the page shows it scaled to fit.
+- `ctx.wall`: `fromWorld(p, person.slot)` → wall meters, `place(person)` (where a person is on the wall), `joint(person, 'rightHand')`, `uv()`, `px()`, `velocity()`, `persons`. Never hard-code wall size, LED resolution, sensor height or a stretch factor.
+- WGSL (`createShaderPass`): `wallPerson(uv)` = the people as they fall on the wall (covered, distance, slot, IR); `wallFromWorld(p, slot)`, `wallUv()`, `wallVelocity()`, `WALL.*`. On the LED image `kinectUv()` shows the camera image calibrated to the wall.
+- Control center `/control/` and output window `/wall/` on your dev server: the show (playlist with params per entry), test images, calibration view, the setup with a top view of the room. `npm run wall` opens the output as a kiosk window on the LED screen.
+- Demo: scene `wand-spiegel`. Porting a scene that emulates the wall itself (its own `ledW`, `wallW`, `stretch`, `viewMode`, ...): WALL.md, "Porting".
+
 ## three.js
 
 Import only from `three/webgpu`, `three/tsl` and `three/addons/...`. Mixing in plain `three` gives two copies of the classes. Create `new THREE.WebGPURenderer({ canvas: ctx.canvas })`, `await renderer.init()`, `renderer.setPixelRatio(1)`, `renderer.setSize(ctx.width, ctx.height, false)`, and do the same in `resize`. `dispose()` must call `renderer.dispose()` and `controls.dispose()`. Points larger than 1 px: `THREE.Sprite` + `PointsNodeMaterial` with `instancedDynamicBufferAttribute` (see `three-points`); with `sizeAttenuation` the size is in meters.
@@ -155,7 +167,8 @@ Import only from `three/webgpu`, `three/tsl` and `three/addons/...`. Mixing in p
   - `,` / `.` previous/next scene, across all worktrees
 - URL options: `?hub=8091` (another hub), `?fps=30`, `?kiosk` (no UI).
 - Hot swap: saving `main.js` or a file it imports replaces the scene without a reload. If `setup()` throws, the previous version keeps running and the error is shown. If `frame()` throws, the scene pauses; save again to retry.
-- `npm run check` without names checks every scene in your worktree. Options go after `--`: `npm run check my-scene -- --seconds 8 --size 1920x1080 --hub 8091`.
+- Your dev server's gallery and the hub list only the scenes your worktree **added or changed** against `main` (`?all` shows every scene; the main checkout shows all).
+- `npm run check` without names checks your worktree's new and changed scenes. Options go after `--`: `npm run check my-scene -- --seconds 8 --size 1920x1080 --hub 8091`.
 
 ## Recorded people instead of an empty room
 

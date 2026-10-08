@@ -53,7 +53,8 @@
     <span id="hubPill" class="pill">…</span>
     <span id="hubLine" class="muted"></span>
   </header>
-  <div class="muted" style="margin-top:4px">Alle Szenen aller Worktrees. Jeder Agent startet in seinem Worktree <code>npm run dev</code> in <code>web/</code> – der Dev-Server meldet sich hier an. Klick öffnet die Szene; dort wechseln <code>,</code> und <code>.</code> zur vorigen/nächsten Szene.</div>
+  <div class="muted" style="margin-top:4px">Die Szenen aller Worktrees. Jeder Agent startet in seinem Worktree <code>npm run dev</code> in <code>web/</code> – der Dev-Server meldet sich hier an. Ein Worktree zeigt nur die Szenen, die er neu angelegt oder gegenüber <code>main</code> geändert hat (der Haupt-Checkout zeigt alle). Klick öffnet die Szene; dort wechseln <code>,</code> und <code>.</code> zur vorigen/nächsten Szene.</div>
+  <div id="wallLinks" class="muted" style="margin-top:6px" hidden>LED-Wand: <a href="/control/">Steuerzentrale</a> · <a href="/wall/" target="kinect-wall-output">Ausgabefenster</a> · Anleitung: <code>web/WALL.md</code></div>
 
   <div id="servers"></div>
 
@@ -79,6 +80,7 @@ import { hubUrl, wsUrl, devServer, getJson } from '/lib/hub.js';
 
 const HUB = hubUrl();
 const DEV = devServer();
+const ALL = new URLSearchParams(location.search).has('all'); // also the scenes a worktree did not change
 const BUILD = !!window.__KINECT_DEV__?.build; // npm run build, served by the hub (--web-dir web/dist)
 document.getElementById('apiLink').href = `${HUB}/api`;
 document.getElementById('pngLink').href = `${HUB}/api/frame/depth?format=png`;
@@ -116,9 +118,10 @@ async function refresh() {
   }
   if (DEV || BUILD) {
     try {
-      const l = await getJson('/__scenes');
+      const l = await getJson(ALL ? '/__scenes?all=1' : '/__scenes');
       local = {
         ...(l.devserver ?? { label: 'Build (web/dist)', url: location.origin }),
+        total: l.total,
         scenes: (l.scenes ?? []).map((s) => ({ ...s, url: `/scenes/${s.name}/`, thumb: s.thumb })),
       };
     } catch {
@@ -155,8 +158,26 @@ function render() {
     const link = el('a', '', head, s.url);
     link.href = `${s.url}/`;
     if (s.worktree) el('span', 'muted', head, s.worktree);
-    el('span', 'muted', head, `${s.scenes?.length ?? 0} Szenen`);
+    const shown = s.scenes?.length ?? 0;
+    // the hub keeps only the known fields: a worktree (not main) lists only its own scenes
+    const filtered = s.filtered ?? !['main', 'master'].includes(s.branch);
+    if (filtered && !(s.here && ALL)) {
+      const note = el('span', 'muted', head, `${shown} neue/geänderte${s.total ? ` von ${s.total}` : ''} Szenen · `);
+      const all = el('a', '', note, 'alle zeigen');
+      all.href = `${s.here ? '' : s.url}/?all`;
+    } else {
+      el('span', 'muted', head, `${shown} Szenen${s.here && ALL && filtered ? ' (alle)' : ''}`);
+      if (s.here && ALL && filtered) {
+        const own = el('a', '', head, 'nur neue/geänderte');
+        own.href = '/';
+      }
+    }
+    if (s.here) {
+      const c = el('a', '', head, 'LED-Steuerzentrale');
+      c.href = '/control/';
+    }
     const grid = el('div', 'grid', box);
+    if (!shown && filtered) el('div', 'empty', box, 'Dieser Worktree hat noch keine eigene Szene (npm run new meine-szene).');
     for (const sc of s.scenes ?? []) {
       const card = el('a', 'card', grid);
       card.href = sc.url;
@@ -172,6 +193,7 @@ function render() {
   }
 }
 
+document.getElementById('wallLinks').hidden = !(DEV || BUILD);
 refresh();
 setInterval(refresh, 2000);
 if (import.meta.hot) import.meta.hot.on('kinect:scenes', refresh);

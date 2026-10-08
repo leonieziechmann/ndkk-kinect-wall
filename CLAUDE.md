@@ -13,7 +13,11 @@ npm run new my-scene             # web/scenes/my-scene/ from a template
 npm run check my-scene           # headless render: errors, fps, screenshot web/.cache/shots/my-scene.png
 ```
 
-The user sees the scenes of every worktree at http://127.0.0.1:8090/. Edit only your own `web/scenes/<name>/`. `web/lib/` and `package.json` are shared, so ask before you change them.
+The user sees the scenes of every worktree at http://127.0.0.1:8090/; each worktree lists only the scenes it added or changed against `main`. Edit only your own `web/scenes/<name>/`. `web/lib/` and `package.json` are shared, so ask before you change them.
+
+## LED wall: read `web/WALL.md`
+
+The scenes run on a 6 × 2 m LED wall (1008 × 336). One shared core handles it: `wall: true` makes the canvas the LED image, `ctx.wall` maps the Kinect onto the wall (mirror, real size, stretched walk), and the control center `http://127.0.0.1:<port>/control/` runs the output window `/wall/` (show, params per scene, test images, wall setup). Do not build your own wall emulation into a scene.
 
 ## Kinect data: always through kinect-hub
 

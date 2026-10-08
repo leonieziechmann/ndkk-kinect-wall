@@ -36,7 +36,7 @@ export function normalizeParams(defs) {
 
 export const optionValues = (options) => (Array.isArray(options) ? options : Object.values(options ?? {}));
 
-function accepts(p, v) {
+export function acceptsParam(p, v) {
   switch (p.kind) {
     case 'number':
       return typeof v === 'number' && Number.isFinite(v);
@@ -53,9 +53,9 @@ function accepts(p, v) {
   }
 }
 
-const storeKey = (scene) => `kinect-scene:${scene}:params`;
+export const storeKey = (scene) => `kinect-scene:${scene}:params`;
 
-function readStore(key) {
+export function readStore(key) {
   try {
     const v = JSON.parse(localStorage.getItem(key));
     return v && typeof v === 'object' ? v : {};
@@ -79,12 +79,15 @@ export class ParamPanel {
     this.visible = true;
   }
 
-  /** Values for a scene: the user's earlier changes over the defaults from the code. */
-  resolve(scene, defs) {
+  /**
+   * Values for a scene: the user's earlier changes over the defaults from the code. With
+   * `overrides` (an object, e.g. a show entry of the LED wall) those instead of the stored ones.
+   */
+  resolve(scene, defs, overrides = null) {
     const list = normalizeParams(defs);
-    const stored = readStore(storeKey(scene));
+    const stored = overrides && typeof overrides === 'object' ? overrides : readStore(storeKey(scene));
     const values = {};
-    for (const p of list) values[p.key] = accepts(p, stored[p.key]) ? stored[p.key] : p.value;
+    for (const p of list) values[p.key] = acceptsParam(p, stored[p.key]) ? stored[p.key] : p.value;
     return { scene, list, values };
   }
 

@@ -3,6 +3,11 @@ html, body { margin: 0; height: 100%; background: #111; color: #ddd; overflow: h
 #stage { position: fixed; inset: 0; }
 .k-canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
 .k-canvas.k-pending { visibility: hidden; }
+/* LED wall: the canvas is the LED image, placed by the runtime (inline left/top/width/height) */
+.k-canvas.k-led, .k-scene-dom.k-led { right: auto; bottom: auto; }
+.k-canvas.k-led-preview { outline: 1px solid #2c2c33; }
+.k-output, .k-output body { background: #000; }
+.k-output.k-cursor-idle, .k-output.k-cursor-idle * { cursor: none !important; }
 /* scenes put their own DOM in ctx.dom; it does not catch the mouse unless a child sets pointer-events */
 .k-scene-dom { position: fixed; inset: 0; pointer-events: none; }
 
@@ -38,4 +43,6 @@ html, body { margin: 0; height: 100%; background: #111; color: #ddd; overflow: h
 
 .k-ui-hidden .k-hud, .k-kiosk .k-hud { display: none; }
 .lil-gui.kinect-params { --width: 300px; z-index: 10; }
+/* lil-gui 0.21 prefixes its classes with lil- (older versions did not) */
+.lil-gui.kinect-params .lil-controller.changed > .lil-name,
 .lil-gui.kinect-params .controller.changed > .name { color: #ffcf6b; }

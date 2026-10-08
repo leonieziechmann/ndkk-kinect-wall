@@ -5,6 +5,10 @@
 // Keys of the runtime: h UI on/off · f fullscreen · m mirror · , . previous/next scene (all worktrees)
 // Person tracking: streams: ['persons'] plus optional persons: {...} (or (params) => {...}), see
 // ../PERSONS.md; ctx.persons is the list of Person objects.
+// LED wall (../WALL.md): ctx.wall is the wall setup and the mapping Kinect -> wall. A scene with
+// `wall: true` renders the LED image (canvas = LED pixels, shown scaled to fit). /wall/ is the output
+// window for the LED controller: it plays the show of the control center (/control/, lib/wall-output.js)
+// and switches scenes in place with a crossfade.
 // URL options: ?hub=8091 (other hub) · ?kiosk (no UI at all) · ?fps=30 (cap the render rate)
 //              · ?nothumb (no thumbnail upload)
 
@@ -12,15 +16,19 @@ import { KinectData, KinectGpu } from './kinect-data.js';
 import { PERSON_OPTIONS } from './persons.js';
 import { ParamPanel } from './params.js';
 import { OrbitCamera } from './camera.js';
+import { WallMap } from './wall.js';
+import { WallBus, loadDoc } from './wall-bus.js';
 import { hubUrl, wsUrl, devServer, localScenes, allDevServers } from './hub.js';
 import loaders from 'virtual:kinect-scene-loaders';
 import './runtime.css';
 
 const query = new URLSearchParams(location.search);
-const NAME = decodeURIComponent(/\/scenes\/([^/]+)\/?/.exec(location.pathname)?.[1] ?? query.get('scene') ?? '');
+/** /wall/: the output window for the LED controller (no UI, plays the show) */
+const OUTPUT = /^\/wall\/?$/.test(location.pathname);
+const URL_NAME = decodeURIComponent(/\/scenes\/([^/]+)\/?/.exec(location.pathname)?.[1] ?? query.get('scene') ?? '');
 const HUB = hubUrl();
-const KIOSK = query.has('kiosk');
-const THUMBS = !!devServer() && !query.has('nothumb');
+const KIOSK = OUTPUT || query.has('kiosk');
+const THUMBS = !OUTPUT && !!devServer() && !query.has('nothumb');
 const FPS_CAP = Number(query.get('fps')) || 0;
 
 function el(tag, className, parent, text) {
@@ -55,27 +63,36 @@ const hud = el('div', 'k-hud', document.body);
 const banner = el('div', 'k-banner', document.body);
 const errorBox = el('div', 'k-error', document.body);
 if (KIOSK) document.documentElement.classList.add('k-kiosk');
+if (OUTPUT) document.documentElement.classList.add('k-output');
 
 const rt = {
-  title: NAME,
+  title: URL_NAME,
   info: null,
   state: 'loading', // loading | running | error
   current: null, // the running scene instance
   pending: null, // an instance whose setup() is still running
+  leaving: [], // instances fading out (crossfade), still rendering
   errors: [],
   frames: 0,
   swaps: 0,
   fps: 0,
   fpsCount: 0,
   fpsSince: performance.now(),
+  scenes: [], // this dev server's scenes (all of them)
+  setupSource: 'none',
 };
 
 const kinect = new KinectData(wsUrl(HUB));
 kinect.connect();
 const camera = new OrbitCamera();
 const panel = new ParamPanel();
+const wall = new WallMap();
+wall.output = OUTPUT;
+const bus = new WallBus(OUTPUT ? 'output' : 'scene');
 let xSign = remember('kinect:xSign', -1) === 1 ? 1 : -1;
 let uiHidden = KIOSK || remember('kinect:uiHidden', false) === true;
+/** set by lib/wall-output.js: called after every rendered frame */
+const hooks = { afterFrame: null, beforeFrame: null };
 
 // ---------- errors ----------
 
@@ -93,10 +110,11 @@ function pushError(where, err) {
   const known = rt.errors.find((e) => e.where === where && e.message === message);
   if (known) {
     known.count++;
+    known.at = Date.now();
   } else {
-    rt.errors.push({ where, message, stack: cleanStack(err?.stack), count: 1, at: Date.now() });
+    rt.errors.push({ where, message, stack: cleanStack(err?.stack), count: 1, at: Date.now(), scene: rt.current?.name ?? rt.pending?.name ?? URL_NAME });
     if (rt.errors.length > 20) rt.errors.shift();
-    console.error(`[${NAME}] ${where}:`, err);
+    console.error(`[${rt.current?.name ?? URL_NAME}] ${where}:`, err);
   }
   renderErrors();
 }
@@ -109,7 +127,7 @@ function clearErrors() {
 function renderErrors() {
   errorBox.replaceChildren();
   errorBox.style.display = rt.errors.length && !KIOSK ? 'block' : 'none';
-  if (!rt.errors.length) return;
+  if (!rt.errors.length || KIOSK) return;
   const head = el('div', 'k-error-head', errorBox);
   el('b', '', head, rt.state === 'error' ? 'Szene angehalten' : 'Fehler');
   const actions = el('span', 'k-error-actions', head);
@@ -139,6 +157,27 @@ if (import.meta.hot) {
     if (typeof args[0] === 'string' && args[0].startsWith('[hmr] Failed')) pushError('Hot-Swap', args[0].replace('[hmr] ', ''));
   };
 }
+
+// ---------- the LED wall setup (shared by every page, see WALL.md) ----------
+
+async function loadSetup() {
+  const { doc, source } = await loadDoc('setup');
+  wall.setSetup(doc ?? {});
+  rt.setupSource = source;
+  if (OUTPUT) xSign = wall.setup.mirror ? 1 : -1;
+}
+// the control center sends every change at once; the file follows a moment later (an older save
+// must not undo a newer live change)
+let liveSetupAt = -1e9;
+bus.on('setup', (d) => {
+  if (!d?.setup) return;
+  liveSetupAt = performance.now();
+  wall.setSetup(d.setup);
+  if (OUTPUT) xSign = wall.setup.mirror ? 1 : -1;
+});
+bus.on('file', (d) => {
+  if (d.kind === 'setup' && performance.now() - liveSetupAt > 3000) loadSetup();
+});
 
 // ---------- WebGPU: one device per page, shared by every scene instance ----------
 
@@ -172,9 +211,12 @@ function sceneDefinition(mod) {
   return def;
 }
 
+/** Does this instance render the LED image (canvas = LED pixels)? */
+const isWall = (inst) => OUTPUT || !!inst?.def.wall;
+
 function createContext(inst) {
   const ctx = {
-    scene: NAME,
+    scene: inst.name,
     canvas: inst.canvas,
     dom: inst.dom,
     width: 1,
@@ -195,8 +237,18 @@ function createContext(inst) {
     get persons() {
       return kinect.view;
     },
+    /** The LED wall: setup and the mapping Kinect -> wall, see WALL.md. */
+    get wall() {
+      return wall;
+    },
     /** Depth image pixel (u, v) -> canvas pixels, as kinectUv() in 2D shaders (CSS px: / pixelRatio). */
     kinectToScreen(u, v) {
+      if (wall.active) {
+        const w = wall.imageToWall(u, v, kinect.lut?.data);
+        if (!w) return [-1e4, -1e4];
+        const [px, py] = wall.uv(w);
+        return [px * ctx.width, py * ctx.height];
+      }
       let kx = (u + 0.5) / 512;
       let ky = (v + 0.5) / 424;
       if (xSign < 0) kx = 1 - kx;
@@ -282,20 +334,39 @@ function wantedPersons(inst) {
 }
 
 let personConfig = '';
+/** Subscribes what every live instance needs (during a crossfade both scenes render). */
 function updateStreams() {
-  const inst = rt.pending ?? rt.current;
-  if (!inst) return;
-  const streams = wantedStreams(inst);
+  const live = [rt.pending ?? rt.current, ...rt.leaving.map((l) => l.inst)].filter(Boolean);
+  if (!live.length) return;
+  const streams = [...new Set(live.flatMap(wantedStreams))];
   kinect.setStreams(streams);
   if (!streams.includes('persons')) return;
-  const options = wantedPersons(inst);
-  const key = JSON.stringify(options);
+  // the newest scene that tracks persons decides how
+  const owner = live.find((i) => wantedStreams(i).includes('persons'));
+  const key = JSON.stringify(wantedPersons(owner));
   if (key === personConfig) return;
   personConfig = key;
-  kinect.personTracker.configure(options);
+  kinect.personTracker.configure(JSON.parse(key));
 }
 
-function sizeCanvas(inst) {
+/** Canvas size (device px) and its place on the page (CSS px; null = the whole window). */
+function layout(inst) {
+  if (isWall(inst)) {
+    const led = wall.setup.led;
+    const out = wall.setup.output;
+    const dpr = devicePixelRatio || 1;
+    let css;
+    if (OUTPUT && out.fit === 'pixel') css = [out.x / dpr, out.y / dpr, led.w / dpr, led.h / dpr];
+    else if (OUTPUT && out.fit === 'stretch') css = [0, 0, innerWidth, innerHeight];
+    else {
+      const pad = OUTPUT ? 0 : 16;
+      const s = Math.min(Math.max(1, innerWidth - 2 * pad) / led.w, Math.max(1, innerHeight - 2 * pad) / led.h);
+      const w = led.w * s;
+      const h = led.h * s;
+      css = [(innerWidth - w) / 2, (innerHeight - h) / 2, w, h];
+    }
+    return { w: led.w, h: led.h, css };
+  }
   const ratio = inst.def.pixelRatio ?? Math.min(devicePixelRatio || 1, 2);
   let w = Math.max(1, Math.round(innerWidth * ratio));
   let h = Math.max(1, Math.round(innerHeight * ratio));
@@ -304,13 +375,32 @@ function sizeCanvas(inst) {
     h = Math.max(1, Math.round((h * maxWidth) / w));
     w = maxWidth;
   }
+  return { w, h, css: null };
+}
+
+function sizeCanvas(inst) {
+  const { w, h, css } = layout(inst);
+  const key = css ? css.map((v) => v.toFixed(2)).join(',') : 'full';
+  if (key !== inst.cssKey) {
+    inst.cssKey = key;
+    for (const e of [inst.canvas, inst.dom]) {
+      e.classList.toggle('k-led', !!css);
+      e.style.left = css ? `${css[0]}px` : '';
+      e.style.top = css ? `${css[1]}px` : '';
+      e.style.width = css ? `${css[2]}px` : '';
+      e.style.height = css ? `${css[3]}px` : '';
+    }
+    inst.canvas.classList.toggle('k-led-preview', !!css && !OUTPUT);
+    // LED pixels stay square blocks when the preview shows them larger than 1:1
+    inst.canvas.style.imageRendering = css && css[2] / w >= 1.5 ? 'pixelated' : '';
+  }
   const ctx = inst.ctx;
+  ctx.pixelRatio = w / Math.max(1, css ? css[2] : innerWidth);
   if (w === ctx.width && h === ctx.height) return;
   inst.canvas.width = w;
   inst.canvas.height = h;
   ctx.width = w;
   ctx.height = h;
-  ctx.pixelRatio = w / Math.max(1, innerWidth);
   if (inst.ready) {
     try {
       inst.def.resize?.(ctx);
@@ -342,7 +432,11 @@ function destroy(inst) {
   inst.dom.remove();
 }
 
-async function launch(mod, { swap = false } = {}) {
+/**
+ * Starts a scene module. name: the scene; swap: a hot swap of the running scene; overrides: param
+ * values instead of the stored ones (output: the show entry); transition 'cross' | 'cut' and fade (s).
+ */
+async function launch(mod, { name = URL_NAME, swap = false, overrides = null, transition = 'cut', fade = 1 } = {}) {
   let def;
   try {
     def = sceneDefinition(mod);
@@ -354,12 +448,13 @@ async function launch(mod, { swap = false } = {}) {
   const canvas = el('canvas', 'k-canvas k-pending');
   const dom = el('div', 'k-scene-dom');
   stage.append(canvas, dom);
-  const inst = { def, canvas, dom, disposers: [], params: panel.resolve(NAME, def.params), started: performance.now(), frame: 0, ready: false };
+  const inst = { name, def, canvas, dom, disposers: [], overrides, params: panel.resolve(name, def.params, overrides), started: performance.now(), frame: 0, ready: false };
   inst.ctx = createContext(inst);
   const ctx = inst.ctx;
   ctx.on(canvas, 'pointermove', (e) => {
-    ctx.pointer.x = e.offsetX * ctx.pixelRatio;
-    ctx.pointer.y = e.offsetY * ctx.pixelRatio;
+    const r = canvas.width / Math.max(1, canvas.clientWidth);
+    ctx.pointer.x = e.offsetX * r;
+    ctx.pointer.y = e.offsetY * r;
   });
   ctx.on(canvas, 'pointerdown', () => (ctx.pointer.down = true));
   ctx.on(window, 'pointerup', () => (ctx.pointer.down = false));
@@ -386,23 +481,70 @@ async function launch(mod, { swap = false } = {}) {
   const old = rt.current;
   rt.current = inst;
   canvas.classList.remove('k-pending');
-  panel.mount(inst.params, (key, value) => {
-    try {
-      def.onParam?.(key, value, ctx);
-    } catch (e) {
-      pushError('onParam()', e);
-    }
-    updateStreams();
-  });
-  if (old) destroy(old);
+  if (!KIOSK) {
+    panel.mount(inst.params, (key, value) => {
+      try {
+        def.onParam?.(key, value, ctx);
+      } catch (e) {
+        pushError('onParam()', e);
+      }
+      updateStreams();
+    });
+  }
+  if (old) {
+    if (transition === 'cross' && fade > 0 && !swap) {
+      // the new canvas lies on top and fades in; the old one keeps rendering below until then
+      canvas.style.opacity = '0';
+      canvas.getBoundingClientRect();
+      canvas.style.transition = `opacity ${fade}s ease-in-out`;
+      requestAnimationFrame(() => (canvas.style.opacity = '1'));
+      rt.leaving.push({ inst: old, until: performance.now() + fade * 1000 + 100 });
+    } else destroy(old);
+  }
   rt.state = 'running';
   if (swap) rt.swaps++;
-  clearErrors();
+  if (!OUTPUT) clearErrors();
   scheduleThumb();
+  updateStreams();
   return true;
 }
 
+/** The entry file of a scene of this dev server ('main.js' unless the list says otherwise). */
+async function sceneModule(name) {
+  if (!rt.scenes.some((s) => s.name === name)) rt.scenes = await localScenes(true).catch(() => rt.scenes);
+  const info = rt.scenes.find((s) => s.name === name);
+  if (!info) throw new Error(`Szene „${name}“ gibt es auf diesem Dev-Server nicht`);
+  const file = `/scenes/${name}/${info.entry ?? 'main.js'}`;
+  return { info, mod: loaders ? await loaders[file]() : await import(/* @vite-ignore */ file) };
+}
+
 // ---------- render loop ----------
+
+function renderInstance(inst, now, dt) {
+  sizeCanvas(inst);
+  const ctx = inst.ctx;
+  ctx.dt = dt;
+  ctx.time = (now - inst.started) / 1000;
+  ctx.frame = inst.frame++;
+  if (inst.cameraAttached) camera.update(now, ctx.width, ctx.height);
+  const r = inst.def.frame?.(ctx);
+  if (r && typeof r.then === 'function') r.catch((e) => pushError('frame()', e));
+}
+
+/** The mouse on the wall (wall scenes): canvas pixels are LED pixels. */
+function wallPointer(inst) {
+  const p = wall.pointer;
+  if (!inst || !isWall(inst)) {
+    p.inside = false;
+    return;
+  }
+  const c = inst.ctx;
+  p.u = c.pointer.x / Math.max(1, c.width);
+  p.v = c.pointer.y / Math.max(1, c.height);
+  [p.x, p.y] = wall.fromUv(p.u, p.v);
+  p.down = c.pointer.down;
+  p.inside = p.u >= 0 && p.u < 1 && p.v >= 0 && p.v < 1;
+}
 
 let lastFrame = performance.now();
 function loop(now) {
@@ -419,16 +561,30 @@ function loop(now) {
   kinect.xSign = xSign;
   kinect.beginFrame(now);
   if (kinect.fresh.meta) camera.track(kinect.meta?.stats?.median_mm);
-  if (inst && rt.state === 'running') {
-    sizeCanvas(inst);
-    const ctx = inst.ctx;
-    ctx.dt = dt;
-    ctx.time = (now - inst.started) / 1000;
-    ctx.frame = inst.frame++;
-    if (inst.cameraAttached) camera.update(now, ctx.width, ctx.height);
+  wall.setRays(kinect.lut?.data); // the camera's real view, once the hub sent it
+  wall.active = isWall(inst);
+  wall.update(kinect.view, xSign);
+  wallPointer(inst);
+  hooks.beforeFrame?.(now);
+  // scenes fading out (crossfade) render below the new one until the fade is over
+  for (const l of [...rt.leaving]) {
+    if (now >= l.until) {
+      rt.leaving.splice(rt.leaving.indexOf(l), 1);
+      destroy(l.inst);
+      updateStreams();
+      continue;
+    }
     try {
-      const r = inst.def.frame?.(ctx);
-      if (r && typeof r.then === 'function') r.catch((e) => pushError('frame()', e));
+      renderInstance(l.inst, now, dt);
+    } catch (e) {
+      rt.leaving.splice(rt.leaving.indexOf(l), 1);
+      destroy(l.inst);
+      console.warn('leaving scene', e);
+    }
+  }
+  if (inst && rt.state === 'running') {
+    try {
+      renderInstance(inst, now, dt);
       rt.frames++;
       rt.fpsCount++;
       maybeThumb(now, inst);
@@ -437,6 +593,8 @@ function loop(now) {
       pushError('frame()', e);
     }
   }
+  // same task as the rendering: the WebGPU drawing buffers can still be read (previews)
+  hooks.afterFrame?.(now, inst);
   if (now - rt.fpsSince >= 1000) {
     rt.fps = (rt.fpsCount * 1000) / (now - rt.fpsSince);
     rt.fpsCount = 0;
@@ -465,7 +623,7 @@ function maybeThumb(now, inst) {
     // same task as the rendering, so the WebGPU/WebGL drawing buffer is still there
     c.getContext('2d').drawImage(inst.canvas, 0, 0, w, h);
     c.toBlob((blob) => {
-      if (blob) fetch(`/__thumb/${NAME}`, { method: 'POST', body: blob }).catch(() => {});
+      if (blob) fetch(`/__thumb/${inst.name}`, { method: 'POST', body: blob }).catch(() => {});
     }, 'image/jpeg', 0.85);
   } catch (e) {
     console.warn('thumbnail', e);
@@ -504,12 +662,15 @@ function updateHud(now) {
   if (now - lastHud < 250) return;
   lastHud = now;
   const problem = sensorLine(now) || (personsActive() && kinect.personTracker.error ? kinect.personTracker.statusText : '');
+  rt.problem = problem;
   banner.textContent = problem;
   banner.style.display = problem && !KIOSK ? 'block' : 'none';
   hud.classList.toggle('k-idle', now - lastMove > 4000);
+  document.documentElement.classList.toggle('k-cursor-idle', OUTPUT && now - lastMove > 2000);
   if (uiHidden) return;
+  const name = rt.current?.name ?? URL_NAME;
   const dev = devServer();
-  const line1 = `${rt.title}${rt.title !== NAME ? `  (${NAME})` : ''}${dev?.label ? `  ·  ${dev.label}` : ''}`;
+  const line1 = `${rt.title}${rt.title !== name ? `  (${name})` : ''}${dev?.label ? `  ·  ${dev.label}` : ''}`;
   const line2 = [
     `${rt.fps.toFixed(0)} fps`,
     `Kinect ${kinect.fps.toFixed(1)} fps`,
@@ -522,9 +683,19 @@ function updateHud(now) {
   hud.replaceChildren();
   el('div', 'k-hud-title', hud, line1);
   el('div', '', hud, line2);
+  if (isWall(rt.current)) {
+    const s = wall.setup;
+    const map = { real: 'echt 1:1', factor: `×${s.map.factor}`, fit: `Sichtfeld bei ${s.map.distance} m` }[s.map.mode];
+    el('div', '', hud, `LED-Wand ${s.led.w}×${s.led.h} · ${s.size.w}×${s.size.h} m · ${map}${s.mirror ? ' · gespiegelt' : ''} · Setup: ${{ devserver: 'gemeinsam', local: 'nur dieser Browser', none: 'Standard' }[rt.setupSource] ?? rt.setupSource}`);
+  }
   const keys = el('div', 'k-hud-keys', hud, 'h UI · f Vollbild · m Spiegeln · , . Szene · ');
   const a = el('a', '', keys, 'Galerie');
   a.href = '/';
+  if (isWall(rt.current)) {
+    keys.append(' · ');
+    const c = el('a', '', keys, 'Steuerzentrale');
+    c.href = '/control/';
+  }
 }
 
 function applyUi() {
@@ -533,7 +704,8 @@ function applyUi() {
 }
 
 async function go(delta) {
-  const here = `${location.origin}|${NAME}`;
+  const name = rt.current?.name ?? URL_NAME;
+  const here = `${location.origin}|${name}`;
   let list = (await allDevServers(HUB)).flatMap((s) => (s.scenes ?? []).map((sc) => ({ key: `${s.url}|${sc.name}`, url: sc.url })));
   if (!list.some((e) => e.key === here)) {
     list = (await localScenes().catch(() => [])).map((sc) => ({ key: `${location.origin}|${sc.name}`, url: `/scenes/${sc.name}/` }));
@@ -546,8 +718,21 @@ async function go(delta) {
   location.href = next.url + (keep.size ? `?${keep}`.replace('=', '') : '');
 }
 
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen?.().catch(() => {});
+}
+
 addEventListener('keydown', (e) => {
   if (e.target?.closest?.('input, textarea, select, [contenteditable]') || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (OUTPUT) {
+    // the output window: only fullscreen (everything else comes from the control center)
+    if (e.key === 'f' || e.key === 'F11') {
+      e.preventDefault();
+      toggleFullscreen();
+    }
+    return;
+  }
   switch (e.key) {
     case 'h':
       if (KIOSK) return;
@@ -556,8 +741,7 @@ addEventListener('keydown', (e) => {
       applyUi();
       break;
     case 'f':
-      if (document.fullscreenElement) document.exitFullscreen();
-      else document.documentElement.requestFullscreen?.().catch(() => {});
+      toggleFullscreen();
       break;
     case 'm':
       xSign = -xSign;
@@ -580,11 +764,12 @@ addEventListener('keydown', (e) => {
 
 async function refreshInfo() {
   try {
-    const info = (await localScenes()).find((s) => s.name === NAME);
+    rt.scenes = await localScenes(true);
+    const info = rt.scenes.find((s) => s.name === (rt.current?.name ?? URL_NAME));
     if (info) {
       rt.info = info;
-      rt.title = info.title || NAME;
-      document.title = `${rt.title} · Kinect`;
+      rt.title = info.title || info.name;
+      if (!OUTPUT) document.title = `${rt.title} · Kinect`;
     }
   } catch {
     // keep the old title
@@ -604,47 +789,67 @@ function showMissing(list, reason) {
   back.href = '/';
 }
 
+/** Output window: plays a scene of this dev server in place (crossfade). For lib/wall-output.js. */
+async function play(name, { overrides = null, transition = 'cross', fade = 1 } = {}) {
+  let found;
+  try {
+    found = await sceneModule(name);
+  } catch (e) {
+    pushError(`Szene ${name}`, e);
+    return false;
+  }
+  rt.info = found.info;
+  rt.title = found.info.title || name;
+  return launch(found.mod, { name, overrides, transition: rt.current ? transition : 'cut', fade });
+}
+
 async function boot() {
   applyUi();
+  await loadSetup().catch((e) => pushError('LED-Wand-Setup', e));
+  if (OUTPUT) {
+    document.title = 'LED-Wand · Ausgabe';
+    rt.scenes = await localScenes(true).catch(() => []);
+    const { startOutput } = await import('./wall-output.js');
+    startOutput(outputApi);
+    return;
+  }
   let list = [];
   try {
-    list = await localScenes();
+    list = await localScenes(true);
   } catch (e) {
     pushError('Szenenliste', e);
   }
-  const info = list.find((s) => s.name === NAME);
-  if (!NAME || !info) {
-    showMissing(list, NAME ? `Szene „${NAME}“ gibt es nicht` : 'Keine Szene gewählt');
+  rt.scenes = list;
+  const info = list.find((s) => s.name === URL_NAME);
+  if (!URL_NAME || !info) {
+    showMissing(list, URL_NAME ? `Szene „${URL_NAME}“ gibt es nicht` : 'Keine Szene gewählt');
     return;
   }
   rt.info = info;
-  rt.title = info.title || NAME;
+  rt.title = info.title || URL_NAME;
   document.title = `${rt.title} · Kinect`;
-  const file = `/scenes/${NAME}/${info.entry}`;
-  let mod;
+  let found;
   try {
-    mod = loaders ? await loaders[file]() : await import(/* @vite-ignore */ file);
+    found = await sceneModule(URL_NAME);
   } catch (e) {
     rt.state = 'error';
-    pushError(`Import von ${file}`, e);
+    pushError(`Import von /scenes/${URL_NAME}/${info.entry}`, e);
     return;
   }
-  await launch(mod);
+  await launch(found.mod, { name: URL_NAME });
 }
 
-globalThis.__kinectRuntime = {
-  hotSwap: (mod) => launch(mod, { swap: true }),
-  /** For debugging: what the scene sees as ctx.persons. */
-  persons: () => kinect.view,
-  /** For tools/check.mjs and debugging. */
-  status: () => ({
-    scene: NAME,
+function status() {
+  return {
+    scene: rt.current?.name ?? URL_NAME,
     title: rt.title,
     state: rt.state,
     frames: rt.frames,
     fps: Math.round(rt.fps * 10) / 10,
     swaps: rt.swaps,
     size: rt.current ? [rt.current.ctx.width, rt.current.ctx.height] : null,
+    params: rt.current ? { ...rt.current.params.values } : null,
+    wall: isWall(rt.current) ? { led: [wall.setup.led.w, wall.setup.led.h], output: OUTPUT, setup: rt.setupSource } : null,
     errors: rt.errors.map(({ where, message, stack, count }) => ({ where, message, stack, count })),
     kinect: {
       hub: HUB,
@@ -671,7 +876,66 @@ globalThis.__kinectRuntime = {
           error: kinect.personTracker.error ? String(kinect.personTracker.error) : null,
         }
       : null,
-  }),
+  };
+}
+
+/** What lib/wall-output.js may use. */
+const outputApi = {
+  kinect,
+  wall,
+  bus,
+  rt,
+  stage,
+  hooks,
+  play,
+  status,
+  pushError,
+  updateStreams,
+  personsActive,
+  get xSign() {
+    return xSign;
+  },
+  /** Retry a scene stopped by an error in frame(). */
+  resume() {
+    if (rt.current && rt.state === 'error') rt.state = 'running';
+  },
+  /** Changes a param of the running scene (as the panel would). */
+  setParam(key, value) {
+    const inst = rt.current;
+    if (!inst || !(key in inst.params.values)) return;
+    if (inst.params.values[key] === value) return;
+    inst.params.values[key] = value;
+    try {
+      inst.def.onParam?.(key, value, inst.ctx);
+    } catch (e) {
+      pushError('onParam()', e);
+    }
+    updateStreams();
+  },
+  /** Stops every scene (black). */
+  stop() {
+    for (const l of rt.leaving.splice(0)) destroy(l.inst);
+    if (rt.current) destroy(rt.current);
+    rt.current = null;
+    rt.state = 'loading';
+  },
+  loadSetup,
+};
+
+globalThis.__kinectRuntime = {
+  hotSwap(mod, url) {
+    // the module of a scene that is not shown any more (output window, after a switch) is ignored
+    const name = /\/scenes\/([^/]+)\/main\.[jt]s/.exec(String(url ?? ''))?.[1];
+    const inst = rt.pending ?? rt.current;
+    if (name && inst && name !== inst.name) return false;
+    return launch(mod, { name: inst?.name ?? URL_NAME, swap: true, overrides: inst?.overrides ?? null });
+  },
+  /** For debugging: what the scene sees as ctx.persons. */
+  persons: () => kinect.view,
+  /** For debugging: ctx.wall. */
+  wall: () => wall,
+  /** For tools/check.mjs and debugging. */
+  status,
 };
 
 requestAnimationFrame(loop);

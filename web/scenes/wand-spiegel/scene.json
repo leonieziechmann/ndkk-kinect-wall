@@ -1,0 +1,6 @@
+{
+  "title": "Wand-Spiegel",
+  "description": "Kern-Demo für die LED-Wand: die Menschen als leuchtende Silhouetten, gespiegelt, in echter Größe und mit gedehntem Laufweg – alles aus dem gemeinsamen Wand-Setup der Steuerzentrale (wall: true, wallPerson() im Shader). Farbe nach Abstand, Spuren steigen wie Rauch.",
+  "author": "claude/led-wall-control-toolset",
+  "created": "2026-10-08"
+}

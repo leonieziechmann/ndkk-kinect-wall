@@ -25,9 +25,12 @@ export async function getJson(url, timeoutMs = 3000) {
   return r.json();
 }
 
-/** Scenes of this dev server (or of a build), as served at /__scenes. */
-export async function localScenes() {
-  const list = await getJson('/__scenes');
+/**
+ * Scenes of this dev server (or of a build), as served at /__scenes. Outside the main checkout the
+ * dev server lists only the scenes its worktree added or changed (see the Vite plugin); all = every one.
+ */
+export async function localScenes(all = false) {
+  const list = await getJson(all ? '/__scenes?all=1' : '/__scenes');
   return list.scenes ?? [];
 }
 

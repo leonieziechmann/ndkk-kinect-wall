@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LED-Wand · Steuerzentrale</title>
+<link rel="icon" href="data:,">
+</head>
+<body>
+<!-- The control center of the LED wall: lib/control.js (see WALL.md). Served at /control/. -->
+<header class="c-top">
+  <h1>LED-Wand <span>Steuerzentrale</span></h1>
+  <span id="hubPill" class="pill">Hub …</span>
+  <span id="outPill" class="pill">Ausgabe …</span>
+  <span id="peoplePill" class="pill">–</span>
+  <span class="spacer"></span>
+  <div class="menu">
+    <button id="openBtn" class="btn">Ausgabe öffnen ▾</button>
+    <div id="openMenu" class="menu-list" hidden>
+      <button id="openKiosk">Kiosk-Fenster auf dem LED-Bildschirm</button>
+      <button id="openWindow">Fenster in diesem Browser</button>
+      <button id="reloadOut">Ausgabe neu laden</button>
+      <button id="closeOut">Ausgabe schließen</button>
+    </div>
+  </div>
+  <button id="blackoutBtn" class="btn blackout" title="Taste B">Blackout</button>
+</header>
+
+<main class="c-main">
+  <section class="c-live">
+    <div class="preview-wrap">
+      <img id="preview" alt="">
+      <div id="previewNote" class="preview-note">Keine Ausgabe verbunden</div>
+      <div id="previewBadge" class="preview-badge" hidden>BLACKOUT</div>
+    </div>
+    <div class="now">
+      <div>
+        <div id="nowTitle" class="now-title">–</div>
+        <div id="nowMeta" class="muted"></div>
+      </div>
+      <div class="now-buttons">
+        <button id="prevBtn" class="btn" title="Taste ←">◀ Zurück</button>
+        <button id="nextBtn" class="btn" title="Taste →">Weiter ▶</button>
+      </div>
+    </div>
+    <div class="row test-row">
+      <label>Testbild <select id="patternSel"><option value="">aus</option></select></label>
+      <label><input type="checkbox" id="patternOver"> über der Szene</label>
+      <span id="nowStatus" class="muted ellipsis"></span>
+    </div>
+  </section>
+
+  <nav class="tabs">
+    <button data-tab="show" class="active">Show</button>
+    <button data-tab="setup">Wand-Setup</button>
+    <button data-tab="status">Status</button>
+  </nav>
+
+  <section id="tab-show" class="tab">
+    <div class="cols">
+      <div>
+        <h2>Ablauf</h2>
+        <div id="playlist" class="playlist"></div>
+        <div class="show-settings">
+          <label><input type="checkbox" id="autoOn"> automatisch weiter</label>
+          <label><input type="checkbox" id="waitEmpty"> erst, wenn niemand davor steht</label>
+          <label>höchstens <input type="number" id="maxWait" min="0" max="3600" step="10"> s länger</label>
+          <label>Übergang <select id="transSel"></select></label>
+          <label><input type="number" id="fadeSec" min="0" max="10" step="0.1"> s</label>
+        </div>
+        <h2>Szenen <span id="libNote" class="muted"></span></h2>
+        <div id="library" class="library"></div>
+        <div id="others" class="muted others"></div>
+      </div>
+      <div>
+        <h2 id="paramsHead">Parameter</h2>
+        <div id="paramsNote" class="muted"></div>
+        <div id="paramsActions" class="row" hidden>
+          <button id="paramsFromPage" class="btn small">Werte der Szenen-Seite übernehmen</button>
+          <button id="paramsReset" class="btn small">Zurücksetzen</button>
+        </div>
+        <div id="paramsGui" class="gui-box"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-setup" class="tab" hidden>
+    <div class="cols">
+      <div>
+        <h2>Wand-Setup <span id="setupNote" class="muted"></span></h2>
+        <div id="setupGui" class="gui-box"></div>
+        <div class="row">
+          <button id="screenBtn" class="btn small">Bildschirm für die Ausgabe wählen …</button>
+          <span id="screenNote" class="muted"></span>
+        </div>
+        <div id="screens" class="screens"></div>
+        <div class="row">
+          <button id="exportBtn" class="btn small">Exportieren</button>
+          <button id="importBtn" class="btn small">Importieren …</button>
+          <button id="defaultsBtn" class="btn small">Standard (6 × 2 m, 1008 × 336)</button>
+          <input type="file" id="importFile" accept="application/json,.json" hidden>
+        </div>
+      </div>
+      <div>
+        <h2>Draufsicht <span class="muted">(Wand oben, Publikum unten)</span></h2>
+        <canvas id="plan" class="plan"></canvas>
+        <div class="muted legend">
+          Grau: was die Kinect sieht, hell: die Zone. Gestrichelt: der Bezugsabstand und wohin sein Sichtfeld auf der Wand fällt.
+          Punkte: die Personen, wo sie stehen; die Linie zeigt, wo die Wand sie zeigt. Testbild „Kalibrierung“ zeigt dasselbe auf der Wand.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-status" class="tab" hidden>
+    <div class="cols">
+      <div>
+        <h2>Ausgabe</h2>
+        <table id="statusTable" class="kv"></table>
+      </div>
+      <div>
+        <h2>Fehler der Ausgabe</h2>
+        <div id="errors" class="errors muted">keine</div>
+      </div>
+    </div>
+  </section>
+</main>
+<script type="module" src="/lib/control.js"></script>
+</body>
+</html>

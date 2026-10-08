@@ -2,7 +2,8 @@
 //
 // Renders scenes in headless Chrome/Edge on the real GPU (WebGPU works) and reports per scene:
 // errors (runtime, WebGPU, WGSL, console), frame rate, Kinect frames and latency, and saves a
-// screenshot to web/.cache/shots/<name>.png (look at it!). Without names: all scenes.
+// screenshot to web/.cache/shots/<name>.png (look at it!). Without names: the scenes this worktree
+// added or changed (in the main checkout: all scenes).
 // Uses this worktree's running dev server (.cache/dev-server.json) or starts a temporary one.
 // Exit code 1 if a scene has errors or does not render.
 
@@ -11,6 +12,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import puppeteer from 'puppeteer-core';
 import { normalizeHub } from './vite-plugin-kinect.js';
+import { findBrowser } from './wall-launch.js';
 
 const web = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -29,25 +31,10 @@ function parseArgs(argv) {
   return o;
 }
 
-function findBrowser() {
-  const local = process.env.LOCALAPPDATA ?? '';
-  return [
-    process.env.CHROME_PATH,
-    'C:/Program Files/Google/Chrome/Application/chrome.exe',
-    'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-    `${local}/Google/Chrome/Application/chrome.exe`,
-    'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
-    'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
-    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-    '/usr/bin/google-chrome',
-    '/usr/bin/chromium',
-  ].find((p) => p && fs.existsSync(p));
-}
-
 async function devServer() {
   try {
     const info = JSON.parse(fs.readFileSync(path.join(web, '.cache', 'dev-server.json'), 'utf8'));
-    const r = await fetch(`${info.url}/__scenes`, { signal: AbortSignal.timeout(2000) });
+    const r = await fetch(`${info.url}/__scenes?all=1`, { signal: AbortSignal.timeout(2000) });
     if (r.ok) return { url: info.url, close: async () => {} };
   } catch {
     // no dev server running in this worktree
@@ -160,9 +147,14 @@ if (!exe) {
 const server = await devServer();
 let failed = false;
 try {
-  const list = await (await fetch(`${server.url}/__scenes`)).json();
+  const list = await (await fetch(`${server.url}/__scenes?all=1`)).json();
   const known = list.scenes.map((s) => s.name);
-  const names = o.names.length ? o.names : known;
+  const own = list.scenes.filter((s) => s.changed !== false).map((s) => s.name);
+  const names = o.names.length ? o.names : own;
+  if (!names.length) {
+    console.log(`Dieser Worktree hat keine neuen oder geänderten Szenen. Namen angeben: npm run check <szene> (vorhanden: ${known.join(', ')})`);
+    process.exit(0);
+  }
   const unknown = names.filter((n) => !known.includes(n));
   if (unknown.length) {
     console.error(`Unbekannte Szene(n): ${unknown.join(', ')}. Vorhanden: ${known.join(', ')}`);

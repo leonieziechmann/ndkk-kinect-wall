@@ -7,7 +7,8 @@
 //   F.resolution, F.time, F.dt, F.mouse, F.xSign, F.frame, F.depthAge, F.hasDepth
 //   P.<param>        the scene's params with the same names (numbers/checkboxes f32, colors vec3f,
 //                    options: the value if numeric, else the index)
-//   kinectUv(uv)     screen uv -> depth image uv (image covers the screen, mirrored like 3D scenes)
+//   kinectUv(uv)     screen uv -> depth image uv (image covers the screen, mirrored like 3D scenes;
+//                    on the LED image as it falls on the wall: wallToKinect(), see WALL.md)
 //   depthAt(k)       depth in meters at depth image uv k, 0 = no measurement; depthSmooth(k) filtered
 //   irAt(k)          infrared brightness 0..1
 //   pointAt(k)       3D point in world space (m, x right, y up, z forward); z = 0 without measurement
@@ -29,6 +30,13 @@
 //   skeletonDist(k)             x: distance to the nearest stick figure of anyone, y: its slot (0 = none)
 //   J_NOSE … J_RIGHT_ANKLE (0..16, COCO), J_NECK, J_PELVIS, J_HEAD, J_LEFT_HAND, J_RIGHT_HAND,
 //   J_CENTER, J_GROUND; BONES / BONE_COUNT: the stick figure as pairs of J_ indices
+// the LED wall (ctx.wall, see WALL.md; for scenes with wall: true, where uv covers the LED image):
+//   WALL                        the setup and the mapping (struct Wall in lib/wall.js)
+//   wallFromWorld(p, slot)      world point (pointAt(), personJoint()) -> wall m: x from the left
+//                               edge, y above the floor, z in front of the wall; wallUv(), wallPx()
+//   wallAt(uv)                  LED uv -> wall m (x, y);  wallToKinect(uv): LED uv -> depth image uv
+//   wallPerson(uv)              the people as they fall on the wall: x covered 0..1 (smooth), y m from
+//                               the sensor, z slot, w IR; wallPersonMask(uv), wallPersonAt(uv) -> slot
 //
 //   const pass = await createShaderPass(ctx, { shade: SHADE_WGSL, feedback: true });
 //   frame(ctx) { pass.render(); }
@@ -36,6 +44,8 @@
 import { optionValues } from './params.js';
 import { PERSON_COLORS, POINTS, BONES, MAX_PERSONS } from './persons.js';
 import { PERSON_POINTS } from './kinect-data.js';
+import { wallWgsl } from './wall.js';
+import { createWallPersons } from './wall-persons.js';
 
 // WGSL names of the person points: leftHand -> J_LEFT_HAND
 const jointConsts = POINTS.map((n, i) => `const J_${n.replace(/[A-Z]/g, (c) => `_${c}`).toUpperCase()} = ${i}u;`).join('\n');
@@ -125,10 +135,14 @@ ${layout.struct}
 @group(0) @binding(7) var personTex: texture_2d<u32>;      // slot of the person per pixel, 0 = none
 @group(0) @binding(8) var personDepthTex: texture_2d<f32>; // meters, person pixels only
 @group(0) @binding(9) var<storage, read> personPoints: array<vec4f>; // see personJoint()
+@group(0) @binding(11) var wallPersonTex: texture_2d<f32>; // lib/wall-persons.js (only if the shader uses wallPerson*)
+${wallWgsl(0, 10)}
 
 const KINECT_SIZE = vec2f(512.0, 424.0);
 
 fn kinectUv(uv: vec2f) -> vec2f {
+  // on the LED image (wall scenes, output window): the camera image as it falls on the wall
+  if (WALL.ledImage > 0.5) { return wallToKinect(uv); }
   let screen = F.resolution.x / max(F.resolution.y, 1.0);
   let image = KINECT_SIZE.x / KINECT_SIZE.y;
   var k = uv - vec2f(0.5);
@@ -201,6 +215,16 @@ fn personBoneDist(k: vec2f, slot: u32) -> f32 {
   }
   return d;
 }
+fn wallPersonPx(uv: vec2f) -> vec2i {
+  let size = vec2f(textureDimensions(wallPersonTex));
+  return vec2i(clamp(uv, vec2f(0.0), vec2f(0.99999)) * size);
+}
+fn wallPersonMask(uv: vec2f) -> f32 { return textureSampleLevel(wallPersonTex, smoothSampler, uv, 0.0).r; }
+fn wallPersonAt(uv: vec2f) -> u32 { return u32(textureLoad(wallPersonTex, wallPersonPx(uv), 0).b + 0.5); }
+fn wallPerson(uv: vec2f) -> vec4f {
+  let v = textureLoad(wallPersonTex, wallPersonPx(uv), 0);
+  return vec4f(wallPersonMask(uv), v.g, v.b, v.a);
+}
 fn skeletonDist(k: vec2f) -> vec2f {
   var best = vec2f(1e6, 0.0);
   for (var s = 1u; s <= PERSON_SLOTS; s++) {
@@ -257,8 +281,13 @@ export async function createShaderPass(ctx, { shade, feedback = false } = {}) {
       { binding: 7, visibility: FRAG, texture: { sampleType: 'uint' } },
       { binding: 8, visibility: FRAG, texture: { sampleType: 'unfilterable-float' } },
       { binding: 9, visibility: FRAG, buffer: { type: 'read-only-storage' } },
+      { binding: 10, visibility: FRAG, buffer: { type: 'uniform' } },
+      { binding: 11, visibility: FRAG, texture: { sampleType: 'float' } },
     ],
   });
+  // the people on the wall: only projected if the shader asks for them
+  const wallPersons = /\bwallPerson/.test(shade) ? await createWallPersons(ctx) : null;
+  let wallPersonView = null;
   const targetFormat = feedback ? 'rgba16float' : format;
   const pipeline = await validated(device, 'Pipeline', () =>
     device.createRenderPipeline({
@@ -305,9 +334,13 @@ export async function createShaderPass(ctx, { shade, feedback = false } = {}) {
         { binding: 7, resource: kinectViews[3] },
         { binding: 8, resource: kinectViews[4] },
         { binding: 9, resource: { buffer: gpu.personPointBuffer } },
+        { binding: 10, resource: { buffer: ctx.wall.buffer(device) } },
+        { binding: 11, resource: wallPersonView ?? blackView },
       ],
     });
-  const plainGroup = group(black.createView());
+  const blackView = black.createView();
+  wallPersonView = wallPersons?.view ?? null;
+  let plainGroup = group(blackView);
 
   // feedback: render into one of two textures, read the other one as prev()
   let targets = null;
@@ -357,6 +390,16 @@ export async function createShaderPass(ctx, { shade, feedback = false } = {}) {
     render() {
       writeUniforms();
       const enc = device.createCommandEncoder();
+      if (wallPersons) {
+        wallPersons.update(enc);
+        if (wallPersons.view !== wallPersonView) {
+          // the LED size changed: new texture, new bind groups
+          wallPersonView = wallPersons.view;
+          plainGroup = group(blackView);
+          targets?.textures.forEach((t) => t.destroy());
+          targets = null;
+        }
+      }
       if (feedback) {
         const t = ensureTargets();
         draw(enc, t.textures[t.current].createView(), pipeline, t.groups[t.current]);
