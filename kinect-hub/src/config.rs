@@ -24,11 +24,13 @@ usage: kinect-hub [options]
                          Same-origin pages and http(s)://localhost / 127.0.0.1 are always allowed.
   --pose dml|cpu|off     pose model on the infrared image (stream `poses`): DirectML on the GPU
                          (default), the CPU, or not at all
-  --pose-model PATH      full-size pose model (default web/lib/models/yolo11n-pose-fp16.onnx)
-  --pose-model-fast PATH|none
-                         smaller model taken while the full one cannot keep --pose-hz
-                         (default web/lib/models/yolo11n-pose-384-fp16.onnx if it exists)
-  --pose-hz HZ           target pose rate (default 15; 0 = as often as possible, full model only)
+  --pose-models A,B,...  pose models, best first; all are loaded, the hub runs the best one that
+                         keeps --pose-hz (default: those of web/lib/models/ that exist, in this
+                         order: yolo11s-pose-512x448-fp16, yolo11s-pose-384x320-fp16,
+                         yolo11n-pose-fp16 (only without the s 384 one), yolo11n-pose-384-fp16)
+  --pose-model PATH      the best model, --pose-model-fast PATH|none the next one (older form of
+                         --pose-models)
+  --pose-hz HZ           target pose rate (default 15; 0 = as often as possible, best model only)
   --persons on|off       person tracking (streams `persons`, `persons_live`; default on)
   --persons-delay N      frames the `persons` stream may wait for a later pose (default 12)
   --onnxruntime PATH     onnxruntime.dll (default: next to the hub, else kinect-hub/onnxruntime/,
@@ -75,6 +77,8 @@ pub struct Config {
     pub smoothing: f32,
     pub allow_origins: Vec<String>,
     pub pose: PoseDevice,
+    /// --pose-models, best first (empty: see pose_model_paths)
+    pub pose_models: Vec<PathBuf>,
     pub pose_model: Option<PathBuf>,
     /// `Some(None)`: `--pose-model-fast none`
     pub pose_model_fast: Option<Option<PathBuf>>,
@@ -98,6 +102,7 @@ impl Config {
             smoothing: 0.4,
             allow_origins: Vec::new(),
             pose: PoseDevice::DirectMl,
+            pose_models: Vec::new(),
             pose_model: None,
             pose_model_fast: None,
             pose_hz: 15.0,
@@ -161,6 +166,9 @@ impl Config {
                         other => return Err(format!("--pose {other}: expected dml, cpu or off")),
                     }
                 }
+                "--pose-models" => {
+                    cfg.pose_models = value("--pose-models")?.split(',').map(str::trim).filter(|s| !s.is_empty()).map(PathBuf::from).collect();
+                }
                 "--pose-model" => cfg.pose_model = Some(PathBuf::from(value("--pose-model")?)),
                 "--pose-model-fast" => {
                     let v = value("--pose-model-fast")?;
@@ -206,24 +214,31 @@ impl Config {
         }
     }
 
-    /// The full-size pose model.
-    pub fn pose_model_path(&self) -> Option<PathBuf> {
-        match &self.pose_model {
-            Some(p) => Some(p.clone()),
-            None => self.web_dir.as_ref().map(|d| d.join("lib").join("models").join("yolo11n-pose-fp16.onnx")),
+    /// The pose models, best first (looked up again before every start: models may be added
+    /// while the hub runs). Empty: no web/ directory and none given.
+    pub fn pose_model_paths(&self) -> Vec<PathBuf> {
+        if !self.pose_models.is_empty() {
+            return self.pose_models.clone();
         }
-    }
-
-    /// The smaller pose model, if there is one.
-    pub fn pose_model_fast_path(&self) -> Option<PathBuf> {
-        match &self.pose_model_fast {
-            Some(p) => p.clone(),
-            None => self
-                .web_dir
-                .as_ref()
-                .map(|d| d.join("lib").join("models").join("yolo11n-pose-384-fp16.onnx"))
-                .filter(|p| p.is_file()),
+        let dir = self.web_dir.as_ref().map(|d| d.join("lib").join("models"));
+        let in_dir = |name: &str| dir.as_ref().map(|d| d.join(name));
+        if self.pose_model.is_some() || self.pose_model_fast.is_some() {
+            let best = self.pose_model.clone().or_else(|| in_dir("yolo11n-pose-fp16.onnx"));
+            let next = match &self.pose_model_fast {
+                Some(p) => p.clone(),
+                None => in_dir("yolo11n-pose-384-fp16.onnx").filter(|p| p.is_file()),
+            };
+            return best.into_iter().chain(next).collect();
         }
+        // n 512 costs about as much as s 384 and is worse: only without that one
+        let s384 = in_dir("yolo11s-pose-384x320-fp16.onnx").filter(|p| p.is_file());
+        let n512 = if s384.is_some() { None } else { in_dir("yolo11n-pose-fp16.onnx") };
+        let found: Vec<PathBuf> = [in_dir("yolo11s-pose-512x448-fp16.onnx"), s384, n512, in_dir("yolo11n-pose-384-fp16.onnx")]
+            .into_iter()
+            .flatten()
+            .filter(|p| p.is_file())
+            .collect();
+        if found.is_empty() { in_dir("yolo11n-pose-fp16.onnx").into_iter().collect() } else { found }
     }
 
     /// onnxruntime.dll, looked up again before every attempt (setup-onnxruntime.ps1 may run while

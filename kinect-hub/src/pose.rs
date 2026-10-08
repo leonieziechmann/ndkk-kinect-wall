@@ -1,4 +1,4 @@
-//! Poses of the people in front of the sensor: YOLO11n-pose (yolo.rs) on the infrared image,
+//! Poses of the people in front of the sensor: YOLO11-pose (yolo.rs) on the infrared image,
 //! natively with ONNX Runtime on the GPU through DirectML, once for every client (stream `poses`,
 //! `GET /api/poses`). Measured against the browser in kinect-hub/pose-bench: a third of the GPU time
 //! per pose, the same poses.
@@ -7,9 +7,11 @@
 //!   15 Hz); the frames never wait for it. It only runs while someone wants poses. While the
 //!   person tracker runs (tracking.rs), the tracker hands it the frames instead (submit()): it must
 //!   know which frame a pose belongs to before it processes that frame.
-//! - Two model sizes: when the full model (512x448) runs late for the target rate, the smaller one
-//!   (384x320) takes over. Every few seconds the full one is tried again (its pose counts as well)
-//!   and comes back once it fits with room to spare. Every pose says which model made it.
+//! - A ladder of models, best first (--pose-models, e.g. YOLO11s 512, YOLO11s 384, YOLO11n 384), all
+//!   loaded at the start: the hub runs the best one that keeps the target rate. When the one in use
+//!   gets too slow, the next one takes over; every few seconds the next better one is tried (its
+//!   pose counts as well) and takes over once it fits with room to spare. Every pose says which
+//!   model made it.
 //! - ONNX Runtime is a DLL loaded at run time (setup-onnxruntime.ps1). Without it, without a model,
 //!   or if DirectML fails, the hub runs on without poses, says why in /api/status and tries again
 //!   every 10 s (so the DLL or a new model can be added while the hub runs).
@@ -34,15 +36,23 @@ use crate::yolo::{Device, Model, Pose};
 
 /// Wait after a failed start before the next attempt.
 const RETRY: Duration = Duration::from_secs(10);
-/// A full-model run slower than this share of the period counts as late ...
-const LATE: f64 = 0.9;
-/// ... and this many late runs in a row switch to the small model.
-const LATE_RUNS: u32 = 5;
-/// While on the small model, the full one is tried this often ...
+/// The model in use hands over to the next one when its runs take longer than this share of the
+/// period on average ...
+const DOWN: f64 = 0.95;
+/// ... once it ran this often since it took over.
+const DOWN_RUNS: u32 = 8;
+/// Meanwhile the next better model is tried now and then; it takes over after this many tries in
+/// a row faster than this share of the period.
+const UP: f64 = 0.85;
+const UP_PROBES: u32 = 2;
+/// Wait between tries at first ...
 const PROBE_EVERY: Duration = Duration::from_secs(3);
-/// ... and comes back after this many tries in a row faster than this share of the period.
-const FITS: f64 = 0.6;
-const FIT_PROBES: u32 = 3;
+/// ... and longer (up to this) after tries that failed or a takeover that did not last.
+const PROBE_MAX: Duration = Duration::from_secs(30);
+/// A model that hands over this soon after it took over did not last ...
+const FLIP: Duration = Duration::from_secs(20);
+/// ... one that ran this long did: its tries start over at PROBE_EVERY.
+const STAY: Duration = Duration::from_secs(60);
 /// `GET /api/poses` keeps the model running this long for scripts that poll it.
 const HTTP_LEASE: Duration = Duration::from_secs(5);
 
@@ -60,10 +70,14 @@ pub struct PoseSet {
 
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ModelInfo {
+    /// short name, e.g. "s@384" (YOLO11s with a 384 px wide input)
+    pub name: String,
     pub size: String,
     pub file: String,
     /// ms per run measured right after loading (GPU without the scenes' load)
     pub warm_ms: f64,
+    /// ms per run of late (average; 0 = not run yet)
+    pub ms: f64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -73,7 +87,7 @@ pub struct PoseStatus {
     pub detail: String,
     pub device: &'static str,
     pub models: Vec<ModelInfo>,
-    /// the model in use ("512x448")
+    /// the model in use (its name, e.g. "s@384")
     pub active: Option<String>,
     pub target_hz: f64,
     /// poses per second, and ms per run of the active model (moving averages)
@@ -286,68 +300,102 @@ fn warm(file: &std::path::Path, device: Device) -> Result<(Model, f64), String> 
     Ok((m, t.elapsed().as_secs_f64() * 1000.0))
 }
 
-/// Which model the next run uses.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Pick {
-    Full,
-    Fast,
-    /// the full model, tried while the small one is in use
-    Probe,
+/// A short name for a model: "s@384" for yolo11s-pose-384x320-fp16.onnx (input 384x320), else
+/// the file name.
+fn label(file: &std::path::Path, size: &str) -> String {
+    let stem = file.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let width = size.split('x').next().unwrap_or(size);
+    match stem.find("yolo11").and_then(|i| stem.get(i + 6..i + 7)) {
+        Some(v) if v.chars().all(|c| c.is_ascii_lowercase()) && !v.is_empty() => format!("{v}@{width}"),
+        _ => stem,
+    }
 }
 
-/// Paces the runs and chooses the model, with hysteresis.
+/// Which model the next run uses: its level (0 = the best) and whether it is a try of a better one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Pick {
+    level: usize,
+    probe: bool,
+}
+
+/// Paces the runs and picks the best model that keeps the target rate, with hysteresis.
 struct Scheduler {
     period: Option<Duration>,
-    has_fast: bool,
-    on_fast: bool,
-    late: u32,
+    /// the model in use: its level, 0 = the best
+    cur: usize,
+    /// ms per run of each model (moving average; 0 = not run yet)
+    avg: Vec<f64>,
+    /// wait between tries of each model while a worse one runs
+    wait: Vec<Duration>,
+    /// runs of the model in use since it took over, and when that was
+    runs: u32,
+    since: Instant,
+    /// tries of the next better model in a row that fit
     fits: u32,
     last_probe: Instant,
     next_due: Instant,
 }
 
 impl Scheduler {
-    fn new(hz: f64, has_fast: bool) -> Scheduler {
+    fn new(hz: f64, levels: usize) -> Scheduler {
         let period = (hz > 0.0).then(|| Duration::from_secs_f64(1.0 / hz));
-        Scheduler { period, has_fast, on_fast: false, late: 0, fits: 0, last_probe: Instant::now(), next_due: Instant::now() }
+        let n = levels.max(1);
+        let now = Instant::now();
+        Scheduler { period, cur: 0, avg: vec![0.0; n], wait: vec![PROBE_EVERY; n], runs: 0, since: now, fits: 0, last_probe: now, next_due: now }
     }
 
     fn pick(&mut self) -> Pick {
-        if !self.on_fast {
-            return Pick::Full;
+        if self.period.is_some() && self.cur > 0 {
+            let up = self.cur - 1;
+            if self.last_probe.elapsed() >= self.wait.get(up).copied().unwrap_or(PROBE_EVERY) {
+                self.last_probe = Instant::now();
+                return Pick { level: up, probe: true };
+            }
         }
-        if self.last_probe.elapsed() >= PROBE_EVERY {
-            self.last_probe = Instant::now();
-            return Pick::Probe;
-        }
-        Pick::Fast
+        Pick { level: self.cur, probe: false }
     }
 
-    /// A run took `ms`; returns a description when the model changes.
+    /// A run took `ms`; returns why when the model in use changes (see `cur`).
     fn record(&mut self, pick: Pick, ms: f64) -> Option<String> {
         let now = Instant::now();
+        if let Some(a) = self.avg.get_mut(pick.level) {
+            *a = if *a == 0.0 { ms } else { 0.85 * *a + 0.15 * ms };
+        }
         let period = self.period?;
         // the next run is due one period after this one was; a late run is not made up for
         self.next_due = (self.next_due + period).max(now);
         let p = period.as_secs_f64() * 1000.0;
-        match pick {
-            Pick::Full if self.has_fast => {
-                self.late = if ms > LATE * p { self.late + 1 } else { self.late.saturating_sub(1) };
-                if self.late >= LATE_RUNS {
-                    (self.on_fast, self.late, self.fits, self.last_probe) = (true, 0, 0, now);
-                    return Some(format!("small model: the full one took {ms:.0} ms, {p:.0} ms per pose wanted"));
+        if pick.probe {
+            if ms < UP * p {
+                self.fits += 1;
+            } else {
+                self.fits = 0;
+                if let Some(w) = self.wait.get_mut(pick.level) {
+                    *w = w.mul_f64(1.25).min(PROBE_MAX);
                 }
             }
-            Pick::Probe => {
-                self.fits = if ms < FITS * p { self.fits + 1 } else { 0 };
-                if self.fits >= FIT_PROBES {
-                    (self.on_fast, self.late, self.fits) = (false, 0, 0);
-                    return Some(format!("full model again: {ms:.0} ms fits {p:.0} ms per pose"));
-                }
+            if self.fits < UP_PROBES {
+                return None;
             }
-            Pick::Full | Pick::Fast => {}
+            (self.cur, self.runs, self.since, self.fits) = (pick.level, 0, now, 0);
+            return Some(format!("{ms:.0} ms fits {p:.0} ms per pose"));
         }
-        None
+        self.runs += 1;
+        let avg = self.avg.get(self.cur).copied().unwrap_or(0.0);
+        if self.cur + 1 >= self.avg.len() || self.runs < DOWN_RUNS || avg <= DOWN * p {
+            return None;
+        }
+        // a takeover that did not last: try that model less often; after a long stay as at first
+        let stayed = now.saturating_duration_since(self.since);
+        if let Some(w) = self.wait.get_mut(self.cur) {
+            if stayed < FLIP {
+                *w = w.mul_f64(2.0).min(PROBE_MAX);
+            } else if stayed >= STAY {
+                *w = PROBE_EVERY;
+            }
+        }
+        (self.cur, self.runs, self.since, self.fits, self.last_probe) = (self.cur + 1, 0, now, 0, now);
+        Some(format!("{avg:.0} ms per run, {p:.0} ms per pose wanted"))
     }
 }
 
@@ -357,36 +405,45 @@ fn serve(hub: &Arc<Hub>, rt: &Handle) -> Result<(), String> {
     hub.pose.set_state("loading", "loading ONNX Runtime");
     load_runtime(hub)?;
     let device = device(hub);
-    let full_file = hub.cfg.pose_model_path().ok_or("no pose model (web/ directory not found; pass --pose-model)")?;
-    hub.pose.set_state("loading", format!("loading {}", full_file.display()));
-    let (mut full, full_ms) = warm(&full_file, device)?;
-    let mut fast = None;
-    if let Some(file) = hub.cfg.pose_model_fast_path() {
-        match warm(&file, device) {
-            Ok((m, ms)) => fast = Some((m, ms)),
-            Err(e) => warn!("small pose model not used: {e}"),
+    let files = hub.cfg.pose_model_paths();
+    if files.is_empty() {
+        return Err("no pose model (web/ directory not found; pass --pose-models)".to_string());
+    }
+    let mut models: Vec<Model> = Vec::new();
+    let mut infos: Vec<ModelInfo> = Vec::new();
+    let mut failed: Vec<String> = Vec::new();
+    for file in &files {
+        hub.pose.set_state("loading", format!("loading {}", file.display()));
+        match warm(file, device) {
+            Ok((m, ms)) => {
+                let size = m.size_name();
+                infos.push(ModelInfo { name: label(&m.file, &size), size, file: m.file.display().to_string(), warm_ms: (ms * 10.0).round() / 10.0, ms: 0.0 });
+                models.push(m);
+            }
+            Err(e) => {
+                warn!("pose model not used: {e}");
+                failed.push(e);
+            }
         }
     }
-    let info = |m: &Model, ms: f64| ModelInfo { size: m.size_name(), file: m.file.display().to_string(), warm_ms: (ms * 10.0).round() / 10.0 };
-    let mut models = vec![info(&full, full_ms)];
-    if let Some((m, ms)) = &fast {
-        models.push(info(m, *ms));
+    if models.is_empty() {
+        return Err(failed.join("; "));
     }
+    let names: Vec<String> = infos.iter().map(|m| m.name.clone()).collect();
     info!(
-        "pose model ready on {}: {}",
+        "pose models ready on {}, best first: {}",
         device.name(),
-        models.iter().map(|m| format!("{} ({:.1} ms)", m.size, m.warm_ms)).collect::<Vec<_>>().join(", ")
+        infos.iter().map(|m| format!("{} ({:.1} ms)", m.name, m.warm_ms)).collect::<Vec<_>>().join(", ")
     );
     {
         let mut s = hub.pose.status();
-        s.models = models;
-        s.active = Some(full.size_name());
+        s.models = infos;
+        s.active = names.first().cloned();
     }
     hub.pose.set_state("idle", "nobody wants poses");
     hub.pose.set_ready(true);
 
-    let mut fast = fast.map(|(m, _)| m);
-    let mut sched = Scheduler::new(hub.cfg.pose_hz, fast.is_some());
+    let mut sched = Scheduler::new(hub.cfg.pose_hz, models.len());
     let mut frames = hub.frames.subscribe();
     let mut last_seq: Option<u32> = None;
     let (mut ema_ms, mut ema_hz, mut last_run) = (0.0_f64, 0.0_f64, None::<Instant>);
@@ -426,22 +483,20 @@ fn serve(hub: &Arc<Hub>, rt: &Handle) -> Result<(), String> {
             continue;
         };
         let pick = sched.pick();
-        let model = match (pick, fast.as_mut()) {
-            (Pick::Fast, Some(m)) => m,
-            _ => &mut full,
-        };
+        let model = models.get_mut(pick.level).ok_or("no pose model at that level")?;
         let t = Instant::now();
         let poses = model.run(&ir)?;
         let ms = t.elapsed().as_secs_f64() * 1000.0;
-        let size = model.size_name();
+        let name = names.get(pick.level).cloned().unwrap_or_default();
         last_seq = Some(frame.seq);
+        let before = sched.cur;
         let switched = sched.record(pick, ms);
         *hub.pose.next_due.lock().unwrap_or_else(PoisonError::into_inner) = sched.next_due;
-        publish(hub, &frame, &size, ms, poses);
+        publish(hub, &frame, &name, ms, poses);
         hub.pose.busy.store(false, Ordering::SeqCst);
 
         let ema = |old: f64, new: f64| if old == 0.0 { new } else { 0.8 * old + 0.2 * new };
-        if pick != Pick::Probe {
+        if !pick.probe {
             ema_ms = ema(ema_ms, ms);
         }
         if let Some(prev) = last_run {
@@ -455,11 +510,17 @@ fn serve(hub: &Arc<Hub>, rt: &Handle) -> Result<(), String> {
         s.runs += 1;
         s.ms = (ema_ms * 10.0).round() / 10.0;
         s.hz = (ema_hz * 10.0).round() / 10.0;
+        for (info, avg) in s.models.iter_mut().zip(&sched.avg) {
+            info.ms = (avg * 10.0).round() / 10.0;
+        }
         if let Some(why) = switched {
+            let from = names.get(before).map_or("?", String::as_str);
+            let to = names.get(sched.cur).map_or("?", String::as_str);
+            let why = format!("{from} -> {to}: {why}");
             info!("pose model: {why}");
             s.switches += 1;
             s.last_switch = Some(why);
-            s.active = Some(if sched.on_fast { fast.as_ref().map_or_else(|| full.size_name(), Model::size_name) } else { full.size_name() });
+            s.active = Some(to.to_string());
             ema_ms = 0.0;
         }
     }
@@ -523,43 +584,96 @@ fn publish(hub: &Hub, frame: &FrameSet, model: &str, ms: f64, poses: Vec<Pose>) 
 mod tests {
     use super::*;
 
-    #[test]
-    fn switches_down_after_late_runs_and_back_after_good_probes() {
-        let mut s = Scheduler::new(15.0, true); // 66.7 ms per pose
-        for _ in 0..LATE_RUNS - 1 {
-            assert_eq!(s.pick(), Pick::Full);
-            assert!(s.record(Pick::Full, 70.0).is_none());
-        }
-        assert!(s.record(Pick::Full, 70.0).is_some());
-        assert!(s.on_fast);
-        assert_eq!(s.pick(), Pick::Fast);
-        // probes that do not fit keep the small model
-        s.last_probe = Instant::now() - PROBE_EVERY;
-        assert_eq!(s.pick(), Pick::Probe);
-        assert!(s.record(Pick::Probe, 50.0).is_none());
-        for _ in 0..FIT_PROBES - 1 {
-            assert!(s.record(Pick::Probe, 30.0).is_none());
-        }
-        assert!(s.record(Pick::Probe, 30.0).is_some());
-        assert!(!s.on_fast);
+    const RUN: Pick = Pick { level: 0, probe: false };
+
+    fn run(s: &mut Scheduler, ms: f64) -> Option<String> {
+        let p = s.pick();
+        s.record(Pick { probe: false, ..p }, ms)
+    }
+
+    /// Lets the next try come now.
+    fn probe_now(s: &mut Scheduler) {
+        s.last_probe = Instant::now() - PROBE_MAX;
     }
 
     #[test]
-    fn one_late_run_does_not_switch() {
-        let mut s = Scheduler::new(15.0, true);
-        for _ in 0..20 {
-            assert!(s.record(Pick::Full, 70.0).is_none());
-            assert!(s.record(Pick::Full, 30.0).is_none());
+    fn steps_down_one_model_at_a_time_and_up_after_good_tries() {
+        let mut s = Scheduler::new(15.0, 3); // 66.7 ms per pose
+        for _ in 0..DOWN_RUNS - 1 {
+            assert!(run(&mut s, 120.0).is_none());
         }
-        assert!(!s.on_fast);
+        assert!(run(&mut s, 120.0).is_some());
+        assert_eq!(s.cur, 1);
+        // the next one is too slow as well: one more step, not further than the last
+        for _ in 0..DOWN_RUNS {
+            run(&mut s, 90.0);
+        }
+        assert_eq!(s.cur, 2);
+        for _ in 0..3 * DOWN_RUNS {
+            assert!(run(&mut s, 200.0).is_none());
+        }
+        assert_eq!(s.cur, 2);
+        // tries of the better one: a slow one does not count, two fitting ones in a row step up
+        probe_now(&mut s);
+        let p = s.pick();
+        assert_eq!(p, Pick { level: 1, probe: true });
+        assert!(s.record(p, 70.0).is_none());
+        for i in 0..UP_PROBES {
+            probe_now(&mut s);
+            let p = s.pick();
+            assert_eq!(s.record(p, 40.0).is_some(), i + 1 == UP_PROBES);
+        }
+        assert_eq!(s.cur, 1);
     }
 
     #[test]
-    fn without_a_target_rate_it_never_switches() {
-        let mut s = Scheduler::new(0.0, true);
-        for _ in 0..20 {
-            assert!(s.record(Pick::Full, 500.0).is_none());
+    fn a_slow_run_now_and_then_does_not_switch() {
+        let mut s = Scheduler::new(15.0, 2);
+        for _ in 0..40 {
+            assert!(s.record(RUN, 75.0).is_none());
+            assert!(s.record(RUN, 45.0).is_none());
+            assert!(s.record(RUN, 45.0).is_none());
         }
-        assert!(!s.on_fast);
+        assert_eq!(s.cur, 0);
+    }
+
+    #[test]
+    fn a_takeover_that_does_not_last_backs_the_tries_off() {
+        let mut s = Scheduler::new(15.0, 2);
+        for _ in 0..DOWN_RUNS {
+            run(&mut s, 100.0);
+        }
+        assert_eq!(s.cur, 1);
+        let before = s.wait.first().copied();
+        // up again, and down soon after
+        for _ in 0..UP_PROBES {
+            probe_now(&mut s);
+            let p = s.pick();
+            s.record(p, 40.0);
+        }
+        assert_eq!(s.cur, 0);
+        for _ in 0..2 * DOWN_RUNS {
+            run(&mut s, 100.0);
+        }
+        assert_eq!(s.cur, 1);
+        assert!(s.wait.first().copied() > before);
+    }
+
+    #[test]
+    fn without_a_target_rate_it_keeps_the_best_model() {
+        let mut s = Scheduler::new(0.0, 3);
+        for _ in 0..20 {
+            assert_eq!(s.pick(), RUN);
+            assert!(s.record(RUN, 500.0).is_none());
+        }
+        assert_eq!(s.cur, 0);
+    }
+
+    #[test]
+    fn short_names_of_the_models() {
+        let p = std::path::Path::new;
+        assert_eq!(label(p("m/yolo11s-pose-384x320-fp16.onnx"), "384x320"), "s@384");
+        assert_eq!(label(p("yolo11n-pose-fp16.onnx"), "512x448"), "n@512");
+        assert_eq!(label(p("pose.onnx"), "512x448"), "pose");
     }
 }
