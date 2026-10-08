@@ -13,7 +13,13 @@ path = "src/main.rs"
 name = "kinect-hub-probe"
 path = "src/bin/probe.rs"
 
+# the tracker (persons/) is a library of its own; pose-bench/ is a separate measurement tool
+[workspace]
+members = [".", "persons"]
+exclude = ["pose-bench"]
+
 [dependencies]
+persons = { path = "persons" }
 axum = { version = "0.8", features = ["ws"] }
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
