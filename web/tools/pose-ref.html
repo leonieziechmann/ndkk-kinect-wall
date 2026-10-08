@@ -1,0 +1,95 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Pose-Referenz</title>
+<pre id="out">läuft …</pre>
+<script type="module">
+  // The pose model exactly as the persons worker runs it (PoseModel from lib/persons-pose.js, WebGPU):
+  // times detect() and the bare session.run, and hands back the raw output and the poses of each frame
+  // so that kinect-hub/pose-bench can check its native results against them. Driven by tools/pose-ref.mjs.
+  // ?frames=<name>,... (files <dir>/<name>.bin, 512x424 u8 infrared) &runs=40 &dir=/.cache/pose-native
+  import * as ort from 'onnxruntime-web/webgpu';
+  import { PoseModel } from '/lib/persons-pose.js';
+
+  const q = new URLSearchParams(location.search);
+  const dir = q.get('dir') ?? '/.cache/pose-native';
+  const frames = (q.get('frames') ?? '').split(',').filter(Boolean);
+  const runs = Number(q.get('runs') ?? 40);
+  const W = 512;
+  const H = 424;
+  const IN_W = 512;
+  const IN_H = 448;
+  const out = document.getElementById('out');
+  const sorted = (a) => a.slice().sort((x, y) => x - y);
+  const stats = (a) => ({ med: sorted(a)[a.length >> 1], p90: sorted(a)[Math.floor(0.9 * (a.length - 1))], min: sorted(a)[0] });
+
+  /** The same input as PoseModel.detect builds (letterbox, mirrored back, gray in three channels). */
+  function preprocess(ir, x) {
+    const plane = IN_W * IN_H;
+    x.fill(114 / 255);
+    for (let v = 0; v < H; v++) {
+      const dst = (v + (IN_H - H) / 2) * IN_W;
+      for (let u = 0; u < W; u++) {
+        const g = ir[v * W + W - 1 - u] / 255;
+        x[dst + u] = g;
+        x[plane + dst + u] = g;
+        x[2 * plane + dst + u] = g;
+      }
+    }
+  }
+
+  function base64(f32) {
+    const b = new Uint8Array(f32.buffer, f32.byteOffset, f32.byteLength);
+    let s = '';
+    for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+    return btoa(s);
+  }
+
+  try {
+    const adapter = await navigator.gpu?.requestAdapter();
+    const info = { f16: adapter?.features.has('shader-f16') ?? null, vendor: adapter?.info?.vendor, arch: adapter?.info?.architecture };
+    const t0 = performance.now();
+    const m = await PoseModel.create();
+    await m.detect(new Uint8Array(W * H)); // warm-up as in persons-pose-worker.js
+    const loadMs = performance.now() - t0;
+    const irs = [];
+    for (const name of frames) irs.push(new Uint8Array(await (await fetch(`${dir}/${name}.bin`)).arrayBuffer()));
+
+    const results = [];
+    for (let i = 0; i < frames.length; i++) {
+      const poses = await m.detect(irs[i]);
+      const x = new Float32Array(3 * IN_W * IN_H);
+      preprocess(irs[i], x);
+      const t = (await m.session.run({ [m.inputName]: new ort.Tensor('float32', x, [1, 3, IN_H, IN_W]) }))[m.outputName];
+      results.push({
+        name: frames[i],
+        dims: t.dims,
+        output: base64(t.data),
+        poses: poses.map((p) => ({ score: p.score, box: p.box, kp: Array.from(p.kp) })),
+      });
+    }
+
+    // timing: detect() end to end (what the worker reports as Pose ms), then the bare inference
+    const detect = [];
+    const run = [];
+    const x = new Float32Array(3 * IN_W * IN_H);
+    for (let k = 0; k < runs + 3; k++) {
+      const ir = irs[k % irs.length];
+      const a = performance.now();
+      await m.detect(ir);
+      const b = performance.now();
+      preprocess(ir, x);
+      const c = performance.now();
+      await m.session.run({ [m.inputName]: new ort.Tensor('float32', x, [1, 3, IN_H, IN_W]) });
+      const d = performance.now();
+      if (k >= 3) {
+        detect.push(b - a);
+        run.push(d - c);
+      }
+    }
+    globalThis.__poseRef = { info, provider: m.provider, loadMs: Math.round(loadMs), detect: stats(detect), run: stats(run), detectAll: detect, results };
+    out.textContent = JSON.stringify({ info, provider: m.provider, detect: stats(detect), run: stats(run) }, null, 1);
+  } catch (e) {
+    globalThis.__poseRef = { error: String(e?.stack ?? e) };
+    out.textContent = String(e?.stack ?? e);
+  }
+</script>

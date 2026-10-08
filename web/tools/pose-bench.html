@@ -1,0 +1,138 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Pose-Benchmark</title>
+<pre id="out">läuft …</pre>
+<script type="module">
+  // Times pose models (ONNX) on WebGPU the way lib/persons-pose.js runs them: preprocessing, inference
+  // (with the read-back of the output), postprocessing. Driven by tools/pose-bench.mjs.
+  // ?models=<name>,... (files <dir>/<name>.onnx; input size from the name: n-512x448-fp16) &runs=30 &dir=/.cache/pose-bench
+  import * as ort from 'onnxruntime-web/webgpu';
+  import wasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.asyncify.wasm?url';
+
+  ort.env.wasm.wasmPaths = { wasm: wasmUrl };
+  ort.env.wasm.numThreads = 1;
+  ort.env.logLevel = 'error';
+
+  const q = new URLSearchParams(location.search);
+  const dir = q.get('dir') ?? '/.cache/pose-bench';
+  const models = (q.get('models') ?? '').split(',').filter(Boolean);
+  const runs = Number(q.get('runs') ?? 30);
+  const W = 512;
+  const H = 424;
+  const out = document.getElementById('out');
+  const med = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1];
+  const p90 = (a) => a.slice().sort((x, y) => x - y)[Math.floor(0.9 * (a.length - 1))];
+
+  async function frame() {
+    const img = new Image();
+    img.src = `${dir}/frame.png`;
+    await img.decode();
+    const c = new OffscreenCanvas(W, H);
+    const g = c.getContext('2d');
+    g.drawImage(img, 0, 0);
+    const rgba = g.getImageData(0, 0, W, H).data;
+    const ir = new Uint8Array(W * H);
+    for (let i = 0; i < ir.length; i++) ir[i] = rgba[4 * i];
+    return ir;
+  }
+
+  /** The infrared frame into the model input of inW x inH: scaled (nearest), gray bands above and below. */
+  function preprocess(ir, inW, inH, x) {
+    const s = inW / W;
+    const h = Math.round(H * s);
+    const pad = (inH - h) >> 1;
+    const plane = inW * inH;
+    x.fill(114 / 255);
+    for (let v = 0; v < h; v++) {
+      const sv = Math.min(H - 1, Math.floor(v / s));
+      const dst = (v + pad) * inW;
+      for (let u = 0; u < inW; u++) {
+        const g = ir[sv * W + W - 1 - Math.min(W - 1, Math.floor(u / s))] / 255;
+        x[dst + u] = g;
+        x[plane + dst + u] = g;
+        x[2 * plane + dst + u] = g;
+      }
+    }
+  }
+
+  function postprocess(t) {
+    const data = t.data;
+    const A = t.dims[2];
+    const cands = [];
+    for (let a = 0; a < A; a++) if (data[4 * A + a] >= 0.35) cands.push(a);
+    return cands.length;
+  }
+
+  const adapter = await navigator.gpu?.requestAdapter();
+  const info = { f16: adapter?.features.has('shader-f16') ?? null, vendor: adapter?.info?.vendor, arch: adapter?.info?.architecture, desc: adapter?.info?.description };
+  const ir = await frame();
+  const results = [];
+  for (const spec of models) {
+    // <name>+gc: graph capture (the GPU commands recorded once, replayed), input and output on the GPU
+    const [name, flag] = spec.split('+');
+    const gc = flag === 'gc';
+    const [, w, h] = /(\d+)x(\d+)/.exec(name).map(Number);
+    const A = (w / 8) * (h / 8) + (w / 16) * (h / 16) + (w / 32) * (h / 32);
+    const t0 = performance.now();
+    try {
+      const opts = { executionProviders: ['webgpu'], graphOptimizationLevel: 'all' };
+      if (gc) Object.assign(opts, { enableGraphCapture: true, preferredOutputLocation: 'gpu-buffer' });
+      const session = await ort.InferenceSession.create(`${dir}/${name}.onnx`, opts);
+      const loadMs = performance.now() - t0;
+      const x = new Float32Array(3 * w * h);
+      let feed = null;
+      let fetches = null;
+      let device = null;
+      let inBuf = null;
+      if (gc) {
+        device = await ort.env.webgpu.device;
+        inBuf = device.createBuffer({ size: x.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+        const outBuf = device.createBuffer({ size: 56 * A * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+        const staging = device.createBuffer({ size: 56 * A * 4, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        const download = async () => {
+          const enc = device.createCommandEncoder();
+          enc.copyBufferToBuffer(outBuf, 0, staging, 0, 56 * A * 4);
+          device.queue.submit([enc.finish()]);
+          await staging.mapAsync(GPUMapMode.READ);
+          const data = new Float32Array(staging.getMappedRange().slice(0));
+          staging.unmap();
+          return data;
+        };
+        feed = { [session.inputNames[0]]: ort.Tensor.fromGpuBuffer(inBuf, { dataType: 'float32', dims: [1, 3, h, w] }) };
+        fetches = { [session.outputNames[0]]: ort.Tensor.fromGpuBuffer(outBuf, { dataType: 'float32', dims: [1, 56, A], download }) };
+      }
+      const pre = [];
+      const run = [];
+      const post = [];
+      let found = 0;
+      for (let k = 0; k < runs + 3; k++) {
+        const a = performance.now();
+        preprocess(ir, w, h, x);
+        const b = performance.now();
+        let res;
+        if (gc) {
+          device.queue.writeBuffer(inBuf, 0, x);
+          const t = (await session.run(feed))[session.outputNames[0]];
+          res = { data: await t.getData(true), dims: t.dims };
+        } else {
+          const tensor = new ort.Tensor('float32', x, [1, 3, h, w]);
+          res = (await session.run({ [session.inputNames[0]]: tensor }))[session.outputNames[0]];
+        }
+        const c = performance.now();
+        found = postprocess(res);
+        const d = performance.now();
+        if (k >= 3) {
+          pre.push(b - a);
+          run.push(c - b);
+          post.push(d - c);
+        }
+      }
+      await session.release();
+      results.push({ name: spec, w, h, loadMs: Math.round(loadMs), pre: med(pre), run: med(run), run90: p90(run), post: med(post), found });
+    } catch (e) {
+      results.push({ name: spec, error: String(e?.message ?? e) });
+    }
+    out.textContent = JSON.stringify({ info, results }, null, 1);
+  }
+  globalThis.__bench = { info, results };
+</script>

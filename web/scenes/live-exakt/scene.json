@@ -1,0 +1,5 @@
+{
+  "title": "Live und exakt",
+  "description": "Zeigt, was persons: { live: true } einer Szene gibt: die Skelette sofort (live, farbig) und die exakten derselben Frames, die 100–250 ms später kommen (weiß). Eine erhobene Hand wird live sofort gemeldet (gelber Ring) und gegen die exakten Daten geprüft: grün bestätigt, rot verworfen. Die Statuszeile misst, wie weit live von exakt liegt. Vorlage für Szenen, die sofort reagieren und auf den exakten Daten entscheiden (LiveCheck).",
+  "author": "claude"
+}

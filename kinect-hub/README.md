@@ -22,7 +22,9 @@ cargo build --release                      # im Ordner kinect-hub
 kinect-hub\target\release\kinect-hub.exe   # aus dem Projektordner
 ```
 
-Optionen (`--help`): `--bind 0.0.0.0:8090` (LAN statt nur localhost), `--source synthetic` (generierte Testszene ohne Kinect), `--source replay DATEI` (Aufnahme in Schleife abspielen, s. u.), `--pipeline cl|cpu`, `--smoothing 0.4`, `--max-clients 64`, `--allow-origin URL`, `--web-dir` (z. B. `web/dist` für gebaute Szenen), `--worker`. Logging über `RUST_LOG=debug`.
+Optionen (`--help`): `--bind 0.0.0.0:8090` (LAN statt nur localhost), `--source synthetic` (generierte Testszene ohne Kinect), `--source replay DATEI` (Aufnahme in Schleife abspielen, s. u.), `--pipeline fast|cl` (Tiefen-Dekodierung, s. u.), `--persons on|off`, `--persons-delay 12`, `--smoothing 0.4`, `--max-clients 64`, `--allow-origin URL`, `--web-dir` (z. B. `web/dist` für gebaute Szenen), `--worker`, `--pose dml|cpu|off`, `--pose-hz 15`, `--pose-models A,B,…`, `--onnxruntime` (s. u. „Posen“). Logging über `RUST_LOG=debug`.
+
+Für die Posen einmal je Checkout `powershell -NoProfile -ExecutionPolicy Bypass -File kinect-hub\setup-onnxruntime.ps1` (holt `onnxruntime.dll`, s. u.). Ohne läuft der Hub wie bisher, nur ohne Posen.
 
 Der Worker `fn2/bin/fn2_capture.exe` wird mit `sh fn2/build.sh` gebaut. Er braucht den libusbK-Treiber auf „Xbox NUI Sensor (Interface 0)“.
 
@@ -36,6 +38,7 @@ Der Worker `fn2/bin/fn2_capture.exe` wird mit `sh fn2/build.sh` gebaut. Er brauc
 | `GET /api/params` | Intrinsik und Verzeichnung der Tiefenkamera (aus der Kinect gelesen) |
 | `GET /api/lut` | Entzerrungstabelle: f32 x,y je Pixel |
 | `GET /api/frame/{depth,depth_raw,ir,points,meta}` | neuester Frame binär; `?format=png` für depth (16 Bit, mm) und ir |
+| `GET /api/poses` | neueste Posen (JSON wie der Stream `poses`). Eine Anfrage hält das Modell 5 s am Laufen, die erste bekommt eventuell `poses: null` |
 | `GET /ws` | WebSocket-Stream |
 | `GET /api/devservers` | Register der Szenen-Dev-Server (Vite, einer je Worktree) mit ihren Szenen |
 | `POST /api/devservers` | Dev-Server meldet sich an: `{url: "http://127.0.0.1:<port>", label, branch, worktree, hub, pid, scenes: [...]}`. Alle paar Sekunden wiederholen, Einträge verfallen nach 15 s. Erledigt das Vite-Plugin in `web/tools/`. |
@@ -61,6 +64,7 @@ Nach dem Verbinden schickt der Hub `{"type":"hello",…}` mit allen Streams und 
 | `lut` | `{"type":"params",…}` + binär kind 16: f32 x,y je Pixel; kommt beim Abo und bei jedem Sensorstart |
 | `meta` | `{"type":"frame",…}` je Frame: seq, Zeitstempel, Statistik (min/max/Median/Schwerpunkt) |
 | `status` | `{"type":"status",…}` einmal pro Sekunde (standardmäßig abonniert) |
+| `poses` | `{"type":"poses", seq, capture_time_us, publish_time_us, model, ms, poses: [{score, box: [u0,v0,u1,v1], kp: 17 × (u, v, Konfidenz)}]}` in der Pose-Rate; Pixel wie die Frames (gespiegelt), COCO-17. Das Modell läuft nur, solange jemand abonniert |
 
 **Binär-Header** (32 Byte, little-endian), danach die Nutzdaten:
 
@@ -72,6 +76,41 @@ u32 seq | u16 width (512) | u16 height (424) | u64 capture_time_us | u64 publish
 Die Zeiten sind µs seit 1970 auf der Uhr des Hub-Rechners. `capture_time_us` ist der Moment, in dem der fertige Tiefenframe aus libfreenect2 kam.
 
 **Koordinaten:** Kamerakoordinaten der Kinect: x nach rechts, y nach unten, z nach vorn, Einheit mm. 3D-Punkt eines Pixels: `(lut.x * z, lut.y * z, z)`. Die LUT enthält die Linsenentzerrung, die der Hub einmal pro Sensorstart berechnet. Das Kinect-Bild kommt gespiegelt; für eine echte 3D-Ansicht x negieren (machen die Szenen standardmäßig, Taste `m`).
+
+## Tiefen-Dekodierung
+
+Der Worker dekodiert die Rohdaten der Kinect standardmäßig selbst auf der CPU (`--pipeline fast`, `fn2/fast_depth.cpp`): dasselbe Verfahren wie libfreenect2s OpenCL-Pipeline (drei Frequenzen, bilateraler Filter, Phasen-Unwrapping, Kantenfilter), aber mit vorberechneter Trigonometrie, AVX2 und vier Threads. Die GPU bleibt damit ganz für Szenen und Pose-Modell.
+
+- **Qualität:** auf 233 aufgenommenen Rohpaketen gegen OpenCL im Median 0,00 mm Abweichung, 0,01 % der Pixel mehr als 1 mm, je Frame 2 Pixel weniger und 15 mehr gültig als OpenCL (`fn2/depth_bench`).
+- **Zeit:** 5,7 ms je Frame (4 Threads), 13,5 ms auf einem; OpenCL 7–12 ms GPU-Zeit.
+- **Unter einer Szene, die die GPU sättigt** (live gemessen, 3840×2160): Sensor 29,8 statt 23–25 fps mit OpenCL; die Szene verliert dabei 4 fps (56 statt 60), weil CPU und iGPU sich das Strombudget teilen, und der Worker braucht 1,8 statt 0,2 CPU-Kerne. Ohne GPU-Last 0,7 Kerne.
+- Die Helfer-Threads laufen mit niedriger Priorität und geben der Szene den Vortritt, wenn die CPU knapp ist (`FN2_FAST_THREADS`, `FN2_FAST_PRIORITY=normal` im Environment des Hubs ändern das).
+- Ohne AVX2/FMA nimmt der Worker OpenCL. `--pipeline cl` erzwingt OpenCL; ein älterer Worker kennt `fast` nicht und nimmt dann ebenfalls OpenCL.
+- Neue Rohdaten zum Vergleichen: `fn2/bin/fn2_rawdump.exe --out recordings/raw-NAME.k2raw --seconds 8` (braucht die Kinect, also Hub kurz stoppen), dann `fn2/bin/depth_bench.exe recordings/raw-NAME.k2raw` (vergleicht mit libfreenect2 OpenCL und misst die Zeit, ohne Kinect).
+
+## Posen
+
+Der Hub erkennt die Körperhaltung der Menschen vor der Kinect selbst: YOLO11n-pose (`web/lib/models/`) auf dem Infrarotbild, mit ONNX Runtime auf der GPU über DirectML (`src/pose.rs`, `src/yolo.rs`). Das Ergebnis ist dasselbe wie im Browser (`web/lib/persons-pose.js`), es kostet aber nur etwa ein Drittel der GPU-Zeit und wird einmal für alle Clients gerechnet. Messungen und Vergleich: `pose-bench/README.md`.
+
+- **Eigener Thread:** Er nimmt das neueste Bild, sobald die nächste Pose fällig ist (`--pose-hz`, Standard 15). Die Frames warten nie auf ihn. Das Modell rechnet nur, solange jemand `poses` abonniert hat oder `/api/poses` fragt.
+- **Mehrere Modelle, das beste, das die Rate schafft:** Der Hub lädt alle Modelle von `--pose-models A,B,…` (das beste zuerst) und rechnet mit dem besten, das `--pose-hz` hält. Ohne die Option nimmt er aus `web/lib/models/`, was davon da ist: `yolo11s-pose-512x448-fp16.onnx`, `yolo11s-pose-384x320-fp16.onnx`, `yolo11n-pose-fp16.onnx` (nur ohne das s-384, das so viel kostet und besser ist) und `yolo11n-pose-384-fp16.onnx`.
+  - Braucht das laufende Modell im Mittel länger als 95 % der Periode (frühestens nach 8 Läufen), übernimmt das nächstkleinere.
+  - Alle 3 s probiert er das nächstbessere (die Pose zählt mit); zweimal hintereinander unter 85 % der Periode, und es übernimmt.
+  - Fehlgeschlagene Versuche und Wechsel nach oben, die keine 20 s halten, verlängern die Pause bis zu dem Modell (bis 30 s); nach einer Minute auf einem Modell gilt wieder 3 s.
+  - Jede Pose nennt ihr `model` (`s@384` = YOLO11s mit 384 px breitem Eingang). `/api/status` → `pose.models` zeigt je Modell die Zeit nach dem Laden und die ms je Lauf zuletzt.
+  - Gemessen (`pose-bench/README.md`): GPU frei s@512 46–55 ms, s@384 27–34, n@384 12–14; unter hoher GPU-Last s@512 145–170 ms, s@384 83–92, n@384 33–37. `--pose-model` / `--pose-model-fast` gehen weiterhin (das beste und das nächste Modell).
+- **ONNX Runtime** wird zur Laufzeit geladen: `onnxruntime.dll` neben der exe, sonst `kinect-hub/onnxruntime/` (füllt `setup-onnxruntime.ps1`: NuGet-Paket Microsoft.ML.OnnxRuntime.DirectML 1.24.4, die neueste Version mit DirectML; prüft Prüfsumme und Microsoft-Signatur; nicht im Git). `DirectML.dll` bringt Windows mit.
+- **Fehler:** Fehlen DLL oder Modell oder scheitert DirectML, läuft der Hub ohne Posen weiter. `/api/status` → `pose` sagt warum (`state`: `off`, `loading`, `idle`, `running`, `error`), und der Hub versucht es alle 10 s neu. Eine DLL oder ein Modell, das später dazukommt, wird also ohne Neustart übernommen. Abstürze im Pose-Thread werden abgefangen und gezählt.
+- **Status** (`pose` in `/api/status`): Gerät, geladene Modelle mit ihrer Zeit nach dem Laden, aktives Modell, Ziel- und erreichte Rate, ms je Lauf, Zahl der Wechsel und der Grund des letzten.
+
+## Personen
+
+Der Hub verfolgt die Personen selbst (`src/tracking.rs` mit der Bibliothek `persons/`, dem Tracker aus `web/lib/persons-core.js` in Rust) und schickt das Ergebnis an alle Clients; Szenen mit `streams: ['persons']` nutzen es automatisch (`web/lib/persons.js`), ältere Hubs ohne diese Streams fallen auf den Tracker im Browser zurück.
+
+- **Streams:** `persons_live` (jedes Frame sofort) und `persons` (jedes Frame, sobald die Pose eines späteren Frames da ist; Skelette dazwischen interpoliert, höchstens `--persons-delay` Frames, Standard 12). Je Ergebnis JSON (`type`, `seq`, `capture_time_us`, `persons` mit den Feldern aus `web/PERSONS.md`, `floor`, `ms`, `pose_ms`) und danach die Labels als binäre Nachricht (kind 5 bzw. 6, Lauflängen: je Lauf u8 Slot, u16 Länge; ~19 KB statt 217 KB).
+- Der Tracker übergibt die Frames selbst an das Pose-Modell (jede Pose wird mit den Labels ihres Frames verglichen) und läuft nur, solange jemand abonniert. `GET /api/persons` liefert das neueste JSON und hält ihn 5 s am Laufen.
+- **Gleich gut wie im Browser:** Der Backtest (`persons/examples/backtest.rs`, wie `recordings/backtest/backtest.mjs`) gibt auf allen vier Backtest-Aufnahmen dieselben Kennzahlen (Keypoint-Fehler, Flackern, IDs, Verzögerung). 2–5 ms je Frame statt 12–30 ms in Node; optischer Fluss mit AVX2.
+- Gemessen (Replay mit bis zu 4 Personen, `person-skeleton`): 14,5 Posen/s statt 4,7 im Browser, exakte Ausgabe nach 150 statt 415 ms, weniger GPU-Last. Status in `/api/status` → `tracking`. Ein Absturz im Tracker wird abgefangen, er beginnt neu.
 
 ## Eigene Clients
 
