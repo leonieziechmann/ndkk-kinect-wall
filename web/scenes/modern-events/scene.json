@@ -1,0 +1,6 @@
+{
+  "title": "Modern Events: LED-Wand mieten",
+  "description": "Werbung für den Sponsor der Wand: oben das Modern-Events-Logo als LED-Panel aus Punkten, darunter „Diese LED-Wand können Sie mieten.“ mit wechselnder Unterzeile, an der Seite ein QR-Code zu modern-events.de/led-wand-mieten auf einer gelben Karte. Wer vor der Wand steht, erscheint als Punkt-Silhouette und leuchtet im Logo auf, die Schrift bleibt lesbar. Bewegung im Logo wirbelt die Punkte auf, sie federn zurück, sobald man stillsteht. Wer ankommt, schickt eine Welle durchs Logo; ohne Publikum laufen Wellen und ein Glanz von selbst. Steht jemand nah am QR-Code, leuchtet sein Rahmen. Texte, Link, QR-Seite und Kartenhelligkeit sind Parameter (pro Show-Eintrag in der Steuerzentrale).",
+  "author": "claude/led-wand-modern-events",
+  "created": "2026-10-08"
+}
