@@ -28,7 +28,8 @@ const MAX_SPRITES = 8192;
 const slotColor = (s) => (s ? PALETTE[(s - 1) % PALETTE.length] : [1, 1, 1]);
 const easeOutBack = (u) => 1 + 2.2 * (u - 1) ** 3 + 1.2 * (u - 1) ** 2;
 
-let S = null;
+// state per instance (ctx): the output window may run this scene twice at once, e.g. in a crossfade
+const STATES = new WeakMap();
 
 export default {
   wall: true, // the canvas is the LED image; wall size, Kinect, zone and mapping: control center
@@ -97,7 +98,7 @@ export default {
     ctx.on(window, 'keydown', unlock);
     unlock(); // works right away in a kiosk browser that allows autoplay
 
-    S = {
+    const S = {
       device,
       context,
       people,
@@ -175,10 +176,13 @@ export default {
       },
     };
     ctx.track(S);
-    globalThis.__blasen = { game: S.game, get grid() { return S?.grid; }, params: ctx.params }; // for debugging and tests
+    STATES.set(ctx, S);
+    globalThis.__blasen = { game: S.game, get grid() { return S.grid; }, params: ctx.params }; // for debugging and tests
   },
 
   frame(ctx) {
+    const S = STATES.get(ctx);
+    if (!S) return;
     const { device, game } = S;
     const p = ctx.params;
     const wall = ctx.wall;
@@ -295,7 +299,7 @@ export default {
     ctx.status = `${people.length} Person(en) · ${game.bubbles.length} Blasen · ${game.score} Punkte (Rekord ${game.best}) · ${floor}${snd}`;
   },
 
-  dispose() {
-    S = null;
+  dispose(ctx) {
+    STATES.delete(ctx);
   },
 };
