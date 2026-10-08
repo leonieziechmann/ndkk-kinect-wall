@@ -19,9 +19,10 @@ export default {
 
 ## How it works (enough to use it well)
 
-- A pose model (YOLO11n-pose on the infrared image, WebGPU, its own Web Worker) finds the skeletons about 10–15 times a second.
+- **Where it runs:** the hub tracks everyone itself and sends the results to every page (streams `persons` / `persons_live`; the pose model natively with DirectML, the tracker in Rust: kinect-hub/README.md, "Personen"). A page with `streams: ['persons']` takes them automatically (depth only; the infrared image only when the tracking runs in the page). A page hidden for 3 s lets go of the streams, so the hub tracks only for pages someone sees. With an older hub (or one without its pose model) the page runs the same tracker in two Web Workers, as described below. `?persons=local` forces that for comparisons.
+- A pose model (YOLO11n-pose on the infrared image) finds the skeletons: in the hub about 15 times a second (`--pose-hz`); in the browser (WebGPU, its own Web Worker) as often as it can.
 - Every depth frame is cut out on its own (a second worker, 30 fps). The persons' pixels of the last frame grow into the new frame without crossing depth jumps. A learned background (the floor, furniture, walls) is left out. The skeletons only tell which pixels belong to whom. A fast arm is never cut off.
-- The skeleton of every frame is exact. Each frame waits for the pose of a later frame, and its keypoints are interpolated between the pose before and the pose after (the **delayed output**, about 150–250 ms). The depth of each joint is checked against the limb lengths and smoothed. The results are played out evenly at 30 fps. Meanwhile `ctx.kinect.depth`, `ir` and their GPU copies show the *same* frame, so everything you draw fits together.
+- The skeleton of every frame is exact. Each frame waits for the pose of a later frame, and its keypoints are interpolated between the pose before and the pose after (the **delayed output**, about 150–250 ms). The depth of the arms is measured on the person's own pixels; that of the other joints is checked against the limb lengths and smoothed. The results are played out evenly at 30 fps. Meanwhile `ctx.kinect.depth`, `ir` and their GPU copies show the *same* frame, so everything you draw fits together.
 
 ## Modes and options
 
@@ -35,7 +36,8 @@ persons: (p) => ({ mode: p.style === 'Strichmännchen' ? 'skeleton' : 'full' }),
 | option | default | |
 |---|---|---|
 | `mode` | `'full'` | `'full'`: masks and skeletons. `'skeleton'`: skeletons only, no masks. Much less work (1–2 ms instead of 6–30 ms per frame), and the skeletons are just as exact. The mask textures and buffers stay empty, and `pixels`/`area` are 0. Person ids are a bit less stable when people cross each other. |
-| `delay` | `12` | Frames the output may wait for a later pose (see above). `0` is **live**: the lowest latency. The masks are the same, but the skeletons follow the optical flow from the last pose, so they are less exact on fast hands and feet. |
+| `delay` | `12` | Frames the output may wait for a later pose (see above). `0` is **live**: the lowest latency. The masks are the same, but the skeletons follow the optical flow from the last pose, so they are less exact on fast hands and feet. The arms come from the mask of every frame once a pose has confirmed them (an arm reaching out: its far end is the hand), so they keep up with fast arms. Under GPU load (few poses a second) live arms lag more. |
+| `live` | `false` | `true` (with `delay` > 0): **live and exact together**. `ctx.persons` is live (as with `delay: 0`), and the exact skeletons of the same frames follow as `ctx.persons.exact`. See "Live and exact" below. |
 | `maxPersons` | `16` | At most this many persons get a slot. |
 | `maxDepth` | `4500` | mm: farther pixels are never a person. |
 | `minScore` | `0.45` | Pose confidence needed for a new person. |
@@ -96,9 +98,48 @@ An `Array` of the visible persons, sorted by slot, plus:
 22 center     23 ground
 ```
 
-The points 0–16 come from the pose model (COCO). The rest are derived: neck and pelvis are between the shoulders or hips, head is the center of the face points, and the hands lie beyond the wrists along the forearms. `left`/`right` are the person's own sides. `BONES` (pairs of indices) draws a clean stick figure. `SKELETON` has the 18 COCO pairs with the face.
+The points 0–16 come from the pose model (COCO). The rest are derived: neck and pelvis are between the shoulders or hips, head is the center of the face points, and the hands lie beyond the wrists along the forearms (live: where the arm in the mask ends). `left`/`right` are the person's own sides. `BONES` (pairs of indices) draws a clean stick figure. `SKELETON` has the 18 COCO pairs with the face.
 
 From `/lib/persons.js`: `POINTS`, `POINT` (name → index), `BONES`, `SKELETON`, `JOINTS`, `PERSON_COLORS`, `personColor(slot)`, `toWorld(cameraMm, xSign)`, `roomFrame(floor, xSign)`, `MAX_PERSONS`.
+
+## Live and exact
+
+Simple things should react at once; scores and decisions should be right. `persons: { live: true }` gives a scene both:
+
+- `ctx.persons` is **live**: the newest frame, about 10 ms after the sensor (hub), with the live masks. `ctx.kinect.depth`, `ir` and the GPU copies show the newest frames too.
+- The **exact** skeletons of every frame follow when the pose of a later frame is in (100–250 ms later, often several frames at once). They are skeletons only: the masks of a frame are the same in both.
+
+| on `ctx.persons` | |
+|---|---|
+| `.mode` | `'both'` (live + exact), `'exact'` (the delayed output, the default) or `'live'` (`delay: 0`) |
+| `.exact` | the newest exact frame as a view like `ctx.persons` (Person objects, `.seq`, `.byId()`, …), `null` until the first. In `'exact'` mode it is `ctx.persons` itself, in `'live'` mode `null`. |
+| `.exactUpdates` | the exact frames that came in since the last animation frame, oldest first (usually 0–8). Look at all of them when you check events. |
+| `.exactAt(seq)`, `.liveAt(seq)` | the exact view and the live view of frame `seq` (the last 3 s), or `null`. Compare both to see what live got wrong. |
+
+`ctx.kinect.personsExact` is the newest exact result raw (as `ctx.kinect.persons`, without `labels`, `depth`, `indices`).
+
+**Decide on the exact data: `LiveCheck`.** React on the live data at once and record a claim; the exact frames around it confirm or overrule it:
+
+```js
+import { LiveCheck } from '/lib/persons.js';
+
+const pops = new LiveCheck((exact, c) => touches(exact.byId(c.id)?.joints.rightHand, c.bubble), { before: 2, after: 3 });
+
+frame(ctx) {
+  for (const p of ctx.persons) if (touches(p.joints.rightHand, bubble)) {
+    pop(bubble);                                        // at once, on the live data
+    pops.add(ctx.persons, { id: p.id, bubble });       // the claim: about this live frame
+  }
+  for (const c of pops.update(ctx.persons)) {          // every frame: the claims settled now
+    if (c.ok === false) unpop(c.bubble);               // the exact data say no
+    else if (c.ok) score++;                            // confirmed (c.exact: the exact frame that did)
+  }                                                     // c.ok === null: no exact data (live only, or none in time)
+}
+```
+
+`test(exact, claim)` sees the exact frames from `claim.seq - before` to `claim.seq + after` (live skeletons can be a frame or two early or late on fast moves). A claim is confirmed by the first frame that passes and overruled once all of them are in without one, typically 150–300 ms after it was made. The same code works in every mode: with the delayed output the claims settle on the frames shown, and with `delay: 0` they settle at once with `ok: null`.
+
+Measured live against exact, and how often a live decision holds: scene `live-exakt` (its status line). Live skeletons follow the optical flow between poses, so they are off most on fast hands and feet; the masks are the same.
 
 ## Raw data: ctx.kinect.persons
 
@@ -210,6 +251,7 @@ The figures in the table are mask cost per frame and output delay.
 | `full`, 4–5 persons | 10–30 ms | ~170–270 ms |
 | `skeleton` | 1–5 ms | ~150 ms |
 | `delay: 0` | the same | ~40–60 ms |
+| `live: true` | the same | live as `delay: 0`, exact as the default |
 
 - The pose model takes 60–110 ms per run on this GPU, in a worker of its own.
 - The tracking work runs in workers, so `frame()` is not affected. The GPU is shared, though: the pose model, the Kinect's depth decoding and your scene. Keep scenes light (the templates render at 60 fps next to it).
@@ -243,4 +285,5 @@ Allow 8–12 s: the pose model loads and warms up first (about 5 s).
 - **Very close people** (under about 0.7 m) have little depth, so their masks have holes.
 - **A dress held out** at arm's length can be found as a second person by the pose model.
 - **Loose clothes** and things a person holds belong to the person as long as they move. Something left lying still for 8 s outside the person's body parts becomes background.
-- **Skeleton quality:** keypoints are exact to about 1–2 px (median). Depth is the weak spot of thin limbs, so wrists and ankles are kept at their learned bone lengths and smoothed. For effects that need raw values, use `p.camera`.
+- **Skeleton quality:** keypoints are exact to about 1–2 px (median). The depth of elbows, wrists and hands is measured on the person's pixels around them (delayed: about 2 cm median, live: about 5 cm on fast arms). Knees and ankles are kept at their learned bone lengths and smoothed. For effects that need raw values, use `p.camera`.
+- **Smoothing costs lag on fast arms:** the One-Euro filter of `p.joints` is steady when slow, but on jumping jacks it puts the hands about 5 cm (median) behind the raw `p.camera` points. A scene that needs every fast swing can read `p.camera` and smooth it itself.

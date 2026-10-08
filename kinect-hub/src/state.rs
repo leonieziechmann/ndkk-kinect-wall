@@ -12,6 +12,9 @@ use tokio::sync::{Semaphore, watch};
 
 use crate::config::Config;
 use crate::devservers::DevServers;
+use crate::pose::{PoseSet, PoseState};
+use crate::render::RenderReports;
+use crate::tracking::{PersonsSet, TrackingState};
 use crate::protocol::{HEIGHT, Stream, WIDTH};
 
 /// Wall-clock time in microseconds since 1970 (same clock as the worker's timestamps).
@@ -135,7 +138,7 @@ impl FrameSet {
             Stream::DepthRaw => Some(&self.depth_raw),
             Stream::Ir => self.ir.as_ref(),
             Stream::Points => self.points.as_ref(),
-            Stream::Lut | Stream::Meta | Stream::Status => None,
+            Stream::Lut | Stream::Meta | Stream::Status | Stream::Poses | Stream::Persons | Stream::PersonsLive => None,
         }
     }
 }
@@ -223,11 +226,22 @@ pub struct Hub {
     stop: AtomicBool,
     /// Scene dev servers (one per worktree) that announced themselves; see devservers.rs.
     pub devservers: DevServers,
+    /// Newest poses of the pose model (pose.rs), latest-only like the frames.
+    pub poses: watch::Sender<Option<Arc<PoseSet>>>,
+    pub pose: PoseState,
+    /// Newest results of the person tracker (tracking.rs): delayed and at once.
+    pub persons: watch::Sender<Option<Arc<PersonsSet>>>,
+    pub persons_live: watch::Sender<Option<Arc<PersonsSet>>>,
+    pub tracking: TrackingState,
+    /// What the pages that render scenes report (render.rs).
+    pub render: RenderReports,
 }
 
 impl Hub {
     pub fn new(cfg: Arc<Config>) -> Arc<Hub> {
         let max_clients = cfg.max_clients;
+        let pose = PoseState::new(cfg.pose_hz, cfg.pose_idle_hz, cfg.pose);
+        let tracking = TrackingState::new(cfg.persons, cfg.persons_delay);
         Arc::new(Hub {
             cfg,
             frames: watch::Sender::new(None),
@@ -247,6 +261,12 @@ impl Hub {
             started: Instant::now(),
             stop: AtomicBool::new(false),
             devservers: DevServers::default(),
+            poses: watch::Sender::new(None),
+            pose,
+            persons: watch::Sender::new(None),
+            persons_live: watch::Sender::new(None),
+            tracking,
+            render: RenderReports::default(),
         })
     }
 
@@ -333,6 +353,9 @@ impl Hub {
             "clients": self.clients.load(Ordering::Relaxed),
             "max_clients": self.cfg.max_clients,
             "dev_servers": self.devservers.count(),
+            "pose": self.pose.status_json(),
+            "tracking": self.tracking.status_json(),
+            "render": self.render.status_json(),
             "subscribers": subscribers,
             "sent": {
                 "messages": self.messages_sent.load(Ordering::Relaxed),

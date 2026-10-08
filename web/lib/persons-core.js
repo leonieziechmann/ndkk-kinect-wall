@@ -22,9 +22,12 @@
 // (keypoints on the background) does not. Each frame follows the keypoints from the newest keyframe
 // with the optical flow on the infrared image (persons-flow.js) and lifts them to 3D with its own
 // depth, never onto someone else's pixels nor far in front of where the person just was (hidden
-// behind someone); a joint it cannot place keeps its place, moved with the person. finalize() makes
-// the skeletons of a frame exact once the pose of a later frame is in: interpolated between the
-// keyframes before and after it (delayed output, see persons-worker.js).
+// behind someone); a joint it cannot place keeps its place, moved with the person. The flow often
+// loses a fast arm, so the arms of every frame come from its mask once segmented (_arms): the
+// person's pixels outside its trunk that connect to a shoulder, their far end the hand. finalize()
+// makes the skeletons of a frame exact once the pose of a later frame is in: interpolated between
+// the keyframes before and after it (delayed output, see persons-worker.js), the arms' depth
+// measured on the person's pixels of that frame.
 //
 // Coordinates: Kinect camera frame, x right, y down, z forward. Depth and points in mm, the floor
 // plane in meters: n·p + d = height above the floor (n points up, d = height of the sensor).
@@ -66,6 +69,8 @@ const PARTS = [
   [11, 13, 0.11], [13, 15, 0.1], [15, 15, 0.12], [12, 14, 0.11], [14, 16, 0.1], [16, 16, 0.12],
 ];
 const NP = PARTS.length;
+// the body parts that are no arm, the trunk first (an arm is what lies outside them)
+const CORE_PARTS = [3, 4, 5, 6, 2, 1, 0, 13, 14, 15, 16, 17, 18];
 // per capsule: ax, ay, az, bx, by, bz (mm), radius², reach radius², valid
 const CAP = 9;
 // bones whose middle is sampled to see whose pixels a pose lies on
@@ -77,6 +82,20 @@ const HIDDEN = 800; // mm: a keypoint this far in front of the person's joints o
 // limb bones (parent, child) and their typical length (mm, joint center to joint center): a thin
 // wrist or ankle whose depth does not fit its bone is put on its ray at the bone's length
 const LIMBS = [[5, 7, 290], [7, 9, 250], [6, 8, 290], [8, 10, 250], [11, 13, 430], [13, 15, 420], [12, 14, 430], [14, 16, 420]];
+const LIMB_LENGTHS = Float32Array.from(LIMBS, (l) => l[2]);
+// arms (elbow, wrist, hand): their depth is measured on the person's own pixels (a window of
+// ARM_WINDOW pixels around them), not set from the bone lengths
+const ARM_WINDOW = 5;
+// mm from the far end of an arm in the mask (the fingertips) to the wrist and to the hand point
+const WRIST_TIP = 140;
+const HAND_TIP = 50;
+const HAND_INSET = 30; // mm: the hand point lies this far behind the surface it is seen on
+const ARM_TRUST = 120; // mm: a mask's arm this near the pose's wrist (same frame) is right
+const ARM_JUMP = 300; // mm from one frame to the next: a mask's arm that jumps is not trusted
+const KEEP_ARMS = 40; // frames the mask's arms are remembered for the poses that come later
+const ARM_NEAR = 900; // mm: nearer persons keep the arms of the flow
+// keypoints the optical flow follows with lower demands (elbows, wrists: little texture, fast)
+const RELAX_ARMS = Uint8Array.from({ length: 17 }, (_, k) => (k >= 7 && k <= 10 ? 1 : 0));
 const BEHIND = 70; // mm: how far behind its bone a pixel of a body may lie (the far rim of a limb)
 // learned background "nothing measured here": beyond the sensor's range, a window, black velvet.
 // Anything measured there is in front of it.
@@ -224,7 +243,7 @@ export class PersonTracker {
     this.bgCount = new Uint8Array(N); // frames it has been seen
     this.nearPerson = new Uint8Array(N); // 1 = close to a person: unknown background is learned slowly
     this.uidIndex = new Int8Array(32768).fill(-1);
-    this.window = new Float32Array(81);
+    this.window = new Float32Array(169);
     this.jScratch = new Float32Array(NJ * 4);
     this.uvScratch = new Float32Array(NJ * 3);
     this.capScratch = new Float64Array(NP * CAP);
@@ -232,7 +251,7 @@ export class PersonTracker {
     this.ptsScratch = new Float32Array(34);
     this.useScratch = new Uint8Array(17);
     this.lostScratch = new Uint8Array(17);
-    this.flow = new FlowTracker(W, H, { history: 24 });
+    this.flow = new FlowTracker(W, H, { history: 24, relaxTexture: 10, relaxError: 2 });
     this.lastSeq = null;
     this.tracks = [];
     this.uids = 0;
@@ -490,6 +509,16 @@ export class PersonTracker {
     t.keys.push({ seq, kp: Float32Array.from(kp) });
     t.keys.sort((a, b) => a.seq - b.seq);
     t.lifted = true;
+    // the arms the mask had in that frame (_arms): where the pose has them? Then they are used.
+    const h = t.armHist?.find((a) => a.seq === seq);
+    if (!h) return;
+    for (let s = 0; s < 2; s++) {
+      const w = h.w[s];
+      const k = 9 + s;
+      if (!w || kp[3 * k + 2] < this.options.minKeypoint) continue;
+      const tol = Math.max(8, (ARM_TRUST * 370) / w[2]);
+      t.armTrust[s] = Math.hypot(w[0] - kp[3 * k], w[1] - kp[3 * k + 1]) < tol ? 1 : 0;
+    }
   }
 
   /**
@@ -531,7 +560,9 @@ export class PersonTracker {
       pts[2 * k + 1] = kp[3 * k + 1];
       use[k] = kp[3 * k + 2] >= mk ? 1 : 0;
     }
-    if (this.flow.track(t.kpSeq, seq, pts, 17, use, t.lost)) {
+    // a visible person's arms are followed with lower demands; a hidden person's points get lost
+    // (they would follow the background)
+    if (this.flow.track(t.kpSeq, seq, pts, 17, use, t.lost, true, t.pixels ? RELAX_ARMS : null)) {
       for (let k = 0; k < 17; k++) {
         kp[3 * k] = pts[2 * k];
         kp[3 * k + 1] = pts[2 * k + 1];
@@ -549,13 +580,12 @@ export class PersonTracker {
   // ---------- 2. skeleton in 3D ----------
 
   /**
-   * Depth at a keypoint: the near cluster of a small window (the person, not what is behind). With
-   * `uidMap`, only the pixels of person `uid` count if the window has any, and never the pixels of
-   * someone else (the person in front of it).
+   * Depth at a keypoint: the near cluster of a small window (radius r; the person, not what is
+   * behind). With `uidMap`, only the pixels of person `uid` count if the window has any (strict:
+   * only they), and never the pixels of someone else (the person in front of it).
    */
-  _depthNear(depth, u, v, uidMap = null, uid = 0) {
+  _depthNear(depth, u, v, uidMap = null, uid = 0, r = 3, strict = false) {
     const { minDepth, maxDepth } = this.options;
-    const r = 3;
     const w = this.window;
     let n = 0;
     let lo = Infinity;
@@ -563,7 +593,7 @@ export class PersonTracker {
     const u1 = Math.min(W - 1, Math.round(u) + r);
     const v0 = Math.max(0, Math.round(v) - r);
     const v1 = Math.min(H - 1, Math.round(v) + r);
-    for (let pass = uidMap ? 0 : 1; pass < 2 && n < 3; pass++) {
+    for (let pass = uidMap ? 0 : 1; pass < (strict ? 1 : 2) && n < 3; pass++) {
       n = 0;
       lo = Infinity;
       for (let y = v0; y <= v1; y++) {
@@ -589,9 +619,13 @@ export class PersonTracker {
    * silhouette must not take the depth of the background behind it). refZ: median depth of its
    * joints a moment ago (0 = unknown). steady: { prev, z, n } (prev: the joints of the last frame)
    * damps implausible depth jumps (the background next to a thin wrist, motion blur): such a
-   * joint keeps its depth along its new ray unless the new depth holds for three frames.
+   * joint keeps its depth along its new ray unless the new depth holds for three frames. measured:
+   * uidMap are the labels of this very frame; the arms are then measured on the person's own pixels
+   * only, without that damping and without the bone lengths: thin, fast and often in front of the
+   * body, their depth is right where the keypoint is, and the bone lengths would move a right depth
+   * to a wrong one. (The skeleton made at once gets its arms from the mask in _arms.)
    */
-  _lift(kp, depth, uidMap, uid, seen, J, UV, refZ = 0, steady = null) {
+  _lift(kp, depth, uidMap, uid, seen, J, UV, refZ = 0, steady = null, measured = false) {
     const o = this.options;
     const rays = this.rays;
     J.fill(0);
@@ -607,7 +641,9 @@ export class PersonTracker {
       // hidden behind someone else (that person owns the pixel): its depth is not ours
       const owner = uidMap[Math.round(v) * W + Math.round(u)];
       if (owner && owner !== uid) continue;
-      const d = this._depthNear(depth, u, v, seen ? uidMap : null, uid);
+      const arm = measured && k >= 7 && k <= 10;
+      let d = arm ? this._depthNear(depth, u, v, uidMap, uid, ARM_WINDOW, true) : this._depthNear(depth, u, v, seen ? uidMap : null, uid);
+      if (!d && arm) d = this._depthNear(depth, u, v, uidMap, uid, 8, true);
       if (!d) continue;
       // far in front of where the person was a moment ago: something (someone) in front of it
       if (refZ && d + INSET[k] * 1000 < refZ - HIDDEN) continue;
@@ -632,7 +668,7 @@ export class PersonTracker {
       // the joint center lies a few cm behind the surface the keypoint is seen on
       const i = Math.round(UV[3 * k + 1]) * W + Math.round(UV[3 * k]);
       let z = J[4 * k + 2] + INSET[k] * 1000;
-      if (steady?.prev && steady.prev[4 * k + 3]) {
+      if (steady?.prev && steady.prev[4 * k + 3] && !(measured && k >= 7 && k <= 10)) {
         const zp = steady.prev[4 * k + 2];
         const lim = 150 + 0.05 * zp;
         if (Math.abs(z - zp) > lim) {
@@ -649,7 +685,7 @@ export class PersonTracker {
       J[4 * k + 1] = rays[2 * i + 1] * z;
       J[4 * k + 2] = z;
     }
-    if (steady) this._limbs(J, UV, steady);
+    if (steady) this._limbs(J, UV, steady, measured);
     const mid = (a, b, out) => {
       if (!J[4 * a + 3] || !J[4 * b + 3]) return;
       for (let j = 0; j < 3; j++) J[4 * out + j] = (J[4 * a + j] + J[4 * b + j]) / 2;
@@ -676,17 +712,10 @@ export class PersonTracker {
       UV[3 * HEAD + 2] = 1;
       J[4 * HEAD + 3] = 1;
     }
-    // hands: beyond the wrist, along the forearm
-    const hand = (e, w, out) => {
-      if (!J[4 * e + 3] || !J[4 * w + 3]) return;
-      for (let j = 0; j < 3; j++) J[4 * out + j] = J[4 * w + j] + 0.45 * (J[4 * w + j] - J[4 * e + j]);
-      J[4 * out + 3] = 1;
-      UV[3 * out] = UV[3 * w] + 0.45 * (UV[3 * w] - UV[3 * e]);
-      UV[3 * out + 1] = UV[3 * w + 1] + 0.45 * (UV[3 * w + 1] - UV[3 * e + 1]);
-      UV[3 * out + 2] = 1;
-    };
-    hand(7, 9, LH);
-    hand(8, 10, RH);
+    // hands: beyond the wrist, along the forearm (their depth measured where they are)
+    const at = measured ? (u, v) => this._depthNear(depth, u, v, uidMap, uid, ARM_WINDOW, true) : null;
+    if (J[4 * 7 + 3] && J[4 * 9 + 3]) this._hand(J, UV, 7, 9, LH, at);
+    if (J[4 * 8 + 3] && J[4 * 10 + 3]) this._hand(J, UV, 8, 10, RH, at);
     // legs that leave the image at the bottom: the shin continues the thigh to the image border
     const shin = (hip, knee, ankle) => {
       if (J[4 * ankle + 3] || !J[4 * hip + 3] || !J[4 * knee + 3]) return;
@@ -705,14 +734,37 @@ export class PersonTracker {
   }
 
   /**
+   * The hand: beyond the wrist w along the forearm (from elbow e), into J/UV point `out`.
+   * depthAt(u, v) -> mm or 0: its depth measured there, used if it fits the wrist.
+   */
+  _hand(J, UV, e, w, out, depthAt = null) {
+    for (let j = 0; j < 3; j++) J[4 * out + j] = J[4 * w + j] + 0.45 * (J[4 * w + j] - J[4 * e + j]);
+    J[4 * out + 3] = 1;
+    const u = UV[3 * w] + 0.45 * (UV[3 * w] - UV[3 * e]);
+    const v = UV[3 * w + 1] + 0.45 * (UV[3 * w + 1] - UV[3 * e + 1]);
+    UV[3 * out] = u;
+    UV[3 * out + 1] = v;
+    UV[3 * out + 2] = 1;
+    if (!depthAt || u < 0 || v < 0 || u > W - 1 || v > H - 1) return;
+    const d = depthAt(u, v);
+    if (!d || Math.abs(d + HAND_INSET - J[4 * w + 2]) > 250) return;
+    const i = Math.round(v) * W + Math.round(u);
+    const z = d + HAND_INSET;
+    J[4 * out] = this.rays[2 * i] * z;
+    J[4 * out + 1] = this.rays[2 * i + 1] * z;
+    J[4 * out + 2] = z;
+  }
+
+  /**
    * Limbs: each elbow, wrist, knee and ankle must lie its bone's length from its parent joint. A
    * joint whose measured depth does not fit (the depth next to a thin limb is often the background
    * or the body behind it) moves along its ray to the point at that distance nearest to where it
-   * was a moment ago. The lengths are learned per person from the measurements that fit.
+   * was a moment ago. The lengths are learned per person from the measurements that fit. Arms
+   * measured on the person's own pixels (`arms`) only teach their lengths.
    */
-  _limbs(J, UV, st) {
+  _limbs(J, UV, st, arms = false) {
     const rays = this.rays;
-    st.bones ??= Float32Array.from(LIMBS, (l) => l[2]);
+    st.bones ??= LIMB_LENGTHS.slice();
     for (let b = 0; b < LIMBS.length; b++) {
       const [a, c] = LIMBS[b];
       if (!J[4 * a + 3] || !J[4 * c + 3]) continue;
@@ -725,6 +777,7 @@ export class PersonTracker {
         if (Math.abs(len - L) < 0.15 * L) st.bones[b] = 0.97 * L + 0.03 * len; // learn the length
         continue;
       }
+      if (arms && b < 4) continue;
       // the ray through the joint's pixel: point = z * (rx, ry, 1)
       const i = Math.round(UV[3 * c + 1]) * W + Math.round(UV[3 * c]);
       const rx = this.rays[2 * i];
@@ -787,6 +840,351 @@ export class PersonTracker {
     t.joints.set(J);
     t.uv.set(U);
     return this._capsules(t.joints, t.capsules);
+  }
+
+  // ---------- 2b. arms from the mask ----------
+
+  /**
+   * Depth (mm) at an image point from the pixels of person q in this frame's mask (owner): the
+   * near cluster of a small window, 0 if it has too few.
+   */
+  _maskDepth(depth, u, v, q, r = ARM_WINDOW) {
+    const w = this.window;
+    const owner = this.owner;
+    let n = 0;
+    let lo = Infinity;
+    const u0 = Math.max(0, Math.round(u) - r);
+    const u1 = Math.min(W - 1, Math.round(u) + r);
+    const v0 = Math.max(0, Math.round(v) - r);
+    const v1 = Math.min(H - 1, Math.round(v) + r);
+    for (let y = v0; y <= v1; y++) {
+      for (let x = u0; x <= u1; x++) {
+        const i = y * W + x;
+        if (owner[i] !== q || !depth[i]) continue;
+        w[n++] = depth[i];
+        if (depth[i] < lo) lo = depth[i];
+      }
+    }
+    if (n < 3) return 0;
+    let m = 0;
+    for (let k = 0; k < n; k++) if (w[k] <= lo + 120) w[m++] = w[k];
+    return w.subarray(0, m).sort()[m >> 1];
+  }
+
+  /**
+   * The arms of this frame from its mask (after the segmentation). Between two poses the optical
+   * flow often loses a fast wrist (little texture, motion blur), and the arm then stays behind
+   * while the mask has it. The person's pixels outside its trunk, head and legs that connect to a
+   * shoulder are its arm; when it reaches out, its far end (from the shoulder) is the fingertips,
+   * and wrist, hand and elbow are cut out of it at their distances from there. Such an arm is
+   * used once a pose has confirmed it (the mask's arm of that pose's frame was where the pose had
+   * it) and while it does not jump. Otherwise the arm stays as the flow has it, with this frame's
+   * depth; a wrist the flow lost that lies off the body hangs down along it. Corrects joints, image
+   * points and the followed keypoints (the flow goes on from there).
+   */
+  _arms(depth, persons, seq) {
+    const rays = this.rays;
+    const mk = this.options.minKeypoint;
+    const GW = W >> 1;
+    const GH = H >> 1;
+    const side = (this.armSide ??= new Int8Array(GW * GH));
+    const dist = (this.armDist ??= new Float32Array(GW * GH));
+    const gq = (this.armQueue ??= new Int32Array(GW * GH));
+    const tipDist = (this.armTipDist ??= new Float32Array(GW * GH));
+    const cells = [(this.armCells0 ??= new Int32Array(GW * GH)), (this.armCells1 ??= new Int32Array(GW * GH))];
+    const cellIndex = (g) => {
+      const gy = (g / GW) | 0;
+      return 2 * gy * W + 2 * (g - gy * GW);
+    };
+    for (let q = 0; q < persons.length; q++) {
+      const t = persons[q];
+      // hidden a moment ago, or too near (little depth, holes in the mask): the arms stay as they are
+      if (!t.pixels || this._refZ(t) < ARM_NEAR) continue;
+      const J = t.joints;
+      const U = t.uv;
+      const C = t.capsules;
+      const kp = t.kp;
+      const bones = t.steady?.bones ?? LIMB_LENGTHS;
+      const sh = [5, 6].map((k) => (J[4 * k + 3] ? [J[4 * k], J[4 * k + 1], J[4 * k + 2]] : null));
+      const arm = [null, null]; // per side: wrist, hand, elbow as [u, v, depth] (the elbow may be null)
+      if (sh[0] || sh[1]) {
+        // the box the arms can reach, within the person's box of the last frame (with a margin
+        // for a fast arm)
+        const reach = [0, 1].map((s) => bones[2 * s] + bones[2 * s + 1] + 250);
+        let u0 = W;
+        let v0 = H;
+        let u1 = 0;
+        let v1 = 0;
+        for (let s = 0; s < 2; s++) {
+          if (!sh[s]) continue;
+          const k = 5 + s;
+          const px = (reach[s] * 370) / Math.max(400, sh[s][2] - 0.7 * reach[s]);
+          u0 = Math.min(u0, U[3 * k] - px);
+          u1 = Math.max(u1, U[3 * k] + px);
+          v0 = Math.min(v0, U[3 * k + 1] - px);
+          v1 = Math.max(v1, U[3 * k + 1] + px);
+        }
+        if (t.bbox) {
+          u0 = Math.max(u0, t.bbox[0] - 24);
+          v0 = Math.max(v0, t.bbox[1] - 24);
+          u1 = Math.min(u1, t.bbox[2] + 24);
+          v1 = Math.min(v1, t.bbox[3] + 24);
+        }
+        const g0 = Math.max(0, Math.floor(u0 / 2));
+        const g1 = Math.min(GW - 1, Math.ceil(u1 / 2));
+        const h0 = Math.max(0, Math.floor(v0 / 2));
+        const h1 = Math.min(GH - 1, Math.ceil(v1 / 2));
+        // below this height (mm above the floor) a pixel is a leg: on the floor, and below the
+        // hips of someone crouching or sitting (the knees come up to the shoulders)
+        const f = this.floor ?? this.feetFloor;
+        const fn = f ? f.normal : [0, -1, 0];
+        const fd = f ? f.d * 1000 : 0;
+        let low = -Infinity;
+        if (f) {
+          low = 120;
+          if (J[4 * HC + 3]) {
+            const hip = fn[0] * J[4 * HC] + fn[1] * J[4 * HC + 1] + fn[2] * J[4 * HC + 2] + fd;
+            if (hip < 700) low = Math.max(low, hip + 100);
+          }
+        }
+        let tail = this._armCandidates(depth, q, C, sh, reach, bones, g0, g1, h0, h1, low, fn, fd);
+        // each arm: the candidates connected to its shoulder's seeds without a depth jump
+        const o = this.options;
+        const nc = [0, 0];
+        let head = 0;
+        while (head < tail) {
+          const g = gq[head++];
+          const s = side[g] - 3;
+          cells[s][nc[s]++] = g;
+          const gy = (g / GW) | 0;
+          const gx = g - gy * GW;
+          const di = depth[2 * gy * W + 2 * gx];
+          const tol = 2 * (o.joinMargin + o.joinSlope * di);
+          for (let n = 0; n < 4; n++) {
+            const nx = gx + (n === 0 ? -1 : n === 1 ? 1 : 0);
+            const ny = gy + (n === 2 ? -1 : n === 3 ? 1 : 0);
+            if (nx < g0 || nx > g1 || ny < h0 || ny > h1) continue;
+            const h = ny * GW + nx;
+            if (side[h] !== s + 1) continue;
+            const dj = depth[2 * ny * W + 2 * nx];
+            if (dj - di > tol || di - dj > tol) continue;
+            side[h] = s + 3;
+            gq[tail++] = h;
+          }
+        }
+        for (let s = 0; s < 2; s++) {
+          const n = nc[s];
+          const list = cells[s];
+          if (n < 12) continue;
+          let dmax = 0;
+          for (let c = 0; c < n; c++) dmax = Math.max(dmax, dist[list[c]]);
+          // the hand reaches out: farther from the shoulder than the elbow could be
+          if (dmax < bones[2 * s] + 0.5 * bones[2 * s + 1]) continue;
+          // mean u, v, depth of the arm's cells whose key lies in [a, b]
+          const slice = (key, a, b) => {
+            let su = 0;
+            let sv = 0;
+            let sd = 0;
+            let m = 0;
+            for (let c = 0; c < n; c++) {
+              const g = list[c];
+              if (key[g] < a || key[g] > b) continue;
+              const i = cellIndex(g);
+              su += i % W;
+              sv += (i / W) | 0;
+              sd += depth[i];
+              m++;
+            }
+            return m >= 3 ? [su / m, sv / m, sd / m] : null;
+          };
+          const tip = slice(dist, dmax - 40, Infinity);
+          if (!tip) continue;
+          const ti = Math.round(tip[1]) * W + Math.round(tip[0]);
+          const tx = rays[2 * ti] * tip[2];
+          const ty = rays[2 * ti + 1] * tip[2];
+          for (let c = 0; c < n; c++) {
+            const g = list[c];
+            const i = cellIndex(g);
+            const d = depth[i];
+            const dx = rays[2 * i] * d - tx;
+            const dy = rays[2 * i + 1] * d - ty;
+            tipDist[g] = Math.sqrt(dx * dx + dy * dy + (d - tip[2]) * (d - tip[2]));
+          }
+          const w = slice(tipDist, WRIST_TIP - 20, WRIST_TIP + 20);
+          const h = slice(tipDist, HAND_TIP - 20, HAND_TIP + 20);
+          if (!w || !h) continue;
+          const e = slice(tipDist, WRIST_TIP + bones[2 * s + 1] - 20, WRIST_TIP + bones[2 * s + 1] + 20);
+          arm[s] = { w, h, e };
+        }
+      }
+      // remembered: the next pose tells whether the mask's arms were right in this frame (_addKey)
+      t.armHist ??= [];
+      t.armHist.push({ seq, w: arm.map((a) => a && a.w) });
+      if (t.armHist.length > KEEP_ARMS) t.armHist.shift();
+      t.armTrust ??= [0, 0];
+      t.armLast ??= [null, null];
+      const place = (k, p, inset) => {
+        const i = Math.round(p[1]) * W + Math.round(p[0]);
+        const z = p[2] + inset;
+        J[4 * k] = rays[2 * i] * z;
+        J[4 * k + 1] = rays[2 * i + 1] * z;
+        J[4 * k + 2] = z;
+        J[4 * k + 3] = 1;
+        U[3 * k] = p[0];
+        U[3 * k + 1] = p[1];
+        t.jointAge[k] = 0;
+        if (k >= 17) {
+          U[3 * k + 2] = 1;
+          return;
+        }
+        U[3 * k + 2] = Math.max(U[3 * k + 2], mk);
+        kp[3 * k] = p[0];
+        kp[3 * k + 1] = p[1];
+        kp[3 * k + 2] = Math.max(kp[3 * k + 2], mk);
+        t.lost[k] = 0;
+      };
+      // the depth of a joint from this frame's mask, where it is
+      const measured = (k) => {
+        const u = U[3 * k];
+        const v = U[3 * k + 1];
+        if (!J[4 * k + 3] || !(u >= 0 && v >= 0 && u <= W - 1 && v <= H - 1)) return;
+        const d = this._maskDepth(depth, u, v, q);
+        if (!d) return;
+        const i = Math.round(v) * W + Math.round(u);
+        const z = d + INSET[k] * 1000;
+        J[4 * k] = rays[2 * i] * z;
+        J[4 * k + 1] = rays[2 * i + 1] * z;
+        J[4 * k + 2] = z;
+      };
+      for (let s = 0; s < 2; s++) {
+        const a = arm[s];
+        const ke = 7 + s;
+        const kw = 9 + s;
+        const kh = LH + s;
+        if (a) {
+          // a mask's arm that jumps from one frame to the next is something else (a leg, the
+          // hair) until the next pose says otherwise
+          const i = Math.round(a.w[1]) * W + Math.round(a.w[0]);
+          const p = [rays[2 * i] * a.w[2], rays[2 * i + 1] * a.w[2], a.w[2]];
+          const last = t.armLast[s];
+          if (last && seq - last.seq <= 2 && Math.hypot(p[0] - last.p[0], p[1] - last.p[1], p[2] - last.p[2]) > ARM_JUMP) t.armTrust[s] = 0;
+          t.armLast[s] = { seq, p };
+        } else t.armLast[s] = null;
+        if (a && t.armTrust[s]) {
+          place(kw, a.w, INSET[kw] * 1000);
+          place(kh, a.h, HAND_INSET);
+          // the elbow where the mask has it, if it fits the bones
+          const S = sh[s];
+          const E = a.e;
+          let ok = false;
+          if (E && S) {
+            const i = Math.round(E[1]) * W + Math.round(E[0]);
+            const z = E[2] + INSET[ke] * 1000;
+            const ex = rays[2 * i] * z;
+            const ey = rays[2 * i + 1] * z;
+            const lu = Math.hypot(ex - S[0], ey - S[1], z - S[2]);
+            const lf = Math.hypot(ex - J[4 * kw], ey - J[4 * kw + 1], z - J[4 * kw + 2]);
+            ok = Math.abs(lu - bones[2 * s]) < 0.4 * bones[2 * s] && Math.abs(lf - bones[2 * s + 1]) < 0.4 * bones[2 * s + 1];
+          }
+          if (ok) place(ke, E, INSET[ke] * 1000);
+          else measured(ke);
+          continue;
+        }
+        measured(ke);
+        measured(kw);
+        // the flow lost the wrist and it lies off the body: the arm is not out (the mask would
+        // have it), it hangs down along the body
+        const S = sh[s];
+        if (S && J[4 * kw + 3] && J[4 * SC + 3] && J[4 * HC + 3] && t.lost[kw] && !this._maskDepth(depth, U[3 * kw], U[3 * kw + 1], q, 6)) {
+          const dir = [0, 1, 2].map((j) => J[4 * HC + j] - J[4 * SC + j]);
+          const out = [0, 1, 2].map((j) => S[j] - J[4 * SC + j]);
+          const ld = Math.hypot(...dir) || 1;
+          const lo = Math.hypot(...out) || 1;
+          for (let j = 0; j < 3; j++) dir[j] = dir[j] / ld + (0.15 * out[j]) / lo;
+          const l = Math.hypot(...dir);
+          for (const [k, len] of [[ke, bones[2 * s]], [kw, bones[2 * s] + bones[2 * s + 1]]]) {
+            const P = [0, 1, 2].map((j) => S[j] + (len * dir[j]) / l);
+            const [u, v] = this._project(P[0], P[1], P[2], U[3 * (5 + s)], U[3 * (5 + s) + 1]);
+            if (u < 0 || v < 0 || u > W - 1 || v > H - 1) continue;
+            const d = this._maskDepth(depth, u, v, q);
+            place(k, [u, v, d || P[2] - INSET[k] * 1000], INSET[k] * 1000);
+          }
+        }
+        if (J[4 * ke + 3] && J[4 * kw + 3]) this._hand(J, U, ke, kw, kh, (u, v) => this._maskDepth(depth, u, v, q));
+      }
+      this._capsules(J, C);
+    }
+  }
+
+  /**
+   * _arms: the candidates for the arms in the grid (every second row and column) of box g0..g1,
+   * h0..h1: the person's pixels within reach of a shoulder, above `low` (mm over the floor
+   * fn·p + fd), outside the other body parts. armSide = 1, 2 for the left, right arm (the nearer
+   * shoulder), 3, 4 for the seeds on the upper arm next to it (also in armQueue); armDist = the
+   * distance from that shoulder (mm). Returns the number of seeds.
+   */
+  _armCandidates(depth, q, C, sh, reach, bones, g0, g1, h0, h1, low, fn, fd) {
+    const GW = W >> 1;
+    const side = this.armSide;
+    const dist = this.armDist;
+    const gq = this.armQueue;
+    const owner = this.owner;
+    const rays = this.rays;
+    const nx = fn[0];
+    const ny = fn[1];
+    const nz = fn[2];
+    const sx0 = sh[0] ? sh[0][0] : 0;
+    const sy0 = sh[0] ? sh[0][1] : 0;
+    const sz0 = sh[0] ? sh[0][2] : -1e9;
+    const sx1 = sh[1] ? sh[1][0] : 0;
+    const sy1 = sh[1] ? sh[1][1] : 0;
+    const sz1 = sh[1] ? sh[1][2] : -1e9;
+    const r0 = reach[0] * reach[0];
+    const r1 = reach[1] * reach[1];
+    const seed0 = (0.75 * bones[0] + 100) ** 2;
+    const seed1 = (0.75 * bones[2] + 100) ** 2;
+    let tail = 0;
+    for (let gy = h0; gy <= h1; gy++) {
+      for (let gx = g0; gx <= g1; gx++) {
+        const g = gy * GW + gx;
+        side[g] = 0;
+        const i = 2 * gy * W + 2 * gx;
+        if (owner[i] !== q) continue;
+        const d = depth[i];
+        if (!d) continue;
+        const x = rays[2 * i] * d;
+        const y = rays[2 * i + 1] * d;
+        const dl = (x - sx0) * (x - sx0) + (y - sy0) * (y - sy0) + (d - sz0) * (d - sz0);
+        const dr = (x - sx1) * (x - sx1) + (y - sy1) * (y - sy1) + (d - sz1) * (d - sz1);
+        const s = dl <= dr ? 0 : 1;
+        const ds = s ? dr : dl;
+        if (ds > (s ? r1 : r0) || nx * x + ny * y + nz * d + fd < low) continue;
+        let core = false;
+        for (let c = 0; c < CORE_PARTS.length && !core; c++) {
+          const o = CAP * CORE_PARTS[c];
+          if (C[o + 8] && seg(C, CORE_PARTS[c], x, y, d) <= C[o + 6]) core = true;
+        }
+        if (core) continue;
+        side[g] = s + 1;
+        dist[g] = Math.sqrt(ds);
+        if (ds < (s ? seed1 : seed0)) {
+          side[g] = s + 3;
+          gq[tail++] = g;
+        }
+      }
+    }
+    return tail;
+  }
+
+  /** Image point of a camera point (mm), the rays linearized around pixel (u0, v0). */
+  _project(x, y, z, u0, v0) {
+    const r = this.rays;
+    const uc = Math.min(W - 2, Math.max(1, Math.round(u0)));
+    const vc = Math.min(H - 2, Math.max(1, Math.round(v0)));
+    const i = vc * W + uc;
+    const fx = 2 / (r[2 * (i + 1)] - r[2 * (i - 1)]);
+    const fy = 2 / (r[2 * (i + W) + 1] - r[2 * (i - W) + 1]);
+    return [uc + (x / z - r[2 * i]) * fx, vc + (y / z - r[2 * i + 1]) * fy];
   }
 
   /** Median depth (mm) of a person's joints in the last frame, 0 if none. */
@@ -1177,8 +1575,10 @@ export class PersonTracker {
     };
     active.sort((a, b) => near(a) - near(b));
     const masks = o.mode !== 'skeleton';
-    if (masks) this._segment(depth, active);
-    else this.owner.fill(-1);
+    if (masks) {
+      this._segment(depth, active);
+      this._arms(depth, active, seq);
+    } else this.owner.fill(-1);
 
     // labels, statistics, the list of person pixels and the seeds of the next frame: one pass in
     // raster order (memory in order is several times faster than in the order the regions grew)
@@ -1430,7 +1830,7 @@ export class PersonTracker {
       const zs = p.joints.filter((j) => j[3] > 0).map((j) => j[2]).sort((x, y) => x - y);
       const refZ = zs.length ? zs[zs.length >> 1] : 0;
       t.steadyFinal ??= { prev: null, z: new Float32Array(17), n: new Uint8Array(17), joints: new Float32Array(NJ * 4) };
-      if (!this._lift(kp, depth, labels, p.slot, true, J, U, refZ, t.steadyFinal)) continue;
+      if (!this._lift(kp, depth, labels, p.slot, true, J, U, refZ, t.steadyFinal, true)) continue;
       // joints that do not lift in that frame keep the ones made at once
       for (let k = 0; k < 17; k++) {
         if (J[4 * k + 3] || !p.joints[k][3]) continue;

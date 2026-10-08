@@ -93,7 +93,7 @@ const panel = new ParamPanel();
 const wall = new WallMap();
 wall.output = OUTPUT && !EMBED;
 // block zones of the wall setup: nobody standing in one is tracked, for every scene
-kinect.personFilter = (result) => wall.filterPersons(result);
+kinect.personFilter = (result, opts) => wall.filterPersons(result, opts);
 const bus = new WallBus(OUTPUT ? 'output' : 'scene');
 let xSign = remember('kinect:xSign', -1) === 1 ? 1 : -1;
 let uiHidden = KIOSK || remember('kinect:uiHidden', false) === true;
@@ -344,7 +344,8 @@ let personConfig = '';
 function updateStreams() {
   const live = [rt.pending ?? rt.current, ...rt.leaving.map((l) => l.inst)].filter(Boolean);
   if (!live.length) return;
-  const streams = [...new Set(live.flatMap(wantedStreams))];
+  // a page nobody sees gets no Kinect data: the hub then stops tracking and posing for it
+  const streams = pageHidden ? [] : [...new Set(live.flatMap(wantedStreams))];
   kinect.setStreams(streams);
   if (!streams.includes('persons')) return;
   // the newest scene that tracks persons decides how
@@ -626,9 +627,62 @@ function wallPointer(inst) {
   p.inside = p.u >= 0 && p.u < 1 && p.v >= 0 && p.v < 1;
 }
 
+// ---------- pages nobody sees ----------
+
+/** A page hidden this long (background tab, minimized window) unsubscribes the Kinect streams. */
+const HIDDEN_GRACE_MS = 3000;
+let pageHidden = false;
+let hiddenTimer = 0;
+function watchVisibility() {
+  clearTimeout(hiddenTimer);
+  if (document.visibilityState === 'hidden') {
+    hiddenTimer = setTimeout(() => {
+      pageHidden = true;
+      updateStreams();
+    }, HIDDEN_GRACE_MS);
+  } else if (pageHidden) {
+    pageHidden = false;
+    updateStreams();
+  }
+}
+document.addEventListener('visibilitychange', watchVisibility);
+watchVisibility();
+
+// ---------- render reports (the hub's pose model gives way to a slow visible scene) ----------
+
+// the display's refresh rate, from the intervals between animation frames (a low percentile: the
+// frames that came in time), snapped to a usual rate
+const REFRESH_RATES = [30, 50, 60, 72, 75, 90, 100, 120, 144, 165, 240];
+const rafIntervals = [];
+let rafLast = 0;
+function noteAnimationFrame(now) {
+  if (rafLast) rafIntervals.push(now - rafLast);
+  if (rafIntervals.length > 120) rafIntervals.shift();
+  rafLast = now;
+}
+function refreshRate() {
+  if (rafIntervals.length < 20) return 60;
+  const sorted = [...rafIntervals].sort((x, y) => x - y);
+  const hz = 1000 / Math.max(1, sorted[Math.floor(sorted.length * 0.1)]);
+  return REFRESH_RATES.reduce((best, r) => (Math.abs(r - hz) / r < Math.abs(best - hz) / best ? r : best), 60);
+}
+setInterval(() => {
+  const inst = rt.current;
+  if (!inst || rt.state !== 'running') return;
+  const refresh = refreshRate();
+  const cap = FPS_CAP || inst.def.maxFps || 0;
+  kinect.reportRender({
+    fps: Math.round(rt.fps * 10) / 10,
+    target: cap > 0 ? Math.min(cap, refresh) : refresh,
+    visible: document.visibilityState === 'visible',
+    scene: inst.name,
+  });
+}, 1000);
+
 let lastFrame = performance.now();
 function loop(now) {
   requestAnimationFrame(loop);
+  noteAnimationFrame(now);
   const inst = rt.current;
   // optional render rate cap (scene maxFps or ?fps=): leaves GPU time for the Kinect depth decoding
   const cap = FPS_CAP || inst?.def.maxFps || 0;
@@ -957,6 +1011,7 @@ function status() {
           poseRuns: kinect.persons?.poseRuns ?? 0,
           seq: kinect.persons?.seq ?? null,
           mode: kinect.personTracker.options.mode ?? 'full',
+          live: kinect.personTracker.dual, // live + exact: waitMs is how long the exact results take
           delayMs: kinect.persons ? Math.round(kinect.persons.lag) : null,
           waitMs: kinect.personTracker.waitStats(),
           provider: kinect.personTracker.provider,

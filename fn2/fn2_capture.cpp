@@ -14,13 +14,20 @@
 //   kind 4 HEARTBEAT  JSON counters, once per second
 // stderr: log lines
 //
-//   fn2_capture [--pipeline cl|cpu|clkde] [--no-stdin-watch]
+//   fn2_capture [--pipeline fast|cl|cpu|clkde] [--no-stdin-watch]
+//
+// fast: the depth is decoded here on the CPU (fast_depth: AVX2, a few threads, ~6 ms a frame,
+// the same results as OpenCL) and the GPU stays free for the scenes; libfreenect2 only hands over
+// the raw packets (its dump pipeline). Without AVX2 it falls back to cl (OpenCL on the GPU).
 
 #include <libfreenect2/libfreenect2.hpp>
 #include <libfreenect2/frame_listener.hpp>
 #include <libfreenect2/packet_pipeline.h>
 #include <libfreenect2/logger.h>
 
+#include "fast_depth.h"
+
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -227,11 +234,40 @@ private:
 class Listener : public libfreenect2::FrameListener
 {
 public:
-  explicit Listener(Output &out) : out_(out), ir_(PIXELS) {}
+  explicit Listener(Output &out, fastdepth::Decoder *fast = nullptr) : out_(out), ir_(PIXELS), fast_(fast)
+  {
+    if (fast_) depth_.resize(PIXELS);
+  }
+
+  /// fast pipeline: the device's tables, after every start (the raw packets wait meanwhile)
+  void load_tables(libfreenect2::DumpPacketPipeline *dump)
+  {
+    size_t p0_len = 0, xl = 0, zl = 0, ll = 0;
+    const unsigned char *p0 = dump->getDepthP0Tables(&p0_len);
+    const float *xt = dump->getDepthXTable(&xl);
+    const float *zt = dump->getDepthZTable(&zl);
+    const short *lut = dump->getDepthLookupTable(&ll);
+    std::lock_guard<std::mutex> lock(fast_m_);
+    tables_ok_ = fast_ && fast_->load_tables(p0, p0_len, xt, zt, lut);
+    if (!tables_ok_) std::fprintf(stderr, "fast depth: the device's tables did not load\n");
+  }
 
   // libfreenect2 delivers IR first, then depth of the same packet, from the same thread.
   bool onNewFrame(libfreenect2::Frame::Type type, libfreenect2::Frame *frame) override
   {
+    if (fast_)
+    {
+      // the dump pipeline hands the raw packet twice (as Ir and as Depth): decode it once
+      if (type != libfreenect2::Frame::Depth || frame->format != libfreenect2::Frame::Raw) return false;
+      {
+        std::lock_guard<std::mutex> lock(fast_m_);
+        if (!tables_ok_ || !fast_->decode(frame->data, frame->bytes_per_pixel, depth_.data(), ir_.data())) return false;
+      }
+      out_.send_frame(depth_.data(), ir_.data(), frame->sequence, frame->timestamp, host_time_us());
+      last_frame_ms_ = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+      ++frames_;
+      return false;
+    }
     if (frame->status != 0 || frame->width != (size_t)W || frame->height != (size_t)H || frame->bytes_per_pixel != 4)
       return false;
     if (type == libfreenect2::Frame::Ir)
@@ -263,6 +299,10 @@ public:
 private:
   Output &out_;
   std::vector<float> ir_;
+  fastdepth::Decoder *fast_;
+  std::vector<float> depth_;
+  std::mutex fast_m_;
+  bool tables_ok_ = false;
   uint32_t ir_seq_ = 0;
   bool have_ir_ = false;
   std::atomic<int64_t> last_frame_ms_{0};
@@ -289,6 +329,7 @@ private:
 
 libfreenect2::PacketPipeline *make_pipeline(const std::string &name)
 {
+  if (name == "fast") return new libfreenect2::DumpPacketPipeline();
   if (name == "cpu") return new libfreenect2::CpuPacketPipeline();
 #ifdef LIBFREENECT2_WITH_OPENCL_SUPPORT
   if (name == "clkde") return new libfreenect2::OpenCLKdePacketPipeline();
@@ -336,7 +377,7 @@ void send_params(Output &out, libfreenect2::Freenect2Device *dev)
 
 int main(int argc, char **argv)
 {
-  std::string pipeline_name = "cl";
+  std::string pipeline_name = "fast";
   bool stdin_watch = true;
   for (int i = 1; i < argc; i++)
   {
@@ -357,6 +398,11 @@ int main(int argc, char **argv)
   if (stdin_watch) std::thread(watch_stdin).detach();
   libfreenect2::setGlobalLogger(new WatchLogger());  // libfreenect2 takes ownership
 
+  if (pipeline_name == "fast" && !fastdepth::cpu_supported())
+  {
+    std::fprintf(stderr, "this CPU has no AVX2/FMA: depth on the GPU (OpenCL) instead\n");
+    pipeline_name = "cl";
+  }
   send_status(out, "starting", "setting up the depth pipeline (" + pipeline_name + ")");
   const Clock::time_point t_pipe = Clock::now();
   libfreenect2::PacketPipeline *shared = make_pipeline(pipeline_name);
@@ -364,7 +410,23 @@ int main(int argc, char **argv)
                (long long)std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t_pipe).count());
 
   libfreenect2::Freenect2 ctx;
-  Listener listener(out);
+  // fast: the depth is decoded by the listener, on the processing thread plus 3 helpers
+  // (FN2_FAST_THREADS). The sensor comes first: the worker runs above normal priority, so a busy
+  // CPU (scenes, browsers) takes its time from them and not from the frames (FN2_PRIORITY=normal
+  // turns that off). FN2_FAST_PRIORITY=low puts the helpers below the rest of the worker: with 8 of
+  // 12 CPU threads busy elsewhere the sensor then fell to 8-16 fps.
+  const char *env_threads = std::getenv("FN2_FAST_THREADS");
+  const char *env_prio = std::getenv("FN2_FAST_PRIORITY");
+  const char *env_worker_prio = std::getenv("FN2_PRIORITY");
+#ifdef _WIN32
+  if (!env_worker_prio || std::string(env_worker_prio) != "normal") SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
+#endif
+  const int fast_threads = env_threads ? std::max(0, std::min(8, std::atoi(env_threads))) : 3;
+  const bool fast_low = env_prio && std::string(env_prio) == "low";
+  fastdepth::Decoder *fast = pipeline_name == "fast" ? new fastdepth::Decoder(fast_threads, fastdepth::Params(), fast_low) : nullptr;
+  if (fast) std::fprintf(stderr, "fast depth: %d helper threads%s\n", fast_threads, fast_low ? ", low priority" : "");
+  auto *dump = fast ? static_cast<libfreenect2::DumpPacketPipeline *>(shared) : nullptr;
+  Listener listener(out, fast);
   libfreenect2::Freenect2Device *dev = nullptr;
   int64_t started_ms = 0, next_heartbeat = now_ms();
   bool searching_reported = false, streaming_reported = false;
@@ -410,6 +472,7 @@ int main(int argc, char **argv)
         dev = nullptr;
         continue;
       }
+      if (dump) listener.load_tables(dump);
       send_params(out, dev);
       started_ms = now_ms();
       streaming_reported = false;

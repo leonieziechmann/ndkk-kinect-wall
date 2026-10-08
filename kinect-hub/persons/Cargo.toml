@@ -1,0 +1,22 @@
+[package]
+name = "persons"
+version = "0.1.0"
+edition = "2024"
+description = "Person tracking in the Kinect depth image (masks, skeletons, floor): a port of web/lib/persons-core.js for kinect-hub"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }  # the backtest reads the reference poses
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+# indexing_slicing is allowed here, unlike in the hub: this is a numeric port of the browser's
+# tracker, written as close to the JavaScript as possible so both give the same results (checked by
+# examples/backtest.rs). The buffers have fixed sizes; the hub runs the tracker under catch_unwind.
