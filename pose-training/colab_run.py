@@ -55,6 +55,10 @@ job = textwrap.dedent(f"""\
       deliver {N} runs/{N}/weights/best.pt runs/{N}/weights/last.pt runs/{N}/results.csv runs/{N}/args.yaml export/{N}.onnx export/{N}-fp16.onnx export-{N}.txt eval-{N}-val.txt eval-{N}-test.txt; }}
     touch {C}/DONE-{N}
 """)
-open(f'{C}/job-{N}.sh', 'w').write(job)
-subprocess.Popen(f'nohup bash {C}/job-{N}.sh > {C}/job-{N}.log 2>&1 &', shell=True)
-print(f'started: /content/job-{N}.log; /content/out/{N}.zip, /content/DONE-{N}')
+if os.path.exists(f'{C}/job-{N}.started'):  # a retried start (colab exec can time out after starting it)
+    print('started already')
+else:
+    open(f'{C}/job-{N}.started', 'w').close()
+    open(f'{C}/job-{N}.sh', 'w').write(job)
+    subprocess.Popen(f'nohup bash {C}/job-{N}.sh > {C}/job-{N}.log 2>&1 &', shell=True)
+    print(f'started: /content/job-{N}.log; /content/out/{N}.zip, /content/DONE-{N}')
