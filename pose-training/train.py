@@ -18,11 +18,16 @@ from teacher import FLIP  # noqa: E402
 def dataset(out, train='train', extra=()):
     """The dataset description for Ultralytics (labels/ next to images/); extra: more image folders for training
     (relative to out, e.g. coco/images/train from coco.py)."""
-    p = os.path.join(out, f'kinect-ir-pose-{train}' + ''.join('+' + e.split('/')[0] for e in extra) + '.yaml')
+    tag = f'kinect-ir-pose-{train}' + ''.join('+' + e.split('/')[0] for e in extra)
     root = out.replace('\\', '/')
-    dirs = ', '.join([f'images/{train}', *extra])
+    # image lists, not folders: Ultralytics resolves folder links, and a folder of linked images (another label
+    # set for the same images, colab_teachers.py) must keep its own labels/
+    for name, dirs in (('train', [f'images/{train}', *extra]), ('val', ['images/val'])):
+        files = sorted(f'{root}/{d}/{f}' for d in dirs for f in os.listdir(os.path.join(out, d)) if f.endswith(('.png', '.jpg')))
+        open(os.path.join(out, f'{tag}-{name}.txt'), 'w').write('\n'.join(files) + '\n')
+    p = os.path.join(out, f'{tag}.yaml')
     open(p, 'w').write(
-        f'path: {root}\ntrain: [{dirs}]\nval: images/val\nkpt_shape: [17, 3]\nflip_idx: {FLIP}\nnames:\n  0: person\n'
+        f'path: {root}\ntrain: {tag}-train.txt\nval: {tag}-val.txt\nkpt_shape: [17, 3]\nflip_idx: {FLIP}\nnames:\n  0: person\n'
     )
     return p
 
