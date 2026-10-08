@@ -97,12 +97,18 @@ def main():
     ap.add_argument('--boxes', default='yolo11x-pose@1024+768-flip', help='raw tag whose person boxes are used')
     ap.add_argument('--batch', type=int, default=0, help='persons per batch (default: 32 for vitpose, 4 for sapiens)')
     ap.add_argument('--limit', type=int, default=0)
+    ap.add_argument('--shard', default='', help='only the images whose index mod n is one of k: "k[,k...]/n" (share the work between VMs)')
     a = ap.parse_args()
     from PIL import Image
     boxes = json.load(open(os.path.join(a.out, 'raw', f'{a.boxes}-{a.split}.json')))
     raw_path = os.path.join(a.out, 'raw', f'{a.model}-{a.split}.json')
     raw = json.load(open(raw_path)) if os.path.exists(raw_path) else {}
-    names = sorted(n for n in boxes if n not in raw)
+    names = sorted(boxes)
+    if a.shard:
+        ks, n = a.shard.split('/')
+        keep = {int(k) for k in ks.split(',')}
+        names = [x for i, x in enumerate(names) if i % int(n) in keep]
+    names = [x for x in names if x not in raw]
     if a.limit:
         names = names[: a.limit]
     a.batch = a.batch or (32 if a.model == 'vitpose' else 4)
