@@ -465,6 +465,19 @@ async function launch(mod, { name = URL_NAME, swap = false, overrides = null, tr
   ctx.on(canvas, 'pointerdown', () => (ctx.pointer.down = true));
   ctx.on(window, 'pointerup', () => (ctx.pointer.down = false));
   sizeCanvas(inst);
+  if (!swap) {
+    // a scene runs only once at a time: its instances share the module's variables (`let pass`), so
+    // setup() of a new one would hand the old one its resources and the old one's dispose() would
+    // free them. One still fading out or stopped by an error goes first. (A hot swap is a new module.)
+    for (const l of rt.leaving.filter((l) => l.inst.name === name)) {
+      rt.leaving.splice(rt.leaving.indexOf(l), 1);
+      destroy(l.inst);
+    }
+    if (rt.current?.name === name) {
+      destroy(rt.current);
+      rt.current = null;
+    }
+  }
   rt.pending = inst;
   updateStreams();
   try {
@@ -513,6 +526,67 @@ async function launch(mod, { name = URL_NAME, swap = false, overrides = null, tr
   scheduleThumb();
   updateStreams();
   return true;
+}
+
+// ---------- new param values for a running instance (output window: show entries) ----------
+
+const rgb = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+const hex = (v) => `#${v.map((x) => Math.round(x).toString(16).padStart(2, '0')).join('')}`;
+
+/** Sets one param as the panel would (onParam); true if it changed. */
+function setValue(inst, key, value) {
+  if (inst.params.values[key] === value) return false;
+  inst.params.values[key] = value;
+  try {
+    inst.def.onParam?.(key, value, inst.ctx);
+  } catch (e) {
+    pushError('onParam()', e);
+  }
+  return true;
+}
+
+/**
+ * The values of `overrides` (as in launch(): missing ones get the defaults) for a running instance.
+ * With `fade` (s) numbers and colors glide there (stepGlide()), everything else switches at once.
+ */
+function retune(inst, overrides, fade = 0) {
+  inst.overrides = overrides;
+  const { list, values } = panel.resolve(inst.name, inst.def.params, overrides);
+  const glide = { from: {}, to: {}, start: performance.now(), ms: fade * 1000 };
+  for (const p of list) {
+    const now = inst.params.values[p.key];
+    const want = values[p.key];
+    if (now === want) continue;
+    if (fade > 0 && (p.kind === 'number' || p.kind === 'color') && typeof now === typeof want) {
+      glide.from[p.key] = now;
+      glide.to[p.key] = want;
+    } else setValue(inst, p.key, want);
+  }
+  inst.glide = Object.keys(glide.to).length ? glide : null;
+  updateStreams();
+}
+
+/** One step of a running glide (render loop). Integer params stay integers. */
+function stepGlide(inst, now) {
+  const g = inst.glide;
+  const t = Math.min(1, (now - g.start) / Math.max(1, g.ms));
+  const e = t * t * (3 - 2 * t); // ease in-out, like the canvas crossfade
+  for (const p of inst.params.list) {
+    if (!(p.key in g.to)) continue;
+    const a = g.from[p.key];
+    const b = g.to[p.key];
+    let v = b;
+    if (t < 1 && p.kind === 'color') {
+      const [ca, cb] = [rgb(a), rgb(b)];
+      v = hex(ca.map((x, i) => x + (cb[i] - x) * e));
+    } else if (t < 1) {
+      v = a + (b - a) * e;
+      if (Number.isInteger(p.step) && Number.isInteger(a) && Number.isInteger(b)) v = Math.round(v);
+    }
+    setValue(inst, p.key, v);
+  }
+  if (t >= 1) inst.glide = null;
+  updateStreams();
 }
 
 /** The entry file of a scene of this dev server ('main.js' unless the list says otherwise). */
@@ -588,6 +662,7 @@ function loop(now) {
       console.warn('leaving scene', e);
     }
   }
+  if (inst?.glide) stepGlide(inst, now);
   if (inst && rt.state === 'running') {
     try {
       renderInstance(inst, now, dt);
@@ -797,6 +872,12 @@ function showMissing(list, reason) {
 
 /** Output window: plays a scene of this dev server in place (crossfade). For lib/wall-output.js. */
 async function play(name, { overrides = null, transition = 'cross', fade = 1 } = {}) {
+  if (rt.current?.name === name && rt.state === 'running') {
+    // the same scene again (another show entry of it, ▶ on the one that runs, a command sent twice):
+    // no second instance (see launch()), the running one takes the new values instead
+    retune(rt.current, overrides, transition === 'cross' ? fade : 0);
+    return true;
+  }
   let found;
   try {
     found = await sceneModule(name);
@@ -907,18 +988,9 @@ const outputApi = {
   resume() {
     if (rt.current && rt.state === 'error') rt.state = 'running';
   },
-  /** Changes a param of the running scene (as the panel would). */
-  setParam(key, value) {
-    const inst = rt.current;
-    if (!inst || !(key in inst.params.values)) return;
-    if (inst.params.values[key] === value) return;
-    inst.params.values[key] = value;
-    try {
-      inst.def.onParam?.(key, value, inst.ctx);
-    } catch (e) {
-      pushError('onParam()', e);
-    }
-    updateStreams();
+  /** New param values for the running scene (a show entry's; missing ones get the defaults), at once. */
+  setParams(overrides) {
+    if (rt.current) retune(rt.current, overrides);
   },
   /** Stops every scene (black). */
   stop() {
