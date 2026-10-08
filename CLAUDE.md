@@ -41,8 +41,9 @@ Only one process can open the Kinect at a time. **kinect-hub** owns it and serve
 - Protocol: `kinect-hub/README.md`, or `GET /api` (machine-readable). Dev servers announce themselves at `POST /api/devservers` (done by the Vite plugin).
 - Python: `kinect_hub.py` provides `Hub().depth()`, `.points()`, `.stream([...])` and `HubDepthSensor`.
 - Coordinates: x right, y down, z forward, in mm. point = (lut.x * z, lut.y * z, z). The Kinect image is mirrored.
-- The worker decodes the depth on the CPU by default (`--pipeline fast`, fn2/fast_depth.cpp), so the GPU belongs to the scenes and the hub's pose model. A scene that saturates the GPU still costs CPU and power on this APU; `npm run check` reports the sensor rate. `--pipeline cl` = the old OpenCL decoding on the GPU.
+- The worker decodes the depth on the CPU by default (`--pipeline fast`, fn2/fast_depth.cpp, above normal priority: the sensor keeps 30 fps on a busy CPU), so the GPU belongs to the scenes and the hub's pose model. A scene that saturates the GPU still costs CPU and power on this APU; `npm run check` reports the sensor rate. `--pipeline cl` = the old OpenCL decoding on the GPU.
 - The hub tracks persons itself (streams `persons` / `persons_live`, pose model with DirectML): scenes with `streams: ['persons']` take them automatically. `?persons=local` forces the old in-browser tracker for comparisons.
+- The hub spends the GPU where it is seen: it tracks only while a page subscribes (a page hidden for 3 s unsubscribes), poses 3×/s with the cheapest model while nobody is in the room, and steps the pose model down while a visible page renders below its target fps.
 
 ## Building the hub and the worker (main checkout only)
 

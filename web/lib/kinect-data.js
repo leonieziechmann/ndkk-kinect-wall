@@ -218,19 +218,31 @@ export class KinectData {
     return this._personStream;
   }
 
-  /** Runtime: subscribes the streams the scene needs (+ lut, meta, status). 'persons' implies depth and ir. */
+  /**
+   * Runtime: subscribes the streams the scene needs (+ lut, meta, status). 'persons' implies depth,
+   * and the infrared image while the tracking runs in this page (the hub's tracking needs none).
+   */
   setStreams(list) {
     this._wanted = list;
     const persons = list.includes('persons');
     if (persons) this.personTracker.start();
     else this._personStream?.stop();
     const wire = list.filter((s) => s !== 'persons');
-    if (persons) wire.push('depth', 'ir');
+    if (persons) wire.push('depth');
+    if (persons && this._personStream.source !== 'hub') wire.push('ir');
     if (persons) wire.push(...this._personStream.hubStreams);
     const want = [...new Set(['lut', 'meta', 'status', ...wire])].sort();
     if (want.join() === this._streams) return;
     this._streams = want.join();
     this.stream.subscribe(want);
+  }
+
+  /**
+   * Runtime, about once a second: how this page renders ({ fps, target, visible, scene }). A hub
+   * that takes it lets its pose model give way while a visible page is too slow.
+   */
+  reportRender(report) {
+    if (this.stream.hello?.accepts?.includes('render')) this.stream._send({ type: 'render', ...report });
   }
 
   /** Subscribes again (the hub stream of the person tracking changed). */

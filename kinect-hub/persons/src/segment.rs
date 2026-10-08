@@ -293,7 +293,7 @@ impl PersonTracker {
             self.bg_tol = (0..=u16::MAX).map(|b| (m + sl * f64::from(b)).floor().clamp(0.0, 65535.0) as u16).collect();
             self.bg_tol_for = (m, sl);
         }
-        let PersonTracker { options: o, rays, owner, prev_depth: prev, near_person: near, bg, bg_cand: cand, bg_count: count, still, tracks, frame, bg_tol: tol, .. } = self;
+        let PersonTracker { options: o, rays, owner, prev_depth: prev, near_person: near, bg, bg_cand: cand, bg_count: count, still, tracks, frame, bg_tol: tol, foreground: fg, .. } = self;
         // every pixel is visited every second frame (half the work): counts are in visits
         let still_frames = jround(o.static_seconds * o.fps / 2.0).clamp(0.0, 65535.0) as u16;
         let need_of = |frames: f64| (frames / 2.0).ceil().clamp(0.0, 255.0) as u8;
@@ -310,6 +310,7 @@ impl PersonTracker {
         let (owner, depth, prev, near) = (&owner[..N], &depth[..N], &prev[..N], &near[..N]);
         let (bg, cand, count, still) = (&mut bg[..N], &mut cand[..N], &mut count[..N], &mut still[..N]);
         let tol = &tol[..65536];
+        let mut fresh = 0_usize;
         let mut i = (*frame & 1) as usize;
         while i < N {
             let q = owner[i];
@@ -353,6 +354,9 @@ impl PersonTracker {
                 i += 2;
                 continue;
             }
+            if b != 0 && b != FAR && d < b {
+                fresh += 1; // something in front of the background that is nobody (yet)
+            }
             let c = cand[i];
             let n = count[i];
             if n != 0 && d.abs_diff(c) <= tol[usize::from(c)] {
@@ -379,6 +383,7 @@ impl PersonTracker {
             }
             i += 2;
         }
+        *fg = 2 * fresh;
     }
 }
 

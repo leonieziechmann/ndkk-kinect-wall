@@ -232,21 +232,45 @@ bool Decoder::decode(const uint8_t *packet, size_t len, float *depth, float *ir)
 }
 
 // ---- the thread pool: blocks of rows handed out by an atomic counter ------------------------
+//
+// The caller works too and waits only for blocks a helper has taken: a helper that wakes up late
+// (a busy CPU) finds the job done and holds nothing up.
 
 void Decoder::run_parallel(const std::function<void(int, int)> &rows)
 {
-  next_.store(0);
+  const int blocks = (H + BLOCK - 1) / BLOCK;
+  uint64_t gen;
   {
     std::lock_guard<std::mutex> lock(m_);
+    gen = ++generation_;
     job_ = &rows;
-    pending_ = (int)threads_.size();
-    generation_++;
+    blocks_ = blocks;
+    finished_.store(0);
+    claim_.store((gen & 0xffffffffu) << 32);
   }
   start_.notify_all();
-  for (int b; (b = next_.fetch_add(1)) * BLOCK < H;) rows(b * BLOCK, std::min(H, (b + 1) * BLOCK));
+  work(gen, rows, blocks);
   std::unique_lock<std::mutex> lock(m_);
-  done_.wait(lock, [this] { return pending_ == 0; });
+  done_.wait(lock, [&] { return finished_.load() >= blocks; });
   job_ = nullptr;
+}
+
+void Decoder::work(uint64_t gen, const std::function<void(int, int)> &rows, int blocks)
+{
+  for (;;) {
+    uint64_t v = claim_.load();
+    int b;
+    do {
+      if ((v >> 32) != (gen & 0xffffffffu)) return; // a newer job
+      b = (int)(v & 0xffffffffu);
+      if (b >= blocks) return; // all taken
+    } while (!claim_.compare_exchange_weak(v, v + 1));
+    rows(b * BLOCK, std::min(H, (b + 1) * BLOCK));
+    if (finished_.fetch_add(1) + 1 == blocks) {
+      std::lock_guard<std::mutex> lock(m_);
+      done_.notify_all();
+    }
+  }
 }
 
 void Decoder::worker_loop()
@@ -254,21 +278,21 @@ void Decoder::worker_loop()
 #ifdef _WIN32
   if (low_priority_) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 #endif
-  int seen = 0;
+  uint64_t seen = 0;
   for (;;) {
     const std::function<void(int, int)> *job;
+    uint64_t gen;
+    int blocks;
     {
       std::unique_lock<std::mutex> lock(m_);
       start_.wait(lock, [&] { return quit_ || generation_ != seen; });
       if (quit_) return;
-      seen = generation_;
+      seen = gen = generation_;
       job = job_;
+      blocks = blocks_;
     }
-    for (int b; (b = next_.fetch_add(1)) * BLOCK < H;) (*job)(b * BLOCK, std::min(H, (b + 1) * BLOCK));
-    {
-      std::lock_guard<std::mutex> lock(m_);
-      if (--pending_ == 0) done_.notify_one();
-    }
+    // a block can only be claimed while its job runs, so `job` is valid whenever it is called
+    if (job) work(gen, *job, blocks);
   }
 }
 

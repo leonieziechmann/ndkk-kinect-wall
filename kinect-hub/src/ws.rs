@@ -76,6 +76,7 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         self.set_subscriptions(0);
+        self.hub.render.forget(self.id);
         let _ = self.hub.clients.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| Some(v.saturating_sub(1)));
         info!("client {} ({}) disconnected", self.id, self.addr);
     }
@@ -269,6 +270,10 @@ async fn handle_request(
         ClientRequest::Ping { t } => {
             send_json(hub, tx, &json!({"type": "pong", "t": t, "server_time_us": now_us()})).await
         }
+        ClientRequest::Render { fps, target, visible, scene } => {
+            hub.render.report(session.id, fps, target, visible, scene);
+            Ok(())
+        }
     }
 }
 
@@ -287,6 +292,7 @@ fn hello(hub: &Hub, id: u64) -> String {
         "frame": {"width": WIDTH, "height": HEIGHT, "header_bytes": CLIENT_HEADER_LEN},
         "streams": streams,
         "subscribed": ["status"],
+        "accepts": ["subscribe", "ping", "render"],
         "sensor": sensor,
         "params": params,
         "usage": "send {\"type\":\"subscribe\",\"streams\":[\"depth\",\"lut\"]}; protocol details: GET /api",

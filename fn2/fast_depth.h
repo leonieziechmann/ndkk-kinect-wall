@@ -88,6 +88,7 @@ public:
 
 private:
   void run_parallel(const std::function<void(int, int)> &rows);
+  void work(uint64_t generation, const std::function<void(int, int)> &rows, int blocks);
   void worker_loop();
   void stage1(int y0, int y1);
   void stage2(int y0, int y1);
@@ -115,8 +116,12 @@ private:
   std::mutex m_;
   std::condition_variable start_, done_;
   const std::function<void(int, int)> *job_ = nullptr;
-  int generation_ = 0, pending_ = 0;
-  std::atomic<int> next_{0};
+  uint64_t generation_ = 0;
+  int blocks_ = 0;
+  // the blocks of a job are claimed from one counter: its generation in the high 32 bits, the next
+  // block in the low 32 (a helper that wakes up late cannot take blocks of a newer job)
+  std::atomic<uint64_t> claim_{0};
+  std::atomic<int> finished_{0};
   bool quit_ = false;
   bool low_priority_ = false;
 };
