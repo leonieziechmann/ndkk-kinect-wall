@@ -3,8 +3,9 @@
 #   <out>/labels/<split>/<image>.txt   class cx cy w h, then 17 x (x, y, v); normalized, v = 2 seen, 0 not
 # and all raw detections (box, score, 17 x (x, y, conf) in pixels) to <out>/raw/<model>-<split>.json, so the
 # thresholds can change without running the model again (--from-raw).
-# Usage: python teacher.py [--model yolo11x-pose.pt] [--split train|val] [--flip] [--from-raw]
+# Usage: python teacher.py [--model yolo11x-pose.pt] [--split train|val] [--flip] [--scales 512] [--from-raw]
 #   --flip      also runs the mirrored image and averages the matching persons (left/right swapped): steadier
+#   --scales    input widths, each run and averaged (e.g. 1024,768: the image upscaled, for far persons)
 #   --labels 0  only the raw detections (e.g. of the small model, for comparison)
 #   --threads   CPU threads for the model (default: a quarter of the cores, at the lowest priority)
 # Stopping and going on: the raw detections are saved every few hundred images; a new run skips the images
@@ -30,32 +31,40 @@ def iou(a, b):
     return inter / max(1e-6, ar(a) + ar(b) - inter)
 
 
-def detect(model, paths, flip):
-    """Per image: [{box: [x0, y0, x1, y1], score, kp: [17 x [x, y, conf]]}] in image pixels."""
-    from PIL import Image
-    imgs = [np.array(Image.open(p).convert('RGB')) for p in paths]
-    res = model.predict(imgs, imgsz=512, conf=0.25, iou=0.5, device=device(), verbose=False)
+def passes(model, imgs, imgsz, flip):
+    """One prediction pass: per image [{box, score, kp}] in image pixels (mirrored back, left/right swapped)."""
+    res = model.predict([im[:, ::-1].copy() for im in imgs] if flip else imgs, imgsz=imgsz, conf=0.25, iou=0.5, device=device(), verbose=False)
     out = []
     for r in res:
         b = r.boxes.xyxy.cpu().numpy().tolist()
         s = r.boxes.conf.cpu().numpy().tolist()
         k = r.keypoints.data.cpu().numpy().tolist() if r.keypoints is not None else [[] for _ in b]
+        if flip:
+            b = [[W - 1 - x1, y0, W - 1 - x0, y1] for x0, y0, x1, y1 in b]
+            k = [[[W - 1 - kp[FLIP[n]][0], kp[FLIP[n]][1], kp[FLIP[n]][2]] for n in range(17)] for kp in k]
         out.append([{'box': b[j], 'score': s[j], 'kp': k[j]} for j in range(len(b))])
-    if not flip:
-        return out
-    res = model.predict([im[:, ::-1].copy() for im in imgs], imgsz=512, conf=0.25, iou=0.5, device=device(), verbose=False)
-    for i, r in enumerate(res):
-        fb = [[W - 1 - x1, y0, W - 1 - x0, y1] for x0, y0, x1, y1 in r.boxes.xyxy.cpu().numpy().tolist()]
-        fs = r.boxes.conf.cpu().numpy().tolist()
-        fk = r.keypoints.data.cpu().numpy().tolist() if r.keypoints is not None else [[] for _ in fb]
-        for p in out[i]:
-            j = max(range(len(fb)), key=lambda j: iou(p['box'], fb[j]), default=None)
-            if j is None or iou(p['box'], fb[j]) < 0.5:
-                continue
-            q = [[W - 1 - fk[j][FLIP[n]][0], fk[j][FLIP[n]][1], fk[j][FLIP[n]][2]] for n in range(17)]
-            p['kp'] = [[(a[0] + b[0]) / 2, (a[1] + b[1]) / 2, (a[2] + b[2]) / 2] for a, b in zip(p['kp'], q)]
-            p['box'] = [(a + b) / 2 for a, b in zip(p['box'], fb[j])]
-            p['score'] = (p['score'] + fs[j]) / 2
+    return out
+
+
+def detect(model, paths, flip, scales=(512,)):
+    """Per image: [{box: [x0, y0, x1, y1], score, kp: [17 x [x, y, conf]]}] in image pixels. The persons of the
+    first pass (first scale, not mirrored); every further pass (other scales, mirrored) is averaged into them
+    where its person overlaps (IoU >= 0.5)."""
+    from PIL import Image
+    imgs = [np.array(Image.open(p).convert('RGB')) for p in paths]
+    runs = [passes(model, imgs, z, f) for z in scales for f in ((False, True) if flip else (False,))]
+    out = runs[0]
+    for i, persons in enumerate(out):
+        for p in persons:
+            got = [p]
+            for r in runs[1:]:
+                j = max(range(len(r[i])), key=lambda j: iou(p['box'], r[i][j]['box']), default=None)
+                if j is not None and iou(p['box'], r[i][j]['box']) >= 0.5:
+                    got.append(r[i][j])
+            n = len(got)
+            p['kp'] = [[sum(g['kp'][k][c] for g in got) / n for c in range(3)] for k in range(17)]
+            p['box'] = [sum(g['box'][c] for g in got) / n for c in range(4)]
+            p['score'] = sum(g['score'] for g in got) / n
     return out
 
 
@@ -80,6 +89,7 @@ def main():
     ap.add_argument('--model', default='yolo11x-pose.pt')
     ap.add_argument('--split', default='train')
     ap.add_argument('--flip', action='store_true')
+    ap.add_argument('--scales', default='512', help='input widths, averaged (e.g. 1024,768: upscaled, finds far persons; the first gives the persons)')
     ap.add_argument('--labels', type=int, default=1)
     ap.add_argument('--from-raw', action='store_true')
     ap.add_argument('--limit', type=int, default=0)
@@ -91,7 +101,8 @@ def main():
     paths = sorted(glob.glob(os.path.join(a.out, 'images', a.split, '*.png')))
     if a.limit:
         paths = paths[:: max(1, len(paths) // a.limit)][: a.limit]
-    tag = os.path.splitext(os.path.basename(a.model))[0] + ('-flip' if a.flip else '')
+    scales = [int(z) for z in a.scales.split(',')]
+    tag = os.path.splitext(os.path.basename(a.model))[0] + ('' if scales == [512] else '@' + '+'.join(map(str, scales))) + ('-flip' if a.flip else '')
     raw_path = os.path.join(a.out, 'raw', f'{tag}-{a.split}.json')
     os.makedirs(os.path.dirname(raw_path), exist_ok=True)
     raw = json.load(open(raw_path)) if os.path.exists(raw_path) else {}
@@ -104,7 +115,7 @@ def main():
         t0 = time.time()
         for b in range(0, len(todo), a.batch):
             chunk = todo[b : b + a.batch]
-            for p, d in zip(chunk, detect(model, chunk, a.flip)):
+            for p, d in zip(chunk, detect(model, chunk, a.flip, scales)):
                 raw[os.path.basename(p)] = d
             done = b + len(chunk)
             stop = os.path.exists(stop_file)
