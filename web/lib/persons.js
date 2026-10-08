@@ -30,7 +30,8 @@
 // when the waits get shorter, e.g. after the model's slow first run). Meanwhile ctx.kinect.depth,
 // .ir (and their GPU copies) show the same frame as the persons, so everything a scene draws fits
 // together: a smooth, slightly delayed mirror. delay: 0 = live (the skeleton follows the optical
-// flow from the last pose; the same masks, a less exact skeleton on fast limbs).
+// flow from the last pose, the arms come from the mask of every frame; the same masks, a less exact
+// skeleton on fast limbs).
 //
 // The arrays are valid until the next but one result: copy what you want to keep longer.
 // GPU copies: ctx.kinect.gpu.personLabelTexture/-Buffer, personDepthTexture/-Buffer, personIndexBuffer.

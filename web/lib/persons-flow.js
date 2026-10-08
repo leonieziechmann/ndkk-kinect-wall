@@ -13,7 +13,7 @@
 const EPS = 0.01; // px: stop iterating below this step
 
 export class FlowTracker {
-  constructor(width, height, { levels = 3, radius = 5, iterations = 8, history = 10, minTexture = 30, maxError = 1.5 } = {}) {
+  constructor(width, height, { levels = 3, radius = 5, iterations = 8, history = 10, minTexture = 30, maxError = 1.5, relaxTexture = minTexture, relaxError = maxError } = {}) {
     this.w = width;
     this.h = height;
     this.levels = levels;
@@ -22,6 +22,8 @@ export class FlowTracker {
     this.history = history;
     this.minTexture = minTexture; // smallest eigenvalue of the gradient matrix per window pixel
     this.maxError = maxError; // px: forward-backward error
+    this.relaxTexture = relaxTexture; // the same for the points marked in track()'s `relax`
+    this.relaxError = relaxError;
     this.frames = []; // oldest first: { seq, pyr: [{ w, h, data }] }
     const n = (2 * radius + 1) ** 2;
     this.wa = new Float32Array(n); // window: template values and gradients
@@ -70,7 +72,7 @@ export class FlowTracker {
    * again in the next step; lost[k] counts such steps in a row. False if a frame is not kept
    * (nothing moved). check = false skips tracking back (twice as fast, for rough predictions).
    */
-  track(from, to, pts, n, use, lost, check = true) {
+  track(from, to, pts, n, use, lost, check = true, relax = null) {
     if (from === to) return true;
     let a = -1;
     let b = -1;
@@ -93,11 +95,13 @@ export class FlowTracker {
         if (!use[p]) continue;
         const x = pts[2 * p];
         const y = pts[2 * p + 1];
-        if (!this._lk(I, J, x, y)) continue;
+        const tex = relax && relax[p] ? this.relaxTexture : this.minTexture;
+        const err = relax && relax[p] ? this.relaxError : this.maxError;
+        if (!this._lk(I, J, x, y, tex)) continue;
         const nx = out[0];
         const ny = out[1];
         // and back: it must come out where it started
-        if (check && (!this._lk(J, I, nx, ny) || (out[0] - x) ** 2 + (out[1] - y) ** 2 > this.maxError ** 2)) continue;
+        if (check && (!this._lk(J, I, nx, ny, tex) || (out[0] - x) ** 2 + (out[1] - y) ** 2 > err ** 2)) continue;
         ok[p] = 1;
         lost[p] = 0;
         dx[m] = nx - x;
@@ -119,7 +123,7 @@ export class FlowTracker {
   }
 
   /** One point from pyramid I to J (coarse to fine); the result in this.out, false if lost. */
-  _lk(I, J, x, y) {
+  _lk(I, J, x, y, minTexture = this.minTexture) {
     const r = this.r;
     const wa = this.wa;
     const wx = this.wx;
@@ -154,7 +158,7 @@ export class FlowTracker {
       }
       const det = gxx * gyy - gxy * gxy;
       const minEig = (gxx + gyy - Math.sqrt((gxx - gyy) ** 2 + 4 * gxy * gxy)) / 2;
-      if (minEig < this.minTexture * area || det <= 0) {
+      if (minEig < minTexture * area || det <= 0) {
         if (l === 0) return false; // nothing to follow here
         gx *= 2;
         gy *= 2;
