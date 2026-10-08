@@ -58,6 +58,24 @@ colab stop -s pose
 
 After a change to the scripts: `kaggle.py --no-zip` rebuilds only the notebook. The scripts use the GPU when there is one (`POSE_DEVICE` overrides it).
 
+## Results (2026-10-08, Colab A100)
+
+Pose mAP50-95 against the teacher. "val" is the held-out frames (other recordings of the same days, same setup). "unseen" is 283 frames of the backtest recordings, which no training ever saw: `final-*` (final setup, another day) and `alt-live2` (another room, up to 5 people).
+
+| model | val all | val T-pose | val multi | unseen all | final-solo | final-kleid | alt-live2 |
+|---|---|---|---|---|---|---|---|
+| yolo11n COCO @512 (browser) | 0.764 | 0.863 | 0.851 | 0.654 | 0.696 | 0.772 | 0.479 |
+| yolo11n COCO @384 | 0.698 | 0.812 | 0.776 | 0.603 | 0.675 | 0.734 | 0.417 |
+| yolo11n fine-tuned @512 (`n-ir-2`, 50 epochs) | 0.816 | 0.978 | 0.933 | 0.586 | 0.687 | 0.792 | 0.342 |
+| yolo11n fine-tuned @384 (`n-ir-384-2`) | 0.799 | 0.963 | 0.900 | 0.536 | 0.661 | 0.784 | 0.264 |
+| yolo11s COCO @512 | | | | 0.726 | 0.750 | 0.846 | 0.570 |
+| yolo11s COCO @384 | | | | 0.684 | 0.722 | 0.790 | 0.535 |
+| yolo11m COCO @512 | | | | 0.800 | 0.782 | 0.907 | 0.708 |
+
+- The fine-tuning learned the recorded sessions (people, clothes, the T-pose val is the end of a recording whose start is in training), not the setup: on unseen sessions of the final setup it is even, in another room much worse (it finds fewer people: tracker backtest on alt-live2 with 25 % fewer person pixels). The browser keeps the COCO model.
+- The larger model is the lever: yolo11s at 384 beats yolo11n at 512 everywhere.
+- A further fine-tuning would need: a validation split by day/session, a low learning rate and a frozen backbone, COCO person images (gray) mixed in against forgetting.
+
 ## Stopping and going on
 
 Everything can stop at any time and go on later:
