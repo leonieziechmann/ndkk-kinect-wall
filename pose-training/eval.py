@@ -14,12 +14,12 @@ from teacher import FLIP  # noqa: E402
 CASES = {'alle': '', 'tpose': 'tpose-', 'springen': 'hops-', 'multi': 'multi-'}  # case: image name prefix
 
 
-def subsets(out):
+def subsets(out, cases=CASES):
     """A dataset description per case (a list of its validation images); cases without images are left out."""
     root = out.replace('\\', '/')
     paths = sorted(glob.glob(os.path.join(out, 'images', 'val', '*.png')))
     found = {}
-    for case, prefix in CASES.items():
+    for case, prefix in cases.items():
         sel = [p.replace('\\', '/') for p in paths if os.path.basename(p).startswith(prefix)]
         if not sel:
             continue
@@ -36,6 +36,7 @@ def main():
     ap.add_argument('models', nargs='*')
     ap.add_argument('--out', default=os.path.join(REC, 'training'))
     ap.add_argument('--threads', type=int, default=THREADS)
+    ap.add_argument('--cases', default='', help='other cases: name=prefix,... (e.g. alle=,solo=final-solo-)')
     a = ap.parse_args()
     be_nice()
     import torch
@@ -43,7 +44,7 @@ def main():
     from ultralytics import YOLO
     coco = os.path.join(a.out, 'weights', 'yolo11n-pose.pt')
     models = a.models or [f'{coco}@512', f'{coco}@384'] + [f"{p}@{YOLO(p).ckpt['train_args']['imgsz']}" for p in sorted(glob.glob(os.path.join(a.out, 'runs', '*', 'weights', 'best.pt')))]
-    cases = subsets(a.out)
+    cases = subsets(a.out, dict(c.split('=', 1) for c in a.cases.split(',')) if a.cases else CASES)
     print('pose mAP50-95 (keypoints) / box mAP50-95 (persons found) against the teacher; frames: ' + ', '.join(f'{c} {n}' for c, (_, n) in cases.items()))
     print(f'{"model":44s}' + ''.join(f'{c:>16s}' for c in cases))
     for spec in models:
