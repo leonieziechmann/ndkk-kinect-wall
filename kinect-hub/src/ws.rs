@@ -86,7 +86,9 @@ pub async fn run(socket: WebSocket, hub: Arc<Hub>, addr: SocketAddr, _permit: Ow
     let (mut tx, mut rx) = socket.split();
     let mut frames = hub.frames.subscribe();
     let mut params = hub.params.subscribe();
+    let mut poses = hub.poses.subscribe();
     frames.mark_unchanged(); // the first frame sent is a fresh one
+    poses.mark_unchanged();
     params.mark_unchanged(); // params are sent when `lut` gets subscribed
 
     if send(&hub, &mut tx, Message::Text(hello(&hub, session.id).into())).await.is_err() {
@@ -158,6 +160,16 @@ pub async fn run(socket: WebSocket, hub: Arc<Hub>, addr: SocketAddr, _permit: Ow
                 let p = params.borrow_and_update().clone();
                 if let Some(p) = p
                     && send_params(&hub, &mut tx, &p).await.is_err() {
+                        break "send failed".to_string();
+                    }
+            }
+            changed = poses.changed(), if session.has(Stream::Poses) => {
+                if changed.is_err() {
+                    break "hub shutting down".to_string();
+                }
+                let p = poses.borrow_and_update().clone();
+                if let Some(p) = p
+                    && send(&hub, &mut tx, Message::Text(p.json.clone())).await.is_err() {
                         break "send failed".to_string();
                     }
             }

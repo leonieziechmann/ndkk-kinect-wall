@@ -85,6 +85,7 @@ fn router(hub: Arc<Hub>) -> Router {
         .route("/api/params", get(api_params))
         .route("/api/lut", get(api_lut))
         .route("/api/frame/{stream}", get(api_frame))
+        .route("/api/poses", get(api_poses))
         .route(
             "/api/devservers",
             get(devservers_list).post(devservers_register).delete(devservers_remove).layer(DefaultBodyLimit::max(64 * 1024)),
@@ -212,6 +213,7 @@ async fn api_frame(State(hub): State<Arc<Hub>>, Path(name): Path<String>, Query(
             .into_response(),
         Stream::Lut => error(StatusCode::BAD_REQUEST, "use /api/lut"),
         Stream::Status => error(StatusCode::BAD_REQUEST, "use /api/status"),
+        Stream::Poses => error(StatusCode::BAD_REQUEST, "use /api/poses"),
         Stream::Points => {
             if png {
                 return error(StatusCode::BAD_REQUEST, "points are only available raw (i16 x,y,z in mm)");
@@ -254,6 +256,25 @@ async fn api_frame(State(hub): State<Arc<Hub>>, Path(name): Path<String>, Query(
                 Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, format!("png encoding failed: {e}")),
             }
         }
+    }
+}
+
+/// The newest poses. The model only runs while someone wants poses: a request keeps it running for
+/// a few seconds, so the first one may find none yet (poll again).
+async fn api_poses(State(hub): State<Arc<Hub>>) -> Response {
+    hub.pose.touch_http();
+    let latest = hub.poses.borrow().clone();
+    let fresh = latest.filter(|p| crate::state::now_us().saturating_sub(p.capture_time_us) < 2_000_000);
+    match fresh {
+        Some(p) => ([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], p.json.as_str().to_string())
+            .into_response(),
+        None => Json(json!({
+            "type": "poses",
+            "poses": null,
+            "hint": "the pose model starts with this request; ask again in a moment (status below)",
+            "pose": hub.pose.status_json(),
+        }))
+        .into_response(),
     }
 }
 
@@ -367,6 +388,7 @@ async fn api_index(State(hub): State<Arc<Hub>>) -> Response {
             "GET /api/params": "depth camera intrinsics + distortion (JSON)",
             "GET /api/lut": "undistortion table: f32 x,y per pixel (binary)",
             "GET /api/frame/{depth|depth_raw|ir|points|meta}": "latest frame; ?format=png for depth/depth_raw (16-bit mm) and ir (8-bit)",
+            "GET /api/poses": "newest poses of the pose model as the poses stream sends them (JSON); a request keeps the model running for 5 s, the first one may get poses: null",
             "GET /ws": "WebSocket stream (see websocket)",
             "GET /api/devservers": "scene dev servers (Vite, one per worktree) that announced themselves, with their scenes (JSON)",
             "POST /api/devservers": "announce a dev server: {url: 'http://127.0.0.1:<port>', label, branch, worktree, hub, pid, scenes: [{name, title, description, author, thumb, modified_ms, error}]}; repeat every few seconds, entries expire after ttl_s; only from this machine, not from browsers",
@@ -379,7 +401,7 @@ async fn api_index(State(hub): State<Arc<Hub>>) -> Response {
                 "subscribe": {"type": "subscribe", "streams": ["depth", "lut"], "max_fps": 30},
                 "ping": {"type": "ping", "t": "anything, echoed back"},
             },
-            "server_text_messages": ["hello", "subscribed", "status", "params", "frame", "pong", "error"],
+            "server_text_messages": ["hello", "subscribed", "status", "params", "frame", "poses", "pong", "error"],
             "binary_header": {
                 "bytes": CLIENT_HEADER_LEN,
                 "layout": "u32 magic 'K2H1' (0x3148324B) | u8 kind | u8 version | u16 header_len | u32 seq | u16 width | u16 height | u64 capture_time_us | u64 publish_time_us, little-endian; payload follows",

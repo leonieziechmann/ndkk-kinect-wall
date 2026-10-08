@@ -21,6 +21,15 @@ usage: kinect-hub [options]
                          0.05..1 (default 0.4; 1 = off). `depth_raw` is never filtered.
   --allow-origin ORIGIN  additional browser origin that may connect (repeatable, '*' = any).
                          Same-origin pages and http(s)://localhost / 127.0.0.1 are always allowed.
+  --pose dml|cpu|off     pose model on the infrared image (stream `poses`): DirectML on the GPU
+                         (default), the CPU, or not at all
+  --pose-model PATH      full-size pose model (default web/lib/models/yolo11n-pose-fp16.onnx)
+  --pose-model-fast PATH|none
+                         smaller model taken while the full one cannot keep --pose-hz
+                         (default web/lib/models/yolo11n-pose-384-fp16.onnx if it exists)
+  --pose-hz HZ           target pose rate (default 15; 0 = as often as possible, full model only)
+  --onnxruntime PATH     onnxruntime.dll (default: next to the hub, else kinect-hub/onnxruntime/,
+                         which kinect-hub/setup-onnxruntime.ps1 fills)
   -h, --help             this text
 
 Logging: set RUST_LOG, e.g. RUST_LOG=debug";
@@ -42,6 +51,14 @@ impl SourceKind {
     }
 }
 
+/// Where the pose model runs (`--pose`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PoseDevice {
+    DirectMl,
+    Cpu,
+    Off,
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub bind: SocketAddr,
@@ -54,6 +71,12 @@ pub struct Config {
     pub max_clients: usize,
     pub smoothing: f32,
     pub allow_origins: Vec<String>,
+    pub pose: PoseDevice,
+    pub pose_model: Option<PathBuf>,
+    /// `Some(None)`: `--pose-model-fast none`
+    pub pose_model_fast: Option<Option<PathBuf>>,
+    pub pose_hz: f64,
+    pub onnxruntime: Option<PathBuf>,
 }
 
 impl Config {
@@ -69,6 +92,11 @@ impl Config {
             max_clients: 64,
             smoothing: 0.4,
             allow_origins: Vec::new(),
+            pose: PoseDevice::DirectMl,
+            pose_model: None,
+            pose_model_fast: None,
+            pose_hz: 15.0,
+            onnxruntime: None,
         };
         let mut args = args;
         while let Some(arg) = args.next() {
@@ -118,6 +146,27 @@ impl Config {
                     }
                 }
                 "--allow-origin" => cfg.allow_origins.push(value("--allow-origin")?),
+                "--pose" => {
+                    cfg.pose = match value("--pose")?.as_str() {
+                        "dml" | "directml" => PoseDevice::DirectMl,
+                        "cpu" => PoseDevice::Cpu,
+                        "off" => PoseDevice::Off,
+                        other => return Err(format!("--pose {other}: expected dml, cpu or off")),
+                    }
+                }
+                "--pose-model" => cfg.pose_model = Some(PathBuf::from(value("--pose-model")?)),
+                "--pose-model-fast" => {
+                    let v = value("--pose-model-fast")?;
+                    cfg.pose_model_fast = Some((v != "none").then(|| PathBuf::from(v)));
+                }
+                "--pose-hz" => {
+                    let v = value("--pose-hz")?;
+                    cfg.pose_hz = v.parse().map_err(|e| format!("--pose-hz {v}: {e}"))?;
+                    if !(0.0..=60.0).contains(&cfg.pose_hz) {
+                        return Err("--pose-hz must be between 0 and 60".to_string());
+                    }
+                }
+                "--onnxruntime" => cfg.onnxruntime = Some(PathBuf::from(value("--onnxruntime")?)),
                 other => return Err(format!("unknown option {other}")),
             }
         }
@@ -134,6 +183,37 @@ impl Config {
             Some(p) => p.is_file().then(|| p.clone()),
             None => find_upwards(&Path::new("fn2").join("bin").join("fn2_capture.exe")),
         }
+    }
+
+    /// The full-size pose model.
+    pub fn pose_model_path(&self) -> Option<PathBuf> {
+        match &self.pose_model {
+            Some(p) => Some(p.clone()),
+            None => self.web_dir.as_ref().map(|d| d.join("lib").join("models").join("yolo11n-pose-fp16.onnx")),
+        }
+    }
+
+    /// The smaller pose model, if there is one.
+    pub fn pose_model_fast_path(&self) -> Option<PathBuf> {
+        match &self.pose_model_fast {
+            Some(p) => p.clone(),
+            None => self
+                .web_dir
+                .as_ref()
+                .map(|d| d.join("lib").join("models").join("yolo11n-pose-384-fp16.onnx"))
+                .filter(|p| p.is_file()),
+        }
+    }
+
+    /// onnxruntime.dll, looked up again before every attempt (setup-onnxruntime.ps1 may run while
+    /// the hub does).
+    pub fn onnxruntime_path(&self) -> Option<PathBuf> {
+        if let Some(p) = &self.onnxruntime {
+            return p.is_file().then(|| p.clone());
+        }
+        find_upwards(Path::new("onnxruntime.dll"))
+            .or_else(|| find_upwards(&Path::new("kinect-hub").join("onnxruntime").join("onnxruntime.dll")))
+            .or_else(|| find_upwards(&Path::new("onnxruntime").join("onnxruntime.dll")))
     }
 
     /// The recording to replay, looked up again before every attempt. A relative path that does

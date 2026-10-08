@@ -1,5 +1,7 @@
 # build output
 kinect-hub/target/
+# onnxruntime.dll for the pose model: fetched by kinect-hub/setup-onnxruntime.ps1
+kinect-hub/onnxruntime/
 fn2/bin/
 __pycache__/
 *.pyc

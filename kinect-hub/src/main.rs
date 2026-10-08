@@ -6,6 +6,7 @@ mod config;
 mod devservers;
 mod lut;
 mod pipeline;
+mod pose;
 mod protocol;
 mod recording;
 mod replay;
@@ -14,6 +15,7 @@ mod source;
 mod state;
 mod synthetic;
 mod ws;
+mod yolo;
 
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -69,16 +71,25 @@ async fn run(cfg: Arc<Config>) {
         stop_tx.send_replace(true);
     });
 
-    // the source (and with it the Kinect) only starts once this instance owns the port
+    // the source (and with it the Kinect) and the pose model only start once this instance owns the port
     let source_slot = Arc::new(Mutex::new(None));
+    let pose_slot = Arc::new(Mutex::new(None));
     let start_source: Box<dyn FnOnce() + Send> = {
-        let (slot, hub) = (source_slot.clone(), hub.clone());
-        Box::new(move || *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(source::spawn(hub)))
+        let (slot, pose, hub) = (source_slot.clone(), pose_slot.clone(), hub.clone());
+        let rt = tokio::runtime::Handle::current();
+        Box::new(move || {
+            *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(source::spawn(hub.clone()));
+            *pose.lock().unwrap_or_else(PoisonError::into_inner) = Some(pose::spawn(hub, rt));
+        })
     };
     server::serve(hub.clone(), shutdown, Some(start_source)).await;
     let source = source_slot.lock().unwrap_or_else(PoisonError::into_inner).take();
     if let Some(source) = source {
         source.stop(Duration::from_secs(4)).await;
+    }
+    let pose = pose_slot.lock().unwrap_or_else(PoisonError::into_inner).take();
+    if let Some(pose) = pose {
+        pose.stop(Duration::from_secs(4)).await;
     }
     info!("bye");
 }

@@ -81,7 +81,11 @@ fn opts() -> Res<Opts> {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut o = Opts {
         model: here.join("../../web/lib/models/yolo11n-pose-fp16.onnx"),
-        dylib: std::env::var_os("ORT_DYLIB_PATH").map_or_else(|| here.join("ort/onnxruntime.dll"), PathBuf::from),
+        // the hub's copy (setup-onnxruntime.ps1) unless there is one of its own
+        dylib: std::env::var_os("ORT_DYLIB_PATH").map_or_else(
+            || Some(here.join("ort/onnxruntime.dll")).filter(|p| p.is_file()).unwrap_or_else(|| here.join("../onnxruntime/onnxruntime.dll")),
+            PathBuf::from,
+        ),
         frames: Vec::new(),
         hub: "127.0.0.1:8090".into(),
         eps: vec![Ep::Dml(0), Ep::Cpu { threads: 6, spinning: false }],

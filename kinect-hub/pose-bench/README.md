@@ -63,7 +63,7 @@ Vorbehalte:
 
 ## Einrichten
 
-1. ONNX Runtime mit DirectML: NuGet-Paket [Microsoft.ML.OnnxRuntime.DirectML 1.24.4](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime.DirectML/1.24.4) (12,5 MB) laden, aus dem Zip (`.nupkg`) nur `runtimes/win-x64/native/onnxruntime.dll` nach `kinect-hub/pose-bench/ort/onnxruntime.dll` legen (git-ignoriert). Das ist die neueste ONNX Runtime mit DirectML; deshalb `api-24` in `Cargo.toml`.
+1. ONNX Runtime mit DirectML: `kinect-hub/setup-onnxruntime.ps1` (dieselbe DLL wie für den Hub, nach `kinect-hub/onnxruntime/`). Oder von Hand: NuGet-Paket [Microsoft.ML.OnnxRuntime.DirectML 1.24.4](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime.DirectML/1.24.4) (12,5 MB), aus dem Zip (`.nupkg`) nur `runtimes/win-x64/native/onnxruntime.dll` nach `kinect-hub/pose-bench/ort/onnxruntime.dll` (git-ignoriert). Das ist die neueste ONNX Runtime mit DirectML; deshalb `api-24` in `Cargo.toml`.
 2. `DirectML.dll` liefert Windows 11 mit (System32, hier 1.15.5). Ist sie zu alt, das NuGet-Paket Microsoft.AI.DirectML neben die `onnxruntime.dll` legen.
 3. `cargo build --release` in `kinect-hub/pose-bench/`. Das Crate `ort` lädt die DLL zur Laufzeit (`load-dynamic`), deshalb geht es mit der GNU-Toolchain wie der Hub.
 

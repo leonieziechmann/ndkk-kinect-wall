@@ -45,7 +45,7 @@ Only one process can open the Kinect at a time. **kinect-hub** owns it and serve
 
 ## Building the hub and the worker (main checkout only)
 
-- Hub: `cargo build --release` in `kinect-hub/`.
+- Hub: `cargo build --release` in `kinect-hub/`. Once per checkout for the pose model (stream `poses`): `powershell -NoProfile -ExecutionPolicy Bypass -File kinect-hub/setup-onnxruntime.ps1` fetches `onnxruntime.dll` (not in git). Without it the hub runs without poses and says so in `/api/status`.
   - The running exe is locked. Stop the hub only if you started it yourself, or rename the running exe before building.
   - Lints deny `unwrap`/`expect`/`panic`/indexing. Run `cargo clippy --release --all-targets` before finishing.
 - Worker, DLLs, tools: `sh fn2/build.sh` (w64devkit gcc). libfreenect2 is a patched copy in `third_party/`; the changes are in `third_party/libfreenect2-fastreconnect.patch`.

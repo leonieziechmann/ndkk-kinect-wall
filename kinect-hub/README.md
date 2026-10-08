@@ -22,7 +22,9 @@ cargo build --release                      # im Ordner kinect-hub
 kinect-hub\target\release\kinect-hub.exe   # aus dem Projektordner
 ```
 
-Optionen (`--help`): `--bind 0.0.0.0:8090` (LAN statt nur localhost), `--source synthetic` (generierte Testszene ohne Kinect), `--source replay DATEI` (Aufnahme in Schleife abspielen, s. u.), `--pipeline cl|cpu`, `--smoothing 0.4`, `--max-clients 64`, `--allow-origin URL`, `--web-dir` (z. B. `web/dist` für gebaute Szenen), `--worker`. Logging über `RUST_LOG=debug`.
+Optionen (`--help`): `--bind 0.0.0.0:8090` (LAN statt nur localhost), `--source synthetic` (generierte Testszene ohne Kinect), `--source replay DATEI` (Aufnahme in Schleife abspielen, s. u.), `--pipeline cl|cpu`, `--smoothing 0.4`, `--max-clients 64`, `--allow-origin URL`, `--web-dir` (z. B. `web/dist` für gebaute Szenen), `--worker`, `--pose dml|cpu|off`, `--pose-hz 15`, `--pose-model`, `--pose-model-fast`, `--onnxruntime` (s. u. „Posen“). Logging über `RUST_LOG=debug`.
+
+Für die Posen einmal je Checkout `powershell -NoProfile -ExecutionPolicy Bypass -File kinect-hub\setup-onnxruntime.ps1` (holt `onnxruntime.dll`, s. u.). Ohne läuft der Hub wie bisher, nur ohne Posen.
 
 Der Worker `fn2/bin/fn2_capture.exe` wird mit `sh fn2/build.sh` gebaut. Er braucht den libusbK-Treiber auf „Xbox NUI Sensor (Interface 0)“.
 
@@ -36,6 +38,7 @@ Der Worker `fn2/bin/fn2_capture.exe` wird mit `sh fn2/build.sh` gebaut. Er brauc
 | `GET /api/params` | Intrinsik und Verzeichnung der Tiefenkamera (aus der Kinect gelesen) |
 | `GET /api/lut` | Entzerrungstabelle: f32 x,y je Pixel |
 | `GET /api/frame/{depth,depth_raw,ir,points,meta}` | neuester Frame binär; `?format=png` für depth (16 Bit, mm) und ir |
+| `GET /api/poses` | neueste Posen (JSON wie der Stream `poses`). Eine Anfrage hält das Modell 5 s am Laufen, die erste bekommt eventuell `poses: null` |
 | `GET /ws` | WebSocket-Stream |
 | `GET /api/devservers` | Register der Szenen-Dev-Server (Vite, einer je Worktree) mit ihren Szenen |
 | `POST /api/devservers` | Dev-Server meldet sich an: `{url: "http://127.0.0.1:<port>", label, branch, worktree, hub, pid, scenes: [...]}`. Alle paar Sekunden wiederholen, Einträge verfallen nach 15 s. Erledigt das Vite-Plugin in `web/tools/`. |
@@ -61,6 +64,7 @@ Nach dem Verbinden schickt der Hub `{"type":"hello",…}` mit allen Streams und 
 | `lut` | `{"type":"params",…}` + binär kind 16: f32 x,y je Pixel; kommt beim Abo und bei jedem Sensorstart |
 | `meta` | `{"type":"frame",…}` je Frame: seq, Zeitstempel, Statistik (min/max/Median/Schwerpunkt) |
 | `status` | `{"type":"status",…}` einmal pro Sekunde (standardmäßig abonniert) |
+| `poses` | `{"type":"poses", seq, capture_time_us, publish_time_us, model, ms, poses: [{score, box: [u0,v0,u1,v1], kp: 17 × (u, v, Konfidenz)}]}` in der Pose-Rate; Pixel wie die Frames (gespiegelt), COCO-17. Das Modell läuft nur, solange jemand abonniert |
 
 **Binär-Header** (32 Byte, little-endian), danach die Nutzdaten:
 
@@ -72,6 +76,16 @@ u32 seq | u16 width (512) | u16 height (424) | u64 capture_time_us | u64 publish
 Die Zeiten sind µs seit 1970 auf der Uhr des Hub-Rechners. `capture_time_us` ist der Moment, in dem der fertige Tiefenframe aus libfreenect2 kam.
 
 **Koordinaten:** Kamerakoordinaten der Kinect: x nach rechts, y nach unten, z nach vorn, Einheit mm. 3D-Punkt eines Pixels: `(lut.x * z, lut.y * z, z)`. Die LUT enthält die Linsenentzerrung, die der Hub einmal pro Sensorstart berechnet. Das Kinect-Bild kommt gespiegelt; für eine echte 3D-Ansicht x negieren (machen die Szenen standardmäßig, Taste `m`).
+
+## Posen
+
+Der Hub erkennt die Körperhaltung der Menschen vor der Kinect selbst: YOLO11n-pose (`web/lib/models/`) auf dem Infrarotbild, mit ONNX Runtime auf der GPU über DirectML (`src/pose.rs`, `src/yolo.rs`). Das Ergebnis ist dasselbe wie im Browser (`web/lib/persons-pose.js`), es kostet aber nur etwa ein Drittel der GPU-Zeit und wird einmal für alle Clients gerechnet. Messungen und Vergleich: `pose-bench/README.md`.
+
+- **Eigener Thread:** Er nimmt das neueste Bild, sobald die nächste Pose fällig ist (`--pose-hz`, Standard 15). Die Frames warten nie auf ihn. Das Modell rechnet nur, solange jemand `poses` abonniert hat oder `/api/poses` fragt.
+- **Zwei Größen:** Liegt `web/lib/models/yolo11n-pose-384-fp16.onnx` neben dem Standardmodell (oder `--pose-model-fast`), springt der Hub auf das kleine Modell, wenn das große fünfmal hintereinander länger als 90 % der Periode braucht. Alle 3 s probiert er das große wieder (die Pose zählt mit) und kehrt zurück, sobald es dreimal unter 60 % bleibt. Jede Pose nennt ihr `model`. Gemessen unter hoher GPU-Last: 512×448 ≈ 58 ms, 384×320 ≈ 30 ms.
+- **ONNX Runtime** wird zur Laufzeit geladen: `onnxruntime.dll` neben der exe, sonst `kinect-hub/onnxruntime/` (füllt `setup-onnxruntime.ps1`: NuGet-Paket Microsoft.ML.OnnxRuntime.DirectML 1.24.4, die neueste Version mit DirectML; prüft Prüfsumme und Microsoft-Signatur; nicht im Git). `DirectML.dll` bringt Windows mit.
+- **Fehler:** Fehlen DLL oder Modell oder scheitert DirectML, läuft der Hub ohne Posen weiter. `/api/status` → `pose` sagt warum (`state`: `off`, `loading`, `idle`, `running`, `error`), und der Hub versucht es alle 10 s neu. Eine DLL oder ein Modell, das später dazukommt, wird also ohne Neustart übernommen. Abstürze im Pose-Thread werden abgefangen und gezählt.
+- **Status** (`pose` in `/api/status`): Gerät, geladene Modelle mit ihrer Zeit nach dem Laden, aktives Modell, Ziel- und erreichte Rate, ms je Lauf, Zahl der Wechsel und der Grund des letzten.
 
 ## Eigene Clients
 

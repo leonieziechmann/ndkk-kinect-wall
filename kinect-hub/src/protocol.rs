@@ -91,10 +91,11 @@ pub enum Stream {
     Lut,
     Meta,
     Status,
+    Poses,
 }
 
 impl Stream {
-    pub const COUNT: usize = 7;
+    pub const COUNT: usize = 8;
     pub const ALL: [Stream; Stream::COUNT] = [
         Stream::Depth,
         Stream::DepthRaw,
@@ -103,6 +104,7 @@ impl Stream {
         Stream::Lut,
         Stream::Meta,
         Stream::Status,
+        Stream::Poses,
     ];
     /// Streams that carry one message per sensor frame, in the order they are sent.
     pub const PER_FRAME: [Stream; 5] = [Stream::Depth, Stream::DepthRaw, Stream::Ir, Stream::Points, Stream::Meta];
@@ -116,6 +118,7 @@ impl Stream {
             Stream::Lut => 4,
             Stream::Meta => 5,
             Stream::Status => 6,
+            Stream::Poses => 7,
         }
     }
 
@@ -132,6 +135,7 @@ impl Stream {
             Stream::Lut => "lut",
             Stream::Meta => "meta",
             Stream::Status => "status",
+            Stream::Poses => "poses",
         }
     }
 
@@ -147,7 +151,7 @@ impl Stream {
             Stream::Ir => Some(3),
             Stream::Points => Some(4),
             Stream::Lut => Some(16),
-            Stream::Meta | Stream::Status => None,
+            Stream::Meta | Stream::Status | Stream::Poses => None,
         }
     }
 
@@ -160,6 +164,7 @@ impl Stream {
             Stream::Lut => "JSON {type:'params'} + binary kind 16: f32 x,y per pixel; point = (x*z, y*z, z)",
             Stream::Meta => "JSON {type:'frame'} per frame: seq, timestamps, depth statistics",
             Stream::Status => "JSON {type:'status'} once per second: sensor state, fps, latency, clients",
+            Stream::Poses => "JSON {type:'poses'} at the pose rate (--pose-hz): seq and capture_time_us of the frame, model, ms, poses [{score, box: [u0,v0,u1,v1], kp: 17 x (u, v, confidence)}] in depth-image pixels (mirrored, as the frames); the model runs only while someone subscribes",
         }
     }
 }
