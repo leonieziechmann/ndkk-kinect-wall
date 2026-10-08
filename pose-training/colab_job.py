@@ -8,7 +8,7 @@
 # and averaged), trains the browser model at 512 (as now) and at 384 (faster in the browser), evaluates
 # old against new, exports both, and packs ergebnis.zip. The steps run in a shell of their own (nohup), so
 # a lost connection to the CLI does not stop them; a step that is done is skipped when started again.
-import glob
+
 import os
 import subprocess
 import textwrap
@@ -17,16 +17,12 @@ C = '/content'
 K = f'{C}/kinect'
 EPOCHS = int(os.environ.get('POSE_EPOCHS', '40'))
 
-# every data zip: kinect-pose-daten.zip (kaggle.py) and those packed later (kaggle.py --only <prefix>)
-for z in sorted(glob.glob(f'{C}/kinect-pose-*.zip')):
-    if not os.path.exists(f'{z}.unpacked'):
-        subprocess.run(['unzip', '-q', '-o', z, '-d', C], check=True)
-        open(f'{z}.unpacked', 'w').close()
-os.makedirs(f'{K}/pose-training', exist_ok=True)
-subprocess.run(f'cp {C}/pose-training/*.py {K}/pose-training/', shell=True, check=True)
-
+# the start returns at once (the CLI waits only seconds for an answer): unpacking is the job's first step
 job = textwrap.dedent(f"""\
     set -x
+    # every data zip: kinect-pose-daten.zip (kaggle.py) and those packed later (kaggle.py --only <prefix>)
+    for z in {C}/kinect-pose-*.zip; do [ -e $z.unpacked ] || {{ unzip -q -o $z -d {C} && touch $z.unpacked; }}; done
+    mkdir -p {K}/pose-training && cp {C}/pose-training/*.py {K}/pose-training/
     export KINECT_MAIN={K} POSE_THREADS=$(nproc)
     T={K}/recordings/training; P={K}/pose-training
     pip install -q ultralytics onnx onnxruntime onnxconverter-common onnxslim
