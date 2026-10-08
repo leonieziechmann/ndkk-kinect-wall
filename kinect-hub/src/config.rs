@@ -13,8 +13,9 @@ usage: kinect-hub [options]
                          data source (default kinect; synthetic = generated test scene;
                          replay FILE = loop a recording of `kinect-hub-probe record`)
   --worker PATH          capture worker (default: fn2/bin/fn2_capture.exe, searched upwards)
-  --pipeline cl|cpu|clkde
-                         libfreenect2 depth pipeline inside the worker (default cl = OpenCL)
+  --pipeline fast|cl|cpu|clkde
+                         depth decoding inside the worker (default fast = on the CPU with AVX2,
+                         leaves the GPU to the scenes; cl = OpenCL on the GPU)
   --web-dir PATH         static files served at / (default: web/, searched upwards)
   --max-clients N        simultaneous WebSocket clients (default 64)
   --smoothing A          temporal filter for the `depth` stream: weight of the newest frame,
@@ -91,7 +92,7 @@ impl Config {
             source: SourceKind::Kinect,
             replay: None,
             worker: None,
-            pipeline: "cl".to_string(),
+            pipeline: "fast".to_string(),
             web_dir: None,
             max_clients: 64,
             smoothing: 0.4,
@@ -131,8 +132,8 @@ impl Config {
                 "--worker" => cfg.worker = Some(PathBuf::from(value("--worker")?)),
                 "--pipeline" => {
                     let v = value("--pipeline")?;
-                    if !["cl", "cpu", "clkde"].contains(&v.as_str()) {
-                        return Err(format!("--pipeline {v}: expected cl, cpu or clkde"));
+                    if !["fast", "cl", "cpu", "clkde"].contains(&v.as_str()) {
+                        return Err(format!("--pipeline {v}: expected fast, cl, cpu or clkde"));
                     }
                     cfg.pipeline = v;
                 }

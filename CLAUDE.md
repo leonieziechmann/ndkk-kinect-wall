@@ -41,12 +41,13 @@ Only one process can open the Kinect at a time. **kinect-hub** owns it and serve
 - Protocol: `kinect-hub/README.md`, or `GET /api` (machine-readable). Dev servers announce themselves at `POST /api/devservers` (done by the Vite plugin).
 - Python: `kinect_hub.py` provides `Hub().depth()`, `.points()`, `.stream([...])` and `HubDepthSensor`.
 - Coordinates: x right, y down, z forward, in mm. point = (lut.x * z, lut.y * z, z). The Kinect image is mirrored.
-- The depth decoding (OpenCL) shares the GPU with the browser. A scene that saturates the GPU drops the sensor rate; `npm run check` reports it.
+- The worker decodes the depth on the CPU by default (`--pipeline fast`, fn2/fast_depth.cpp), so the GPU belongs to the scenes and the hub's pose model. A scene that saturates the GPU still costs CPU and power on this APU; `npm run check` reports the sensor rate. `--pipeline cl` = the old OpenCL decoding on the GPU.
+- The hub tracks persons itself (streams `persons` / `persons_live`, pose model with DirectML): scenes with `streams: ['persons']` take them automatically. `?persons=local` forces the old in-browser tracker for comparisons.
 
 ## Building the hub and the worker (main checkout only)
 
 - Hub: `cargo build --release` in `kinect-hub/`. Once per checkout for the pose model (stream `poses`): `powershell -NoProfile -ExecutionPolicy Bypass -File kinect-hub/setup-onnxruntime.ps1` fetches `onnxruntime.dll` (not in git). Without it the hub runs without poses and says so in `/api/status`.
   - The running exe is locked. Stop the hub only if you started it yourself, or rename the running exe before building.
   - Lints deny `unwrap`/`expect`/`panic`/indexing. Run `cargo clippy --release --all-targets` before finishing.
-- Worker, DLLs, tools: `sh fn2/build.sh` (w64devkit gcc). libfreenect2 is a patched copy in `third_party/`; the changes are in `third_party/libfreenect2-fastreconnect.patch`.
+- Worker, DLLs, tools: `sh fn2/build.sh` (w64devkit gcc; from a worktree `T=<main>/third_party sh fn2/build.sh`). Depth decoder tools: `fn2_rawdump` (raw packets, needs the Kinect) and `depth_bench` (compares decoders offline). libfreenect2 is a patched copy in `third_party/`; the changes are in `third_party/libfreenect2-fastreconnect.patch`.
 - Robustness check after hub changes: `kinect-hub-probe abuse` must end with 0 errors, the healthy client at about 30 fps, and "dev server registry: ... OK".
