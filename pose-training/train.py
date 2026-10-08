@@ -29,6 +29,7 @@ def main():
     ap.add_argument('--out', default=os.path.join(REC, 'training'))
     ap.add_argument('--model', default='yolo11n-pose.pt')
     ap.add_argument('--epochs', type=int, default=30)
+    ap.add_argument('--imgsz', type=int, default=512, help='input width (512: as in the browser now; 384: 1.5-2x faster there)')
     ap.add_argument('--batch', type=int, default=16)
     ap.add_argument('--fraction', type=float, default=1.0, help='share of the training images (short test runs)')
     ap.add_argument('--name', default='n-ir')
@@ -67,7 +68,7 @@ def main():
     model.add_callback('on_fit_epoch_end', maybe_stop)
     model.train(
         data=dataset(a.out, a.train_split),
-        imgsz=512,
+        imgsz=a.imgsz,
         epochs=a.epochs,
         batch=a.batch,
         fraction=a.fraction,

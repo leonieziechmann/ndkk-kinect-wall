@@ -31,6 +31,22 @@ $PY pose-training/export.py                                 # ONNX + float16 lik
 - **eval.py**: pose mAP (keypoint similarity, OKS) and box mAP on the validation frames against the teacher, per model.
 - **export.py**: ONNX for 448×512, then float16, and a check against the current browser model (same input and output, run with the browser's preprocessing). The result goes into `web/lib/models/` only after the backtest (`recordings/backtest/`) and a check in the browser.
 
+## On Colab (colab CLI, e.g. an A100 with Colab Pro)
+
+The [colab CLI](https://github.com/googlecolab/google-colab-cli) runs on Linux and macOS; on Windows in WSL (`python3 -m venv ~/colab-cli && ~/colab-cli/bin/pip install google-colab-cli`). Log in once yourself (it prints a Google link, you paste the code back): `colab --auth=oauth2 sessions`.
+
+```bash
+colab new -s pose --gpu A100
+colab upload -s pose recordings/training/kaggle/kinect-pose-daten.zip /content/kinect-pose-daten.zip   # from kaggle.py
+colab upload -s pose pose-training/<script>.py /content/pose-training/<script>.py                     # each script
+colab exec -s pose -f pose-training/colab_job.py        # starts the whole run in the background on the VM
+echo "print(open('/content/job.log').read()[-3000:])" | colab exec -s pose                            # progress
+colab download -s pose /content/ergebnis.zip recordings/training/ergebnis.zip                         # once /content/DONE exists
+colab stop -s pose
+```
+
+`colab_job.py` labels with the teacher (both splits, mirrored), trains at 512 (`n-ir`, as in the browser now) and at 384 (`n-ir-384`, faster in the browser), evaluates and exports both. A step that is done is skipped when it starts again; an interrupted training goes on from `resume.pt`.
+
 ## On Kaggle (free GPU)
 
 `kaggle.py` packs everything for a Kaggle notebook into `recordings/training/kaggle/`: `kinect-pose-daten.zip` (the frames, the weights, the browser's current model; ~1 GB) and `kinect-pose-training.ipynb` (the scripts inside, so it needs nothing from the repository).
