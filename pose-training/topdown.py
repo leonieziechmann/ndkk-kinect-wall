@@ -29,8 +29,11 @@ def load(name):
     import transformers
     repo = MODELS[name][0]
     cls = transformers.VitPoseForPoseEstimation if name == 'vitpose' else transformers.Sapiens2ForPoseEstimation
-    model = cls.from_pretrained(repo, torch_dtype=torch.bfloat16).cuda().eval()
-    return model
+    try:  # memory-efficient attention: Sapiens2 at 1024x768 has 3072 tokens per crop
+        model = cls.from_pretrained(repo, torch_dtype=torch.bfloat16, attn_implementation='sdpa')
+    except (ValueError, ImportError):
+        model = cls.from_pretrained(repo, torch_dtype=torch.bfloat16)
+    return model.cuda().eval()
 
 
 def crop(img, box, h, w, pad=1.25):
@@ -92,7 +95,7 @@ def main():
     ap.add_argument('--model', choices=list(MODELS), required=True)
     ap.add_argument('--split', default='train')
     ap.add_argument('--boxes', default='yolo11x-pose@1024+768-flip', help='raw tag whose person boxes are used')
-    ap.add_argument('--batch', type=int, default=32)
+    ap.add_argument('--batch', type=int, default=0, help='persons per batch (default: 32 for vitpose, 4 for sapiens)')
     ap.add_argument('--limit', type=int, default=0)
     a = ap.parse_args()
     from PIL import Image
@@ -102,6 +105,7 @@ def main():
     names = sorted(n for n in boxes if n not in raw)
     if a.limit:
         names = names[: a.limit]
+    a.batch = a.batch or (32 if a.model == 'vitpose' else 4)
     model = load(a.model)
     _, h, w, _ = MODELS[a.model]
     todo = [(n, p) for n in names for p in boxes[n] if p['score'] >= MIN_BOX]

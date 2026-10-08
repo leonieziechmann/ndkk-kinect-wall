@@ -22,7 +22,7 @@ TEACH = 'yolo11x-pose@1024+768-flip yolo11x-pose-flip vitpose sapiens'
 job = textwrap.dedent(f"""\
     set -x
     until [ -e {T}/done-r3-teacher ]; do sleep 60; done
-    export KINECT_MAIN={K} POSE_THREADS=4
+    export KINECT_MAIN={K} POSE_THREADS=4 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
     P={C}/pose-training  # the uploaded scripts as they are (round 3 runs its own copy)
     pip install -q -U "transformers>=5.10" accelerate
     deliver() {{ s=$1; shift; (cd {T4} && rm -f {C}/out/$s.zip.part && zip -q -r {C}/out/$s.zip.part "$@" && mv {C}/out/$s.zip.part {C}/out/$s.zip); }}
