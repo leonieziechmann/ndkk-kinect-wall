@@ -41,59 +41,26 @@ const BONES = [
 ];
 const JOINT_NAMES = [...new Set(BONES.flatMap((b) => [b[0], b[1]]).concat(['head']))];
 
-function median(arr, n) {
-  if (!n) return 0;
-  const s = Array.from(arr.subarray(0, n)).sort((a, b) => a - b);
-  return s[Math.floor(n / 2)];
-}
-
-function percentile(arr, n, q) {
-  if (!n) return 0;
-  const s = Array.from(arr.subarray(0, n)).sort((a, b) => a - b);
-  return s[Math.min(n - 1, Math.floor(n * q))];
-}
-
-/** a ring of the last n values */
-class Ring {
-  constructor(n) {
-    this.v = new Float32Array(n);
-    this.n = 0;
-    this.i = 0;
-  }
-  push(x) {
-    this.v[this.i] = x;
-    this.i = (this.i + 1) % this.v.length;
-    this.n = Math.min(this.n + 1, this.v.length);
-  }
-  median() {
-    return median(this.v, this.n);
-  }
-  /** pushes x; the standing level: the highest median of the ring, sinking `decay` m/s */
-  stand(x, time, decay = 0.003) {
-    this.push(x);
-    const m = this.median();
-    const dt = this.last === undefined ? 0 : Math.max(0, time - this.last);
-    this.last = time;
-    this.level = this.level === undefined || m > this.level ? m : this.level - decay * dt;
-    return this.level;
-  }
-  pct(q) {
-    return percentile(this.v, this.n, q);
-  }
-}
-
-/** one height signal: its standing level (Ring.stand), the rise above it, its velocity */
+/**
+ * One height signal of a person: its velocity and its standing level. The standing level is a
+ * percentile of the values of the last `win` seconds in which the signal stood still (|v| < 0.25
+ * m/s). Not the highest median with a slow decay (the first try): that one got stuck up to 30 cm
+ * too high after a few hops in a row or with the arms up, and for a minute no small hop counted.
+ * A high percentile over 8 s keeps the level while someone crouches for a few seconds.
+ */
 class Signal {
-  constructor() {
-    this.ring = new Ring(30);
+  constructor(win = 8, pct = 0.8) {
+    this.win = win;
+    this.pct = pct;
+    this.hist = []; // [time, value] of the still moments
+    this.stand = null;
     this.v = 0;
     this.y = null;
     this.t = 0;
+    this.n = 0;
   }
-  get n() {
-    return this.ring.n;
-  }
-  /** adds a value (null: nothing measured); returns { stand, rise, v } or null */
+
+  /** adds a value (0/null: nothing measured); returns { stand, rise, v, y } or null */
   add(y, time) {
     if (!y) return null;
     const dt = time - this.t;
@@ -101,8 +68,14 @@ class Signal {
     this.v = this.y !== null && dt > 1e-3 && dt < 0.3 ? 0.4 * this.v + 0.6 * ((y - this.y) / dt) : 0;
     this.y = y;
     this.t = time;
-    const stand = this.ring.stand(y, time);
-    return { stand, rise: y - stand, v: this.v };
+    this.n++;
+    if (Math.abs(this.v) < 0.25) this.hist.push([time, y]);
+    while (this.hist.length && time - this.hist[0][0] > this.win) this.hist.shift();
+    if (this.hist.length >= 8) {
+      const s = this.hist.map((h) => h[1]).sort((a, b) => a - b);
+      this.stand = s[Math.min(s.length - 1, Math.floor(s.length * this.pct))];
+    } else if (this.stand === null) this.stand = y;
+    return { stand: this.stand, rise: y - this.stand, v: this.v, y };
   }
 }
 
@@ -130,8 +103,10 @@ export class Figure {
     this.k = 0; // scale real body -> figure on the wall (0 = not known yet)
     this.cx = 0; // wall x of the body center (m from the left edge)
     this.dist = 3;
-    this.heights = new Ring(30); // 1 s at 30 fps: the standing height (Ring.stand)
-    this.track = { body: new Signal(), pelvis: new Signal() }; // the jump signals (see signals())
+    this.heights = new Signal(8, 0.8); // the standing height (top of the head)
+    // the jump signals (see signals()): the mask's median and mean height, its feet, the raw pelvis
+    this.track = { body: new Signal(8, 0.8), mean: new Signal(8, 0.8), feet: new Signal(4, 0.5), pelvis: new Signal(8, 0.8) };
+    this.candidate = -9; // when the push-off of a possible jump was seen
     this.standH = 0;
     this.realRise = 0; // m on the wall: how far the real body is above where it stands
     this.sig = { pelvisY: 0, pelvisVy: 0, feetY: 0, medY: 0, meanY: 0, topY: 0, height: 0, base: 0 };
@@ -292,6 +267,7 @@ export class PeopleLayer {
     }
 
     if (fresh) {
+      this.seq = ctx.kinect.persons.seq; // the frame number (logged: aligns the log with a recording)
       this.rasterize(ctx, L, p);
       for (const f of this.figures.values()) if (f.visible && !f.fake && f.q) this.signals(f, f.q.person, wall, p, time);
     }
@@ -311,24 +287,29 @@ export class PeopleLayer {
   /** the person's scale on the wall: everyone the same height (or everyone scaled alike) */
   scale(f, P, p, time) {
     const h = P.height ?? 0;
-    if (h > 0.5) f.standH = f.heights.stand(h, time);
+    if (h > 0.5) f.standH = f.heights.add(h, time).stand;
     const standH = Math.min(2.2, Math.max(0.9, f.standH || h || 1.7));
     const kT = (p.sameSize ? p.figH / standH : p.figH / 1.75) * (f.player ? 1 : p.bgScale);
     f.k = f.k ? f.k + (kT - f.k) * 0.08 : kT;
   }
 
   /**
-   * The jump detection, once per tracking result. Two signals must agree:
-   * - the median height of the person's mask: exact in every frame, not smoothed, independent of
-   *   the pose model; but raised arms shift it by 10-25 cm;
-   * - the raw pelvis of the skeleton (not the smoothed one, which lags 0.1-0.2 s): blind to arms,
-   *   noisy on its own.
-   * Position and velocity together (ballistic): a jump fires as soon as the body moves up fast
-   * enough near where it stands that it would fly (height + v² / 2g above the standing level), so
-   * during the push-off. Measured on final-solo in live mode: the big jump fires 0.6 s before its top
-   * (the old rule on the smoothed pelvis: 0.05 s), every hop of the jumping jacks fires. Standing up
-   * from a crouch slows down before it reaches the standing level; walking (moving sideways) never
-   * fires. The standing levels are the highest 1 s medians and sink only 3 mm/s (crouching).
+   * The jump detection, once per tracking result. Calibrated on two recordings of the user at home
+   * (hops-2026-10-08: hops on cue, small, normal, high, several in a row; nohops-2026-10-08: squats,
+   * ducking, tiptoes, arms, bobbing knees, steps, bending, crouching, standing up fast, walking),
+   * replayed through this scene in live mode. Process and numbers: calibrate/README.md.
+   *
+   * Everything comes from the person's mask (every frame, exact, not smoothed, independent of the
+   * pose model, whose skeleton gets rough when the GPU is busy):
+   * 1. Push-off: the median height of the mask moves up fast enough near where it stands that the
+   *    body would fly (height + v^2 / 2g above the standing level), and the mask's mean rises too.
+   * 2. Confirmed within 0.35 s by the feet (lowest 3 % of the mask) leaving the floor by 2 cm, with
+   *    the body 6 cm above its standing level. Every real hop lifts the feet (3-34 cm); ducking,
+   *    squats, crouching and raised arms do not (at most 1-3 cm).
+   * 3. The skeleton's raw pelvis may veto: when it stays below 3 cm above its standing level, it
+   *    was the arms that lifted the mask.
+   * Result: 31 of 34 hops with a free GPU (all 10 small ones), 29 of 33 with a busy one; 0.03-0.10 s
+   * after the takeoff (median); 1.7-2.5 false jumps per 72 s of moves that are no hops.
    */
   signals(f, P, wall, p, time) {
     const m = wall.room.matrix;
@@ -340,7 +321,7 @@ export class PeopleLayer {
       s.pelvisY = pel[1];
       s.pelvisVy = mv ? m[1] * mv[0] + m[5] * mv[1] + m[9] * mv[2] : 0;
     }
-    // the raw pelvis in the room
+    // the raw pelvis in the room (the smoothed one lags 0.1-0.2 s)
     const raw = P.camera?.extra?.[1];
     s.rawY = 0;
     if (raw && raw[3] > 0) {
@@ -356,27 +337,34 @@ export class PeopleLayer {
     walks.push([time, s.walk]);
     while (walks.length && time - walks[0][0] > 0.3) walks.shift();
     const walking = Math.max(...walks.map((w) => w[1]));
-    let jumped = false;
+
     const body = f.track.body.add(s.medY, time);
+    const mean = f.track.mean.add(s.meanY, time);
+    const feet = f.track.feet.add(s.feetY, time);
     const pelv = s.rawY ? f.track.pelvis.add(s.rawY, time) : null;
+    let jumped = false;
     if (body) {
       s.base = body.stand;
-      // the figure's own rise: the smaller of both (raised arms lift only the mask)
+      // the figure's own rise: the smaller of mask and pelvis (raised arms lift only the mask)
       f.realRise = Math.max(0, Math.min(body.rise, pelv ? pelv.rise : body.rise)) * f.k;
+      const flies = body.rise > -p.jumpDip && body.rise + (body.v * body.v) / 19.62 > p.jumpRise;
+      if (body.v > p.jumpVy && (!mean || mean.v > p.jumpVy2) && flies && walking < p.walkGate) f.candidate = time;
+      const feetUp = !feet || feet.rise > p.feetUp;
+      const pelvisOk = !pelv || pelv.rise > p.pelvisMin;
+      const can = f.player && f.alive !== false && f.armed && time - f.born > 1 && f.track.body.n >= 20;
       // every hop counts, also in the air (air jumps). One hop fires once: the next one needs the
       // body to have stopped rising first.
-      const flies = body.rise > -p.jumpDip && body.rise + (body.v * body.v) / 19.62 > p.jumpRise;
-      const pelvisUp = !pelv || pelv.v > p.jumpVy2;
-      if (f.player && f.alive !== false && f.armed && time - f.born > 1 && f.track.body.n >= 20 && body.v > p.jumpVy && pelvisUp && flies && walking < p.walkGate) {
+      if (can && time - f.candidate < 0.35 && feetUp && body.rise > p.minRise && pelvisOk) {
         f.startJump(time, p, p.jumpLead);
         f.armed = false;
         f.armedAt = time;
+        f.candidate = -9;
         this.jumped.push(f);
         jumped = true;
       } else if (!f.armed && time - f.armedAt > p.jumpRest && (body.v < 0.05 || body.rise < p.jumpRise * 0.35)) f.armed = true;
     } else f.realRise = 0;
     if (this.log.length < this.logMax) {
-      this.log.push([+time.toFixed(3), f.id, +s.pelvisY.toFixed(3), +s.pelvisVy.toFixed(3), +s.feetY.toFixed(3), +s.topY.toFixed(3), +s.height.toFixed(3), +(s.base ?? 0).toFixed(3), +(f.track.body.v ?? 0).toFixed(3), jumped ? 1 : 0, +(s.meanY ?? 0).toFixed(3), +(s.medY ?? 0).toFixed(3), +s.rawY.toFixed(3), +(s.p10 ?? 0).toFixed(3), +(s.p25 ?? 0).toFixed(3), +s.walk.toFixed(2)]);
+      this.log.push([+time.toFixed(3), f.id, +s.pelvisY.toFixed(3), +s.pelvisVy.toFixed(3), +s.feetY.toFixed(3), +s.topY.toFixed(3), +s.height.toFixed(3), +(s.base ?? 0).toFixed(3), +(f.track.body.v ?? 0).toFixed(3), jumped ? 1 : 0, +(s.meanY ?? 0).toFixed(3), +(s.medY ?? 0).toFixed(3), +s.rawY.toFixed(3), +(s.p10 ?? 0).toFixed(3), +(s.p25 ?? 0).toFixed(3), +s.walk.toFixed(2), this.seq ?? -1]);
     }
   }
 
