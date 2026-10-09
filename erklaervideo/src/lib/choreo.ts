@@ -34,7 +34,7 @@ export const CHOREO: PersonSpec[] = [
       { t0: at('ki', 6.8), t1: at('ki', 11.3), kind: 'raise', side: 'B' },
       { t0: at('masken', 1.6), t1: at('masken', 6.2), kind: 'out', side: 'B' },
       { t0: at('daten', 5.4), t1: at('daten', 9.0), kind: 'wave', side: 'R' },
-      { t0: at('wand', 0.6), t1: at('wand', 5.6), kind: 'sweep', side: 'B' },
+      { t0: at('wand', 0.6), t1: at('wand', 5.6), kind: 'circle', side: 'B' },
       { t0: at('wand', 8.4), t1: at('wand', 11.2), kind: 'wave', side: 'B' },
     ],
   },
@@ -65,7 +65,7 @@ export const CHOREO: PersonSpec[] = [
       { t0: at('ki', 6.6), t1: at('ki', 11.0), kind: 'reach', side: 'L' },
       { t0: at('masken', 0.8), t1: at('masken', 4.6), kind: 'wave', side: 'L' },
       { t0: at('wand', 1.0), t1: at('wand', 5.0), kind: 'wave', side: 'L' },
-      { t0: at('wand', 7.0), t1: at('wand', 11.0), kind: 'sweep', side: 'R' },
+      { t0: at('wand', 7.0), t1: at('wand', 11.0), kind: 'circle', side: 'B' },
     ],
   },
   {
@@ -82,8 +82,8 @@ export const CHOREO: PersonSpec[] = [
       { t: at('wand', 10.0), x: 2.0, z: 2.5 },
     ],
     actions: [
-      { t0: at('wand', 3.0), t1: at('wand', 7.0), kind: 'sweep', side: 'B' },
-      { t0: at('wand', 8.0), t1: at('wand', 11.5), kind: 'wave', side: 'R' },
+      { t0: at('wand', 3.0), t1: at('wand', 7.0), kind: 'raise', side: 'B' },
+      { t0: at('wand', 8.0), t1: at('wand', 11.5), kind: 'wave', side: 'B' },
     ],
   },
 ];

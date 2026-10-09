@@ -12,6 +12,7 @@ npm run stills -- 12 30.5 47               # Einzelbilder (Sekunden) → output/
 npm run stills -- --body natur 19 75       # dasselbe mit den weich schattierten Figuren (Standard: lowpoly)
 npm run stills -- --project figuren --out output/fig 8 33.5   # Modellblatt der Figuren (vorne, Seite, hinten)
 python3 tools/sheet.py output/stills sheet.jpg 2   # Kontaktabzug der Einzelbilder (braucht Pillow)
+npm run check-arms                         # prüft jedes Bild: kein Arm gestreckt nach vorne (nach jeder Choreo-Änderung)
 ```
 
 `render` und `stills` starten Vite und einen unsichtbaren Chrome/Edge (`tools/render.mjs`, Browser per `CHROME_PATH` wählbar). Im Editor geht dasselbe über „Video Settings“ → „Render“ (Exporter FFmpeg ist voreingestellt, Ergebnis in `output/`).

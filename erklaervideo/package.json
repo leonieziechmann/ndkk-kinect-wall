@@ -7,7 +7,8 @@
     "start": "vite",
     "render": "node tools/render.mjs video",
     "stills": "node tools/render.mjs stills",
-    "build": "tsc && vite build"
+    "build": "tsc && vite build",
+    "check-arms": "node tools/check-arms.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

@@ -38,7 +38,11 @@ export const COCO_BONES: [number, number][] = [
   [1, 2], [0, 1], [0, 2], [1, 3], [2, 4], [3, 5], [4, 6],
 ];
 
-export type ActionKind = 'wave' | 'raise' | 'out' | 'sweep' | 'point' | 'reach';
+/**
+ * The gestures. None of them stretches an arm forward: arms go up or out to the side, the elbows
+ * bend (no pose that could read as a raised-arm salute; `npm run check-arms` checks every frame).
+ */
+export type ActionKind = 'wave' | 'raise' | 'out' | 'circle' | 'reach';
 export interface Action {
   t0: number;
   t1: number;
@@ -142,31 +146,52 @@ function actionWeight(a: Action, T: number) {
   return smooth(a.t0, a.t0 + 0.5, T) * (1 - smooth(a.t1 - 0.5, a.t1, T));
 }
 
+/**
+ * Upper arm and forearm (unit, chest frame) that bring the wrist to `target` (relative to the
+ * shoulder, in units of the body scale), the elbow bending towards `pole`.
+ */
+function reachFor(target: V3, pole: V3): [V3, V3] {
+  const a = 0.29;
+  const b = 0.255;
+  const dir = norm(target);
+  const d = clamp(Math.hypot(target[0], target[1], target[2]), a - b + 0.02, a + b - 0.01);
+  const cos = (a * a + d * d - b * b) / (2 * a * d);
+  const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
+  const k = pole[0] * dir[0] + pole[1] * dir[1] + pole[2] * dir[2];
+  const side = norm([pole[0] - dir[0] * k, pole[1] - dir[1] * k, pole[2] - dir[2] * k]);
+  const upper: V3 = [dir[0] * cos + side[0] * sin, dir[1] * cos + side[1] * sin, dir[2] * cos + side[2] * sin];
+  const fore = norm([dir[0] * d - upper[0] * a, dir[1] * d - upper[1] * a, dir[2] * d - upper[2] * a]);
+  return [upper, fore];
+}
+
 /** arm in the chest frame for a gesture: upper arm and forearm as [outwards, up, forward] */
 function actionArm(a: Action, T: number, slot: number): [V3, V3] {
   const t = T - a.t0;
   switch (a.kind) {
     case 'wave': {
+      // the elbow out at about shoulder height, the forearm up, the hand waving beside the head
       const w = Math.sin(2 * Math.PI * 1.4 * t + slot);
-      return [[0.82, 0.48, 0.28], [0.12 + 0.42 * w, 1, 0.22]];
+      return [[0.94, 0.26, 0.06], [0.16 + 0.42 * w, 1, 0.04]];
     }
     case 'raise': {
+      // both arms up in a V (cheering)
       const w = 0.05 * Math.sin(2 * Math.PI * 0.7 * t + slot);
-      return [[0.38, 0.92, 0.12 + w], [0.22, 1, 0.1]];
+      return [[0.42, 0.9, 0.04 + w], [0.24, 1, 0.02]];
     }
     case 'out': {
+      // arms out to the sides
       const w = 0.07 * Math.sin(2 * Math.PI * 0.55 * t);
-      return [[1, 0.08 + w, 0.12], [1, 0.18 + w, 0.3]];
+      return [[1, 0.08 + w, 0.06], [1, 0.18 + w, 0.1]];
     }
-    case 'sweep': {
-      const b = 0.8 + 0.65 * Math.sin(2 * Math.PI * 0.5 * t);
-      return [[Math.cos(b), 0.15, Math.sin(b)], [Math.cos(b + 0.45), 0.25, Math.sin(b + 0.45)]];
+    case 'circle': {
+      // the hands draw circles beside the body, parallel to the wall, the elbows bent and down
+      const ph = 2 * Math.PI * 0.55 * t + slot * 0.6;
+      return reachFor([0.36 + 0.14 * Math.cos(ph), -0.02 + 0.14 * Math.sin(ph), 0.12], [0.25, -1, -0.35]);
     }
-    case 'point':
-      return [[0.15, 0.2, 1], [0.08, 0.28, 1]];
     case 'reach': {
-      const w = 0.1 * Math.sin(2 * Math.PI * 0.75 * t);
-      return [[0.22 + w, 1, 0.18], [0.1, 1, 0.12]];
+      // one arm up beside the head, the elbow a little bent
+      const w = 0.08 * Math.sin(2 * Math.PI * 0.75 * t);
+      return [[0.5 + w, 0.86, 0], [0.22, 1, 0]];
     }
   }
 }
@@ -252,9 +277,8 @@ export function pose(spec: PersonSpec, T: number): Pose | null {
   const L = leg(lHip, legs[0]);
   const Rl = leg(rHip, legs[1]);
 
-  // spine and chest; the chest follows sweeping arms a little
-  let twist = chestTwist;
-  for (const a of spec.actions) if (a.kind === 'sweep') twist += 0.18 * actionWeight(a, T) * Math.sin(2 * Math.PI * 0.5 * (T - a.t0));
+  // spine and chest
+  const twist = chestTwist;
   const lean = 0.05 * amp + 0.015 * breathe * (1 - walking);
   const spineTop = local(pelvis, base.r, UP, base.f, -0.02 * weight, 0.5 * k, lean);
   const spine = norm([spineTop[0] - pelvis[0], spineTop[1] - pelvis[1], spineTop[2] - pelvis[2]]);
@@ -282,6 +306,10 @@ export function pose(spec: PersonSpec, T: number): Pose | null {
       const [au, af] = actionArm(a, T, spec.slot + i * 0.7);
       up = mix(up, norm(au), w);
       fo = mix(fo, norm(af), w);
+      // into and out of a gesture the arm moves through the side, not through the front
+      const mid = 1 - 0.75 * 4 * w * (1 - w);
+      up[2] *= mid;
+      fo[2] *= mid;
       lift = Math.max(lift, w * Math.max(0, norm(au)[1]));
     }
     const toWorld = (v: V3): V3 => {
