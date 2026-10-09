@@ -24,12 +24,18 @@ const gameParams = Object.fromEntries(Object.entries(game.params).map(([k, v]) =
 
 export default {
   streams: ['persons'],
-  persons: (p) => ({ mode: 'full', delay: p.timing === 'live (wie das Spiel)' ? 0 : 12 }),
+  // as the game: live masks, live + exact skeletons (or the delayed output alone, for comparison)
+  persons: (p) => (p.timing === 'verzögert (genau)' ? { mode: 'full', delay: 12 } : p.exactSlow ? { mode: 'full', live: true } : { mode: 'full', delay: 0 }),
 
   params: {
     timing: { value: 'live (wie das Spiel)', options: ['live (wie das Spiel)', 'verzögert (genau)'], label: 'Tracking' },
     mask: { value: 0.45, min: 0, max: 1, step: 0.01, label: 'Maske' },
     raw: { value: false, label: 'Rohe Keypoints (ungeglättet)' },
+    ghost: { value: true, label: 'Exaktes Skelett dazu (hängt etwas hinterher)' },
+    armSource: { value: gameParams.armSource, options: ['Skelett', 'Maske'], label: 'Arme aus' },
+    exactSlow: { value: gameParams.exactSlow, label: 'Skelett: langsam exakt, schnell live' },
+    exactBelow: { value: gameParams.exactBelow, min: 0, max: 2, step: 0.05, label: 'Exakt unter (m/s)' },
+    liveAbove: { value: gameParams.liveAbove, min: 0.1, max: 3, step: 0.05, label: 'Live über (m/s)' },
     armMin: { value: gameParams.armMin, min: 0.2, max: 0.6, step: 0.01, label: 'Arm ab (m vom Körper)' },
     mirrorArm: { value: true, label: 'Verdeckten Arm ergänzen (gestrichelt)' },
   },
@@ -91,6 +97,25 @@ export default {
       const c = personColor(p.slot);
       return `rgba(${c.map((v) => Math.round(v * 255)).join(',')},${a})`;
     };
+    // the exact skeletons (live + exact): dim and dashed, where they were a few frames ago
+    if (ctx.params.ghost && ctx.persons.mode === 'both' && ctx.persons.exact) {
+      g.setLineDash([4 * dpr, 4 * dpr]);
+      g.strokeStyle = 'rgba(255,255,255,0.45)';
+      g.lineWidth = 2 * dpr;
+      for (const p of ctx.persons.exact) {
+        const J = p.image.joints;
+        for (const [a, b] of BONES) {
+          const pa = J[POINTS[a]];
+          const pb = J[POINTS[b]];
+          if (!pa || !pb) continue;
+          g.beginPath();
+          g.moveTo(lx + pa[0] * sx, ly + pa[1] * sy);
+          g.lineTo(lx + pb[0] * sx, ly + pb[1] * sy);
+          g.stroke();
+        }
+      }
+      g.setLineDash([]);
+    }
     for (const p of ctx.persons) {
       const J = p.image.joints;
       const C = p.confidence;
@@ -147,7 +172,8 @@ export default {
     }
 
     // ---- right: the floor from above, read by the game's code
-    const P = { ...gameParams, armMin: ctx.params.armMin, mirrorArm: ctx.params.mirrorArm, look: 'Silhouette', turn: true };
+    const cp = ctx.params;
+    const P = { ...gameParams, armMin: cp.armMin, mirrorArm: cp.mirrorArm, armSource: cp.armSource, exactSlow: cp.exactSlow, exactBelow: cp.exactBelow, liveAbove: cp.liveAbove, look: 'Silhouette', turn: true };
     const led = ctx.wall.setup.led;
     const L = makeLayout({ wall: ctx.wall, width: led.w, height: led.h }, P);
     const B = S.body;
@@ -256,12 +282,14 @@ export default {
       `Posen ${poseRate.toFixed(1)}/s (${ps.poseMs ? Math.round(ps.poseMs) : '–'} ms)`,
       `Verzögerung ${Math.round(ctx.persons.delayMs ?? 0)} ms`,
       `Personen ${ctx.persons.length}`,
+      `Modus ${ctx.persons.mode ?? '–'}${ctx.persons.exact && ctx.persons.mode === 'both' ? ` (exakt ${Math.round(((ctx.persons.seq ?? 0) - ctx.persons.exact.seq) * 33)} ms zurück, Anteil ${Math.round((B.exactShare ?? 0) * 100)} %)` : ''}`,
+      `Arme aus ${P.armSource}`,
       `Seite ${st.fps ? Math.round(st.fps) : '–'} fps`,
     ].join('   ');
     g.fillStyle = '#aaa';
     g.fillText(line, 8 * dpr, ch - fs * 0.8);
     g.fillStyle = '#666';
-    g.fillText('links: Tracking (Maske, Strichfigur, Schultern L/R)   rechts: was das Spiel daraus liest (Arme orange, ergänzt gestrichelt, Drehung grün, Sprung = Ring)', 8 * dpr, ch - fs * 2.1);
+    g.fillText('links: Tracking (Maske, Strichfigur live, gestrichelt exakt, Schultern L/R)   rechts: was das Spiel daraus liest (Arme orange, ergänzt gestrichelt, Drehung grün, Sprung = Ring)', 8 * dpr, ch - fs * 2.1);
     ctx.status = `${ctx.persons.length} Personen`;
   },
 

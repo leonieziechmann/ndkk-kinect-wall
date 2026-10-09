@@ -11,6 +11,12 @@
 //            The hidden arm (param mirrorArm): one arm stretched out along the shoulders, the other
 //            not seen, and the body turned so far (50°+) that the body hides it from the sensor (it
 //            would point away from the wall): it is stretched out to the other side too (virtual).
+//   skeleton the skeleton as the game reads it (fused()): with persons: { live: true } every joint is
+//            the live one, moved towards the exact one the slower it moves (slow = exact, brought to
+//            now; fast = live, the exact one is 100-250 ms old). The turn and, with armSource
+//            'Skelett', the arms come from it: an arm counts when its hand is above half the body
+//            height and more than armMin from the torso (on after 2 results, off after 4); its
+//            direction from the shoulder to the hand, seen from above.
 //   head     the top of the body seen from above (the points within 22 cm of the highest), smoothed
 //   hands    the outermost points to the left and right at hand height (2.5 cm bins with enough
 //            points, so single stray pixels do not count), or the tip of an arm; smoothed
@@ -190,6 +196,13 @@ export class Bodies {
     const { near, far } = S.zone;
     const rays = k.rays;
     const { indices, labels, depth } = R;
+
+    // live + exact (persons: { live: true }): the newest exact skeletons and the live ones of that same
+    // frame, to see what live got wrong then (fused())
+    const view = ctx.persons;
+    const exact = view.mode === 'both' ? view.exact : null;
+    const liveThen = exact ? view.liveAt?.(exact.seq) : null;
+    this.exactShare = 0;
 
     // who is who: the visible persons in the zone, by slot
     const info = new Array(SLOTS).fill(null);
@@ -386,7 +399,9 @@ export class Bodies {
         } else if (!st.armed && time - st.armedAt > 0.15 && (body.v < 0.05 || body.rise < P.jumpRise * 0.35)) st.armed = true;
       }
       const center = L.map(inf.cx, inf.cz);
-      const face = P.turn ? turn(st, q.person, m, side, L, time) : L.wallFace;
+      const sk = fused(q.person, exact, liveThen, P);
+      this.exactShare = Math.max(this.exactShare, sk.exactShare ?? 0);
+      const face = P.turn ? turn(st, sk, m, side, L, time) : L.wallFace;
       const { r: across } = facing(face);
       const shrink = (m) => (m ? L.map(inf.cx + (m[0] - inf.cx) * ks, inf.cz + (m[1] - inf.cz) * ks) : null);
       // head and hands seen from above, smoothed (they are only shown, nothing is aimed with them)
@@ -405,7 +420,16 @@ export class Bodies {
       const hl = hand(0, 1, -1);
       const hr = hand(HB - 1, -1, 1);
       st.hands = [ema(st.hands?.[0], hl, 0.5), ema(st.hands?.[1], hr, 0.5)];
-      const arms = [...st.arms.filter((a) => a.on), ...hiddenArm(st, P, time)]
+      // a skeleton point -> wall x, height, z (as the mask pixels above)
+      const toWall = (w) => {
+        const rx = m[0] * w[0] + m[4] * w[1] + m[8] * w[2] + m[12];
+        const ry = m[1] * w[0] + m[5] * w[1] + m[9] * w[2] + m[13];
+        const rz = m[2] * w[0] + m[6] * w[1] + m[10] * w[2] + m[14];
+        const lat = side * rx;
+        return [perPerson && wall.visible[s] ? cx0 + lat + wall.shift[s] : cx0 + lat * wall.k(lat, rz), ry, S.sensor.front + rz];
+      };
+      const seen = P.armSource === 'Maske' ? st.arms.filter((a) => a.on) : skeletonArms(st, sk, toWall, inf, P);
+      const arms = [...seen, ...hiddenArm(seen, st, P, time)]
         .map((a) => {
           const dx = Math.cos(a.ang) * sx;
           const dy = Math.sin(a.ang) * sy * (up ? 1 : -1);
@@ -428,7 +452,7 @@ export class Bodies {
       // an arm that points: its hand is at the tip
       const hands = st.hands.map(shrink);
       for (const a of arms) hands[a.dir[0] < 0 ? 0 : 1] = a.tip;
-      out.push({ id: q.id, slot: s, q, center, cz: inf.cz, H: st.H, arms, stomp, head: shrink(st.head), hands, face });
+      out.push({ id: q.id, slot: s, q, center, cz: inf.cz, H: st.H, arms, stomp, head: shrink(st.head), hands, face, exactShare: sk.exactShare ?? 0 });
     }
     for (const [id, st] of this.state) if (time - st.seen > 3) this.state.delete(id);
     this.persons = out;
@@ -547,12 +571,92 @@ function wrap(a) {
   return a;
 }
 
+const SKELETON = ['leftShoulder', 'rightShoulder', 'leftElbow', 'rightElbow', 'leftWrist', 'rightWrist', 'leftHand', 'rightHand'];
+const smoothstep = (a, b, x) => {
+  const t = Math.min(1, Math.max(0, (x - a) / Math.max(1e-6, b - a)));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * The skeleton as the game reads it: { joints, confidence, exactShare }. Per joint of SKELETON the
+ * live point, moved by what live got wrong in the newest exact frame (exact minus live of that frame),
+ * fully below `exactBelow` m/s, not at all above `liveAbove`: slow = exact (brought to now), fast =
+ * live. Without exact data (or exactSlow off): the live person. exactShare: the part of the joints
+ * taken from exact (0..1).
+ */
+function fused(p, exact, liveThen, P) {
+  const e = P.exactSlow && exact ? exact.byId(p.id) : null;
+  if (!e) return p;
+  const l = liveThen?.byId(p.id);
+  const joints = { ...p.joints };
+  const confidence = { ...p.confidence };
+  let share = 0;
+  for (const name of SKELETON) {
+    const now = p.joints[name];
+    const ex = e.joints[name];
+    if (!now || !ex) continue;
+    const v = p.motion?.[name] ? Math.hypot(...p.motion[name]) : 0;
+    const w = 1 - smoothstep(P.exactBelow, P.liveAbove, v);
+    share += w / SKELETON.length;
+    if (w <= 0) continue;
+    const then = l?.joints[name];
+    joints[name] = then ? now.map((x, i) => x + w * (ex[i] - then[i])) : now.map((x, i) => x + w * (ex[i] - x));
+    if (w > 0.5) confidence[name] = e.confidence[name] ?? confidence[name];
+  }
+  return { joints, confidence, exactShare: share };
+}
+
+/**
+ * The arms from the skeleton (armSource 'Skelett'): per side the hand (or the wrist) above half the
+ * body height and more than armMin from the torso (a bit less to stay on); its direction from the
+ * shoulder to the hand seen from above. On after 2 results in a row, off after 4; an id per time up.
+ */
+function skeletonArms(st, sk, toWall, inf, P) {
+  const J = sk.joints;
+  const C = sk.confidence;
+  st.sk ??= {};
+  const res = [];
+  for (const [key, sh, wr, hd] of [
+    ['L', 'leftShoulder', 'leftWrist', 'leftHand'],
+    ['R', 'rightShoulder', 'rightWrist', 'rightHand'],
+  ]) {
+    let arm = st.sk[key];
+    let want = null;
+    const tipW = (C[wr] ?? 0) > 0.25 ? (J[hd] ?? J[wr]) : null;
+    if (tipW && J[sh]) {
+      const t = toWall(tipW);
+      const s0 = toWall(J[sh]);
+      const len = Math.hypot(t[0] - inf.cx, t[2] - inf.cz);
+      if (t[1] > 0.5 * st.H && len > P.armMin - (arm?.on ? 0.05 : 0)) {
+        let dx = t[0] - s0[0];
+        let dz = t[2] - s0[2];
+        if (Math.hypot(dx, dz) < 0.1) {
+          dx = t[0] - inf.cx;
+          dz = t[2] - inf.cz;
+        }
+        want = { ang: Math.atan2(dz, dx), len };
+      }
+    }
+    if (want) {
+      if (!arm) arm = st.sk[key] = { id: armIds++, ang: want.ang, len: want.len, hits: 0, miss: 0, on: false };
+      arm.ang = want.ang;
+      arm.len = want.len;
+      arm.miss = 0;
+      if (++arm.hits >= 2) arm.on = true;
+    } else if (arm) {
+      arm.hits = 0;
+      if (++arm.miss >= 4) st.sk[key] = arm = null;
+    }
+    if (arm?.on) res.push(arm);
+  }
+  return res;
+}
+
 /**
  * The arm the sensor cannot see (see the top of this file): [] or [the virtual arm]. On after 2 frames
  * in a row, off after 4, its direction smoothed; it keeps its id while the visible arm stays.
  */
-function hiddenArm(st, P, time) {
-  const real = st.arms.filter((a) => a.on);
+function hiddenArm(real, st, P, time) {
   let want = null;
   if (P.mirrorArm && real.length === 1 && st.right && time - st.rightAt < 0.5) {
     const a = real[0];
@@ -610,3 +714,6 @@ function trackArms(st, found) {
     st.arms.push({ id: armIds++, ang: f.ang, len: f.len, hits: 1, miss: 0, on: false });
   }
 }
+
+// for tests
+export { fused, skeletonArms };

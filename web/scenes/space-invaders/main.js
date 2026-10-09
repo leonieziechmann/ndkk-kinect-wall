@@ -158,8 +158,9 @@ function collectPeople(ctx, S, p) {
 export default {
   wall: true, // the canvas is the LED image; wall size, Kinect, zone and mapping: control center
   streams: ['persons'],
-  // the masks are exact in every frame, also live: the bodies and arms come from them (body.js)
-  persons: { mode: 'full', delay: 0 },
+  // live masks for the bodies; live + exact skeletons (param exactSlow): body.js takes a joint from the
+  // exact skeleton while it moves slowly and from the live one when it is fast
+  persons: (p) => (p.exactSlow ? { mode: 'full', live: true } : { mode: 'full', delay: 0 }),
   // 30 fps (param `fps`): the whole frame (tracking analysis, game, drawing) only every second display
   // frame, which leaves CPU and GPU time to the person tracker and the Kinect's depth decoding
   get maxFps() {
@@ -180,6 +181,10 @@ export default {
     assist: { value: 28, min: 0, max: 60, step: 1, label: 'Zeigen: Zielhilfe (Grad)', folder: 'Steuerung' },
     armMin: { value: 0.33, min: 0.2, max: 0.6, step: 0.01, label: 'Zeigen: Arm ab (m vom Körper)', folder: 'Steuerung' },
     mirrorArm: { value: true, label: 'Verdeckten Arm ergänzen (gespiegelt)', folder: 'Steuerung' },
+    armSource: { value: 'Skelett', options: ['Skelett', 'Maske'], label: 'Arme aus', folder: 'Steuerung' },
+    exactSlow: { value: true, label: 'Skelett: langsam exakt, schnell live', folder: 'Steuerung' },
+    exactBelow: { value: 0.35, min: 0, max: 2, step: 0.05, label: 'Exakt unter (m/s)', folder: 'Steuerung' },
+    liveAbove: { value: 0.9, min: 0.1, max: 3, step: 0.05, label: 'Live über (m/s)', folder: 'Steuerung' },
     homing: { value: 5, min: 0, max: 20, step: 0.5, label: 'Schüsse lenken nach (rad/s)', folder: 'Steuerung' },
     bodyScale: { value: 0.6, min: 0.3, max: 1, step: 0.05, label: 'Personen-Größe', folder: 'Steuerung' },
     look: { value: 'Figur', options: ['Figur', 'Silhouette'], label: 'Personen als', folder: 'Karte' },
@@ -245,7 +250,7 @@ export default {
     flash: { value: 1, min: 0, max: 2, step: 0.05, label: 'Blitze', folder: 'Bild' },
     slowmo: { value: true, label: 'Zeitlupe bei großen Momenten', folder: 'Bild' },
     brightness: { value: 1, min: 0.2, max: 1.5, step: 0.05, label: 'Helligkeit', folder: 'Bild' },
-    fps: { value: '60', options: ['60', '30'], label: 'Bildrate (30 = mehr Luft fürs Tracking)', folder: 'Bild' },
+    fps: { value: '30', options: ['30', '60'], label: 'Bildrate (30 = mehr Luft fürs Tracking)', folder: 'Bild' },
     sound: { value: true, label: 'Ton', folder: 'Bild' },
     volume: { value: 0.5, min: 0, max: 1, step: 0.01, label: 'Lautstärke', folder: 'Bild' },
   },
