@@ -10,6 +10,21 @@ Kinect v2 an einem Windows-Rechner (USB-Mod): Tiefenbild mit 30 fps, eine Middle
 | `kinect_hub.py` | Python-Client für den Hub |
 | `pointcloud.py`, `viewer.py` | Python-Viewer (direkt über libfreenect2/SDK oder `--hub`) |
 | `third_party/` | `setup.sh` holt und baut libfreenect2 (gepatcht), libusb, libjpeg-turbo, OpenCL-Header |
+| `start-wand.cmd` | Die Wand mit einem Klick starten (Ausstellung), siehe unten |
+
+## Ausstellung: alles mit einem Klick
+
+`start-wand.cmd` (Doppelklick, oder Desktop-Symbol „Kinect-Wand starten“) startet aus dem main-Checkout den Hub, den Dev-Server und das Ausgabefenster der Wand. Was schon läuft, wird mitbenutzt, und was abstürzt, startet neu. Solange das Programm läuft, stellt es Windows auf Leistung:
+
+- Energieplan: eine vorübergehende Kopie von „Höchstleistung“ (kein Standby, Bildschirm bleibt an, Deckel zu = nichts tun, USB- und PCIe-Energiesparen aus)
+- Hub und Tiefen-Worker mit hoher Priorität, Chat- und Sync-Apps (Teams, WhatsApp, Signal, Smartphone-Link, OneDrive, …) im Effizienzmodus
+- nach einer UAC-Abfrage: Windows-Suche, SysMain, Telemetrie und Windows Update angehalten (nicht deaktiviert)
+
+Die Bildschirme erkennt das Programm bei jedem Start von selbst, einstellen musst du nichts.
+- Das Wand-Fenster geht auf dem Zweitmonitor auf, nie auf dem Notebook. Ohne Zweitmonitor bleibt es zu, bis einer angeschlossen ist. Landet ein Wand-Fenster doch auf dem Notebook, schließt das Programm es sofort.
+- Die Steuerzentrale geht als eigenes Fenster maximiert auf dem Notebook-Bildschirm auf. Bei zugeklapptem Deckel bleibt sie zu, damit sie nie auf der Wand landet. **S** holt sie zurück.
+
+Beenden mit **Q** im Fenster. **NOTAUS: Strg+Alt+Shift+N** (wirkt in jedem Fenster) oder das Desktop-Symbol „Kinect-Wand NOTAUS“: Das beendet alles, was das Programm gestartet hat, und stellt alle Werte zurück. Jeder alte Wert steht in `%LOCALAPPDATA%\kinect-wand\journal.json`, bevor er geändert wird. Wird das Fenster geschlossen oder stürzt es ab, stellt ein Wächter-Prozess alles zurück. Nach einem Absturz des PCs passiert das bei der nächsten Anmeldung, und den Rest räumt der nächste Start auf. Optionen: `-NoWall`, `-NoControl`, `-NoAdmin`, `-Hub 8091`.
 
 ## Schnellstart
 
