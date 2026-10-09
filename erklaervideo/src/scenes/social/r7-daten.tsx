@@ -95,7 +95,6 @@ export default makeScene2D(function* (view) {
   const cap = new Caption(view, CAPTION.x, CAPTION.y, CAPTION.style);
 
   // part A: from the sensor to the scene
-  cue(T, 'whoosh', 0, { dur: 0.9, gain: 0.3 });
   NAMES.forEach((_, i) => cue(T, 'pop', 0.3 + 0.12 * i, { n: i + 1, pan: -0.3 }));
   cue(T, 'data', 1.0, { dur: 2.4 });
   cue(T, 'tick', 1.5, { pan: 0.4 });
@@ -111,7 +110,6 @@ export default makeScene2D(function* (view) {
   yield* until(3.4);
 
   // part B: "Visualisierung" opens up into the wall
-  cue(T, 'whoosh', 0.1, { dur: 1.0, gain: 0.5, pan: -0.3, panTo: 0 });
   yield* all(
     latency().opacity(0, 0.3),
     ...packets.map((p) => p.flow(0, 0.3)),
@@ -124,7 +122,6 @@ export default makeScene2D(function* (view) {
   );
   cue(T, 'pop', 0, { n: 3, gain: 0.7 });
   cue(T, 'tick', 0.3, { pan: -0.2 });
-  cue(T, 'swish', 0.8, { pan: 0, gain: 0.4 });
   yield* all(wall().skel(1, 0.6), wall().ghost(1, 0.6), delay(0.3, wall().mirror(1, 0.5)), delay(0.6, wall().topView(1, 0.6)));
   yield* until(6.0);
   cue(T, 'fluid', 0);

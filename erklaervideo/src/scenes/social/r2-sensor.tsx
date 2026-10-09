@@ -30,8 +30,6 @@ export default makeScene2D(function* (view) {
 
   cue(T, 'whoosh', 0, { dur: 1.8, gain: 0.45, pan: -0.3, panTo: 0.3 });
   cue(T, 'scan', 0.3, { dur: 1.1, pan: 0, panTo: -0.5 });
-  cue(T, 'swish', 1.0, { pan: -0.5 });
-  cue(T, 'swish', 1.15, { pan: 0.5, gain: 0.7 });
   yield* all(
     ...moveTo(st(), SOCIAL_SHOTS.sidePanels, 1.8, easeInOutCubic),
     st().labels(0, 0.4),

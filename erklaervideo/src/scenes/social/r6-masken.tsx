@@ -40,7 +40,6 @@ export default makeScene2D(function* (view) {
   view.add(<SensorPanel ref={mk} time={T} mode={'mask'} maskGrow={0} title={'Masken'} width={M.w} height={M.h} x={M.x} y={M.y + M.out} textScale={P.text} />);
   const cap = new Caption(view, CAPTION.x, CAPTION.y, CAPTION.style);
 
-  cue(T, 'swish', 0.1, { pan: 0 });
   cue(T, 'whoosh', 0, { dur: 1.0, gain: 0.3 });
   yield* all(...moveTo(st(), SOCIAL_SHOTS.kinectMask, 1.0, easeInOutCubic), mk().y(M.y, 0.9, easeOutCubic), delay(0.3, cap.show('Nur die Menschen\nbleiben übrig.')));
   cue(T, 'grow', 0, { dur: 1.5 });
@@ -49,7 +48,6 @@ export default makeScene2D(function* (view) {
   yield* all(st().bgGrey(1, 0.5), mk().roomTint(1, 0.5));
   cue(T, 'drop', 0, { dur: 1.7 });
   yield* all(st().bgDrop(1, 1.7, linear), mk().room(0, 1.5), delay(0.3, st().frustumAlpha(0, 1.0)));
-  cue(T, 'whoosh', 0, { dur: 1.3, gain: 0.25 });
   yield* all(...moveTo(st(), SOCIAL_SHOTS.kinectMaskEnd, duration('masken') - (T() - SCENES.masken), easeInOutSine), delay(duration('masken') - (T() - SCENES.masken) - 0.45, cap.hide(0.4)));
   yield* until(duration('masken'));
 });

@@ -17,9 +17,7 @@ export default makeScene2D(function* (view) {
   const cap = new Caption(view);
   yield chapterBar(view, 3);
 
-  cue(T, 'whoosh', 0, { dur: 1.6, gain: 0.35 });
   cue(T, 'shimmer', 0.7, { dur: 1.2 });
-  cue(T, 'trails', 0.9, { dur: duration('flow') - 1.2 });
   yield* all(
     ...moveTo(st(), SHOTS.kinectC, 1.6, easeInOutCubic),
     st().frustumAlpha(0.12, 1.6),

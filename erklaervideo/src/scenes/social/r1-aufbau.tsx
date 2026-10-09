@@ -40,7 +40,6 @@ export default makeScene2D(function* (view) {
   cue(T, 'rise', 0, { dur: 1.4 });
   cue(T, 'title', 0.1);
   cue(T, 'build', 0.6, { dur: 1.6 });
-  cue(T, 'whoosh', 2.6, { dur: 0.6, gain: 0.35 });
   cue(T, 'panels', 2.0, { dur: 2.0, n: 16, pan: -0.8, panTo: 0.8 });
   cue(T, 'powerup', 3.9, { dur: 0.9 });
   for (const at of [4.3, 4.6, 4.9]) cue(T, 'tick', at, { pan: -0.3 });

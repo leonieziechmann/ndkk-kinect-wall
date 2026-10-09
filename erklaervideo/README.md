@@ -49,7 +49,7 @@ Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → End
 | `src/nodes/SensorPanel.ts`, `WallView.ts` | die Kinect-Bilder mit KI-Overlay, die Wand von vorne |
 | `src/lib/sound.ts` | `cue()`: die Szenen markieren damit, wann welcher Klang kommt (auf der Story-Uhr) |
 | `src/social.ts`, `src/scenes/social/`, `src/lib/portrait.ts` | die kurze Fassung für Social Media (siehe unten) |
-| `tools/sound.mjs`, `tools/sound/` | die Tonspur: sammelt die Cues (`render.mjs cues`), synthetisiert die Klänge (`sfx.mjs`, Bausteine in `dsp.mjs`), folgt den Händen der Figuren (`motion.mjs`), pegelt jeden Klang nach `LEVEL`, Hall, Echo, sanfte Höhen, -17 LUFS |
+| `tools/sound.mjs`, `tools/sound/` | die Tonspur: sammelt die Cues (`render.mjs cues`), synthetisiert die Klänge (`sfx.mjs`, Bausteine in `dsp.mjs`), folgt den Händen der Figuren und ihren Winkgesten (`motion.mjs`), pegelt jeden Klang nach `LEVEL`, Hall, Echo, sanfte Höhen, -17 LUFS |
 
 ## Social-Fassung
 

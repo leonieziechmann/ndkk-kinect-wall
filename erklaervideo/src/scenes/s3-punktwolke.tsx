@@ -70,7 +70,6 @@ export default makeScene2D(function* (view) {
   cue(T, 'swarm', 0, { dur: 3.0 });
   dp().depthMax(() => flightCut(st().cloudFly()));
   yield* st().cloudFly(1, 3.0, linear);
-  cue(T, 'swish', 0, { pan: 0.7, gain: 0.6 });
   yield* all(dp().x(PANEL.x + PANEL.out, 0.8, easeInOutCubic), ...moveTo(st(), SHOTS.kinectB, 2.0, easeInOutSine));
   yield* until(duration('punktwolke') - 0.45);
   yield* cap.hide(0.4);

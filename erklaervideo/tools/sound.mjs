@@ -47,7 +47,14 @@ if (!fs.existsSync(cuesFile)) {
   process.exit(1);
 }
 const cues = JSON.parse(fs.readFileSync(cuesFile, 'utf8'));
-const { SCENES, motion } = await loadStory(root);
+const { SCENES, motion, waves } = await loadStory(root);
+// every wave of the choreography gets a "hu-hu" (two waves close together get one)
+for (const w of waves) {
+  const last = cues.filter((c) => c.name === 'huhu').at(-1);
+  if (last && w.t - last.t < 2) continue;
+  cues.push({ t: Math.round(w.t * 1000) / 1000, name: 'huhu', n: w.slot, pan: { 1: 0.2, 2: -0.2, 3: 0.35 }[w.slot] ?? 0 });
+}
+cues.sort((a, b) => a.t - b.t);
 const END = SCENES.ende;
 const ctx = {
   scenes: SCENES,

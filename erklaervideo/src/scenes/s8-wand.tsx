@@ -35,7 +35,6 @@ export default makeScene2D(function* (view) {
   yield chapterBar(view, 7);
 
   cue(T, 'whoosh', 0, { dur: 4.0, gain: 0.35 });
-  cue(T, 'swish', 3.4, { pan: 0.75, gain: 0.5 });
   yield* all(
     wall().opacity(0, 0.9),
     ...moveTo(st(), SHOTS.wallWide, 4.0, easeInOutCubic),

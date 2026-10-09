@@ -1,7 +1,8 @@
-// How the people move, for the sounds that follow them (the air of the waving hand, the water of
-// the fluid): how fast the hands move (0..1) and where the busiest hand is, for the lead person
-// (choreo.ts, ROLES.lead) and for everybody, on the story clock. It comes from src/lib/people.ts,
-// the same choreography the picture shows, loaded through Vite like tools/check-arms.mjs does.
+// How the people move, for the sounds that follow them (the music of the fluid): how fast the hands
+// move (0..1) and where the busiest hand is, for the lead person (choreo.ts, ROLES.lead) and for
+// everybody, on the story clock; and when someone starts to wave (for the "hu-hu"). It comes from
+// src/lib/people.ts, the same choreography the picture shows, loaded through Vite like
+// tools/check-arms.mjs does.
 
 import { createServer } from 'vite';
 import { clamp } from './dsp.mjs';
@@ -12,7 +13,7 @@ const RATE = 100;
 export async function loadStory(root) {
   const server = await createServer({ root, logLevel: 'silent', server: { middlewareMode: true }, appType: 'custom', plugins: [], configFile: false });
   const { people, J } = await server.ssrLoadModule('/src/lib/people.ts');
-  const { ROLES } = await server.ssrLoadModule('/src/lib/choreo.ts');
+  const { CHOREO, ROLES } = await server.ssrLoadModule('/src/lib/choreo.ts');
   const { SCENES } = await server.ssrLoadModule('/src/lib/timeline.ts');
   await server.close();
 
@@ -78,5 +79,8 @@ export async function loadStory(root) {
     return { speed: m.speed[k] + (m.speed[k + 1] - m.speed[k]) * a, x: m.x[k] + (m.x[k + 1] - m.x[k]) * a };
   }
 
-  return { SCENES, motion };
+  /** the waves of the choreography: when the hand is up (half a second in), and who */
+  const waves = CHOREO.flatMap((spec) => spec.actions.filter((a) => a.kind === 'wave' && a.t0 < SCENES.ende - 1).map((a) => ({ t: a.t0 + 0.45, slot: spec.slot }))).sort((a, b) => a.t - b.t);
+
+  return { SCENES, motion, waves };
 }

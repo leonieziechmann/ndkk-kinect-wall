@@ -22,17 +22,19 @@ const pick = (scale, i) => scale[Math.max(0, Math.min(scale.length - 1, Math.flo
 export const LEVEL = {
   pad: -27,
   // textures
-  pulses: -22, swarm: -21, shimmer: -23, trails: -25, data: -22, fluid: -24, specks: -24, sparkle: -22,
+  pulses: -22, swarm: -21, shimmer: -23, data: -22, fluid: -21, specks: -24, sparkle: -22,
   // blips, pops, ticks
   tick: -28, pop: -21, select: -22, lock: -22, dots: -23, connect: -19, panels: -20,
-  // movement: the noise of whooshes and swishes stays in the background
+  // someone waves
+  huhu: -20,
+  // movement (whooshes only where the camera moves): the noise stays in the background
   whoosh: -22, swish: -25, scan: -22, zap: -24, laser: -22, word: -21, glint: -22, line: -21,
   // accents
   rise: -20, title: -17, build: -20, powerup: -20, ping: -17, chord: -17, lift: -21, grow: -21, dim: -19, drop: -21,
   ledreveal: -18, riser: -20, transform: -16, bloom: -18,
 };
 /** sounds measured by what they mostly are, not by their loudest moment */
-export const TEXTURES = new Set(['pulses', 'swarm', 'shimmer', 'trails', 'data', 'fluid', 'specks', 'sparkle']);
+export const TEXTURES = new Set(['pulses', 'swarm', 'shimmer', 'data', 'fluid', 'specks', 'sparkle']);
 
 /** put a mono sound on the buses */
 function out(bus, sig, t, { gain = 1, pan = 0, panTo = pan, verb = 0.2, delay = 0 } = {}) {
@@ -51,6 +53,21 @@ function rush(dur, seed, { lo = 220, hi = 1500, peak = 0.55, q = 0.8 } = {}) {
   const band = svf(n, 'bp', (t) => lo + (hi - lo) * env(t / dur), q);
   const body = svf(n, 'lp', 380, 0.7);
   return shape(sum([[band, 1], [body, 0.35]]), env);
+}
+
+/** a plucked string, soft like a harp: harmonic partials, the higher ones dying first */
+function pluck(f, decay = 0.6) {
+  const n = len(decay * 4);
+  const sig = new Float32Array(n);
+  for (const [mul, amp, dk] of [[1, 1, 1], [2, 0.32, 0.5], [3, 0.1, 0.3], [4, 0.04, 0.2]]) {
+    const w = (2 * Math.PI * f * mul) / SR;
+    const tau = decay * dk;
+    for (let i = 0; i < n; i++) {
+      const t = i / SR;
+      sig[i] += Math.sin(w * i) * amp * (t < 0.004 ? t / 0.004 : 1) * Math.exp(-t / tau);
+    }
+  }
+  return sig;
 }
 
 /** a tiny pitch-dropping blip */
@@ -207,7 +224,7 @@ const SOUNDS = {
     const dur = c.dur ?? 3;
     const r = rng(seedOf('swarm', c.t));
     const env = (x) => smooth(x / 0.7) * (1 - smooth((x - 0.82) / 0.18));
-    out(bus, rush(dur + 0.3, seedOf('swarm-rush', c.t), { lo: 250, hi: 2200, peak: 0.75 }), c.t, { gain: 0.22, verb: 0.3 });
+    out(bus, rush(dur + 0.3, seedOf('swarm-rush', c.t), { lo: 250, hi: 1800, peak: 0.75 }), c.t, { gain: 0.12, verb: 0.3 });
     const grains = 700;
     for (let g = 0; g < grains; g++) {
       // more of them where the flight is busiest
@@ -226,15 +243,24 @@ const SOUNDS = {
     for (let i = 0; i < 18; i++) out(bus, bell(midi(pick(HIGH, 4 + r() * 7)), 0.25, 0.4, 0.8), c.t + r() * dur, { gain: 0.025, pan: r() * 1.6 - 0.8, verb: 0.45 });
   },
 
-  /** air that follows the waving hand (the motion of the lead person) */
-  trails(bus, c, ctx) {
-    const dur = c.dur ?? 4;
-    const n = pink(dur, seedOf('trails', c.t));
-    const m = (t) => ctx.motion(c.t + t, 'lead');
-    const s = svf(n, 'bp', (t) => 300 + 1300 * m(t).speed, 0.9);
-    shape(s, (t) => 0.15 + 0.85 * m(t).speed, true);
-    shape(s, (x) => smooth(x / 0.15) * (1 - smooth((x - 0.85) / 0.15)));
-    out(bus, s, c.t, { gain: 0.3, pan: 0, verb: 0.25 });
+  /**
+   * Someone waves: a friendly "hu-hu!", two soft rising notes like an ocarina, with a breath at the
+   * start of each; every person has their own pitch (c.n is the slot).
+   */
+  huhu(bus, c) {
+    const voices = { 1: [78, 83], 2: [69, 74], 3: [76, 81] };
+    const [a, b] = voices[c.n] ?? voices[2];
+    const syllable = (m, dur, fall, seed) => {
+      const f0 = midi(m);
+      const f = (t) => f0 * (1 - 0.07 * Math.exp(-t / 0.035)) * (1 - fall * smooth((t - dur + 0.12) / 0.12)) * (1 + 0.006 * Math.sin(2 * Math.PI * 5.5 * t) * smooth(t / 0.15));
+      const env = (t) => smooth(t / 0.03) * (t < dur ? 1 : Math.exp(-(t - dur) / 0.045));
+      const tone = shape(sum([[sine(dur + 0.2, f), 1], [sine(dur + 0.2, (t) => 2 * f(t)), 0.16], [sine(dur + 0.2, (t) => 3 * f(t)), 0.04]]), env, true);
+      const air = shape(svf(pink(dur + 0.2, seed), 'bp', f0 * 2, 3), (t) => (0.25 + 0.75 * Math.exp(-t / 0.04)) * env(t), true);
+      return svf(sum([[tone, 1], [air, 0.3]]), 'lp', 2400);
+    };
+    const pan = c.pan ?? 0;
+    out(bus, syllable(a, 0.12, 0, seedOf('hu1', c.t)), c.t, { gain: 0.1, pan, verb: 0.35, delay: 0.06 });
+    out(bus, syllable(b, 0.3, 0.035, seedOf('hu2', c.t)), c.t + 0.19, { gain: 0.11, pan, verb: 0.4, delay: 0.1 });
   },
 
   pop(bus, c) {
@@ -342,37 +368,60 @@ const SOUNDS = {
     }
   },
 
-  /** the fluid on the wall: water that follows how much the people move */
+  /**
+   * The fluid on the wall: flowing harp arpeggios in D major, after the D major suite of Handel's
+   * Water Music. The more the people move, the denser, higher and louder they play; a soft bass
+   * note on every bar like a continuo, and a few drops where hands move fast.
+   */
   fluid(bus, c, ctx) {
     const t0 = c.t;
     const t1 = ctx.end;
-    const dur = t1 - t0;
+    const S = ctx.scenes;
     const m = (t) => ctx.motion(t, 'all');
-    const nl = pink(dur, seedOf('fl-l', t0));
-    const nr = pink(dur, seedOf('fl-r', t0));
     // louder once the wall fills the picture (scene 8), out with the black at its end
-    const level = (t) => {
-      const a = smooth((t - t0) / 2.0) * (0.55 + 0.45 * smooth((t - ctx.scenes.wand) / 1.5));
-      return a * (1 - smooth((t - (ctx.scenes.abspann - 1.0)) / 1.0));
+    const level = (t) => smooth((t - t0) / 1.5) * (0.7 + 0.3 * smooth((t - S.wand) / 1.5)) * (1 - smooth((t - (S.abspann - 1.0)) / 1.0));
+    const STEP = 0.15; // a sixteenth at 100 beats a minute
+    const BAR = 16 * STEP;
+    // root, third, fifth over two octaves (all in D major pentatonic, so they sit on the pad)
+    const CH = {
+      D: [62, 66, 69, 74, 78, 81, 86],
+      Bm: [59, 62, 66, 71, 74, 78, 83],
+      A: [57, 59, 64, 69, 71, 76, 81],
     };
-    for (const [n, pan, seed] of [[nl, -0.7, 1], [nr, 0.7, 2]]) {
-      const lfo = (t) => 0.5 + 0.5 * Math.sin(2 * Math.PI * (0.13 + 0.05 * seed) * t + seed);
-      const s = svf(n, 'bp', (t) => 250 + 900 * m(t0 + t).speed + 180 * lfo(t), 1.1);
-      shape(s, (t) => level(t0 + t) * (0.2 + 0.8 * m(t0 + t).speed), true);
-      out(bus, s, t0, { gain: 0.26, pan, verb: 0.3 });
-    }
-    // bubbles and drops where the hands move
+    // over the G of scene 7: B minor and D; over the D of scene 8: D, B minor, A, D
+    const chordAt = (t) => (t < S.wand ? [CH.Bm, CH.D][Math.floor((t - t0) / BAR) % 2] : [CH.D, CH.Bm, CH.A, CH.D][Math.floor((t - S.wand) / BAR) % 4]);
+    const PATTERN = [0, 1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1, 0, 2, 4, 3];
     const r = rng(seedOf('fluid', t0));
-    for (let t = t0; t < t1; ) {
-      const mo = m(t);
-      const rate = 1.5 + 11 * mo.speed;
-      t += -Math.log(1 - r()) / rate;
+    for (let k = 0; t0 + k * STEP < t1; k++) {
+      const t = t0 + k * STEP;
       const lv = level(t);
       if (lv < 0.02) continue;
-      const f0 = 280 + r() * 380;
-      const d = 0.05 + r() * 0.07;
-      const bub = shape(sine(d + 0.05, (x) => f0 * (1 + 0.9 * smooth(x / d))), (x) => Math.sin(Math.PI * clamp(x / d)) ** 1.5, true);
-      out(bus, svf(bub, 'lp', 2400), t, { gain: 0.05 * lv * (0.4 + 0.6 * r()), pan: clamp(mo.x / 3 + (r() - 0.5) * 0.5, -0.9, 0.9), verb: 0.35 });
+      const mo = m(t);
+      const e = mo.speed;
+      const step = k % 16;
+      // calm: the beats; livelier: eighths; lively: every sixteenth
+      if (!(step % 4 === 0 || (step % 2 === 0 && e > 0.12) || e > 0.35)) continue;
+      const chord = chordAt(t);
+      if (step === 0) {
+        out(bus, pluck(midi(chord[0] - 12), 1.1), t, { gain: 0.04 * lv, verb: 0.3 });
+      }
+      // the upper octave only when it is lively
+      const i = PATTERN[step] >= 4 && e < 0.4 ? PATTERN[step] - 3 : PATTERN[step];
+      const note = chord[i];
+      const vel = (0.45 + 0.55 * e) * (step % 4 === 0 ? 1 : 0.78) * (0.9 + 0.2 * r());
+      const pan = clamp((mo.x / 3) * 0.5 + (i - 3) * 0.1, -0.8, 0.8);
+      out(bus, pluck(midi(note), 0.55 + (84 - note) * 0.015), t + (r() - 0.5) * 0.01, { gain: 0.07 * vel * lv, pan, verb: 0.4, delay: 0.14 });
+    }
+    // drops: little rising bloops where the hands move fast
+    for (let t = t0; t < t1; ) {
+      const mo = m(t);
+      t += -Math.log(1 - r()) / (0.6 + 3.5 * mo.speed);
+      const lv = level(t);
+      if (lv < 0.02) continue;
+      const f0 = 420 + r() * 300;
+      const d = 0.05 + r() * 0.06;
+      const drop = shape(sine(d + 0.05, (x) => f0 * (1 + 0.8 * smooth(x / d))), (x) => Math.sin(Math.PI * clamp(x / d)) ** 1.5, true);
+      out(bus, svf(drop, 'lp', 2000), t, { gain: 0.025 * lv * (0.4 + 0.6 * r()), pan: clamp(mo.x / 3 + (r() - 0.5) * 0.5, -0.8, 0.8), verb: 0.35 });
     }
   },
 

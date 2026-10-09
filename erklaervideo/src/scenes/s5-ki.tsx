@@ -79,7 +79,6 @@ export default makeScene2D(function* (view) {
     st().skelFly(1, 1.6, easeInOutCubic),
     ki().opacity(0, 0.9),
   );
-  cue(T, 'whoosh', 0, { dur: 2.2, gain: 0.25, pan: 0.3, panTo: -0.3 });
   yield* all(...moveTo(st(), SHOTS.kinectD, 2.2, easeInOutSine));
   yield* until(duration('ki') - 0.45);
   yield* cap.hide(0.4);

@@ -25,7 +25,6 @@ export default makeScene2D(function* (view) {
   const cap = new Caption(view);
   yield chapterBar(view, 5);
 
-  cue(T, 'swish', 0.1, { pan: 0.7 });
   cue(T, 'whoosh', 0, { dur: 1.2, gain: 0.3 });
   yield* all(
     ...moveTo(st(), SHOTS.kinectMask, 1.2, easeInOutCubic),
@@ -38,7 +37,6 @@ export default makeScene2D(function* (view) {
   yield* all(st().bgGrey(1, 0.7), mk().roomTint(1, 0.7));
   cue(T, 'drop', 0, { dur: 2.2 });
   yield* all(st().bgDrop(1, 2.2, linear), mk().room(0, 1.9), delay(0.4, st().frustumAlpha(0, 1.2)));
-  cue(T, 'whoosh', 0, { dur: 1.9, gain: 0.25 });
   yield* all(...moveTo(st(), SHOTS.kinectMaskEnd, 1.9, easeInOutSine));
   yield* until(duration('masken') - 0.45);
   yield* cap.hide(0.4);

@@ -17,9 +17,7 @@ export default makeScene2D(function* (view) {
   topShade(view, P.w, P.h);
   const cap = new Caption(view, CAPTION.x, CAPTION.y, CAPTION.style);
 
-  cue(T, 'whoosh', 0, { dur: 1.2, gain: 0.35 });
   cue(T, 'shimmer', 0.4, { dur: 1.0 });
-  cue(T, 'trails', 0.5, { dur: duration('flow') - 0.8 });
   yield* all(
     ...moveTo(st(), SOCIAL_SHOTS.kinectC, 1.2, easeInOutCubic),
     st().frustumAlpha(0.12, 1.2),

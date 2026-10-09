@@ -114,11 +114,9 @@ export default makeScene2D(function* (view) {
   yield chapterBar(view, 6);
 
   // part A: from the sensor to the scene
-  cue(T, 'whoosh', 0, { dur: 1.0, gain: 0.3, pan: 0, panTo: 0.7 });
   NAMES.forEach((_, i) => cue(T, 'pop', 0.4 + 0.18 * i, { n: i + 1, pan: XS[i] / 1000 }));
   cue(T, 'data', 1.5, { dur: 3.3 });
   cue(T, 'tick', 2.0, { pan: 0.1 });
-  cue(T, 'swish', 2.6, { pan: 0.4, gain: 0.5 });
   yield* all(
     st().opacity(0, 1.0),
     mk().x(MASK.x + 900, 1.0, easeInOutCubic),
@@ -132,7 +130,6 @@ export default makeScene2D(function* (view) {
   yield* until(4.6);
 
   // part B: the scene opens up into the wall
-  cue(T, 'whoosh', 0.1, { dur: 1.2, gain: 0.5, pan: 0.5, panTo: 0 });
   yield* all(
     card().opacity(0, 0.5),
     latency().opacity(0, 0.4),
@@ -146,7 +143,6 @@ export default makeScene2D(function* (view) {
   );
   cue(T, 'pop', 0, { n: 3, gain: 0.7 });
   cue(T, 'tick', 0.4, { pan: -0.2 });
-  cue(T, 'swish', 1.2, { pan: 0, gain: 0.4 });
   yield* all(
     wall().skel(1, 0.8),
     wall().ghost(1, 0.8),
