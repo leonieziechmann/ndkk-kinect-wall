@@ -26,6 +26,9 @@ job = textwrap.dedent(f"""\
     (cd {T} && zip -q {C}/out/{N}.zip.part eval-{N}-val.txt eval-{N}-test.txt ensemble*.txt 2>/dev/null; mv {C}/out/{N}.zip.part {C}/out/{N}.zip)
     touch {C}/DONE-{N}
 """)
+# the settings stay in the VM's Python between colab exec calls: clear them, the next start sets its own
+for k in [k for k in os.environ if k.startswith('POSE_')]:
+    del os.environ[k]
 if os.path.exists(f'{C}/job-{N}.started'):  # a retried start (colab exec can time out after starting it)
     print('started already')
 else:
