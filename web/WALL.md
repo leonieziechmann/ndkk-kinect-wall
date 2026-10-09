@@ -147,7 +147,24 @@ wallPersonAt(uv) -> u32      // slot, 0 = nobody
 
 The output window places the LED image at "Versatz x/y" with "Abbildung: pixelgenau" (what LED controllers expect: they take a region of the HDMI picture, usually from the top left). Set the LED screen to 100 % scaling in Windows. "Fenster füllen" stretches it over the whole window for controllers that scale the full input.
 
-**Show:** add scenes from the list ("+"), order them, give each entry a label, a duration and its own param values ("✎"; changes apply live on the wall when that entry plays). The same scene may appear twice with different values ("⧉"). "Werte der Szenen-Seite übernehmen" copies what you tuned on `/scenes/<name>/` in this browser. "Automatisch weiter" switches after the duration, by default only when nobody stands in front of the wall (at most "höchstens … s" later). Transitions: crossfade, over black, or a cut. Keys: `→`/`←` next/previous, `B` blackout.
+**Show:** add scenes from the list ("+"), order them, give each entry a label, a duration and its own param values ("✎"; changes apply live on the wall when that entry plays). The same scene may appear twice with different values ("⧉"). "Werte der Szenen-Seite übernehmen" copies what you tuned on `/scenes/<name>/` in this browser. "Automatisch weiter" switches after the duration, by default only when nobody stands in front of the wall (at most "höchstens … s" later). Games switch between their rounds instead ("Spiele: erst nach der Runde", at most its own "höchstens … s" later, default 120 s; see below). Transitions: crossfade, over black, or a cut. Keys: `→`/`←` next/previous, `B` blackout.
+
+**Games: switch between rounds.** In a full room the wall is never empty, so the show would cut into a running round after duration + `maxWait`. A scene with rounds therefore says in every `frame()` whether one runs:
+
+```js
+ctx.holdSwitch = phase === 'countdown' || phase === 'play' || (phase === 'result' && resultTime < 2.5);
+```
+
+| `ctx.holdSwitch` | after the duration, the output … | control center |
+|---|---|---|
+| `true` (a round runs) | waits until it is `false`, at most `maxRoundWait` s (show field, default 120) | "wartet auf Rundenende (höchstens noch …)" |
+| `false` (between rounds) | switches **right away, even with people in front**: the end of a round is a good moment | |
+| never set (`undefined`) | as before: waits for an empty wall (`waitForEmpty`), at most `maxWait` s | "wartet, bis niemand davor steht (höchstens noch …)" |
+
+- Set it on every frame, `true` from the countdown on, and keep it `true` for the first seconds of the result (crown, points) so people still see them: the crossfade starts at most 0.5 s after it turns `false`. Release it early enough that the output can switch before the next round starts (the next countdown sets it `true` again, and the wait starts over).
+- A mode without rounds (an endless game) leaves it `undefined`, so the scene behaves like any other.
+- Unchecking "Spiele: erst nach der Runde" (`waitForRound: false`) makes games behave like other scenes. "→" in the control center always switches at once.
+- In the scenes: `fruit-ninja` (countdown, 60 s round, 2.5 s of the result), `pixel-jump-run` (countdown, run, 3 s of the result), `space-invaders` (a wave while people are there; 1.5 s of the fireworks of a cleared wave, 2.5 s of a fallen city).
 
 **The same scene after itself** (two entries of one scene, "▶" on the entry that runs, a command sent twice): the output starts no second instance. The running one takes the new entry's values: with a crossfade, numbers and colors glide there over the fade time and everything else switches at once (over black: while it is black; cut: at once). The scene keeps running and keeps its state (no restart); only one stopped by an error starts fresh. The reason: all instances of a scene share its module (`let pass` in `main.js`), so two at once would use and free each other's resources. Module-level state in a scene is fine because of this, but read `ctx.params` in `frame()`, not only in `setup()`, or a new entry's values will not show.
 
@@ -186,7 +203,7 @@ The output window places the LED image at "Versatz x/y" with "Abbildung: pixelge
 | `lib/wall.js` | setup (defaults, fields, normalize), `WallMap` (= `ctx.wall`), `wallWgsl()`, `offAxisProjection()` |
 | `lib/wall-persons.js` | the people projected onto the wall (GPU), used by `wallPerson()` |
 | `lib/wall-bus.js` | messages between the pages, loading/saving setup and show |
-| `lib/wall-show.js` | the show (playlist), test image names |
-| `lib/wall-output.js` | the output window: show, test images, color correction, telemetry |
+| `lib/wall-show.js` | the show (playlist, auto advance settings), test image names |
+| `lib/wall-output.js` | the output window: show and auto advance (`ctx.holdSwitch`), test images, color correction, telemetry |
 | `lib/control.js`, `control.html`, `lib/control.css` | the control center |
 | `tools/wall-launch.js`, `tools/wall-window.mjs` | the kiosk window (`npm run wall`) |

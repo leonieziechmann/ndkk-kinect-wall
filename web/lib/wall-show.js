@@ -50,6 +50,8 @@ export function normalizeShow(raw) {
     auto: raw?.auto === true, // switch to the next entry after its duration
     waitForEmpty: raw?.waitForEmpty !== false, // ... but only when nobody is in front of the wall
     maxWait: num(raw?.maxWait, 0, 3600, 120), // s: at most this much longer
+    waitForRound: raw?.waitForRound !== false, // a game (ctx.holdSwitch) switches between its rounds instead
+    maxRoundWait: num(raw?.maxRoundWait, 0, 3600, 120), // s: at most this much longer
     transition: Object.values(TRANSITIONS).includes(raw?.transition) ? raw.transition : 'cross',
     fade: num(raw?.fade, 0, 10, 1.5), // s
   };

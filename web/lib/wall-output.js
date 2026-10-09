@@ -34,7 +34,8 @@ export function startOutput(api) {
   let blackout = false;
   let pattern = null; // name of a test image, or null
   let over = false; // test image over the scene instead of instead of it
-  let waiting = false; // auto advance waits for an empty wall
+  let waiting = null; // auto advance waits: 'round' (a game's round to end), 'empty' (an empty wall)
+  let waitLeft = 0; // s until it switches anyway
   let previewUntil = 0;
   let lastPreview = 0;
   let errorAt = 0;
@@ -120,7 +121,7 @@ export function startOutput(api) {
     try {
       current = entry;
       startedAt = performance.now();
-      waiting = false;
+      waiting = null;
       fails = [];
       rememberCurrent();
       if (!entry) {
@@ -257,14 +258,20 @@ export function startOutput(api) {
   // ---------- auto advance, telemetry ----------
 
   setInterval(() => {
-    if (!show.auto || !current || blackout || switching) {
-      waiting = false;
-      return;
-    }
+    waiting = null;
+    if (!show.auto || !current || blackout || switching) return;
     const elapsed = (performance.now() - startedAt) / 1000;
     if (elapsed < current.duration) return;
-    const busy = show.waitForEmpty && kinect.view.length > 0;
-    waiting = busy && elapsed < current.duration + show.maxWait;
+    // a game says whether a round runs (ctx.holdSwitch true/false): it switches between rounds,
+    // people in front or not; every other scene when nobody stands in front of the wall
+    const inst = rt.current;
+    const hold = inst?.name === current.scene && rt.state === 'running' ? inst.ctx?.holdSwitch : undefined;
+    let limit = 0;
+    if (typeof hold === 'boolean' && show.waitForRound) {
+      if (hold) [waiting, limit] = ['round', show.maxRoundWait];
+    } else if (show.waitForEmpty && kinect.view.length > 0) [waiting, limit] = ['empty', show.maxWait];
+    waitLeft = current.duration + limit - elapsed;
+    if (waitLeft <= 0) waiting = null;
     if (waiting) return;
     const next = stepEntry(show, current.id, 1);
     if (next && next.id !== current.id) playEntry(next);
@@ -286,6 +293,7 @@ export function startOutput(api) {
         elapsed,
         remaining: show.auto && current ? Math.max(0, current.duration - elapsed) : null,
         waiting,
+        waitLeft: waiting ? waitLeft : null,
         fps: s.fps,
         kinect: s.kinect,
         problem: rt.problem || null,

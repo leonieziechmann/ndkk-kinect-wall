@@ -332,6 +332,11 @@ export default {
     const t1 = performance.now();
     const game = S.game;
     game.step(dt, people, S.body, p, S.invCol);
+    // the show switches between waves (WALL.md, "Games: switch between rounds"): not while people fight
+    // one (a tracking gap of a moment does not count as gone), only after the first fireworks of a
+    // cleared wave or once the fallen city has crumbled
+    const ph = game.phase;
+    ctx.holdSwitch = (game.emptyFor < 2 && (ph === 'enter' || ph === 'fight')) || (ph === 'clear' && game.phaseT < 1.5) || (ph === 'fall' && game.phaseT < 2.5);
     const t2 = performance.now();
     if (p.sound) {
       S.sound.setVolume(p.volume);

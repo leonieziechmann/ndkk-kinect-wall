@@ -312,7 +312,10 @@ function renderLive() {
   if (o?.state === 'switching') meta.push('wechselt …');
   else if (o?.state === 'error') meta.push('Fehler – neuer Versuch …');
   if (o?.elapsed != null && o.scene) meta.push(`läuft ${fmtTime(o.elapsed)}`);
-  if (o?.remaining != null) meta.push(o.waiting ? 'wartet, bis niemand davor steht' : `weiter in ${fmtTime(o.remaining)}`);
+  if (o?.remaining != null && o.waiting) {
+    const why = o.waiting === 'round' ? 'wartet auf Rundenende' : 'wartet, bis niemand davor steht';
+    meta.push(o.waitLeft > 0 ? `${why} (höchstens noch ${fmtTime(Math.ceil(o.waitLeft))})` : why);
+  } else if (o?.remaining != null) meta.push(`weiter in ${fmtTime(o.remaining)}`);
   if (o?.entryRemoved) meta.push('nicht mehr im Ablauf');
   $('nowMeta').textContent = meta.join(' · ');
   $('nowStatus').textContent = o?.status ?? '';
@@ -423,6 +426,8 @@ function renderShowSettings() {
   $('autoOn').checked = s.auto;
   $('waitEmpty').checked = s.waitForEmpty;
   $('maxWait').value = String(s.maxWait);
+  $('waitRound').checked = s.waitForRound;
+  $('maxRoundWait').value = String(s.maxRoundWait);
   $('transSel').value = s.transition;
   $('fadeSec').value = String(s.fade);
 }
@@ -437,6 +442,14 @@ $('waitEmpty').onchange = () => {
 };
 $('maxWait').onchange = () => {
   state.show.maxWait = Number($('maxWait').value) || 0;
+  showChanged({ rerender: false });
+};
+$('waitRound').onchange = () => {
+  state.show.waitForRound = $('waitRound').checked;
+  showChanged({ rerender: false });
+};
+$('maxRoundWait').onchange = () => {
+  state.show.maxRoundWait = Number($('maxRoundWait').value) || 0;
   showChanged({ rerender: false });
 };
 $('transSel').onchange = () => {

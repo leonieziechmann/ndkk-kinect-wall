@@ -590,6 +590,10 @@ export default {
     // ready: Kinect frames and the pose model ran once (or test figures)
     const ready = fakes.length > 0 || (Boolean(ctx.kinect.depth) && (ctx.kinect.persons?.poseRuns ?? 0) > 0);
     game.step(dt, figs, L, p, { ready, entered: S.people.entered.filter((f) => f.player), jumped: S.people.jumped, lag });
+    // the show switches between rounds (WALL.md, "Games: switch between rounds"): from the countdown
+    // until the crown has dropped and the points have been seen
+    const ph = game.phase;
+    ctx.holdSwitch = ph === 'count' || ph === 'run' || (ph === 'end' && game.time - game.phaseAt < Math.min(3, p.endTime - 1.5));
     if (p.sound) {
       S.sound.setVolume(p.volume);
       for (const e of game.events) S.sound.play(e, L.wallW);

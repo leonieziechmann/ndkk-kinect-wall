@@ -80,6 +80,7 @@ export default {
 | `ctx.on(target, type, fn)` | `addEventListener` that is removed again on hot swap |
 | `ctx.track(obj)` | `obj.destroy()` on hot swap: use it for big GPU textures and buffers |
 | `ctx.status = '…'` | short text in the HUD |
+| `ctx.holdSwitch = true/false` | games: set every frame, `true` while a round runs; the show then switches only between rounds (WALL.md, "Games: switch between rounds") |
 
 **Coordinates.** The Kinect camera frame is in mm: x right, y down, z forward (away from the sensor). The world used by `ctx.camera` and `pointAt()` is in meters with y up: world = (xSign·x, −y, z) / 1000. The person standing in front of the wall is typically 1–3 m away.
 
