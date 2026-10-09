@@ -511,7 +511,7 @@ export function pad(bus, ctx) {
   const D = [38, [57, 64, 66]]; // D add9
   const Bm = [35, [50, 54, 61]]; // B minor add9
   const G = [31, [54, 59, 62]]; // G major 7
-  const chords = [
+  const all = [
     [S.aufbau, D],
     [S.sensor, Bm],
     [S.punktwolke, G],
@@ -523,6 +523,8 @@ export function pad(bus, ctx) {
     [S.abspann, [31, [54, 57, 59, 62]]], // G major 9
     [S.bunt, [40, [55, 59, 62]]], // E minor 7
   ];
+  // the short cut ends with the wall: its last scenes take no time
+  const chords = all.filter(([start]) => start < S.ende);
   const blacks = ctx.cues.filter((c) => c.name === 'black');
   const changeAt = ctx.cue('transform')?.t ?? S.ende;
   // overall level: in at the start, out with every black, back with the next scene

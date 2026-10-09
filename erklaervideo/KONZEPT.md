@@ -78,6 +78,15 @@ Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Insta
 **10 · Bunt (9 s)**
 - Die Regenbogenflagge aus LED-Punkten, „Cottbus ist bunt“ → „Die Zukunft ist bunt“, dann Schwarz.
 
+## Social-Fassung (Instagram)
+
+Eine kurze Fassung als Reel: 1080 × 1920 (9:16), etwa 52 s, 30 fps, mit Ton. Dieselben acht Szenen bis zur Wand, ohne Abspann und Flagge, jede knapper: Animationen schneller, Pausen kürzer, die Leute kommen früher und machen ihre Gesten dichter hintereinander. Der Titel steht gleich in der ersten Sekunde im Bild.
+
+- **Hochformat:** Der Satz jeder Szene steht groß oben in der Mitte, die 3D-Ansicht darunter, die Kinect-Bilder (Infrarot, Abstand, Masken) unter der 3D-Ansicht nebeneinander. Die Datenkette läuft von oben nach unten, die Wand füllt die Breite, die Draufsicht mit dem gestreckten Laufweg steht darunter.
+- **Sichere Zone:** Text nur im mittleren Band, weil Instagram oben und unten eigene Anzeigen über das Reel legt und im Feed nur die Mitte (4:5) zeigt.
+- **Weggelassen:** die Karte mit den Handdaten in Szene 7 und das kleine Bild „Sicht der Kinect“ in Szene 8.
+- **Ton:** dieselben Klänge, an die neuen Zeiten angepasst (eigene Cues), eigene Tonspur.
+
 ## Ton
 
 Keine Musik von außen, keine Samples: Jeder Klang wird aus Sinustönen und Rauschen berechnet (`tools/sound/`), es gibt also keine Lizenzfragen. Alles steht in D-Dur-Pentatonik, deshalb klingen Effekte und Teppich immer zusammen.

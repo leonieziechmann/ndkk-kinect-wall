@@ -33,6 +33,8 @@ const outDir = path.resolve(root, opt('out', 'output/stills'));
 const query = new URLSearchParams();
 if (opt('body')) query.set('body', opt('body'));
 if (opt('project')) query.set('project', opt('project'));
+/** the cues of the full video go to output/cues.json, those of another project to cues-<project>.json */
+const cuesName = opt('project', 'project') === 'project' ? 'cues.json' : `cues-${opt('project')}.json`;
 const times = args.slice(1).filter((a, i, all) => !a.startsWith('--') && !(all[i - 1] ?? '').startsWith('--')).map(Number);
 
 function findBrowser() {
@@ -112,8 +114,8 @@ try {
       })
       .sort((a, b) => a.t - b.t);
     fs.mkdirSync(path.join(root, 'output'), { recursive: true });
-    fs.writeFileSync(path.join(root, 'output', 'cues.json'), JSON.stringify(list, null, 1));
-    console.log(`${list.length} Cues → output/cues.json`);
+    fs.writeFileSync(path.join(root, 'output', cuesName), JSON.stringify(list, null, 1));
+    console.log(`${list.length} Cues → output/${cuesName}`);
   } else if (mode === 'stills') {
     fs.mkdirSync(outDir, { recursive: true });
     const list = [...times].sort((a, b) => a - b);

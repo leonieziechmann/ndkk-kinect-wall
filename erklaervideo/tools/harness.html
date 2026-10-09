@@ -4,13 +4,15 @@
   <body style="margin: 0; background: #000">
     <script type="module">
       // Loads the project without the editor, for tools/render.mjs (stills and the full video).
-      // ?project=figuren loads the comparison of the body looks, ?body=puppe|lowpoly|natur sets the look.
+      // ?project=figuren loads the comparison of the body looks, ?project=social the short cut for
+      // social media (portrait), ?body=puppe|lowpoly|natur sets the look.
       import { PlaybackState, Renderer } from '@motion-canvas/core';
       const q = new URLSearchParams(location.search);
       if (q.get('body')) globalThis.__BODY = q.get('body');
       const projects = {
         project: () => import('/src/project.ts?project'),
         figuren: () => import('/src/figuren.ts?project'),
+        social: () => import('/src/social.ts?project'),
       };
       const { default: project } = await projects[q.get('project') ?? 'project']();
       window.__mc = { project, PlaybackState, Renderer };

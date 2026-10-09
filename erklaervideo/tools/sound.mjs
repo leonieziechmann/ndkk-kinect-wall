@@ -10,6 +10,8 @@
 //   node tools/sound.mjs                  mixes the cues collected last time
 //   node tools/sound.mjs --levels         also lists every cue: measured, target, gain
 //   node tools/sound.mjs --solo swarm     only these cues (comma separated), no pad: output/solo.wav
+//   node tools/sound.mjs --project social the short cut for social media: output/cues-social.json →
+//                                         src/audio/soundtrack-social.m4a (npm run sound:social)
 //
 // Everything is synthesized here (no samples): same input, same sound.
 
@@ -29,15 +31,19 @@ const opt = (name) => {
   return i >= 0 ? args[i + 1] : undefined;
 };
 const solo = opt('solo')?.split(',');
+/** which video: the full one, or the short cut for social media (timeline.ts, CUT) */
+const project = opt('project') ?? 'project';
+const suffix = project === 'project' ? '' : `-${project}`;
+if (project === 'social') globalThis.__CUT = 'social';
 const FFMPEG = process.env.FFMPEG ?? ffmpegInstaller.path;
 
 /** loudness of the finished track (LUFS) and the highest sample (dBFS) */
 const TARGET_I = -16;
 const CEILING = -1.5;
 
-const cuesFile = path.join(root, 'output', 'cues.json');
+const cuesFile = path.join(root, 'output', `cues${suffix}.json`);
 if (!fs.existsSync(cuesFile)) {
-  console.error('output/cues.json fehlt: erst `node tools/render.mjs cues` (oder `npm run sound`).');
+  console.error(`output/cues${suffix}.json fehlt: erst \`node tools/render.mjs cues${project === 'project' ? '' : ` --project ${project}`}\` (oder \`npm run sound${suffix.replace('-', ':')}\`).`);
   process.exit(1);
 }
 const cues = JSON.parse(fs.readFileSync(cuesFile, 'utf8'));
@@ -125,7 +131,7 @@ for (let i = 0; i < n; i++) {
 
 const outDir = path.join(root, 'output');
 fs.mkdirSync(outDir, { recursive: true });
-const raw = path.join(outDir, solo ? 'solo-raw.wav' : 'soundtrack-raw.wav');
+const raw = path.join(outDir, solo ? 'solo-raw.wav' : `soundtrack${suffix}-raw.wav`);
 writeWav(raw, L, R);
 const before = measure(raw);
 fs.rmSync(raw);
@@ -136,7 +142,7 @@ for (let i = 0; i < n; i++) {
   R[i] *= k;
 }
 const squeezed = limit(L, R, 10 ** (CEILING / 20));
-const wav = path.join(outDir, solo ? 'solo.wav' : 'soundtrack.wav');
+const wav = path.join(outDir, solo ? 'solo.wav' : `soundtrack${suffix}.wav`);
 writeWav(wav, L, R);
 
 console.log(`${report.length} Klänge gemischt in ${((Date.now() - t0) / 1000).toFixed(1)} s; Lautheit ${before.i.toFixed(1)} LUFS → ${TARGET_I} (${gainDb >= 0 ? '+' : ''}${gainDb.toFixed(1)} dB), Limiter: ${squeezed}`);
@@ -144,7 +150,7 @@ console.log(`${report.length} Klänge gemischt in ${((Date.now() - t0) / 1000).t
 if (solo) {
   console.log(`→ ${path.relative(root, wav)}`);
 } else {
-  const m4a = path.join(root, 'src', 'audio', 'soundtrack.m4a');
+  const m4a = path.join(root, 'src', 'audio', `soundtrack${suffix}.m4a`);
   fs.mkdirSync(path.dirname(m4a), { recursive: true });
   execFileSync(FFMPEG, ['-v', 'error', '-y', '-i', wav, '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', m4a]);
   const after = measure(m4a);

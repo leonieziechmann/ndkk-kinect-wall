@@ -68,6 +68,7 @@ export interface StageProps extends RectProps {
   dims?: SignalValue<number>;
   ping?: SignalValue<number>;
   spill?: SignalValue<number>;
+  textScale?: SignalValue<number>;
 }
 
 const TRUSS_SEGS = trussSegments();
@@ -147,6 +148,8 @@ export class Stage extends Rect {
   @initial(0) @signal() public declare readonly dims: SimpleSignal<number, this>;
   @initial(0) @signal() public declare readonly ping: SimpleSignal<number, this>;
   @initial(0) @signal() public declare readonly spill: SimpleSignal<number, this>;
+  /** size of the labels (1 = for 1080p landscape; larger for a phone screen) */
+  @initial(1) @signal() public declare readonly textScale: SimpleSignal<number, this>;
 
   readonly cam = new Camera();
   private splat = new Splatter();
@@ -1045,7 +1048,7 @@ export class Stage extends Rect {
       const label = `${t.d.toFixed(2).replace('.', ',')} m`;
       const mx = (lens[0] + hit[0]) / 2;
       const my = (lens[1] + hit[1]) / 2;
-      this.tag(ctx, label, mx, my - 26, smooth(0.6, 0.9, r), sensor);
+      this.tag(ctx, label, mx, my - 26 * this.textScale(), smooth(0.6, 0.9, r), sensor);
     }
   }
 
@@ -1053,16 +1056,17 @@ export class Stage extends Rect {
 
   private tag(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, a: number, color: [number, number, number]) {
     if (a <= 0) return;
+    const k = this.textScale();
     ctx.save();
-    ctx.font = `600 26px ${FONT}`;
+    ctx.font = `600 ${26 * k}px ${FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const w = ctx.measureText(text).width + 26;
+    const w = ctx.measureText(text).width + 26 * k;
     ctx.fillStyle = `rgba(5,7,12,${0.82 * a})`;
     ctx.strokeStyle = rgba(color, 0.9 * a);
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.5 * k;
     ctx.beginPath();
-    ctx.roundRect(x - w / 2, y - 21, w, 42, 21);
+    ctx.roundRect(x - w / 2, y - 21 * k, w, 42 * k, 21 * k);
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = rgba([0.95, 0.96, 0.98], a);
@@ -1111,7 +1115,9 @@ export class Stage extends Rect {
     this.dimension(ctx, cam, [WALL.w / 2 - 0.15, WALL.bottom, 0.12], [WALL.w / 2 - 0.15, top, 0.12], [0.06, 0, 0], '2 m', clamp(dims * 1.3 - 0.3));
     const white: [number, number, number] = [0.92, 0.94, 0.98];
     this.callout(ctx, cam, [-1.6, WALL.bottom + 1.3, 0.02], -40, -250, 'LED-Wand', clamp(labels * 3), white);
-    this.callout(ctx, cam, [-TRUSS.x, 2.2, TRUSS.z], -70, -120, 'Truss', clamp(labels * 3 - 0.6), white);
+    // portrait: the left tower is at the edge of the picture, so the label goes to the top of the right one
+    if (this.size().y > this.size().x) this.callout(ctx, cam, [TRUSS.x, 3.0, TRUSS.z], -60, -170, 'Truss', clamp(labels * 3 - 0.6), white);
+    else this.callout(ctx, cam, [-TRUSS.x, 2.2, TRUSS.z], -70, -120, 'Truss', clamp(labels * 3 - 0.6), white);
     this.callout(ctx, cam, [KINECT[0], KINECT[1] + 0.04, KINECT[2]], 90, 150, 'Kinect', clamp(labels * 3 - 1.2), hexRgb(C.sensor));
   }
 }
