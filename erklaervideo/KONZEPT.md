@@ -80,7 +80,9 @@ Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Insta
 
 ## Social-Fassung (Instagram)
 
-Eine kurze Fassung als Reel: 1080 × 1920 (9:16), etwa 52 s, 30 fps, mit Ton. Dieselben acht Szenen bis zur Wand, ohne Abspann und Flagge, jede knapper: Animationen schneller, Pausen kürzer, die Leute kommen früher und machen ihre Gesten dichter hintereinander. Der Titel steht gleich in der ersten Sekunde im Bild.
+Eine kurze Fassung als Reel: 1080 × 1920 (9:16), 57 s, 30 fps, mit Ton. Dieselben acht Szenen bis zur Wand, jede knapper: Animationen schneller, Pausen kürzer, die Leute kommen früher und machen ihre Gesten dichter hintereinander. Der Titel steht gleich in der ersten Sekunde im Bild.
+
+- **Schluss:** statt Abspann und Flagge die Nacht der kreativen Köpfe im Look von ndkk.de: Pastellverlauf (Mint, Hellblau, Gelb) mit Rasterpunkten, das NDKK-Logo baut sich Buchstabe für Buchstabe auf (das geschwungene K zuletzt), darunter „NACHT DER KREATIVEN KÖPFE“, dann ein dunkelblauer Kasten „Station Ludwig-Leichhardt-Gymnasium“. Schreibweisen wie auf ndkk.de.
 
 - **Hochformat:** Der Satz jeder Szene steht groß oben in der Mitte, die 3D-Ansicht darunter, die Kinect-Bilder (Infrarot, Abstand, Masken) unter der 3D-Ansicht nebeneinander. Die Datenkette läuft von oben nach unten, die Wand füllt die Breite, die Draufsicht mit dem gestreckten Laufweg steht darunter.
 - **Sichere Zone:** Text nur im mittleren Band, weil Instagram oben und unten eigene Anzeigen über das Reel legt und im Feed nur die Mitte (4:5) zeigt.
@@ -93,4 +95,5 @@ Keine Musik von außen, keine Samples: Jeder Klang wird aus Sinustönen und Raus
 
 - **Teppich:** ein leiser, weicher Akkord pro Szene (D, h-Moll, G, A, …, zum Schluss e-Moll → D-Dur), er geht mit jeder Blende zu Schwarz mit aus.
 - **Effekte an den Bildmomenten:** Die Szenen setzen Cues (`cue()` in `src/lib/sound.ts`), zum Beispiel: Glöckchen zum Titel, kleine Blips beim Einhängen der Panels, ein weiches Pochen im Takt der Infrarot-Pulse, Glitzern, wenn das Tiefenbild als Punktwolke in den Raum fliegt, Luft, die dem winkenden Arm folgt, Bestätigungs-Pieps für die KI, ein Sinken, wenn der Raum wegfällt, Datenblips durch die Kette, Wasser, das so viel plätschert, wie die Menschen sich bewegen, LEDs, die beim Logo einzeln angehen, Funkeln der Flagge, Glocken beim Wortwechsel und ein warmer D-Dur-Akkord zum Schluss. Kamerafahrten bekommen ein leises Rauschen.
-- **Pegel:** Jeder Klang wird gemessen und auf seinen Platz gebracht (`LEVEL` in `tools/sound/sfx.mjs`): Teppich unten, Texturen knapp darüber, Blips und Rauschen deutlich, Akzente oben. Die ganze Spur hat -16 LUFS, wenig Bass, damit sie auch aus Notebook-Lautsprechern klingt, und endet in Stille.
+- **Pegel:** Jeder Klang wird gemessen und auf seinen Platz gebracht (`LEVEL` in `tools/sound/sfx.mjs`): Teppich unten, Texturen knapp darüber, Blips deutlich, Akzente oben; Wischen und Rauschen bleiben im Hintergrund. Die ganze Spur hat -17 LUFS, wenig Bass, damit sie auch aus Notebook-Lautsprechern klingt, und endet in Stille.
+- **Angenehm für die Ohren:** Töne meist unter 1,5 kHz (das Ohr ist zwischen 2 und 5 kHz am empfindlichsten), weiche Einsätze, dunkles Rauschen, gedämpfter Hall; auf der ganzen Spur eine leichte Absenkung um 3 kHz und der obersten Höhen.

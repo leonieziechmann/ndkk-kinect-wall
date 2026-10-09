@@ -1,7 +1,7 @@
 // The soundtrack. The scenes mark the moments that make a sound (cue() in src/lib/sound.ts);
 // `node tools/render.mjs cues` collects them into output/cues.json. This tool turns them into sound
 // (tools/sound/sfx.mjs) over a soft pad, levels every sound to its place in the mix (LEVEL in
-// sfx.mjs), sends them through a reverb and a ping-pong delay, masters the mix to -16 LUFS and
+// sfx.mjs), sends them through a reverb and a ping-pong delay, masters the mix to -17 LUFS and
 // writes src/audio/soundtrack.m4a, which the project puts under the video. Sounds that follow the
 // people (the air of the waving hand, the water of the fluid) read their motion from the same
 // choreography the picture shows (tools/sound/motion.mjs).
@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
-import { SR, Track, momentary, pingPong, reverb, smooth, svf } from './sound/dsp.mjs';
+import { SR, Track, biquad, momentary, pingPong, reverb, smooth, svf } from './sound/dsp.mjs';
 import { loadStory } from './sound/motion.mjs';
 import { LEVEL, TEXTURES, pad, play } from './sound/sfx.mjs';
 
@@ -38,7 +38,7 @@ if (project === 'social') globalThis.__CUT = 'social';
 const FFMPEG = process.env.FFMPEG ?? ffmpegInstaller.path;
 
 /** loudness of the finished track (LUFS) and the highest sample (dBFS) */
-const TARGET_I = -16;
+const TARGET_I = -17;
 const CEILING = -1.5;
 
 const cuesFile = path.join(root, 'output', `cues${suffix}.json`);
@@ -110,17 +110,19 @@ if (args.includes('--levels')) {
 // the echoes get a little room too
 const echo = pingPong(bus.delay, 0.32, 0.38);
 bus.verb.mix(echo, 0.35);
-const wet = reverb(bus.verb, { room: 0.84, damp: 0.4, predelay: 0.025 });
+const wet = reverb(bus.verb, { room: 0.84, damp: 0.55, predelay: 0.025 });
 const mix = new Track(LEN);
 mix.mix(bus.dry, 1);
 mix.mix(echo, 0.75);
 mix.mix(wet, 3);
 
-// --- master: no rumble, in and out with the picture (the video loops), loudness --------------------
+// --- master: no rumble, softer where the ear is most sensitive, in and out with the picture -------
 
 const n = Math.round(END * SR);
-const L = svf(svf(mix.L.subarray(0, n), 'hp', 35, 0.6), 'hp', 35, 0.6);
-const R = svf(svf(mix.R.subarray(0, n), 'hp', 35, 0.6), 'hp', 35, 0.6);
+/** a gentle dip around 3 kHz and less of the very top: nothing pierces */
+const soften = (x) => biquad(biquad(svf(svf(x, 'hp', 35, 0.6), 'hp', 35, 0.6), 'peak', 3000, -1.5, 0.9), 'highshelf', 7000, -2);
+const L = soften(mix.L.subarray(0, n));
+const R = soften(mix.R.subarray(0, n));
 for (let i = 0; i < n; i++) {
   const t = i / SR;
   // the last fade to black ends at the very end: silence, so the loop starts clean

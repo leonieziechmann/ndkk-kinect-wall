@@ -49,11 +49,11 @@ Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → End
 | `src/nodes/SensorPanel.ts`, `WallView.ts` | die Kinect-Bilder mit KI-Overlay, die Wand von vorne |
 | `src/lib/sound.ts` | `cue()`: die Szenen markieren damit, wann welcher Klang kommt (auf der Story-Uhr) |
 | `src/social.ts`, `src/scenes/social/`, `src/lib/portrait.ts` | die kurze Fassung für Social Media (siehe unten) |
-| `tools/sound.mjs`, `tools/sound/` | die Tonspur: sammelt die Cues (`render.mjs cues`), synthetisiert die Klänge (`sfx.mjs`, Bausteine in `dsp.mjs`), folgt den Händen der Figuren (`motion.mjs`), pegelt jeden Klang nach `LEVEL`, Hall, Echo, -16 LUFS |
+| `tools/sound.mjs`, `tools/sound/` | die Tonspur: sammelt die Cues (`render.mjs cues`), synthetisiert die Klänge (`sfx.mjs`, Bausteine in `dsp.mjs`), folgt den Händen der Figuren (`motion.mjs`), pegelt jeden Klang nach `LEVEL`, Hall, Echo, sanfte Höhen, -17 LUFS |
 
 ## Social-Fassung
 
-`src/social.ts` ist ein zweites Projekt: dieselbe Geschichte als Instagram Reel, 1080 × 1920 (9:16), etwa 52 s statt 99 s, ohne Abspann und Flagge. Die Szenen liegen in `src/scenes/social/` (r1 … r8, je eine Hochformat-Fassung von s1 … s8) und nutzen dieselben Bausteine (`Stage`, `SensorPanel`, `WallView`, die Icons der Datenkette in `src/nodes/pipeline.tsx`), mit größerer Schrift (`textScale`).
+`src/social.ts` ist ein zweites Projekt: dieselbe Geschichte als Instagram Reel, 1080 × 1920 (9:16), 57 s statt 99 s. Statt Abspann und Flagge endet es mit der Nacht der kreativen Köpfe: dem NDKK-Logo und „Station Ludwig-Leichhardt-Gymnasium“ (r9, im Look von ndkk.de; das Logo liegt in Buchstaben zerlegt in `src/assets/ndkk/`, siehe `src/lib/ndkk.ts`). Die Szenen liegen in `src/scenes/social/` (r1 … r8, je eine Hochformat-Fassung von s1 … s8) und nutzen dieselben Bausteine (`Stage`, `SensorPanel`, `WallView`, die Icons der Datenkette in `src/nodes/pipeline.tsx`), mit größerer Schrift (`textScale`).
 
 - **Zeitplan und Choreografie:** `timeline.ts` und `choreo.ts` haben für die kurze Fassung eigene Zeiten (`CUT === 'social'`); `src/lib/cut-social.ts` schaltet um und muss in `social.ts` als Erstes importiert werden. Die Leute machen dieselben Gesten, nur schneller hintereinander.
 - **Layout:** `src/lib/portrait.ts`. Instagram legt oben (Name) und unten (Beschreibung, Knöpfe rechts) eigene Dinge über das Reel und zeigt im Feed nur die mittleren 4:5 (1080 × 1350). Deshalb steht der Satz jeder Szene groß oben in der Mitte (mit dunklem Verlauf dahinter), die Kinect-Bilder sitzen unter der 3D-Ansicht, und nichts Wichtiges liegt in den äußeren Rändern.

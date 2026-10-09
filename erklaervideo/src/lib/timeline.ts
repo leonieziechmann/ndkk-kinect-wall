@@ -23,7 +23,7 @@ const FULL = {
   ende: 99,
 };
 
-/** the short cut ends with the wall: no credits, no flag (their scenes take no time) */
+/** the short cut ends with the wall and the NDKK (in the place of the credits); no flag */
 const SOCIAL: typeof FULL = {
   aufbau: 0,
   sensor: 6,
@@ -34,8 +34,8 @@ const SOCIAL: typeof FULL = {
   daten: 37,
   wand: 45,
   abspann: 52.5,
-  bunt: 52.5,
-  ende: 52.5,
+  bunt: 57,
+  ende: 57,
 };
 
 export const SCENES: Readonly<typeof FULL> = CUT === 'social' ? SOCIAL : FULL;

@@ -245,6 +245,54 @@ export function svf(input, type, cutoff, q = 0.707) {
   return out;
 }
 
+/**
+ * A second-order filter from the Audio EQ Cookbook (Robert Bristow-Johnson): 'peak' raises or
+ * lowers a band around f0 by gainDb, 'highshelf' everything above f0.
+ */
+export function biquad(input, type, f0, gainDb = 0, q = 0.707) {
+  const A = 10 ** (gainDb / 40);
+  const w0 = (2 * Math.PI * f0) / SR;
+  const cos = Math.cos(w0);
+  const alpha = Math.sin(w0) / (2 * q);
+  let b0;
+  let b1;
+  let b2;
+  let a0;
+  let a1;
+  let a2;
+  if (type === 'peak') {
+    b0 = 1 + alpha * A;
+    b1 = -2 * cos;
+    b2 = 1 - alpha * A;
+    a0 = 1 + alpha / A;
+    a1 = -2 * cos;
+    a2 = 1 - alpha / A;
+  } else {
+    const sq = 2 * Math.sqrt(A) * alpha;
+    b0 = A * (A + 1 + (A - 1) * cos + sq);
+    b1 = -2 * A * (A - 1 + (A + 1) * cos);
+    b2 = A * (A + 1 + (A - 1) * cos - sq);
+    a0 = A + 1 - (A - 1) * cos + sq;
+    a1 = 2 * (A - 1 - (A + 1) * cos);
+    a2 = A + 1 - (A - 1) * cos - sq;
+  }
+  const out = new Float32Array(input.length);
+  let x1 = 0;
+  let x2 = 0;
+  let y1 = 0;
+  let y2 = 0;
+  for (let i = 0; i < input.length; i++) {
+    const x = input[i];
+    const y = (b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2) / a0;
+    x2 = x1;
+    x1 = x;
+    y2 = y1;
+    y1 = y;
+    out[i] = y;
+  }
+  return out;
+}
+
 /** multiply by an envelope given as a function of the position 0..1 (or of seconds with byTime) */
 export function shape(sig, env, byTime = false) {
   const n = sig.length;
@@ -267,11 +315,12 @@ export function sum(parts) {
 
 /** a short sine "bell": a few (inharmonic) partials with their own decays */
 export function bell(f, decay = 1.2, bright = 0.5, dur = decay * 5) {
+  // the high partials quieter than a real bell: bright enough to ring, soft on the ears
   const parts = [
     [1, 1, 1],
-    [2.76, 0.42 * bright, 0.45],
-    [5.4, 0.2 * bright, 0.25],
-    [2, 0.25, 0.7],
+    [2.76, 0.28 * bright, 0.4],
+    [5.4, 0.07 * bright, 0.2],
+    [2, 0.22, 0.7],
   ];
   const n = len(dur);
   const out = new Float32Array(n);
@@ -280,7 +329,7 @@ export function bell(f, decay = 1.2, bright = 0.5, dur = decay * 5) {
     const tau = decay * dk;
     for (let i = 0; i < n; i++) {
       const t = i / SR;
-      const a = (t < 0.003 ? t / 0.003 : 1) * Math.exp(-t / tau);
+      const a = (t < 0.006 ? t / 0.006 : 1) * Math.exp(-t / tau);
       out[i] += Math.sin(w * i) * amp * a;
     }
   }
@@ -335,8 +384,8 @@ export function pingPong(track, time = 0.32, feedback = 0.35) {
     out.L[s] = yl;
     out.R[s] = yr;
     // the echoes get darker
-    lpL += 0.35 * (yr - lpL);
-    lpR += 0.35 * (yl - lpR);
+    lpL += 0.25 * (yr - lpL);
+    lpR += 0.25 * (yl - lpR);
     bl[i] = (track.L[s] + track.R[s]) * 0.5 + lpL * feedback;
     br[i] = lpR * feedback + track.R[s] * 0.0;
     if (++i >= d) i = 0;
