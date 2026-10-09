@@ -1,12 +1,13 @@
 // The room of the installation: LED wall on a goal-post truss, the Kinect in front of it at the
 // middle, a few things standing around (they show up in the depth image and get removed later).
 // Meters; x to the right as the audience sees the wall, y up, z from the wall towards the audience.
-// The values follow web/WALL.md (6 × 2 m, 1008 × 336 LEDs, 12 × 4 cabinets of 84 × 84 LEDs, Kinect
-// 0.85 m high, 0.2 m in front of the wall, sees 0.5–4.5 m).
+// The values follow web/WALL.md (6 × 2 m, 1008 × 336 LEDs, Kinect 0.85 m high in front of the wall,
+// sees 0.5–4.5 m); the panels are 0.5 m wide and 1 m high (84 × 168 LEDs), 12 × 2 of them. The Kinect
+// stands on a photo/video tripod.
 
 import { V3 } from './math';
 
-export const WALL = { w: 6, h: 2, bottom: 0.6, z: 0, cols: 12, rows: 4, depth: 0.09, ledW: 1008, ledH: 336 };
+export const WALL = { w: 6, h: 2, bottom: 0.6, z: 0, cols: 12, rows: 2, depth: 0.09, ledW: 1008, ledH: 336 };
 export const TRUSS = { x: WALL.w / 2 + 0.38, z: -0.07, size: 0.29, height: 3.2 };
 export const KINECT: V3 = [0, 0.85, 0.25];
 /** depth camera intrinsics at 512 × 424 (Kinect v2: about 70° × 60°) */
@@ -97,7 +98,7 @@ export interface Cabinet {
   row: number;
   /** corners top-left, top-right, bottom-right, bottom-left (front face) */
   corners: V3[];
-  /** order in which they are hung (0..47): top row first */
+  /** order in which they are hung (0..23): column by column, the top panel first */
   order: number;
 }
 
@@ -113,7 +114,7 @@ export function cabinets(): Cabinet[] {
         col,
         row,
         corners: [[x0, y1, WALL.z], [x0 + cw, y1, WALL.z], [x0 + cw, y1 - ch, WALL.z], [x0, y1 - ch, WALL.z]],
-        order: row * WALL.cols + (row % 2 === 0 ? col : WALL.cols - 1 - col),
+        order: col * WALL.rows + row,
       });
     }
   }

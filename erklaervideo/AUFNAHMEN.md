@@ -7,7 +7,8 @@ Im Moment laufen im Video einfache, simulierte Figuren. Mit diesen Aufnahmen ers
 1. **Maße des echten Aufbaus**, damit der gezeichnete Raum stimmt (in Klammern steht, was das Video jetzt annimmt):
    - Unterkante der LED-Wand über dem Boden (0,6 m)
    - Truss: Höhe, wie weit die Türme neben der Wand stehen, Art (Tor aus 2 Türmen und Traverse, 3,2 m hoch, 29er Truss)
-   - Kinect: Höhe der Linse (0,85 m), Abstand vor der Wand (0,25 m), ob sie genau mittig steht
+   - Kinect auf dem Foto-Stativ: Höhe der Linse (0,85 m), Abstand vor der Wand (0,25 m), ob sie genau mittig steht
+   - Die Panels sind schon drin: 0,5 m breit, 1 m hoch, 12 × 2.
    - ein Handyfoto vom Aufbau von schräg vorne
 2. **Fünf Kinect-Aufnahmen** (siehe unten), zusammen etwa 1:40 min, rund 2 GB.
 3. **Optional für Szene 8:** ein Handyvideo von hinten und eine Bildschirmaufnahme der Wand-Ausgabe (siehe unten).

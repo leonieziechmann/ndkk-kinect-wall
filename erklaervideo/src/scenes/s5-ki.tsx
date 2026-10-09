@@ -19,12 +19,12 @@ export default makeScene2D(function* (view) {
     <Stage
       ref={st}
       time={T}
-      wallContent={'idle'}
-      wallLit={0.7}
-      wallAlpha={0.12}
+      wallLit={0.55}
+      wallAlpha={0}
       roomAlpha={0}
       frustum={1}
-      frustumAlpha={0.15}
+      frustumAlpha={0.12}
+      kinectAlpha={0}
       cloud={1}
       colorFlow={1}
       streaks={1}
@@ -34,7 +34,7 @@ export default makeScene2D(function* (view) {
       flyH={KI.h}
     />,
   );
-  setShot(st(), SHOTS.front);
+  setShot(st(), SHOTS.kinectC);
   view.add(<SensorPanel ref={ki} time={T} mode={'ir'} width={KI.w} height={KI.h} x={KI.x} y={KI.y} opacity={0} scale={0.94} />);
   const cap = new Caption(view);
   yield chapterBar(view, 4);
@@ -57,7 +57,7 @@ export default makeScene2D(function* (view) {
   );
   // lift the skeletons into 3D
   yield* st().opacity(0, 0.4);
-  setShot(st(), SHOTS.lift);
+  setShot(st(), SHOTS.kinectK);
   st().colorFlow(0);
   st().streaks(0);
   st().colorMask(1);
@@ -69,7 +69,7 @@ export default makeScene2D(function* (view) {
     st().skelFly(1, 1.6, easeInOutCubic),
     ki().opacity(0, 0.9),
   );
-  yield* all(...moveTo(st(), SHOTS.liftSide, 2.5, easeInOutSine));
+  yield* all(...moveTo(st(), SHOTS.kinectD, 2.5, easeInOutSine));
   yield* until(duration('ki') - 0.45);
   yield* cap.hide(0.4);
   yield* until(duration('ki'));

@@ -13,7 +13,7 @@ export default makeScene2D(function* (view) {
   const T = yield* begin(view, SCENES.aufbau);
   const st = createRef<Stage>();
   const title = createRef<Txt>();
-  view.add(<Stage ref={st} time={T} grid={0} truss={0} wall={0} kinect={0} roomAlpha={0} wallContent={'test'} />);
+  view.add(<Stage ref={st} time={T} grid={0} truss={0} wall={0} kinect={0} roomAlpha={0} wallContent={'test'} wallLit={1} />);
   view.add(
     <Txt ref={title} text={'So funktioniert die Kinect-Wand'} fontFamily={FONT} fontWeight={700} fontSize={84} fill={C.text} y={-40} opacity={0} shadowColor={'rgba(0,0,0,0.9)'} shadowBlur={24} />,
   );
@@ -28,7 +28,6 @@ export default makeScene2D(function* (view) {
     delay(0.6, st().roomAlpha(0.5, 2, easeOutCubic)),
     delay(1.4, st().truss(1, 3.0, linear)),
     delay(3.8, st().wall(1, 3.8, linear)),
-    delay(7.4, st().wallLit(1, 1.0, easeOutCubic)),
     delay(7.6, st().kinect(1, 1.4, linear)),
     delay(8.85, st().ping(1, 0.9, easeOutCubic)),
     delay(8.0, st().labels(1, 2.0, linear)),

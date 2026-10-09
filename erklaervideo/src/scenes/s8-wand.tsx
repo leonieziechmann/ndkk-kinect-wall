@@ -24,7 +24,7 @@ export default makeScene2D(function* (view) {
   view.add(<WallView ref={wall} time={T} x={0} y={-60} width={1500} height={500} fluid={1} skel={0.55} />);
   view.add(
     <Rect ref={pip} x={PIP.x} y={PIP.y} width={PIP.w} height={PIP.h} radius={14} fill={'#03050a'} stroke={'rgba(158,195,255,0.6)'} lineWidth={2} clip opacity={0}>
-      <Stage ref={pipStage} time={T} width={PIP.w} height={PIP.h} grid={0.6} wallAlpha={0} kinect={1} roomAlpha={0} cloud={1} colorMask={1} maskGrow={400} bgDrop={1} skel={1} />
+      <Stage ref={pipStage} time={T} width={PIP.w} height={PIP.h} grid={0.6} wallAlpha={0} kinectAlpha={0} roomAlpha={0} cloud={1} colorMask={1} maskGrow={400} bgDrop={1} skel={1} />
       <Txt x={-PIP.w / 2 + 18} y={-PIP.h / 2 + 22} offset={[-1, 0]} text={'Sicht der Kinect'} fontFamily={FONT} fontWeight={600} fontSize={22} fill={C.sensor} />
     </Rect>,
   );

@@ -20,8 +20,7 @@ export default makeScene2D(function* (view) {
     <Stage
       ref={st}
       time={T}
-      wallContent={'idle'}
-      wallLit={0.7}
+      wallLit={0.55}
       roomAlpha={0.5}
       frustum={1}
       zone={1}
@@ -46,10 +45,10 @@ export default makeScene2D(function* (view) {
     delay(1.7, st().ray(1, 1.6, linear)),
   );
   yield* until(3.5);
-  // every pixel flies to its place
+  // every pixel flies to its place, while the camera swings round to look from the Kinect
   st().cloud(1);
   yield* all(
-    st().cloudFly(1, 2.6, linear),
+    st().cloudFly(1, 2.8, linear),
     dp().image(0.08, 2.4, linear),
     dp().pixel(0, 0.4),
     st().ray(0, 0.5),
@@ -57,15 +56,14 @@ export default makeScene2D(function* (view) {
     ir().x(PANEL.x + PANEL.out, 0.9, easeInOutCubic),
     delay(0.8, st().figures(0, 1.2)),
     delay(0.6, st().zone(0, 1)),
-  );
-  // around the cloud: from the side to the front of the people, behind the (now see-through) wall
-  yield* all(
-    dp().x(PANEL.x + PANEL.out, 0.9, easeInOutCubic),
-    st().wallAlpha(0.12, 1.6),
-    st().frustumAlpha(0.35, 1.6),
+    st().wallAlpha(0, 1.0),
+    st().frustumAlpha(0.22, 1.4),
     st().roomAlpha(0, 1.2),
-    ...moveTo(st(), SHOTS.orbitB, 4.4, easeInOutSine),
+    delay(1.4, st().kinectAlpha(0, 0.8)),
+    ...moveTo(st(), SHOTS.kinectA, 2.8, easeInOutCubic),
   );
+  // a slow swing, enough to see that it is 3D
+  yield* all(dp().x(PANEL.x + PANEL.out, 0.9, easeInOutCubic), ...moveTo(st(), SHOTS.kinectB, 4.2, easeInOutSine));
   yield* until(duration('punktwolke') - 0.45);
   yield* cap.hide(0.4);
   yield* until(duration('punktwolke'));

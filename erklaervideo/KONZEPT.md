@@ -1,4 +1,4 @@
-# Erklärvideo Kinect-Wand: Konzept (Stand: Entwurf 2)
+# Erklärvideo Kinect-Wand: Konzept (Stand: Entwurf 3)
 
 Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Installation funktioniert. Es läuft auf einem Notebook neben der Wand.
 
@@ -10,6 +10,7 @@ Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Insta
 ## Look
 
 - Dunkler Raum, der 3D-Raum als Linienzeichnung. Szenen 1–6 sind eine durchgehende Kamerafahrt, auch die Schnitte zwischen den Szenen sind unsichtbar.
+- Die Kinect-Daten (Punktwolke, Bewegung, Skelette, Masken) sieht man grob aus der Richtung der Kinect: von etwas hinter und über ihr, mit kleinen Schwenks, damit man die Tiefe erkennt.
 - Personen in den Tracking-Farben des echten Systems: Cyan, Magenta, Gold. Bis die KI sie erkennt, sind sie grau.
 - Tiefe als Farbverlauf (nah = warm, fern = kalt), Infrarot in Graustufen.
 - Unten eine schmale Fortschrittsleiste mit 8 Kapiteln (ohne Text).
@@ -24,14 +25,14 @@ Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Insta
 | 4 | 0:34 | Optical Flow | „Sie sieht auch, wie sich alles bewegt.“ |
 | 5 | 0:40 | KI-Tracking | „Eine KI erkennt die Menschen und ihr Skelett.“ |
 | 6 | 0:52 | Masken | „Nur die Menschen bleiben übrig.“ |
-| 7 | 1:01 | Daten an die Szene | „30-mal pro Sekunde gehen die Daten an die Szene.“ / „Daraus malt die Szene das Bild auf der Wand.“ |
+| 7 | 1:01 | Der Weg der Daten | „30-mal pro Sekunde läuft jedes Bild durch diese Schritte.“ / „Daraus entsteht das Bild auf der Wand.“ |
 | 8 | 1:13 | Interaktion | „Deine Bewegung malt auf der Wand.“ |
 | 9 | 1:25 | Abspann | später |
 
 **1 · Aufbau**
 - Das Bodenraster zeichnet sich. Die Truss-Türme wachsen hoch, und die Traverse zieht sich darüber.
-- 48 LED-Kabinette hängen sich Reihe für Reihe ein und zeigen das Testbild.
-- Die Kinect setzt mittig vor der Wand auf ihr Stativ.
+- 24 LED-Panels (12 × 2, je 0,5 m breit und 1 m hoch) hängen sich Spalte für Spalte ein. Jedes bringt sein Stück vom Raster-Testbild der Steuerzentrale mit: Panel-Nummern, Kreis, Mittelkreuz, farbige Ecken, „1008 × 336“.
+- Die Kinect setzt mittig vor der Wand auf ein Foto-Stativ, dessen Beine oben zusammenlaufen.
 - Beschriftungen: LED-Wand, Truss, Kinect, 6 m, 2 m.
 
 **2 · Sichtfeld, Infrarot, Abstand**
@@ -42,10 +43,10 @@ Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Insta
 **3 · Punktwolke**
 - Ein Bildpunkt auf der Brust einer Figur wird markiert. Eine Linie führt zur Kinect, ein Strahl in den Raum, und ein Punkt erscheint mit seiner Entfernung („2,05 m“).
 - Dann fliegen alle Bildpunkte aus dem Bild an ihre Stelle im Raum.
-- Die Kamera fährt um die Punktwolke herum, bis vor die Leute. Man sieht ihre Körper und die „Schatten“ auf der Rückwand, wo die Kinect nicht hinsieht: echte 3D-Daten.
+- Die Kamera schwenkt grob in die Richtung der Kinect und bewegt sich dann langsam zur Seite. Man sieht die Körper und die „Schatten“ auf der Rückwand, wo die Kinect nicht hinsieht: echte 3D-Daten.
 
 **4 · Optical Flow**
-- Nah von vorne: Was sich bewegt, leuchtet in der Farbe seiner Bewegungsrichtung und zieht kurze Spuren. Der Rest wird dunkel.
+- Aus Kinect-Richtung, etwas näher: Was sich bewegt, leuchtet in der Farbe seiner Bewegungsrichtung und zieht kurze Spuren. Der Rest wird dunkel.
 
 **5 · KI-Tracking**
 - Das Infrarotbild steht groß in der Mitte. Eine Scan-Linie läuft darüber, dann rasten Boxen ein („Mensch 93 %“).
@@ -56,10 +57,10 @@ Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Insta
 - Links 3D, rechts das Maskenbild. Von den Skeletten aus wächst die Farbe über die Körper.
 - Der Raum wird grau markiert, fällt nach unten weg und löst sich auf. Übrig bleiben nur die Menschen.
 
-**7 · Daten an die Szene**
-- Die Kette Kinect → Computer → Szene → LED-Wand erscheint, und Datenpunkte strömen hindurch.
-- Ein „Datenpaket“ zeigt live, wo die Hände gerade sind.
-- Die Szene öffnet sich zur LED-Wand mit den Skeletten, dazu zwei Hinweise:
+**7 · Der Weg der Daten**
+- Die Schritte erscheinen mit eigenem Symbol, und Datenpunkte strömen hindurch: Kinect → Vorberechnung → KI-Erkennung → Tracking → Visualisierung → LED-Wand.
+- Eine Karte „Daten nach dem Tracking“ zeigt live, wie hoch und wie weit weg die Hände gerade sind.
+- „Visualisierung“ öffnet sich zur LED-Wand mit den Skeletten, dazu zwei Hinweise:
   - **„wie ein Spiegel“:** Die rechte Hand ist rechts.
   - **Laufweg × 1,4:** Eine Draufsicht zeigt, wie die Position gestreckt wird, damit man die ganze Wand erreicht.
 - Dann beginnt das Fluid zu fließen.

@@ -28,23 +28,27 @@ export const SHOTS = {
   /** scene 2: from the side, the field of view reaches into the room */
   side: shot({ yaw: 58, pitch: 17, dist: 9.6, tx: 0, ty: 1.1, tz: 2.5 }),
   sidePanels: shot({ yaw: 58, pitch: 17, dist: 9.6, tx: 0, ty: 1.1, tz: 2.5, shiftX: -330 }),
-  /** scene 3: around the point cloud */
-  orbitA: shot({ yaw: 150, pitch: 10, dist: 8.2, tx: 0, ty: 1.05, tz: 2.8 }),
-  orbitB: shot({ yaw: 208, pitch: 14, dist: 7.4, tx: 0.1, ty: 1.05, tz: 2.8 }),
-  /** scene 4: close to the people, from the front */
-  front: shot({ yaw: 188, pitch: 7, dist: 5.8, tx: 0.15, ty: 1.2, tz: 2.6 }),
-  /** scene 5: skeletons in 3D, from the Kinect's side (behind the wall, which is see-through then) */
-  lift: shot({ yaw: 176, pitch: 5, dist: 5.4, tx: 0.15, ty: 1.05, tz: 2.6 }),
-  liftSide: shot({ yaw: 128, pitch: 14, dist: 7.0, tx: 0.1, ty: 1.0, tz: 2.7 }),
-  /** scene 6: masks, 3D left */
-  masks: shot({ yaw: 140, pitch: 15, dist: 8.0, tx: 0.1, ty: 1.0, tz: 2.8, shiftX: -330 }),
-  masksEnd: shot({ yaw: 162, pitch: 11, dist: 7.4, tx: 0.1, ty: 1.05, tz: 2.8, shiftX: -330 }),
+  /**
+   * scenes 3–7: the point cloud seen roughly from the Kinect: from behind the sensor (the wall is
+   * hidden then), a bit above and to the side, looking at the people; only small swings, enough to
+   * see that it is 3D
+   */
+  kinectA: shot({ yaw: 200, pitch: 17, dist: 4.4, tx: 0.15, ty: 1.0, tz: 3.0, fov: 46 }),
+  kinectB: shot({ yaw: 162, pitch: 13, dist: 4.5, tx: 0.1, ty: 1.0, tz: 3.0, fov: 46 }),
+  /** scene 4: a bit closer */
+  kinectC: shot({ yaw: 186, pitch: 11, dist: 3.9, tx: 0.15, ty: 1.1, tz: 2.8, fov: 46 }),
+  /** scene 5: where the skeletons lift out of the picture, then a slow swing */
+  kinectK: shot({ yaw: 180, pitch: 6, dist: 3.7, tx: 0.15, ty: 1.0, tz: 2.75, fov: 48 }),
+  kinectD: shot({ yaw: 203, pitch: 15, dist: 4.4, tx: 0.1, ty: 1.0, tz: 2.95, fov: 46 }),
+  /** scene 6: 3D left, the mask picture right */
+  kinectMask: shot({ yaw: 195, pitch: 14, dist: 4.7, tx: 0.1, ty: 1.0, tz: 2.95, fov: 48, shiftX: -330 }),
+  kinectMaskEnd: shot({ yaw: 167, pitch: 12, dist: 4.6, tx: 0.1, ty: 1.0, tz: 2.95, fov: 48, shiftX: -330 }),
   /** scene 8: from behind the audience, straight at the wall (the wall stays a flat rectangle) */
   wallClose: shot({ yaw: 0, pitch: 0, dist: 7.06, tx: 0, ty: 1.6, tz: 0, fov: 34, shiftY: -60 }),
   wallWide: shot({ yaw: 0, pitch: 0, dist: 11.2, tx: 0, ty: 1.6, tz: 0, fov: 34, shiftY: 10 }),
   wallWideEnd: shot({ yaw: 0, pitch: 0, dist: 10.6, tx: 0.25, ty: 1.6, tz: 0, fov: 34, shiftY: 10 }),
   /** the picture-in-picture: the Kinect's view from the side */
-  pip: shot({ yaw: 166, pitch: 8, dist: 4.4, tx: 0.1, ty: 1.0, tz: 2.8, fov: 50 }),
+  pip: shot({ yaw: 176, pitch: 10, dist: 4.4, tx: 0.1, ty: 1.0, tz: 2.9, fov: 50 }),
 };
 
 export function setShot(st: Stage, s: Shot) {

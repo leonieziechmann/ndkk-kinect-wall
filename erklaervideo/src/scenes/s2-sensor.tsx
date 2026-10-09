@@ -2,7 +2,7 @@
 // infrared pulses run through the room, then the two pictures of the Kinect slide in.
 
 import { makeScene2D } from '@motion-canvas/2d';
-import { all, chain, createRef, delay, easeInOutCubic, easeOutCubic } from '@motion-canvas/core';
+import { all, createRef, delay, easeInOutCubic, easeOutCubic } from '@motion-canvas/core';
 import { PANEL } from '../lib/layout';
 import { SHOTS, begin, moveTo, setShot, until } from '../lib/shots';
 import { SCENES, duration } from '../lib/timeline';
@@ -26,7 +26,7 @@ export default makeScene2D(function* (view) {
     ...moveTo(st(), SHOTS.side, 2.4, easeInOutCubic),
     st().labels(0, 0.5),
     st().dims(0, 0.5),
-    chain(st().wallLit(0, 0.5), () => st().wallContent('idle'), st().wallLit(0.7, 0.8)),
+    st().wallLit(0.55, 0.8),
     delay(0.9, st().frustum(1, 1.8, easeInOutCubic)),
     delay(1.8, st().zone(1, 1.0)),
     delay(1.4, st().figures(1, 0.6)),

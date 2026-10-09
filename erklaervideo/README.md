@@ -24,7 +24,8 @@ Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → End
 | `src/lib/timeline.ts` | wann jede Szene auf der Story-Uhr beginnt |
 | `src/lib/choreo.ts` | wer wann wohin läuft und welche Geste macht |
 | `src/lib/people.ts` | die einfachen Figuren: Skelett aus 22 Punkten, Körper aus Kapseln |
-| `src/lib/world.ts` | der Raum: LED-Wand, Truss, Kinect, Möbel (Maße aus `web/WALL.md`) |
+| `src/lib/world.ts` | der Raum: LED-Wand (12 × 2 Panels à 0,5 × 1 m), Truss, Kinect auf Foto-Stativ, Möbel |
+| `src/lib/testpattern.ts` | das Raster-Testbild der Steuerzentrale (nachgebaut aus `web/lib/wall-output.js`) |
 | `src/lib/sensor.ts` | die simulierte Kinect: Tiefe, Infrarot, Masken, Optical Flow, Boxen, Keypoints (512 × 424, 30 Bilder/s) |
 | `src/lib/fluid.ts`, `mapping.ts` | das Fluid auf der Wand und wie Menschen auf die Wand abgebildet werden |
 | `src/lib/shots.ts` | Kamerapositionen der 3D-Ansichten |

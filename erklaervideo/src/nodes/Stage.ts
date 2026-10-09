@@ -11,6 +11,7 @@ import { V3, clamp, easeOutBack, hash, hexRgb, hsv, lerp, rgba, smooth } from '.
 import { BONES, Pose, people } from '../lib/people';
 import { SensorFrame, rayX, rayXAt, rayY, rayYAt, sense } from '../lib/sensor';
 import { Splatter } from '../lib/splat';
+import { testPattern } from '../lib/testpattern';
 import { C, FONT } from '../lib/theme';
 import { FURNITURE, INTR, KINECT, ROOM, TRUSS, WALL, aboveFloor, cabinets, floorZone, fovCorners, segAboveFloor, trussSegments } from '../lib/world';
 
@@ -32,6 +33,7 @@ export interface StageProps extends RectProps {
   wallAlpha?: SignalValue<number>;
   wallContent?: SignalValue<string>;
   kinect?: SignalValue<number>;
+  kinectAlpha?: SignalValue<number>;
   roomAlpha?: SignalValue<number>;
   frustum?: SignalValue<number>;
   frustumAlpha?: SignalValue<number>;
@@ -99,8 +101,9 @@ export class Stage extends Rect {
   @initial(1) @signal() public declare readonly wall: SimpleSignal<number, this>;
   @initial(0) @signal() public declare readonly wallLit: SimpleSignal<number, this>;
   @initial(1) @signal() public declare readonly wallAlpha: SimpleSignal<number, this>;
-  @initial('idle') @signal() public declare readonly wallContent: SimpleSignal<string, this>;
+  @initial('test') @signal() public declare readonly wallContent: SimpleSignal<string, this>;
   @initial(1) @signal() public declare readonly kinect: SimpleSignal<number, this>;
+  @initial(1) @signal() public declare readonly kinectAlpha: SimpleSignal<number, this>;
   @initial(0.7) @signal() public declare readonly roomAlpha: SimpleSignal<number, this>;
   @initial(0) @signal() public declare readonly frustum: SimpleSignal<number, this>;
   @initial(1) @signal() public declare readonly frustumAlpha: SimpleSignal<number, this>;
@@ -312,6 +315,7 @@ export class Stage extends Rect {
       }
       ctx.stroke();
     }
+    const pattern = content === 'test' && lit > 0 ? testPattern() : null;
     for (const cab of CABINETS) {
       const p = this.cabinetProgress(cab.order);
       if (p <= 0) continue;
@@ -320,25 +324,56 @@ export class Stage extends Rect {
       const a = clamp(p * 3) * alpha;
       ctx.beginPath();
       if (!this.poly(ctx, cam, pts)) continue;
-      let fill = hexRgb(C.cabinet);
-      if (lit > 0 && content === 'test') {
-        const c = hsv(cab.col / WALL.cols, 0.55, 0.35 + 0.55 * (1 - cab.row / WALL.rows));
-        const flash = clamp(1 - Math.abs(lit * 1.4 - 0.2 - cab.order / CABINETS.length) * 3);
-        fill = [lerp(fill[0], c[0], lit) + flash * 0.3, lerp(fill[1], c[1], lit) + flash * 0.3, lerp(fill[2], c[2], lit) + flash * 0.3];
+      ctx.fillStyle = rgba(hexRgb(C.cabinet), a);
+      ctx.fill();
+      if (pattern) {
+        // each panel brings its part of the test image and lights up once it hangs
+        const on = clamp((p - 0.7) / 0.3) * lit * alpha;
+        const sw = pattern.width / WALL.cols;
+        const sh = pattern.height / WALL.rows;
+        if (on > 0) this.drawQuadImage(ctx, cam, pattern, cab.col * sw, cab.row * sh, sw, sh, pts, 2, 4, on);
       } else if (lit > 0 && content === 'idle') {
         const u = (cab.col + 0.5) / WALL.cols;
         const v = (cab.row + 0.5) / WALL.rows;
         const w = 0.5 + 0.5 * Math.sin(T * 0.6 + u * 4 - v * 2);
         const c: [number, number, number] = [0.1 + 0.18 * w * u, 0.09 + 0.05 * w, 0.32 + 0.12 * w * (1 - u)];
-        fill = [lerp(fill[0], c[0], lit), lerp(fill[1], c[1], lit), lerp(fill[2], c[2], lit)];
+        ctx.fillStyle = rgba(c, lit * a);
+        ctx.fill();
       }
-      ctx.fillStyle = rgba(fill, a);
-      ctx.fill();
+      ctx.beginPath();
+      this.poly(ctx, cam, pts);
       ctx.strokeStyle = rgba(hexRgb(C.cabinetEdge), a * (content === 'fluid' ? 0.6 : 1));
       ctx.lineWidth = 1;
       ctx.stroke();
     }
     if (lit > 0 && content === 'fluid') this.drawWallImage(ctx, cam, FLUID.at(T).image(), lit * alpha);
+  }
+
+  /** part of an image on a 3D quad (TL, TR, BR, BL), in nx × ny small affine cells (close to perspective) */
+  private drawQuadImage(ctx: CanvasRenderingContext2D, cam: Camera, img: CanvasImageSource, sx: number, sy: number, sw: number, sh: number, q: V3[], nx: number, ny: number, alpha: number) {
+    const at = (u: number, v: number): V3 => {
+      const t: V3 = [lerp(q[0][0], q[1][0], u), lerp(q[0][1], q[1][1], u), lerp(q[0][2], q[1][2], u)];
+      const b: V3 = [lerp(q[3][0], q[2][0], u), lerp(q[3][1], q[2][1], u), lerp(q[3][2], q[2][2], u)];
+      return [lerp(t[0], b[0], v), lerp(t[1], b[1], v), lerp(t[2], b[2], v)];
+    };
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    const e = 0.012;
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        const a = cam.project(at(i / nx, j / ny));
+        const b = cam.project(at((i + 1) / nx, j / ny));
+        const c = cam.project(at(i / nx, (j + 1) / ny));
+        if (!a || !b || !c) continue;
+        ctx.save();
+        ctx.transform(b[0] - a[0], b[1] - a[1], c[0] - a[0], c[1] - a[1], a[0], a[1]);
+        ctx.drawImage(img, sx + (i * sw) / nx, sy + (j * sh) / ny, sw / nx, sh / ny, -e, -e, 1 + 2 * e, 1 + 2 * e);
+        ctx.restore();
+      }
+    }
+    ctx.restore();
   }
 
   /** an image on the wall rectangle (affine: exact when the camera looks straight at the wall) */
@@ -389,24 +424,46 @@ export class Stage extends Rect {
   // ---------------------------------------------------------------- Kinect
 
   private drawKinect(ctx: CanvasRenderingContext2D, cam: Camera) {
-    const p = this.kinect();
-    const standP = clamp(p * 2);
-    const bodyP = clamp(p * 2 - 1);
+    const standP = clamp(this.kinect() * 2);
+    const bodyP = clamp(this.kinect() * 2 - 1);
+    const fade = this.kinectAlpha();
     const [kx, ky, kz] = KINECT;
-    // stand: pole and three legs
-    ctx.strokeStyle = rgba(hexRgb(C.truss), 0.9 * standP);
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    const poleTop = (ky - 0.05) * standP;
-    this.line(ctx, cam, [kx, 0.3 * Math.min(1, standP * 2), kz], [kx, poleTop, kz]);
+    // photo/video tripod: three legs from the floor meet under the head, a short center column,
+    // a pan head with its handle pointing back towards the wall
+    const top = ky - 0.075;
+    const metal = hexRgb(C.truss);
+    ctx.lineCap = 'round';
     for (let i = 0; i < 3; i++) {
-      const a = (i / 3) * Math.PI * 2 + 0.5;
-      const r = 0.24 * standP;
-      this.line(ctx, cam, [kx, 0.3 * standP, kz], [kx + Math.cos(a) * r, 0, kz + Math.sin(a) * r]);
+      const a = (i / 3) * Math.PI * 2 + Math.PI / 2;
+      const foot: V3 = [kx + Math.cos(a) * 0.36, 0, kz + Math.sin(a) * 0.36];
+      const hip: V3 = [kx + Math.cos(a) * 0.045, top, kz + Math.sin(a) * 0.045];
+      const knee: V3 = [lerp(foot[0], hip[0], 0.45), lerp(foot[1], hip[1], 0.45), lerp(foot[2], hip[2], 0.45)];
+      const reach: V3 = [lerp(foot[0], hip[0], standP), lerp(foot[1], hip[1], standP), lerp(foot[2], hip[2], standP)];
+      ctx.strokeStyle = rgba(metal, 0.95 * standP * fade);
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      this.line(ctx, cam, foot, standP < 0.45 ? reach : knee);
+      ctx.stroke();
+      if (standP > 0.45) {
+        ctx.lineWidth = 3.4;
+        ctx.beginPath();
+        this.line(ctx, cam, knee, reach);
+        ctx.stroke();
+      }
     }
-    ctx.stroke();
-    if (bodyP <= 0) return;
-    // the body drops onto the stand
+    if (standP >= 1) {
+      ctx.strokeStyle = rgba(metal, 0.95 * fade);
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      this.line(ctx, cam, [kx, top, kz], [kx, ky - 0.035, kz]);
+      ctx.stroke();
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      this.line(ctx, cam, [kx, ky - 0.04, kz - 0.02], [kx + 0.03, top - 0.05, kz - 0.3]);
+      ctx.stroke();
+    }
+    if (bodyP <= 0 || fade <= 0) return;
+    // the body drops onto the tripod
     const drop = (1 - easeOutBack(bodyP)) * 0.5;
     const hw = 0.125;
     const hh = 0.033;
@@ -423,9 +480,9 @@ export class Stage extends Rect {
     for (const { f } of sorted) {
       ctx.beginPath();
       if (!this.poly(ctx, cam, f.map((i) => c[i]))) continue;
-      ctx.fillStyle = rgba([0.07, 0.08, 0.1], bodyP);
+      ctx.fillStyle = rgba([0.07, 0.08, 0.1], bodyP * fade);
       ctx.fill();
-      ctx.strokeStyle = rgba(hexRgb(C.line), 0.85 * bodyP);
+      ctx.strokeStyle = rgba(hexRgb(C.line), 0.85 * bodyP * fade);
       ctx.lineWidth = 1.3;
       ctx.stroke();
     }
@@ -434,11 +491,11 @@ export class Stage extends Rect {
     const emitter = cam.project([kx + 0.035, y, kz + hd + 0.002]);
     if (lens && emitter) {
       const r = Math.max(2, cam.ppm(lens[2]) * 0.012);
-      ctx.fillStyle = rgba(hexRgb(C.sensor), bodyP);
+      ctx.fillStyle = rgba(hexRgb(C.sensor), bodyP * fade);
       ctx.beginPath();
       ctx.arc(lens[0], lens[1], r, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = rgba(hexRgb(C.ir), bodyP);
+      ctx.fillStyle = rgba(hexRgb(C.ir), bodyP * fade);
       ctx.beginPath();
       ctx.arc(emitter[0], emitter[1], r * 0.8, 0, Math.PI * 2);
       ctx.fill();
