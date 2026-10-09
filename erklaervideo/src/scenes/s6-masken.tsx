@@ -5,6 +5,7 @@ import { makeScene2D } from '@motion-canvas/2d';
 import { all, createRef, delay, easeInCubic, easeInOutCubic, easeInOutSine, easeOutCubic, linear } from '@motion-canvas/core';
 import { PANEL } from '../lib/layout';
 import { SHOTS, begin, moveTo, setShot, until } from '../lib/shots';
+import { cue } from '../lib/sound';
 import { SCENES, duration } from '../lib/timeline';
 import { SensorPanel } from '../nodes/SensorPanel';
 import { Stage } from '../nodes/Stage';
@@ -24,14 +25,20 @@ export default makeScene2D(function* (view) {
   const cap = new Caption(view);
   yield chapterBar(view, 5);
 
+  cue(T, 'swish', 0.1, { pan: 0.7 });
+  cue(T, 'whoosh', 0, { dur: 1.2, gain: 0.3 });
   yield* all(
     ...moveTo(st(), SHOTS.kinectMask, 1.2, easeInOutCubic),
     mk().x(MASK.x, 1.1, easeOutCubic),
     delay(0.5, cap.show('Nur die Menschen bleiben übrig.')),
   );
+  cue(T, 'grow', 0, { dur: 2.0 });
   yield* all(st().maskGrow(90, 2.0, easeInCubic), mk().maskGrow(90, 2.0, easeInCubic));
+  cue(T, 'dim', 0);
   yield* all(st().bgGrey(1, 0.7), mk().roomTint(1, 0.7));
+  cue(T, 'drop', 0, { dur: 2.2 });
   yield* all(st().bgDrop(1, 2.2, linear), mk().room(0, 1.9), delay(0.4, st().frustumAlpha(0, 1.2)));
+  cue(T, 'whoosh', 0, { dur: 1.9, gain: 0.25 });
   yield* all(...moveTo(st(), SHOTS.kinectMaskEnd, 1.9, easeInOutSine));
   yield* until(duration('masken') - 0.45);
   yield* cap.hide(0.4);

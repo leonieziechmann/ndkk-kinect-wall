@@ -4,6 +4,7 @@
 import { Rect, Txt, makeScene2D } from '@motion-canvas/2d';
 import { all, createRef, delay, easeInOutCubic, easeInOutSine, easeOutCubic } from '@motion-canvas/core';
 import { SHOTS, begin, moveTo, setShot, until } from '../lib/shots';
+import { cue } from '../lib/sound';
 import { C, FONT } from '../lib/theme';
 import { SCENES, duration } from '../lib/timeline';
 import { Stage } from '../nodes/Stage';
@@ -33,6 +34,8 @@ export default makeScene2D(function* (view) {
   const cap = new Caption(view);
   yield chapterBar(view, 7);
 
+  cue(T, 'whoosh', 0, { dur: 4.0, gain: 0.35 });
+  cue(T, 'swish', 3.4, { pan: 0.75, gain: 0.5 });
   yield* all(
     wall().opacity(0, 0.9),
     ...moveTo(st(), SHOTS.wallWide, 4.0, easeInOutCubic),
@@ -42,6 +45,7 @@ export default makeScene2D(function* (view) {
   yield* all(...moveTo(st(), SHOTS.wallWideEnd, 6.0, easeInOutSine));
   yield* all(pip().opacity(0, 0.5), cap.hide(0.5));
   yield* until(duration('wand') - 1.0);
+  cue(T, 'black', 0, { dur: 1.0 });
   yield* black().opacity(1, 1.0);
   yield* until(duration('wand'));
 });

@@ -6,6 +6,7 @@ import { makeScene2D } from '@motion-canvas/2d';
 import { all, createRef, delay, easeInOutCubic, easeInOutSine, linear } from '@motion-canvas/core';
 import { PANEL } from '../lib/layout';
 import { SHOTS, begin, moveTo, setShot, until } from '../lib/shots';
+import { cue } from '../lib/sound';
 import { SCENES, duration } from '../lib/timeline';
 import { SensorPanel } from '../nodes/SensorPanel';
 import { Stage, flightCut } from '../nodes/Stage';
@@ -39,6 +40,10 @@ export default makeScene2D(function* (view) {
   yield chapterBar(view, 2);
 
   // one pixel: its ray out of the lens and its distance give a point in the room
+  cue(T, 'select', 0.2, { pan: 0.55 });
+  cue(T, 'zap', 0.7, { dur: 0.8, pan: 0.5, panTo: 0 });
+  cue(T, 'laser', 1.4, { dur: 1.0, pan: 0, panTo: -0.3 });
+  cue(T, 'ping', 2.25, { pan: -0.3, gain: 0.8 });
   yield* all(
     cap.show('Aus jedem Bildpunkt wird ein Punkt im Raum.'),
     delay(0.2, dp().pixel(1, 0.5)),
@@ -46,6 +51,7 @@ export default makeScene2D(function* (view) {
     delay(1.4, st().ray(1, 1.5, linear)),
   );
   // round to the Kinect's direction; the drawn room fades
+  cue(T, 'whoosh', 0, { dur: 1.6, gain: 0.6, pan: 0.4, panTo: -0.4 });
   yield* all(
     dp().pixel(0, 0.4),
     st().ray(0, 0.5),
@@ -61,8 +67,10 @@ export default makeScene2D(function* (view) {
   );
   // the picture flies into the room: far first, near last; it empties in the same order
   st().cloud(1);
+  cue(T, 'swarm', 0, { dur: 3.0 });
   dp().depthMax(() => flightCut(st().cloudFly()));
   yield* st().cloudFly(1, 3.0, linear);
+  cue(T, 'swish', 0, { pan: 0.7, gain: 0.6 });
   yield* all(dp().x(PANEL.x + PANEL.out, 0.8, easeInOutCubic), ...moveTo(st(), SHOTS.kinectB, 2.0, easeInOutSine));
   yield* until(duration('punktwolke') - 0.45);
   yield* cap.hide(0.4);

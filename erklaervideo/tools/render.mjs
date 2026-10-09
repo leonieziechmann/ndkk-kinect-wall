@@ -4,6 +4,7 @@
 //   npm run render                         the whole video → output/kinect-wand.mp4 (ffmpeg exporter)
 //   npm run render -- --fps 30 --scale 0.5 a quicker preview
 //   npm run stills -- 3 12.5 40            single frames (seconds) → output/stills/*.jpg
+//   node tools/render.mjs cues             the sound cues of all scenes → output/cues.json (npm run sound)
 //
 // Options: --fps N, --scale S (resolution factor), --from S --to S (seconds), --out DIR (stills),
 // --body puppe|lowpoly|natur (the look of the people), --project figuren (the comparison of the looks).
@@ -16,8 +17,10 @@ import { createServer } from 'vite';
 import puppeteer from 'puppeteer-core';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// the exporter finds the soundtrack by a path relative to the working directory
+process.chdir(root);
 const args = process.argv.slice(2);
-const mode = args[0] === 'stills' ? 'stills' : 'video';
+const mode = args[0] === 'stills' ? 'stills' : args[0] === 'cues' ? 'cues' : 'video';
 const opt = (name, def) => {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args[i + 1] : def;
@@ -82,7 +85,36 @@ try {
   await page.goto(new URL(`tools/harness.html?${query}`, base).href);
   await page.waitForFunction(() => window.__mc, { timeout: 120000 });
 
-  if (mode === 'stills') {
+  if (mode === 'cues') {
+    // run every scene once through (as for the length of the video) and collect the cue() calls
+    const cues = await page.evaluate(async () => {
+      const { project, PlaybackState, Renderer } = window.__mc;
+      globalThis.__cues = [];
+      const r = new Renderer(project);
+      const settings = { ...project.meta.getFullRenderingSettings(), name: project.name, fps: 30, resolutionScale: 0.25 };
+      r.stage.configure(settings);
+      r.playback.fps = 30;
+      r.playback.state = PlaybackState.Rendering;
+      await r.reloadScenes(settings);
+      await r.playback.recalculate();
+      const cues = globalThis.__cues;
+      globalThis.__cues = undefined;
+      return cues;
+    });
+    // a scene may run more than once: keep each cue once
+    const seen = new Set();
+    const list = cues
+      .filter((c) => {
+        const k = JSON.stringify(c);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .sort((a, b) => a.t - b.t);
+    fs.mkdirSync(path.join(root, 'output'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'output', 'cues.json'), JSON.stringify(list, null, 1));
+    console.log(`${list.length} Cues → output/cues.json`);
+  } else if (mode === 'stills') {
     fs.mkdirSync(outDir, { recursive: true });
     const list = [...times].sort((a, b) => a - b);
     const shots = await page.evaluate(
@@ -124,7 +156,7 @@ try {
           fps,
           resolutionScale: scale,
           range: [from, to],
-          exporter: { name: '@motion-canvas/ffmpeg', options: { fastStart: true, includeAudio: false } },
+          exporter: { name: '@motion-canvas/ffmpeg', options: { fastStart: true, includeAudio: true } },
         };
         let last = 0;
         r.onFrameChanged.subscribe((f) => {

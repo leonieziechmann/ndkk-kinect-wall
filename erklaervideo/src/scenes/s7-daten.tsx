@@ -8,6 +8,7 @@ import { all, createRef, delay, easeInOutCubic, easeOutCubic, linear, sequence }
 import { hsv } from '../lib/math';
 import { people } from '../lib/people';
 import { SHOTS, begin, setShot, until } from '../lib/shots';
+import { cue } from '../lib/sound';
 import { C, FONT, MONO } from '../lib/theme';
 import { SCENES, duration } from '../lib/timeline';
 import { KINECT } from '../lib/world';
@@ -205,6 +206,11 @@ export default makeScene2D(function* (view) {
   yield chapterBar(view, 6);
 
   // part A: from the sensor to the scene
+  cue(T, 'whoosh', 0, { dur: 1.0, gain: 0.3, pan: 0, panTo: 0.7 });
+  NAMES.forEach((_, i) => cue(T, 'pop', 0.4 + 0.18 * i, { n: i + 1, pan: XS[i] / 1000 }));
+  cue(T, 'data', 1.5, { dur: 3.3 });
+  cue(T, 'tick', 2.0, { pan: 0.1 });
+  cue(T, 'swish', 2.6, { pan: 0.4, gain: 0.5 });
   yield* all(
     st().opacity(0, 1.0),
     mk().x(MASK.x + 900, 1.0, easeInOutCubic),
@@ -218,6 +224,7 @@ export default makeScene2D(function* (view) {
   yield* until(4.6);
 
   // part B: the scene opens up into the wall
+  cue(T, 'whoosh', 0.1, { dur: 1.2, gain: 0.5, pan: 0.5, panTo: 0 });
   yield* all(
     card().opacity(0, 0.5),
     latency().opacity(0, 0.4),
@@ -229,6 +236,9 @@ export default makeScene2D(function* (view) {
     delay(0.1, all(wall().x(WALL_SMALL.x, 1.1, easeInOutCubic), wall().y(WALL_SMALL.y, 1.1, easeInOutCubic), wall().width(WALL_SMALL.w, 1.1, easeInOutCubic), wall().height(WALL_SMALL.h, 1.1, easeInOutCubic))),
     delay(0.5, cap.show('Daraus entsteht das Bild auf der Wand.')),
   );
+  cue(T, 'pop', 0, { n: 3, gain: 0.7 });
+  cue(T, 'tick', 0.4, { pan: -0.2 });
+  cue(T, 'swish', 1.2, { pan: 0, gain: 0.4 });
   yield* all(
     wall().skel(1, 0.8),
     wall().ghost(1, 0.8),
@@ -236,6 +246,7 @@ export default makeScene2D(function* (view) {
     delay(1.2, wall().topView(1, 0.7)),
   );
   yield* until(8.0);
+  cue(T, 'fluid', 0);
   yield* all(wall().mirror(0, 0.5), wall().fluid(1, 2.0, linear));
   yield* until(10.0);
   yield* all(wall().topView(0, 0.5), wall().ghost(0, 0.5), wall().skel(0.55, 0.6), cap.hide(0.4));

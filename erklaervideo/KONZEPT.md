@@ -2,7 +2,7 @@
 
 Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Installation funktioniert. Es läuft auf einem Notebook neben der Wand.
 
-- **Format:** 16:9, MP4, 1920 × 1080, ohne Ton. Fertig mit 60 fps, die Vorschau mit 30 fps. Es endet in Schwarz und läuft so nahtlos in Schleife.
+- **Format:** 16:9, MP4, 1920 × 1080, mit Ton (funktioniert auch stumm). Fertig mit 60 fps, die Vorschau mit 30 fps. Es endet in Schwarz und Stille und läuft so nahtlos in Schleife.
 - **Erklären über Bewegung:** Es passiert immer etwas. Pro Szene steht höchstens ein kurzer, einfacher Satz im Bild, dazu ein paar Beschriftungen und für Technik-Interessierte zwei Zahlen (30 Bilder/s, Latenz ≈ 10 ms).
 - **Personen:** drei simulierte Figuren im Low-Poly-Stil (facettierte 3D-Körper mit Kleidung und Haaren, ohne Gesicht). Ohne Geschlechterklischees: Er trägt ein pinkes T-Shirt und wird im Tracking magenta, sie trägt ein türkises Boxy-Shirt, eine weite helle High-Waist-Hose und einen Pferdeschwanz und wird cyan, die dritte Person einen ockerfarbenen Pullover. Die Hauttöne sind verschieden. Echte Aufnahmen sind nicht nötig. Als Alternative gibt es denselben Körper weich schattiert („Natürlich“).
 - **Abspann** (Szene 9): eine geteilte Seite. Links Modern Events (hat die LED-Wand gestellt, Verleih und Betreuung) mit dem LED-Punkt-Logo aus ihrer Wand-Szene, rechts Leonie Ziechmann (Konzept, Umsetzung, Erklärung) auf der Kontaktkarte im Betula-Look mit E-Mail und Telefon. Danach Schwarz.
@@ -72,5 +72,16 @@ Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Insta
 - Ein Bild-im-Bild zeigt die Sicht der Kinect.
 - Zum Schluss Blende zu Schwarz.
 
-**9 · Abspann (später)**
-- Split-Screen: links Modern Events (LED-Wand), rechts Leonie Ziechmann (Creative und Implementierung).
+**9 · Abspann (10 s)**
+- Split-Screen: links Modern Events (LED-Wand, Verleih und Betreuung) mit dem LED-Punkt-Logo, rechts Leonie Ziechmann (Konzept, Umsetzung, Erklärung) mit E-Mail und Telefon.
+
+**10 · Bunt (9 s)**
+- Die Regenbogenflagge aus LED-Punkten, „Cottbus ist bunt“ → „Die Zukunft ist bunt“, dann Schwarz.
+
+## Ton
+
+Keine Musik von außen, keine Samples: Jeder Klang wird aus Sinustönen und Rauschen berechnet (`tools/sound/`), es gibt also keine Lizenzfragen. Alles steht in D-Dur-Pentatonik, deshalb klingen Effekte und Teppich immer zusammen.
+
+- **Teppich:** ein leiser, weicher Akkord pro Szene (D, h-Moll, G, A, …, zum Schluss e-Moll → D-Dur), er geht mit jeder Blende zu Schwarz mit aus.
+- **Effekte an den Bildmomenten:** Die Szenen setzen Cues (`cue()` in `src/lib/sound.ts`), zum Beispiel: Glöckchen zum Titel, kleine Blips beim Einhängen der Panels, ein weiches Pochen im Takt der Infrarot-Pulse, Glitzern, wenn das Tiefenbild als Punktwolke in den Raum fliegt, Luft, die dem winkenden Arm folgt, Bestätigungs-Pieps für die KI, ein Sinken, wenn der Raum wegfällt, Datenblips durch die Kette, Wasser, das so viel plätschert, wie die Menschen sich bewegen, LEDs, die beim Logo einzeln angehen, Funkeln der Flagge, Glocken beim Wortwechsel und ein warmer D-Dur-Akkord zum Schluss. Kamerafahrten bekommen ein leises Rauschen.
+- **Pegel:** Jeder Klang wird gemessen und auf seinen Platz gebracht (`LEVEL` in `tools/sound/sfx.mjs`): Teppich unten, Texturen knapp darüber, Blips und Rauschen deutlich, Akzente oben. Die ganze Spur hat -16 LUFS, wenig Bass, damit sie auch aus Notebook-Lautsprechern klingt, und endet in Stille.

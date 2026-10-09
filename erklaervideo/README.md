@@ -13,9 +13,14 @@ npm run stills -- --body natur 19 75       # dasselbe mit den weich schattierten
 npm run stills -- --project figuren --out output/fig 8 33.5   # Modellblatt der Figuren (vorne, Seite, hinten)
 python3 tools/sheet.py output/stills sheet.jpg 2   # Kontaktabzug der Einzelbilder (braucht Pillow)
 npm run check-arms                         # prüft jedes Bild: kein Arm gestreckt nach vorne (nach jeder Choreo-Änderung)
+npm run sound                              # Tonspur neu → src/audio/soundtrack.m4a (nach Änderungen an Timing, Choreo oder Klängen)
+node tools/sound.mjs --levels              # dasselbe ohne neues Sammeln der Cues, mit Pegel jedes Klangs
+node tools/sound.mjs --solo swarm,glint    # nur diese Klänge, ohne Teppich → output/solo.wav (zum Probehören)
 ```
 
 `render` und `stills` starten Vite und einen unsichtbaren Chrome/Edge (`tools/render.mjs`, Browser per `CHROME_PATH` wählbar). Im Editor geht dasselbe über „Video Settings“ → „Render“ (Exporter FFmpeg ist voreingestellt, Ergebnis in `output/`).
+
+Das Video hat Ton (Effekte und ein leiser Klangteppich, alles synthetisiert, siehe [KONZEPT.md](KONZEPT.md#ton)); es funktioniert auch stumm. Die Tonspur ist `src/audio/soundtrack.m4a` und kommt beim Rendern automatisch dazu. Ändert sich das Timing einer Szene, `npm run sound` neu laufen lassen, sonst passt der Ton nicht mehr zum Bild.
 
 Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → Endlosschleife) oder `ffplay -loop 0 -fs output/kinect-wand.mp4`.
 
@@ -37,5 +42,7 @@ Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → End
 | `src/nodes/Stage.ts` | die 3D-Bühne (Linien, Figuren, Punktwolke, Skelette) |
 | `src/figuren.ts`, `src/scenes/figuren.tsx` | ein zweites Projekt nur zum Vergleichen der Figuren-Stile |
 | `src/nodes/SensorPanel.ts`, `WallView.ts` | die Kinect-Bilder mit KI-Overlay, die Wand von vorne |
+| `src/lib/sound.ts` | `cue()`: die Szenen markieren damit, wann welcher Klang kommt (auf der Story-Uhr) |
+| `tools/sound.mjs`, `tools/sound/` | die Tonspur: sammelt die Cues (`render.mjs cues`), synthetisiert die Klänge (`sfx.mjs`, Bausteine in `dsp.mjs`), folgt den Händen der Figuren (`motion.mjs`), pegelt jeden Klang nach `LEVEL`, Hall, Echo, -16 LUFS |
 
 Alles hängt an einer Story-Uhr (Sekunden ab Videostart). Die Figuren, die Kinect und das Fluid sind Funktionen dieser Uhr, deshalb sind die Schnitte zwischen den Szenen unsichtbar. Jede Szene muss genau so lang sein, wie `timeline.ts` sagt; ist eine länger, meldet `npm run stills` das.

@@ -6,6 +6,7 @@
 import { Node, Rect, Txt, TxtProps, blur, makeScene2D } from '@motion-canvas/2d';
 import { all, createRef, delay, easeInCubic, easeInOutCubic, easeInOutSine, easeOutCubic, linear } from '@motion-canvas/core';
 import { begin, until } from '../lib/shots';
+import { cue } from '../lib/sound';
 import { FONT } from '../lib/theme';
 import { SCENES, duration } from '../lib/timeline';
 import { LedFlag } from '../nodes/LedFlag';
@@ -45,9 +46,19 @@ export default makeScene2D(function* (view) {
   /** into focus: fade in, rise, sharpen */
   const focusIn = (n: Node, y: number, d: number) => all(n.opacity(1, d * 0.8, easeOutCubic), n.y(y, d, easeOutCubic), n.filters.blur(0, d, easeOutCubic));
 
+  cue(T, 'ledreveal', 0, { dur: 1.4, n: 64, pan: -0.9, panTo: 0.9, gain: 1.2 });
+  cue(T, 'sparkle', 0.4, { dur: duration('bunt') - 0.4 });
+  cue(T, 'word', 0.9);
+  cue(T, 'word', 1.08, { gain: 0.6 });
+  // the glint crosses the middle of the flag at these times (LedFlag: every 4.2 s)
+  for (const at of [2.38, 6.58]) cue(T, 'glint', at - 0.3, { pan: -0.8, panTo: 0.8, gain: 0.8 });
+  cue(T, 'riser', 4.3 - 1.4, { dur: 1.4 });
   yield* all(flag().reveal(1, 1.4, linear), delay(0.9, focusIn(cottbus(), LINE1, 0.9)), delay(1.08, focusIn(rest(), LINE2, 0.9)));
   // read "Cottbus ist bunt", then the change
   yield* until(4.3);
+  cue(T, 'transform', 0);
+  cue(T, 'word', 0.28, { gain: 1.1 });
+  cue(T, 'bloom', 0.3, { dur: duration('bunt') - 4.6 });
   yield* all(
     cottbus().opacity(0, 0.6, easeInCubic),
     cottbus().y(LINE1 - DRIFT, 0.65, easeInCubic),
@@ -57,6 +68,7 @@ export default makeScene2D(function* (view) {
   );
   yield* flag().burst(0, 1.2, easeInOutSine);
   yield* until(duration('bunt') - 1.2);
+  cue(T, 'black', 0, { dur: 1.1 });
   yield* black().opacity(1, 1.1, easeInOutCubic);
   yield* until(duration('bunt'));
 });

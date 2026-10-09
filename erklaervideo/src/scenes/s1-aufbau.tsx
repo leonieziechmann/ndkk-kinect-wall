@@ -4,6 +4,7 @@
 import { Txt, makeScene2D } from '@motion-canvas/2d';
 import { all, createRef, delay, easeInCubic, easeInOutSine, easeOutCubic, linear } from '@motion-canvas/core';
 import { SHOTS, begin, moveTo, setShot, until } from '../lib/shots';
+import { cue } from '../lib/sound';
 import { C, FONT } from '../lib/theme';
 import { SCENES, duration } from '../lib/timeline';
 import { Stage } from '../nodes/Stage';
@@ -21,6 +22,14 @@ export default makeScene2D(function* (view) {
   yield chapterBar(view, 0);
   yield all(...moveTo(st(), SHOTS.roomEnd, duration('aufbau'), easeInOutSine));
 
+  cue(T, 'rise', 0, { dur: 2.0 });
+  cue(T, 'title', 0.2);
+  cue(T, 'build', 1.4, { dur: 3.0 });
+  cue(T, 'whoosh', 2.4, { dur: 0.7, gain: 0.35 });
+  cue(T, 'panels', 3.8, { dur: 3.8, n: 24, pan: -0.8, panTo: 0.8 });
+  cue(T, 'powerup', 7.6, { dur: 1.3 });
+  for (const at of [8.0, 8.4, 8.8]) cue(T, 'tick', at, { pan: -0.3 });
+  cue(T, 'ping', 8.85);
   yield* all(
     delay(0.2, all(title().opacity(1, 0.8, easeOutCubic), title().y(-60, 0.8, easeOutCubic))),
     delay(2.4, all(title().opacity(0, 0.6, easeInCubic), title().y(-80, 0.6, easeInCubic))),

@@ -1,5 +1,7 @@
 import { makeProject } from '@motion-canvas/core';
 import './fonts.css';
+// the soundtrack: made from the cues of the scenes by `npm run sound` (tools/sound.mjs)
+import audio from './audio/soundtrack.m4a';
 
 import aufbau from './scenes/s1-aufbau?scene';
 import sensor from './scenes/s2-sensor?scene';
@@ -15,4 +17,5 @@ import bunt from './scenes/s10-bunt?scene';
 export default makeProject({
   name: 'kinect-wand',
   scenes: [aufbau, sensor, punktwolke, flow, ki, masken, daten, wand, abspann, bunt],
+  audio,
 });

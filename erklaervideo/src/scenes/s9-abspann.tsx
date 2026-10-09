@@ -9,6 +9,7 @@ import { Circle, Layout, Line, Node, Rect, Txt, makeScene2D } from '@motion-canv
 import { all, createRef, delay, easeInOutCubic, easeOutCubic, linear, sequence } from '@motion-canvas/core';
 import { hash } from '../lib/math';
 import { begin, until } from '../lib/shots';
+import { cue } from '../lib/sound';
 import { FONT } from '../lib/theme';
 import { SCENES, duration } from '../lib/timeline';
 import { LedLogo } from '../nodes/LedLogo';
@@ -111,6 +112,13 @@ export default makeScene2D(function* (view) {
     return all(node.opacity(1, fade, easeOutCubic), node.y(y, d, easeOutCubic));
   };
 
+  cue(T, 'line', 0.25, { dur: 1.0 });
+  cue(T, 'tick', 0.5, { pan: -0.5, gain: 0.6 });
+  cue(T, 'ledreveal', 0.6, { dur: 1.7, n: 40, pan: -0.85, panTo: -0.1 });
+  cue(T, 'swish', 0.9, { pan: 0.5, gain: 0.45 });
+  for (let i = 0; i < 6; i++) cue(T, 'tick', 1.3 + 0.16 * i, { pan: 0.5, gain: 0.35, n: i });
+  cue(T, 'specks', 1.2, { dur: duration('abspann') - 1.2 });
+  cue(T, 'glint', 4.95, { pan: -0.7, panTo: -0.1, gain: 0.7 });
   // the composition drifts a little closer the whole time
   yield content().scale(1.035, duration('abspann'), linear);
   yield* all(
@@ -124,6 +132,7 @@ export default makeScene2D(function* (view) {
     delay(1.2, specks().opacity(1, 1.5)),
   );
   yield* until(duration('abspann') - 1.2);
+  cue(T, 'black', 0, { dur: 1.1 });
   yield* black().opacity(1, 1.1, easeInOutCubic);
   yield* until(duration('abspann'));
 });

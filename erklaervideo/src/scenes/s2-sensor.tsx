@@ -6,6 +6,7 @@ import { makeScene2D } from '@motion-canvas/2d';
 import { all, createRef, delay, easeInOutCubic, easeInOutSine, easeOutCubic, linear } from '@motion-canvas/core';
 import { PANEL } from '../lib/layout';
 import { SHOTS, begin, moveTo, setShot, until } from '../lib/shots';
+import { cue } from '../lib/sound';
 import { SCENES, duration } from '../lib/timeline';
 import { SensorPanel } from '../nodes/SensorPanel';
 import { Stage } from '../nodes/Stage';
@@ -26,6 +27,10 @@ export default makeScene2D(function* (view) {
   const cap = new Caption(view);
   yield chapterBar(view, 1);
 
+  cue(T, 'whoosh', 0, { dur: 2.6, gain: 0.45, pan: -0.3, panTo: 0.3 });
+  cue(T, 'scan', 0.6, { dur: 1.6, pan: 0, panTo: -0.5 });
+  cue(T, 'swish', 1.8, { pan: 0.7 });
+  cue(T, 'swish', 2.0, { pan: 0.7, gain: 0.7 });
   yield* all(
     ...moveTo(st(), SHOTS.sidePanels, 2.6, easeInOutCubic),
     st().labels(0, 0.5),
@@ -39,6 +44,7 @@ export default makeScene2D(function* (view) {
   );
   // the first pulse: the pictures fill in as the light comes back, near first
   st().pulseStart(T());
+  cue(T, 'pulses', 0, { dur: duration('sensor') - 0.9 + 0.3 - (T() - SCENES.sensor) });
   yield all(...moveTo(st(), SHOTS.sidePanels2, duration('sensor') - 3.0, easeInOutSine));
   yield* all(
     st().pulses(1, 0.3),
