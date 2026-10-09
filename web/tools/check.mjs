@@ -118,7 +118,7 @@ function report(r) {
   const data = !k ? '' : !k.connected ? `Kinect: keine Verbindung zu ${k.hub}` : k.received === 0 ? `Kinect: ${k.sensor}, keine Bilder` : `Kinect ${k.fps} fps · Latenz ${k.latencyMs} ms`;
   const hub = s?.hubFps !== undefined ? `Hub ${s.hubFps} fps` : null;
   const p = s?.persons;
-  const persons = p ? `${p.count} Personen (Pose ${p.poseMs ?? '–'} ms ${p.provider ?? '?'} ×${p.poseRuns}, Maske ${p.ms ?? '–'} ms${p.delayMs ? `, verzögert ${p.delayMs} ms` : ''}${p.floor ? `, Boden ${p.floor} m` : ''})` : null;
+  const persons = p ? `${p.count} Personen (Pose ${p.poseMs ?? '–'} ms ${p.provider ?? '?'} ×${p.poseRuns}, Maske ${p.ms ?? '–'} ms${p.live ? `, live, exakt nach ${p.waitMs?.p50 ?? '–'} ms` : p.delayMs ? `, verzögert ${p.delayMs} ms` : ''}${p.floor ? `, Boden ${p.floor} m` : ''})` : null;
   const line = s ? [`${s.fps} fps`, data, hub, persons, s.size ? s.size.join('×') : null, `bereit nach ${s.readyMs} ms`].filter(Boolean).join(' · ') : '';
   console.log(`${failed ? 'FEHLER' : 'OK    '}  ${r.name.padEnd(22)} ${line}`);
   if (k?.received > 0 && s.hubFps >= 22 && k.fps < 0.75 * s.hubFps) {

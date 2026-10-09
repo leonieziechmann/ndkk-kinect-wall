@@ -1,0 +1,6 @@
+{
+  "title": "Space Invaders: Tracking-Check",
+  "description": "Prüfseite für Space Invaders: links das Tracking, wie das Spiel es bekommt (live, Maske, Strichfigur, Schultern L/R; umschaltbar auf verzögert), rechts der Boden von oben, gelesen mit dem Code des Spiels (Maskenpunkte nach Höhe, Rumpf, gefundene Arme mit Länge, Drehung aus den Schultern, Sprünge). Unten Masken/s, Posen/s, Verzögerung.",
+  "author": "claude/space-invaders-game-402af9",
+  "created": "2026-10-08"
+}

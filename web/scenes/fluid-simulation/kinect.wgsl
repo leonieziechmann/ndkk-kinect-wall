@@ -1,10 +1,12 @@
 // The people -> the wall, for every result of the person tracking (/lib/persons.js, PERSONS.md):
-//   prep      the people only (mask): nearness, IR, depth at full resolution, for the optical flow
-//   nearest   person pixels -> nearest distance (and its person) per wall cell
-//   project   the front surface per wall cell: number of points, distance, IR
-//   scene     optical flow (camera.wgsl, pixels) + depth -> 3D motion in m/s, put on the wall
-//   collect   wall cells -> wall image (what is there, how near, whose)
-//   vcollect  wall cells -> wall motion (mean velocity per cell), arms separately
+//   prep         the people only (mask): nearness, IR, depth at full resolution, for the optical flow
+//   bodyScatter  person pixels -> the LEDs they cover on the wall (nearest point per LED)
+//   bodyImage    -> the people's image on the wall, one texel per LED; bodyClear empties the LEDs
+//   nearest      person pixels -> nearest distance (and its person) per wall cell
+//   scene        optical flow (camera.wgsl, pixels) + depth -> 3D motion in m/s, put on the wall
+//   vcollect     wall cells -> wall motion (mean velocity per cell), arms separately
+// The wall cells of the motion are coarse (about 3 cm, as fine as the optical flow); what the people
+// look like on the wall (where dye goes, its color) is in the LED image.
 // Every person point is projected straight (orthographically) onto the wall: a person covers as much
 // wall as they are wide and their speed counts in meters, whether near the sensor or far away. The
 // wall mapping (wallFromRoom, wallVelocity) mirrors and shifts each person so their walk is stretched.
@@ -14,7 +16,7 @@
 @group(0) @binding(2) var personLabel: texture_2d<u32>; // slot 1..16, 0 = nobody
 @group(0) @binding(3) var lutTex: texture_2d<f32>;      // rg: ray per pixel, point = (x*z, y*z, z)
 @group(0) @binding(4) var irTex: texture_2d<f32>;
-// per wall cell: nearest distance (mm << 5 | slot), number of front points, sum of their distances (mm), sum of IR (0..255)
+// per wall cell: nearest distance (mm << 5 | slot), the front surface that hides what is behind it
 @group(0) @binding(5) var<storage, read_write> cells: array<atomic<u32>>;
 @group(0) @binding(6) var outTex: texture_storage_2d<rgba16float, write>;
 // per wall cell, body and arms: number of motion samples, sums of velocity x, y (wall, y down) and of 3D speed (mm/s)
@@ -23,6 +25,8 @@
 @group(0) @binding(9) var flowTex: texture_2d<f32>; // camera.wgsl lkFinal: rg flow (pixels/frame), a mean |flow|
 @group(0) @binding(11) var sigTex: texture_2d<f32>; // camera.wgsl camSignal: r now, g before, b front depth, a before
 @group(0) @binding(12) var armOut: texture_storage_2d<rgba16float, write>;
+// per LED: the nearest person point, (mm << 13) | (ir << 5) | slot
+@group(0) @binding(14) var<storage, read_write> bodyCells: array<atomic<u32>>;
 
 const FRONT_MM = 150u;
 const EMPTY = 0xffffffffu;
@@ -47,6 +51,78 @@ fn prep(@builtin(global_invocation_id) id: vec3u) {
   textureStore(outTex, p, select(vec4f(0.0), vec4f(near, ir, z, 1.0), on));
 }
 
+// ---- the people on the wall, one cell per LED. Every person pixel is drawn as the patch of wall it
+// covers: near the sensor it is smaller than an LED, 4 m away about 2x2 LEDs, so the silhouette is as
+// sharp as the sensor allows and has no holes at any distance. The nearest point of an LED wins.
+@compute @workgroup_size(8, 8)
+fn bodyScatter(@builtin(global_invocation_id) id: vec3u) {
+  let size = textureDimensions(personDepth);
+  if (id.x >= size.x || id.y >= size.y) { return; }
+  let p = vec2i(id.xy);
+  let slot = textureLoad(personLabel, p, 0).r;
+  let z = textureLoad(personDepth, p, 0).r;
+  if (slot == 0u || z < 0.1) { return; }
+  let room = wallRoom(worldPoint(p, z));
+  if (!wallInZone(room)) { return; }
+  let led = vec2f(U.dyeW, U.dyeH);
+  let c = wallUv(wallFromRoom(room, slot)) * led;
+  // the patch: half the step to the neighbouring pixels (at the same depth) in each direction, in LEDs
+  let dx = wallUv(wallFromRoom(wallRoom(worldPoint(p + vec2i(1, 0), z)), slot)) * led - c;
+  let dy = wallUv(wallFromRoom(wallRoom(worldPoint(p + vec2i(0, 1), z)), slot)) * led - c;
+  let half = min(0.5 * (abs(dx) + abs(dy)), vec2f(3.0));
+  // the LEDs whose centers lie in the patch, at least the one under the pixel's center
+  let at = vec2i(floor(c));
+  let lo = max(min(vec2i(ceil(c - half - 0.5)), at), vec2i(0));
+  let hi = min(max(vec2i(floor(c + half - 0.5)), at), vec2i(led) - 1);
+  let mm = u32(clamp(room.z, 0.0, 60.0) * 1000.0);
+  let ir = u32(saturate(textureLoad(irTex, p, 0).r) * 255.0);
+  let v = (mm << 13u) | (ir << 5u) | min(slot, 31u);
+  for (var y = lo.y; y <= hi.y; y++) {
+    for (var x = lo.x; x <= hi.x; x++) {
+      atomicMin(&bodyCells[u32(y) * u32(led.x) + u32(x)], v);
+    }
+  }
+}
+
+fn bodyCell(c: vec2i, size: vec2i) -> u32 {
+  if (any(c < vec2i(0)) || any(c >= size)) { return EMPTY; }
+  return atomicLoad(&bodyCells[u32(c.y * size.x + c.x)]);
+}
+
+// ---- LEDs -> the people's image on the wall (outTex, LED size): r covered, g distance from the
+// sensor (m, room z), b slot, a IR. A single LED left out with people all around is filled.
+@compute @workgroup_size(8, 8)
+fn bodyImage(@builtin(global_invocation_id) id: vec3u) {
+  let size = vec2i(textureDimensions(outTex));
+  let c = vec2i(id.xy);
+  if (c.x >= size.x || c.y >= size.y) { return; }
+  var v = bodyCell(c, size);
+  if (v == EMPTY) {
+    var n = 0u;
+    var best = EMPTY;
+    for (var y = -1; y <= 1; y++) {
+      for (var x = -1; x <= 1; x++) {
+        let w = bodyCell(c + vec2i(x, y), size);
+        if (w != EMPTY) {
+          n++;
+          best = min(best, w);
+        }
+      }
+    }
+    if (n >= 5u) { v = best; }
+  }
+  let body = vec4f(1.0, f32(v >> 13u) / 1000.0, f32(v & 31u), f32((v >> 5u) & 255u) / 255.0);
+  textureStore(outTex, c, select(body, vec4f(0.0), v == EMPTY));
+}
+
+// ---- empties the LEDs for the next result (after bodyImage has read all of them)
+@compute @workgroup_size(8, 8)
+fn bodyClear(@builtin(global_invocation_id) id: vec3u) {
+  let size = vec2u(u32(U.dyeW), u32(U.dyeH));
+  if (id.x >= size.x || id.y >= size.y) { return; }
+  atomicStore(&bodyCells[id.y * size.x + id.x], EMPTY);
+}
+
 struct Hit { cell: u32, mm: u32, ok: bool };
 // room point of person `slot` -> wall cell and distance in mm; ok = inside the wall and the zone
 fn hitWall(room: vec3f, slot: u32) -> Hit {
@@ -68,29 +144,14 @@ fn personPixel(p: vec2i) -> Pixel {
   return Pixel(hitWall(wallRoom(worldPoint(p, z)), slot), slot);
 }
 
-// ---- wall image, pass 1: nearest person point per wall cell (the slot rides along in the low
-// bits). Only the front-most surface of a cell counts: people overlapping on the wall are not mixed.
+// ---- nearest person point per wall cell (the slot rides along in the low bits). Only the front-most
+// surface of a cell moves it: people overlapping on the wall are not mixed.
 @compute @workgroup_size(8, 8)
 fn nearest(@builtin(global_invocation_id) id: vec3u) {
   let size = textureDimensions(personDepth);
   if (id.x >= size.x || id.y >= size.y) { return; }
   let px = personPixel(vec2i(id.xy));
-  if (px.hit.ok) { atomicMin(&cells[px.hit.cell * 4u], (px.hit.mm << 5u) | px.slot); }
-}
-
-// ---- wall image, pass 2: the points of the front surface
-@compute @workgroup_size(8, 8)
-fn project(@builtin(global_invocation_id) id: vec3u) {
-  let size = textureDimensions(personDepth);
-  if (id.x >= size.x || id.y >= size.y) { return; }
-  let p = vec2i(id.xy);
-  let px = personPixel(p);
-  if (!px.hit.ok) { return; }
-  let i = px.hit.cell * 4u;
-  if (px.hit.mm > (atomicLoad(&cells[i]) >> 5u) + FRONT_MM) { return; }
-  atomicAdd(&cells[i + 1u], 1u);
-  atomicAdd(&cells[i + 2u], px.hit.mm);
-  atomicAdd(&cells[i + 3u], u32(textureLoad(irTex, p, 0).r * 255.0));
+  if (px.hit.ok) { atomicMin(&cells[px.hit.cell], (px.hit.mm << 5u) | px.slot); }
 }
 
 // is this room point of the person on an arm? (nearest bone of their skeleton; false without one)
@@ -179,7 +240,7 @@ fn scene(@builtin(global_invocation_id) id: vec3u) {
   let room = wallRoom(worldPoint(c, z));
 
   let h = hitWall(room, slot);
-  if (!h.ok || h.mm > (atomicLoad(&cells[h.cell * 4u]) >> 5u) + FRONT_MM) { return; }
+  if (!h.ok || h.mm > (atomicLoad(&cells[h.cell]) >> 5u) + FRONT_MM) { return; }
   // arms count armGain times and get a wider reach on the wall (sim.wgsl wallMotion)
   let arm = slot > 0u && onArm(slot, room);
   // motion on the wall: x mirrored, walking stretched (the person's shift rate); y down; z (towards
@@ -193,26 +254,9 @@ fn scene(@builtin(global_invocation_id) id: vec3u) {
   atomicAdd(&vcells[i + 3u], i32(length(w) * 1000.0));
 }
 
-// ---- wall cells -> wall image, and clears the cells for the next result.
-// r = something there (0..1), g = nearness of the front surface mixed with IR (0 where empty), b = slot
-@compute @workgroup_size(8, 8)
-fn collect(@builtin(global_invocation_id) id: vec3u) {
-  let size = gridSize();
-  if (id.x >= size.x || id.y >= size.y) { return; }
-  let i = (id.y * size.x + id.x) * 4u;
-  let front = atomicExchange(&cells[i], EMPTY);
-  let n = f32(atomicExchange(&cells[i + 1u], 0u));
-  let dist = f32(atomicExchange(&cells[i + 2u], 0u)) / max(n, 1.0) / 1000.0;
-  let ir = f32(atomicExchange(&cells[i + 3u], 0u)) / max(n, 1.0) / 255.0;
-  let there = smoothstep(0.5, 2.5, n);
-  let slot = select(0.0, f32(front & 31u), front != EMPTY);
-  let near = wallNear(vec3f(0.0, 0.0, dist)); // dist: room z of the front surface
-  textureStore(outTex, vec2i(id.xy), vec4f(there, there * mix(near, ir, U.irMix), slot, 1.0));
-}
-
 // ---- wall cells -> wall motion of the body (motionOut) and of the arms (armOut): rg mean velocity
 // on the wall (m/s, y down), b mean 3D speed, a = 1 where there was a sample. Mean, not sum: near
-// people give more samples per cell, but not more motion.
+// people give more samples per cell, but not more motion. Clears the cells for the next result.
 fn collectMotion(i: u32) -> vec4f {
   let n = f32(atomicExchange(&vcells[i], 0));
   let vx = f32(atomicExchange(&vcells[i + 1u], 0));
@@ -224,7 +268,8 @@ fn collectMotion(i: u32) -> vec4f {
 fn vcollect(@builtin(global_invocation_id) id: vec3u) {
   let size = gridSize();
   if (id.x >= size.x || id.y >= size.y) { return; }
-  let i = (id.y * size.x + id.x) * 8u;
-  textureStore(motionOut, vec2i(id.xy), collectMotion(i));
-  textureStore(armOut, vec2i(id.xy), collectMotion(i + 4u));
+  let cell = id.y * size.x + id.x;
+  textureStore(motionOut, vec2i(id.xy), collectMotion(cell * 8u));
+  textureStore(armOut, vec2i(id.xy), collectMotion(cell * 8u + 4u));
+  atomicStore(&cells[cell], EMPTY);
 }

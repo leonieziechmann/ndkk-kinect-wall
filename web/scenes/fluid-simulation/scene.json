@@ -1,0 +1,7 @@
+{
+  "title": "Fluid-Simulation",
+  "description": "Fluid auf der LED-Wand, auf der Personenerkennung (live): Bewegung wird auf den Masken gemessen (Optical Flow × Tiefe, m/s) und schiebt die Strömung dort, wo das gemeinsame Wand-Setup die Person abbildet (gespiegelt, Laufweg gedehnt, Körper in echter Größe). Farbe kommt nur aus den bewegten Körpern, LED-genau projiziert und entlang der Bewegung verwischt: scharfe Umrisse statt Klötzchen. Arme zählen mehr und reichen weiter, eine Automatik hält die Wand weder leer noch voll.",
+  "author": "claude/fluid-simulation-optical-flow-7cd5f8",
+  "based_on": "flow-fluid",
+  "created": "2026-10-07"
+}

@@ -574,10 +574,11 @@ export class WallMap {
   /**
    * Removes everybody standing in a block zone from a person tracking result (in place: list,
    * labels, depth, indices). Their feet decide (the point on the floor below them).
+   * { exact: true }: an exact result of live + exact (no masks; blockedPersons stays as the live one set it).
    */
-  filterPersons(result) {
+  filterPersons(result, { exact = false } = {}) {
     if (!result?.list?.length || !this.setup.blocks.some((b) => b.enabled)) {
-      if (result) this.blockedPersons = [];
+      if (result && !exact) this.blockedPersons = [];
       return result;
     }
     const blocked = new Uint8Array(256);
@@ -593,10 +594,11 @@ export class WallMap {
       blocked[c.slot & 255] = 1;
       gone.push({ id: c.id, slot: c.slot, x: xz[0], z: xz[1] });
     }
-    this.blockedPersons = gone;
+    if (!exact) this.blockedPersons = gone;
     if (!gone.length) return result;
     result.list = result.list.filter((c) => !blocked[c.slot & 255]);
     const { labels, depth, indices } = result;
+    if (!labels || !depth || !indices) return result;
     let n = 0;
     for (let k = 0; k < indices.length; k++) {
       const i = indices[k];

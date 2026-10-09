@@ -1,0 +1,27 @@
+[package]
+name = "pose-bench"
+version = "0.1.0"
+edition = "2024"
+description = "Measurement prototype: the YOLO11n-pose model natively (ONNX Runtime, DirectML and CPU) next to the browser"
+publish = false
+
+# its own workspace: the hub does not build or depend on this
+[workspace]
+
+[dependencies]
+# ONNX Runtime loaded at run time (onnxruntime.dll, see README.md): no link step against an MSVC
+# import library, so it builds with the GNU toolchain like the hub; api-24 = ONNX Runtime 1.24,
+# the newest build with DirectML
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "directml", "api-24"] }
+
+[profile.release]
+debug = "line-tables-only"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
