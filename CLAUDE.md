@@ -19,6 +19,14 @@ The user sees the scenes of every worktree at http://127.0.0.1:8090/; each workt
 
 The scenes run on a 6 × 2 m LED wall (1008 × 336). One shared core handles it: `wall: true` makes the canvas the LED image, `ctx.wall` maps the Kinect onto the wall through the scene's projection (play field → wall, curves, mirror, body size; a default plus per-scene values), and the control center `http://127.0.0.1:<port>/control/` runs the output window `/wall/` (show, params per scene, projections, test images, wall setup). Do not build your own wall emulation into a scene.
 
+## Show launcher: `start-wand.cmd`
+
+The user's one-click launcher for the exhibition. It starts the hub, the main checkout's dev server, the kiosk output and the control center. The displays are detected automatically: the output goes only on the second display, never on the notebook's panel, and the control center goes maximized on the notebook's panel. Until it ends, it tunes Windows: power plan, priorities, efficiency mode, and stopped services. It keeps its journal and logs in `%LOCALAPPDATA%\kinect-wand\`.
+- Do not run it unless asked: it changes system settings and stops what it started.
+- To test it, run `-NoWall -NoControl -NoAdmin -Hub 8091`. For a dev server and kiosk of your own, add `-Checkout <worktree>` and set `KINECT_WALL_DIR`.
+- End a test run by creating `quit.flag` in that folder.
+- Diff the power plan, priorities and services before and after.
+
 ## Kinect data: always through kinect-hub
 
 Only one process can open the Kinect at a time. **kinect-hub** owns it and serves it to every worktree and agent.
