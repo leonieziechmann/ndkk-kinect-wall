@@ -23,7 +23,8 @@ Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → End
 
 | Datei | Was |
 |---|---|
-| `src/scenes/s1-…s8-*.tsx` | die acht Szenen (Ablauf, Texte, Kamera) |
+| `src/scenes/s1-…s9-*.tsx` | die neun Szenen (Ablauf, Texte, Kamera); s9 ist der Abspann |
+| `src/nodes/LedLogo.ts`, `LucideIcon.ts` | das Modern-Events-Logo als LED-Punktfeld, die Icons der Kontaktkarte |
 | `src/lib/timeline.ts` | wann jede Szene auf der Story-Uhr beginnt; `at(szene, t)` für Zeiten relativ zur Szene |
 | `src/lib/choreo.ts` | wer wann wohin läuft und welche Geste macht |
 | `src/lib/people.ts` | die Figuren: Skelett aus 22 Punkten, Gehen (Gangzyklus, Standbein) und Gesten |
