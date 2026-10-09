@@ -101,6 +101,8 @@ pub(crate) struct Track {
     pub poses: u32,
     pub last_pose: i64,
     pub score: f64,
+    /// a pose of it lay on measured depth: it may be confirmed
+    pub solid: bool,
     /// the poses, oldest first (kept while needed)
     pub keys: Vec<Key>,
     /// keypoints (u, v, conf) in frame kp_seq
@@ -341,7 +343,7 @@ impl PersonTracker {
         }
         let o = self.options.clone();
         // whose pixels each pose lies on, in the frame it was computed on
-        let hits: Vec<Hits> = poses.iter().map(|p| hits(p, &uid_map, o.min_keypoint)).collect();
+        let hits: Vec<Hits> = poses.iter().map(|p| hits(p, &uid_map, &depth, &o)).collect();
         let mut pairs: Vec<(usize, usize, f64)> = Vec::new();
         for (pi, h) in hits.iter().enumerate() {
             for ti in 0..self.tracks.len() {
@@ -374,6 +376,9 @@ impl PersonTracker {
             }
             used_p[pi] = true;
             used_t[ti] = true;
+            if hits[pi].solid(self.tracks[ti].uid) {
+                self.tracks[ti].solid = true;
+            }
             self.apply_pose(ti, &poses[pi], &depth, &uid_map, use_snap, seq);
         }
         for (pi, p) in poses.iter().enumerate() {
@@ -385,6 +390,7 @@ impl PersonTracker {
                 continue;
             }
             let ti = self.new_track(p);
+            self.tracks[ti].solid = hits[pi].solid(0);
             self.apply_pose(ti, p, &depth, &uid_map, use_snap, seq);
         }
     }
@@ -416,6 +422,9 @@ impl PersonTracker {
             }
             used_p[pi] = true;
             used_t[ti] = true;
+            if hits(&poses[pi], uid_map, depth, &self.options).solid(0) {
+                self.tracks[ti].solid = true;
+            }
             self.apply_pose(ti, &poses[pi], depth, uid_map, use_snap, seq);
         }
         for (pi, p) in poses.iter().enumerate() {
@@ -426,6 +435,7 @@ impl PersonTracker {
                 continue; // a second pose of someone known
             }
             let ti = self.new_track(p);
+            self.tracks[ti].solid = hits(p, uid_map, depth, &self.options).solid(0);
             self.apply_pose(ti, p, depth, uid_map, use_snap, seq);
         }
     }
@@ -439,6 +449,7 @@ impl PersonTracker {
             poses: 0,
             last_pose: self.frame,
             score: p.score,
+            solid: false,
             keys: Vec::new(),
             kp: [0.0; 51],
             kp_seq: None,
@@ -622,45 +633,74 @@ impl PersonTracker {
     }
 }
 
-/// Samples along a pose (keypoints, middles of the bones): how many lie on whose pixels.
+/// Samples along a pose (keypoints, middles of the bones): how many lie on whose pixels, and which
+/// lie on something solid: a surface the depth measures where a person may be (most of the five
+/// points around the sample; solid: those on nobody's pixels, per person in `by`).
 struct Hits {
     n: u32,
     any: u32,
-    /// uid -> count, in the order first seen
-    by: Vec<(i32, u32)>,
+    /// uid -> count, of them solid; in the order first seen
+    by: Vec<(i32, u32, u32)>,
+    solid: u32,
 }
 
 impl Hits {
     fn count(&self, uid: i32) -> u32 {
         self.by.iter().find(|b| b.0 == uid).map_or(0, |b| b.1)
     }
+
+    /// Whether the pose lies on something solid: of its samples on no other person (on the pixels
+    /// of person uid, or on nobody's), a third. The pose model also finds people where the depth
+    /// measures nothing (or only noise): beyond its reach, a reflection in a window or a glass
+    /// door. Such a person is followed but not confirmed (shown) before a pose of it lies on
+    /// measured depth. The learned background counts as solid: someone who stood still while
+    /// nobody followed them is part of it.
+    fn solid(&self, uid: i32) -> bool {
+        let (own, own_solid) = match self.by.iter().find(|b| uid != 0 && b.0 == uid) {
+            Some(b) => (b.1, b.2),
+            None => (0, 0),
+        };
+        3 * (self.solid + own_solid) >= self.n - self.any + own
+    }
 }
 
-fn hits(p: &PoseIn, uid_map: &[i16], mk: f64) -> Hits {
+fn hits(p: &PoseIn, uid_map: &[i16], depth: &[u16], o: &Options) -> Hits {
     let kp = &p.kp;
-    let mut h = Hits { n: 0, any: 0, by: Vec::new() };
+    let mk = o.min_keypoint;
+    let mut h = Hits { n: 0, any: 0, by: Vec::new(), solid: 0 };
     let mut sample = |u: f64, v: f64| {
         h.n += 1;
         let ui = jround(u) as i64;
         let vi = jround(v) as i64;
         let mut id = 0_i32;
+        let mut m = 0;
         for k in 0..5 {
-            if id != 0 {
-                break;
-            }
             let x = ui + if k == 1 { -2 } else if k == 2 { 2 } else { 0 };
             let y = vi + if k == 3 { -2 } else if k == 4 { 2 } else { 0 };
-            if x >= 0 && y >= 0 && x < W as i64 && y < H as i64 {
-                id = i32::from(uid_map[y as usize * W + x as usize]);
+            if x < 0 || y < 0 || x >= W as i64 || y >= H as i64 {
+                continue;
+            }
+            let i = y as usize * W + x as usize;
+            if id == 0 {
+                id = i32::from(uid_map[i]);
+            }
+            let d = f64::from(depth[i]);
+            if d >= o.min_depth && d <= o.max_depth {
+                m += 1;
             }
         }
+        let solid = u32::from(m >= 3);
         if id == 0 {
+            h.solid += solid;
             return;
         }
         h.any += 1;
         match h.by.iter_mut().find(|b| b.0 == id) {
-            Some(b) => b.1 += 1,
-            None => h.by.push((id, 1)),
+            Some(b) => {
+                b.1 += 1;
+                b.2 += solid;
+            }
+            None => h.by.push((id, 1, solid)),
         }
     };
     for k in 0..17 {
@@ -692,4 +732,73 @@ pub(crate) fn iou(a: &[f64; 4], b: &[f64; 4]) -> f64 {
 /// Stable sort by score, highest first (JavaScript: pairs.sort((a, b) => b.s - a.s)).
 fn sort_desc(pairs: &mut [(usize, usize, f64)]) {
     pairs.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A person standing upright around column 256, about 3 m away: 17 confident keypoints.
+    fn standing() -> PoseIn {
+        let pts: [(f32, f32); 17] = [
+            (256.0, 100.0),
+            (252.0, 96.0),
+            (260.0, 96.0),
+            (248.0, 98.0),
+            (264.0, 98.0),
+            (240.0, 130.0),
+            (272.0, 130.0),
+            (236.0, 170.0),
+            (276.0, 170.0),
+            (234.0, 205.0),
+            (278.0, 205.0),
+            (246.0, 210.0),
+            (266.0, 210.0),
+            (246.0, 270.0),
+            (266.0, 270.0),
+            (246.0, 330.0),
+            (266.0, 330.0),
+        ];
+        let mut kp = [0.0_f32; 51];
+        for (k, (u, v)) in pts.into_iter().enumerate() {
+            kp[3 * k] = u;
+            kp[3 * k + 1] = v;
+            kp[3 * k + 2] = 0.9;
+        }
+        PoseIn { score: 0.9, bbox: [225.0, 85.0, 290.0, 340.0], kp }
+    }
+
+    /// The tracker after `frames` depth frames, then `poses` more, each with a pose of that person.
+    fn run(depth: &[u16], frames: usize, poses: usize) -> PersonTracker {
+        let mut t = PersonTracker::default();
+        let (mut labels, mut masked, mut indices) = (vec![0_u8; N], vec![0_u16; N], vec![0_u32; N]);
+        for f in 0..frames + poses {
+            if f >= frames {
+                t.set_poses(&[standing()], None);
+            }
+            t.process(depth, &mut labels, &mut masked, &mut indices, f as i64, None);
+            if f == 0 {
+                t.set_poses(&[], None); // the pose model runs: the background is learned from now on
+            }
+        }
+        t
+    }
+
+    #[test]
+    fn a_person_is_shown_once_a_pose_lies_on_measured_depth() {
+        let solid = |t: &PersonTracker| t.tracks.iter().any(|t| t.solid);
+        let shown = |t: &PersonTracker| t.tracks.iter().any(|t| t.slot != 0);
+        // a surface 3 m away: someone stands there
+        let t = run(&vec![3000_u16; N], 1, 4);
+        assert!(solid(&t) && shown(&t));
+        // no depth under the pose (beyond the depth's reach, a reflection in a glass door): followed, not shown
+        let t = run(&vec![0_u16; N], 1, 4);
+        assert!(!t.tracks.is_empty() && !solid(&t) && !shown(&t));
+        // only noise under it: every 5th pixel measured
+        let noise: Vec<u16> = (0..N).map(|i| if i % 5 == 0 { 3000 } else { 0 }).collect();
+        let t = run(&noise, 1, 4);
+        assert!(!solid(&t) && !shown(&t));
+        // the learned background counts: someone who stood still unfollowed is part of it
+        assert!(solid(&run(&vec![3000_u16; N], 40, 1)));
+    }
 }

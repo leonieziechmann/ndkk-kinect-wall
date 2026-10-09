@@ -90,7 +90,7 @@ pub struct Options {
     pub static_seconds: f64,
     /// m: pixels this close to the floor are floor, not feet
     pub floor_clearance: f64,
-    /// a new person shows after this many pose detections
+    /// a new person shows after this many pose detections (one of them on measured depth)
     pub confirm_poses: f64,
     /// a visible person the pose model does not find any more is kept this long
     pub keep_seconds: f64,

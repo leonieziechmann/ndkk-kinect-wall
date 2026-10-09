@@ -126,7 +126,8 @@ impl PersonTracker {
             self.flow.push(seq, ir);
         }
 
-        // persons without a pose for too long are gone; the others get a slot once confirmed
+        // persons without a pose for too long are gone; the others get a slot once confirmed (enough
+        // poses, one of them on measured depth)
         let lost = jround(o.lost_seconds * o.fps);
         let keep = jround(o.keep_seconds * o.fps);
         let frame = self.frame;
@@ -143,6 +144,7 @@ impl PersonTracker {
         for t in &mut self.tracks {
             if t.slot == 0
                 && f64::from(t.poses) >= o.confirm_poses
+                && t.solid
                 && let Some(s) = (1..=o.max_persons as usize).find(|&s| !used[s])
             {
                 t.slot = s as u8;

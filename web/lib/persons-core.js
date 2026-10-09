@@ -118,7 +118,7 @@ export const DEFAULTS = Object.freeze({
   nearFrames: 150, // ... a depth nearer than the background (something new that is no person)
   staticSeconds: 8, // a person's pixel outside its body parts that has not moved for this long is background (a desk edge)
   floorClearance: 0.025, // m: pixels this close to the floor are floor, not feet
-  confirmPoses: 2, // a new person shows after this many pose detections
+  confirmPoses: 2, // a new person shows after this many pose detections (one of them on measured depth)
   keepSeconds: 4, // a visible person the pose model does not find any more is kept this long
   lostSeconds: 1.5, // a hidden person (no pixels) without a matching pose for this long is gone
   staleSeconds: 0.5, // skeleton mode: a person without a pose for this long is not visible (but kept)
@@ -334,7 +334,7 @@ export class PersonTracker {
       return;
     }
     // whose pixels each pose lies on, in the frame it was computed on
-    const hits = poses.map((p) => this._hits(p, uidMap));
+    const hits = poses.map((p) => this._hits(p, uidMap, depth));
     const pairs = [];
     for (let pi = 0; pi < poses.length; pi++) {
       const h = hits[pi];
@@ -359,7 +359,9 @@ export class PersonTracker {
       if (usedP.has(pi) || usedT.has(ti)) continue;
       usedP.add(pi);
       usedT.add(ti);
-      this._applyPose(this.tracks[ti], poses[pi], depth, uidMap, snap, seq);
+      const t = this.tracks[ti];
+      if (this._solid(hits[pi], t.uid)) t.solid = true;
+      this._applyPose(t, poses[pi], depth, uidMap, snap, seq);
     }
     for (let pi = 0; pi < poses.length; pi++) {
       const p = poses[pi];
@@ -367,6 +369,7 @@ export class PersonTracker {
       // mostly on someone's pixels: a second pose of a known person, not a new one
       if (hits[pi].n && hits[pi].any > 0.5 * hits[pi].n) continue;
       const t = this._newTrack(p);
+      t.solid = this._solid(hits[pi]);
       this._applyPose(t, p, depth, uidMap, snap, seq);
     }
   }
@@ -398,13 +401,16 @@ export class PersonTracker {
       if (usedP.has(pi) || usedT.has(ti)) continue;
       usedP.add(pi);
       usedT.add(ti);
-      this._applyPose(this.tracks[ti], poses[pi], depth, uidMap, snap, seq);
+      const t = this.tracks[ti];
+      if (this._solid(this._hits(poses[pi], uidMap, depth))) t.solid = true;
+      this._applyPose(t, poses[pi], depth, uidMap, snap, seq);
     }
     for (let pi = 0; pi < poses.length; pi++) {
       const p = poses[pi];
       if (usedP.has(pi) || p.score < o.minScore || this.tracks.length >= MAX_TRACKS) continue;
       if (boxes.some((b) => b && iou(p.box, b) > 0.3)) continue; // a second pose of someone known
       const t = this._newTrack(p);
+      t.solid = this._solid(this._hits(p, uidMap, depth));
       this._applyPose(t, p, depth, uidMap, snap, seq);
     }
   }
@@ -417,6 +423,7 @@ export class PersonTracker {
         poses: 0,
         lastPose: this.frame,
         score: p.score,
+        solid: false, // a pose of it lay on measured depth: it may be confirmed
         keys: [], // the poses: { seq, kp }, oldest first (kept while needed)
         kp: new Float32Array(51), // keypoints (u, v, conf) in frame kpSeq
         kpSeq: null,
@@ -437,32 +444,60 @@ export class PersonTracker {
     return t;
   }
 
-  /** Samples along a pose (keypoints, middles of the bones): how many lie on whose pixels. */
-  _hits(p, uidMap) {
-    const mk = this.options.minKeypoint;
+  /**
+   * Samples along a pose (keypoints, middles of the bones): how many lie on whose pixels, and which
+   * lie on something solid: a surface the depth measures where a person may be (most of the five
+   * points around the sample; solid: those on nobody's pixels, dense: per person).
+   */
+  _hits(p, uidMap, depth) {
+    const { minKeypoint: mk, minDepth, maxDepth } = this.options;
     const kp = p.kp;
     const by = new Map();
+    const dense = new Map();
     let n = 0;
     let any = 0;
+    let solid = 0;
     const sample = (u, v) => {
       n++;
       const ui = Math.round(u);
       const vi = Math.round(v);
       let id = 0;
-      for (let k = 0; k < 5 && !id; k++) {
+      let m = 0;
+      for (let k = 0; k < 5; k++) {
         const x = ui + (k === 1 ? -2 : k === 2 ? 2 : 0);
         const y = vi + (k === 3 ? -2 : k === 4 ? 2 : 0);
-        if (x >= 0 && y >= 0 && x < W && y < H) id = uidMap[y * W + x];
+        if (x < 0 || y < 0 || x >= W || y >= H) continue;
+        if (!id) id = uidMap[y * W + x];
+        const d = depth[y * W + x];
+        if (d >= minDepth && d <= maxDepth) m++;
       }
-      if (!id) return;
+      if (!id) {
+        if (m >= 3) solid++;
+        return;
+      }
       any++;
       by.set(id, (by.get(id) ?? 0) + 1);
+      if (m >= 3) dense.set(id, (dense.get(id) ?? 0) + 1);
     };
     for (let k = 0; k < 17; k++) if (kp[3 * k + 2] >= mk) sample(kp[3 * k], kp[3 * k + 1]);
     for (const [a, b] of BODY_BONES) {
       if (kp[3 * a + 2] >= mk && kp[3 * b + 2] >= mk) sample((kp[3 * a] + kp[3 * b]) / 2, (kp[3 * a + 1] + kp[3 * b + 1]) / 2);
     }
-    return { n, any, by };
+    return { n, any, by, solid, dense };
+  }
+
+  /**
+   * Whether a pose lies on something solid: of its samples on no other person (on the pixels of
+   * person uid, or on nobody's), a third. The pose model also finds people where the depth measures
+   * nothing (or only noise): beyond its reach, a reflection in a window or a glass door. Such a
+   * person is followed but not confirmed (shown) before a pose of it lies on measured depth. The
+   * learned background counts as solid: someone who stood still while nobody followed them is part
+   * of it.
+   */
+  _solid(h, uid = 0) {
+    const own = uid ? (h.by.get(uid) ?? 0) : 0;
+    const ownSolid = uid ? (h.dense.get(uid) ?? 0) : 0;
+    return 3 * (h.solid + ownSolid) >= h.n - h.any + own;
   }
 
   /** Median 3D position (mm) of a pose's keypoints that are no one else's pixels, null if none. */
@@ -1545,14 +1580,15 @@ export class PersonTracker {
     this.lastDepth = depth;
     if (ir && !this.flow.has(seq)) this.flow.push(seq, ir);
 
-    // persons without a pose for too long are gone; the others get a slot once confirmed
+    // persons without a pose for too long are gone; the others get a slot once confirmed (enough
+    // poses, one of them on measured depth)
     const lost = Math.round(o.lostSeconds * o.fps);
     const keep = Math.round(o.keepSeconds * o.fps);
     this.tracks = this.tracks.filter((t) => this.frame - t.lastPose <= (t.pixels ? keep : lost));
     if (o.mode === 'skeleton') for (const t of this.tracks) t.pixels = 0;
     const used = new Set(this.tracks.filter((t) => t.slot).map((t) => t.slot));
     for (const t of this.tracks) {
-      if (!t.slot && t.poses >= o.confirmPoses) {
+      if (!t.slot && t.poses >= o.confirmPoses && t.solid) {
         for (let s = 1; s <= o.maxPersons; s++) {
           if (!used.has(s)) {
             t.slot = s;

@@ -36,7 +36,8 @@ fn load_lut(path: &Path) -> Res<Vec<f32>> {
     Ok(b[off + hlen..].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect())
 }
 
-fn load_poses(path: &Path) -> Res<Vec<Vec<PoseIn>>> {
+/// The poses per frame; None where the model did not run (null, as the JavaScript skips it).
+fn load_poses(path: &Path) -> Res<Vec<Option<Vec<PoseIn>>>> {
     let v: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
     let frames = v.as_array().ok_or("poses: not an array")?;
     let num = |v: &serde_json::Value| v.as_f64().unwrap_or(0.0);
@@ -59,7 +60,6 @@ fn load_poses(path: &Path) -> Res<Vec<Vec<PoseIn>>> {
                         })
                         .collect()
                 })
-                .unwrap_or_default()
         })
         .collect())
 }
@@ -101,7 +101,7 @@ struct Measure {
 
 impl Measure {
     #[allow(clippy::too_many_arguments)]
-    fn add(&mut self, seq: i64, f: usize, r: &FrameResult, labels: &[u8], depth_all: &[u16], poses: &[Vec<PoseIn>], ms: f64) {
+    fn add(&mut self, seq: i64, f: usize, r: &FrameResult, labels: &[u8], depth_all: &[u16], poses: &[Option<Vec<PoseIn>>], ms: f64) {
         let depth = &depth_all[f * N..(f + 1) * N];
         if seq > 5 {
             self.sum += ms;
@@ -112,7 +112,7 @@ impl Measure {
             self.ids.insert(p.id);
         }
         // skeleton accuracy: output keypoints vs the pose model run on this very frame
-        if let Some(ref_poses) = poses.get(f).filter(|p| !p.is_empty()) {
+        if let Some(ref_poses) = poses.get(f).and_then(Option::as_ref).filter(|p| !p.is_empty()) {
             for p in r.persons.iter().filter(|p| p.visible) {
                 let mut best: Option<(f64, Vec<(usize, f64)>)> = None;
                 for q in ref_poses {
@@ -258,16 +258,16 @@ fn run() -> Res<()> {
         if let Some((pseq, due, pf)) = pending
             && aseq >= due
         {
-            t.set_poses(&poses[pf], Some(pseq));
+            t.set_poses(poses[pf].as_deref().unwrap_or(&[]), Some(pseq));
             posed_up_to = pseq;
             pending = None;
         }
         // a frame with an entry had a pose run, also one that found nobody (as in the JavaScript)
-        if pending.is_none() && poses.get(fa).is_some() {
+        if pending.is_none() && poses.get(fa).is_some_and(Option::is_some) {
             t.mark_pose_frame(aseq);
             pending = Some((aseq, aseq + lat.max(0), fa));
             if lat == 0 {
-                t.set_poses(&poses[fa], Some(aseq));
+                t.set_poses(poses[fa].as_deref().unwrap_or(&[]), Some(aseq));
                 posed_up_to = aseq;
                 pending = None;
             }
