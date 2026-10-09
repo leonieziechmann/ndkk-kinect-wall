@@ -9,14 +9,15 @@
 // into the room and through the wall mapping (wallFromRoom, wallVelocity: a stretched walk moves
 // along). Where a person stands and how fast they move counts in meters: standing closer to the
 // sensor gives no more influence, standing still shows nothing. The skeleton says which pixels are
-// arms: they count more and reach further. Dye is colored by distance by default. Dragging the mouse
-// works too.
+// arms: they count more and reach further. Dye goes only on the people's image on the wall, one
+// texel per LED, swept along their motion: what moves keeps a sharp outline. It is colored by
+// distance by default. Dragging the mouse works too.
 //
 // Per person tracking result (camera.wgsl, kinect.wgsl, sim.wgsl):
 //   prep -> camSignal -> down, down -> lkCoarse -> lkRefine -> lkFinal   optical flow, 3 levels
-//   nearest, project, collect                                           wall image (front surface)
-//   scene, vcollect                                                     3D motion -> wall
-//   wallSignal, wallMotion                                              smoothing on the wall
+//   bodyScatter, bodyImage, bodyClear                                   the people on the wall, per LED
+//   nearest, scene, vcollect                                            3D motion -> wall cells
+//   wallMotion                                                          smoothing on the wall
 // Per render frame: force, dye, curl, vorticity, divergence, pressure (Jacobi), gradient,
 // advection (dye: MacCormack), display.
 
@@ -32,7 +33,7 @@ import SIM from './sim.wgsl?raw';
 const FIELDS = [
   'simW', 'simH', 'dyeW', 'dyeH', 'gridW', 'gridH',
   'mouseX', 'mouseY', 'mouseDX', 'mouseDY', 'mouseDown', 'dt', 'time',
-  'threshold', 'flowGain', 'force', 'wallSmooth', 'irMix', 'motionOn', 'armGain', 'armBrush',
+  'threshold', 'flowGain', 'force', 'irMix', 'grow', 'motionOn', 'armGain', 'armBrush',
   'coherence', 'lambda', 'flowSmooth', 'frameStep',
   'fillTarget', 'balanceOn', 'hueBySpeed', 'personHue',
   'curl', 'velDiss', 'dyeDiss', 'fade', 'pressureDecay',
@@ -57,7 +58,8 @@ const SKEL_PERSONS = 17 * POINTS.length;
 const SKEL_SIZE = (SKEL_PERSONS + 17) * 16;
 const DEPTH = { w: 512, h: 424 };
 const FLOW = { w: 128, h: 106 }; // optical flow, finest level; then 64x53 and 32x27
-const GRID_ROWS = 64; // wall cells: 64 rows = about 3 cm per cell on a 2 m wall
+const GRID_ROWS = 64; // wall cells of the motion: 64 rows = about 3 cm per cell on a 2 m wall
+const EMPTY = 0xffffffff;
 
 let S = null; // everything setup() creates
 
@@ -89,8 +91,8 @@ export default {
     denoise: { value: 8, min: 0.1, max: 30, step: 0.1, label: 'Rauschfilter', folder: 'Bewegung' },
     balanceOn: { value: true, label: 'Automatisch ausgleichen', folder: 'Bewegung' },
     fillTarget: { value: 0.3, min: 0.05, max: 0.8, step: 0.01, label: 'Füllung (Ziel)', folder: 'Bewegung' },
-    wallSmooth: { value: 0.3, min: 0, max: 0.9, step: 0.01, label: 'Wandbild glätten', folder: 'Bewegung' },
     irMix: { value: 0.3, min: 0, max: 1, step: 0.01, label: 'IR-Anteil (Farbe)', folder: 'Bewegung' },
+    grow: { value: 0.4, min: 0, max: 1, step: 0.01, label: 'Formen aufweiten', folder: 'Bewegung' },
 
     curl: { value: 20, min: 0, max: 80, step: 1, label: 'Wirbel', folder: 'Fluid' },
     velDiss: { value: 0.3, min: 0, max: 4, step: 0.05, label: 'Bremsen', folder: 'Fluid' },
@@ -98,7 +100,7 @@ export default {
     fade: { value: 0.06, min: 0, max: 0.5, step: 0.01, label: 'Ausklingen', folder: 'Fluid' },
     pressureIters: { value: 24, min: 4, max: 60, step: 1, label: 'Druck-Iterationen', folder: 'Fluid' },
     pressureDecay: { value: 0.8, min: 0, max: 1, step: 0.01, label: 'Druck halten', folder: 'Fluid' },
-    simRes: { value: 112, options: [84, 112, 168], label: 'Auflösung Strömung', folder: 'Fluid' },
+    simRes: { value: 168, options: [84, 112, 168, 224], label: 'Auflösung Strömung', folder: 'Fluid' },
 
     colorMode: { value: 0, options: { Tiefe: 0, Person: 1, Neon: 2, Regenbogen: 3, Einfarbig: 4 }, label: 'Farben' },
     tint: { value: '#4fb4ff', label: 'Einfarbig' },
@@ -120,8 +122,8 @@ export default {
     const gpu = ctx.kinect.gpu;
     const head = `${HEAD}${COMMON}`;
     const lines = head.split('\n').length;
-    const simModule = await checkedModule(device, `${head}\n${SIM}\n${CAMERA}`, 'neon-wall sim.wgsl + camera.wgsl', lines);
-    const kinectModule = await checkedModule(device, `${head}\n${KINECT}`, 'neon-wall kinect.wgsl', lines);
+    const simModule = await checkedModule(device, `${head}\n${SIM}\n${CAMERA}`, 'fluid-simulation sim.wgsl + camera.wgsl', lines);
+    const kinectModule = await checkedModule(device, `${head}\n${KINECT}`, 'fluid-simulation kinect.wgsl', lines);
 
     const C = GPUShaderStage.COMPUTE;
     const F = GPUShaderStage.FRAGMENT;
@@ -138,6 +140,7 @@ export default {
         { binding: 5, visibility: C, texture: { sampleType: 'float' } },
         skelEntry(C),
         { binding: 11, visibility: C, texture: { sampleType: 'float' } },
+        { binding: 12, visibility: C, texture: { sampleType: 'float' } },
         wallEntry(C),
       ],
     });
@@ -157,6 +160,7 @@ export default {
         { binding: 11, visibility: C, texture: { sampleType: 'float' } },
         { binding: 12, visibility: C, storageTexture: storage },
         wallEntry(C),
+        { binding: 14, visibility: C, buffer: { type: 'storage' } },
       ],
     });
     const displayLayout = device.createBindGroupLayout({
@@ -167,6 +171,7 @@ export default {
         { binding: 3, visibility: F, sampler: { type: 'filtering' } },
         { binding: 5, visibility: F, texture: { sampleType: 'float' } },
         skelEntry(F),
+        { binding: 12, visibility: F, texture: { sampleType: 'float' } },
         wallEntry(F),
       ],
     });
@@ -175,9 +180,9 @@ export default {
     const simPipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [simLayout] });
     const kinectPipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [kinectLayout] });
     const pipes = {};
-    const simEntries = ['camSignal', 'down', 'lkCoarse', 'lkRefine', 'lkFinal', 'dyeStats', 'wallSignal', 'wallMotion', 'force', 'dye', 'curl', 'vorticity', 'divergence', 'pressureFade', 'jacobi', 'gradient', 'advectVel', 'advect', 'maccormackDye'];
+    const simEntries = ['camSignal', 'down', 'lkCoarse', 'lkRefine', 'lkFinal', 'dyeStats', 'bodyBlurX', 'bodyBlurY', 'wallMotion', 'force', 'dye', 'curl', 'vorticity', 'divergence', 'pressureFade', 'jacobi', 'gradient', 'advectVel', 'advect', 'maccormackDye'];
     for (const name of simEntries) pipes[name] = device.createComputePipeline({ layout: simPipelineLayout, compute: { module: simModule, entryPoint: name } });
-    for (const name of ['prep', 'nearest', 'project', 'scene', 'collect', 'vcollect']) {
+    for (const name of ['prep', 'bodyScatter', 'bodyImage', 'bodyClear', 'nearest', 'scene', 'vcollect']) {
       pipes[name] = device.createComputePipeline({ layout: kinectPipelineLayout, compute: { module: kinectModule, entryPoint: name } });
     }
     const display = device.createRenderPipeline({
@@ -250,7 +255,7 @@ export default {
       // bind group per (layout, inputs, output), cached. sim: a, b, c sampled, out storage (c: the
       // third input, MacCormack). kinect: out storage, everything else fixed or the current camera flow.
       group(kind, a, b, out, c = a) {
-        const key = `${kind}:${a?.id}:${b?.id}:${out?.id}:${c?.id}:${this.r.stats.read.id}:${cam.flow.read.id}:${cam.sig.read.id}`;
+        const key = `${kind}:${a?.id}:${b?.id}:${out?.id}:${c?.id}:${this.r.stats.read.id}:${this.r.bodySoft.read.id}:${cam.flow.read.id}:${cam.sig.read.id}`;
         let g = this.groups.get(key);
         if (!g) {
           const buffer = { binding: 0, resource: { buffer: uniformBuf } };
@@ -272,6 +277,7 @@ export default {
               skelRes,
               { binding: 11, resource: cam.sig.read.view },
               { binding: 12, resource: this.r.rawArm.view },
+              { binding: 14, resource: { buffer: this.r.bodyCells } },
             ],
             sim: () => [
               buffer,
@@ -283,8 +289,18 @@ export default {
               { binding: 5, resource: c.view },
               skelRes,
               { binding: 11, resource: this.r.stats.read.view },
+              { binding: 12, resource: this.r.bodySoft.read.view },
             ],
-            display: () => [buffer, wallRes, { binding: 1, resource: a.view }, { binding: 2, resource: b.view }, { binding: 3, resource: sampler }, { binding: 5, resource: c.view }, skelRes],
+            display: () => [
+              buffer,
+              wallRes,
+              { binding: 1, resource: a.view },
+              { binding: 2, resource: b.view },
+              { binding: 3, resource: sampler },
+              { binding: 5, resource: c.view },
+              skelRes,
+              { binding: 12, resource: this.r.bodySoft.read.view },
+            ],
           }[kind]();
           const layout = { kinect: kinectLayout, sim: simLayout, display: displayLayout }[kind];
           g = device.createBindGroup({ layout, entries });
@@ -293,7 +309,7 @@ export default {
         return g;
       },
       // (re)creates everything whose size depends on the wall setup or params: wall grid, simulation,
-      // dye (one texel per LED = canvas pixel)
+      // the people's image and the dye (one texel per LED = canvas pixel)
       ensure(ctx) {
         const p = ctx.params;
         const ledW = ctx.width;
@@ -304,18 +320,17 @@ export default {
         const key = `${ledW}x${ledH}:${gridW}:${simW}x${simH}`;
         if (this.r?.key === key) return this.r;
         this.destroyWall();
-        const buffer = (bytes) => {
-          const b = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE });
+        const buffer = (bytes, fill = 0) => {
+          const b = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+          if (fill) device.queue.writeBuffer(b, 0, new Uint32Array(bytes / 4).fill(fill));
           owned.add(b);
           return b;
         };
         this.r = {
           key,
           gridW,
-          cells: buffer(gridW * GRID_ROWS * 16),
+          cells: buffer(gridW * GRID_ROWS * 4, EMPTY),
           vcells: buffer(gridW * GRID_ROWS * 32),
-          raw: makeTex(gridW, GRID_ROWS),
-          wallSig: pair(gridW, GRID_ROWS),
           rawMotion: makeTex(gridW, GRID_ROWS),
           rawArm: makeTex(gridW, GRID_ROWS),
           motion: makeTex(gridW, GRID_ROWS),
@@ -329,6 +344,10 @@ export default {
           ledH,
           dye: pair(ledW, ledH),
           dyeTmp: makeTex(ledW, ledH),
+          body: makeTex(ledW, ledH),
+          bodyTmp: makeTex(Math.ceil(ledW / 2), Math.ceil(ledH / 2)),
+          bodySoft: pair(Math.ceil(ledW / 2), Math.ceil(ledH / 2)),
+          bodyCells: buffer(ledW * ledH * 4, EMPTY),
           stats: pair(1, 1),
         };
         return this.r;
@@ -433,21 +452,24 @@ export default {
       sim(pipes.lkRefine, cam.sig1, cam.flow2, cam.flow1);
       sim(pipes.lkFinal, cam.sig.read, cam.flow1, cam.flow.write, cam.flow.read);
       cam.flow.swap();
-      // wall image and 3D motion on the wall
-      kinect(pipes.nearest, r.raw, DEPTH);
-      kinect(pipes.project, r.raw, DEPTH);
-      kinect(pipes.scene, r.raw, FLOW);
-      kinect(pipes.collect, r.raw, r.raw);
-      kinect(pipes.vcollect, r.raw, r.raw);
-      sim(pipes.wallSignal, r.raw, r.wallSig.read, r.wallSig.write);
-      r.wallSig.swap();
+      // the people's image on the wall, one texel per LED
+      kinect(pipes.bodyScatter, cam.prep, DEPTH);
+      kinect(pipes.bodyImage, r.body);
+      kinect(pipes.bodyClear, cam.prep, r.body);
+      sim(pipes.bodyBlurX, r.body, r.body, r.bodyTmp);
+      sim(pipes.bodyBlurY, r.bodyTmp, r.bodyTmp, r.bodySoft.write);
+      r.bodySoft.swap();
+      // 3D motion on the wall cells
+      kinect(pipes.nearest, cam.prep, DEPTH);
+      kinect(pipes.scene, cam.prep, FLOW);
+      kinect(pipes.vcollect, cam.prep, r.motion);
       sim(pipes.wallMotion, r.rawMotion, r.rawMotion, r.motion, r.rawArm);
     }
 
     // forces and dye from the motion
     sim(pipes.force, r.vel.read, r.motion, r.vel.write);
     r.vel.swap();
-    sim(pipes.dye, r.dye.read, r.motion, r.dye.write, r.wallSig.read);
+    sim(pipes.dye, r.dye.read, r.motion, r.dye.write);
     r.dye.swap();
 
     // vorticity confinement
@@ -479,7 +501,7 @@ export default {
       colorAttachments: [{ view: S.context.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
     });
     rp.setPipeline(S.display);
-    rp.setBindGroup(0, S.group('display', r.dye.read, r.motion, null, r.wallSig.read));
+    rp.setBindGroup(0, S.group('display', r.dye.read, r.motion, null, r.dye.read));
     rp.draw(3);
     rp.end();
     const read = !S.reading && ctx.time - S.lastRead > 0.5;
