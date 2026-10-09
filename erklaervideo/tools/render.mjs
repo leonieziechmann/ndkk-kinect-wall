@@ -5,7 +5,8 @@
 //   npm run render -- --fps 30 --scale 0.5 a quicker preview
 //   npm run stills -- 3 12.5 40            single frames (seconds) → output/stills/*.jpg
 //
-// Options: --fps N, --scale S (resolution factor), --from S --to S (seconds), --out DIR (stills).
+// Options: --fps N, --scale S (resolution factor), --from S --to S (seconds), --out DIR (stills),
+// --body puppe|lowpoly|natur (the look of the people), --project figuren (the comparison of the looks).
 // The browser: CHROME_PATH, else Chrome/Edge/Chromium from the usual places.
 
 import fs from 'node:fs';
@@ -26,6 +27,9 @@ const scale = Number(opt('scale', mode === 'stills' ? 0.5 : 1));
 const from = Number(opt('from', 0));
 const to = Number(opt('to', Infinity));
 const outDir = path.resolve(root, opt('out', 'output/stills'));
+const query = new URLSearchParams();
+if (opt('body')) query.set('body', opt('body'));
+if (opt('project')) query.set('project', opt('project'));
 const times = args.slice(1).filter((a, i, all) => !a.startsWith('--') && !(all[i - 1] ?? '').startsWith('--')).map(Number);
 
 function findBrowser() {
@@ -75,7 +79,7 @@ try {
     failed = true;
     console.error('page error:', e.message);
   });
-  await page.goto(new URL('tools/harness.html', base).href);
+  await page.goto(new URL(`tools/harness.html?${query}`, base).href);
   await page.waitForFunction(() => window.__mc, { timeout: 120000 });
 
   if (mode === 'stills') {

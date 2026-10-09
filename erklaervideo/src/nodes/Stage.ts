@@ -4,12 +4,15 @@
 
 import { Rect, RectProps, initial, signal } from '@motion-canvas/2d';
 import { SignalValue, SimpleSignal } from '@motion-canvas/core';
+import { clayLook, silhouetteLook } from '../lib/body/looks';
+import { FigureRaster } from '../lib/body/raster';
+import { BodyStyle, DEFAULT_STYLE, buildBody } from '../lib/body/styles';
 import { Camera } from '../lib/camera';
 import { FLUID } from '../lib/fluid';
 import { depthColor, farDim } from '../lib/images';
 import { V3, clamp, easeOutBack, hash, hexRgb, lerp, rgba, smooth } from '../lib/math';
 import { BONES, Pose, people } from '../lib/people';
-import { SENSOR_FPS, SensorFrame, rayX, rayY, sense } from '../lib/sensor';
+import { SensorFrame, bodyAt, rayX, rayY, sense } from '../lib/sensor';
 import { Splatter } from '../lib/splat';
 import { testPattern } from '../lib/testpattern';
 import { C, FONT } from '../lib/theme';
@@ -42,6 +45,7 @@ export interface StageProps extends RectProps {
   pulseStart?: SignalValue<number>;
   figures?: SignalValue<number>;
   figureColor?: SignalValue<number>;
+  bodyStyle?: SignalValue<string>;
   silhouette?: SignalValue<number>;
   cloud?: SignalValue<number>;
   cloudFly?: SignalValue<number>;
@@ -119,6 +123,8 @@ export class Stage extends Rect {
   @initial(0) @signal() public declare readonly pulseStart: SimpleSignal<number, this>;
   @initial(0) @signal() public declare readonly figures: SimpleSignal<number, this>;
   @initial(0) @signal() public declare readonly figureColor: SimpleSignal<number, this>;
+  /** the look of the bodies (body/styles.ts) */
+  @initial(DEFAULT_STYLE) @signal() public declare readonly bodyStyle: SimpleSignal<string, this>;
   @initial(0) @signal() public declare readonly silhouette: SimpleSignal<number, this>;
   @initial(0) @signal() public declare readonly cloud: SimpleSignal<number, this>;
   @initial(1) @signal() public declare readonly cloudFly: SimpleSignal<number, this>;
@@ -143,6 +149,7 @@ export class Stage extends Rect {
 
   readonly cam = new Camera();
   private splat = new Splatter();
+  private raster = new FigureRaster();
   private glowCanvas = document.createElement('canvas');
 
   public constructor(props?: StageProps) {
@@ -180,7 +187,7 @@ export class Stage extends Rect {
     ctx.lineJoin = 'round';
 
     const needSensor = this.cloud() > 0 || this.skel() > 0 || this.streaks() > 0 || this.ray() > 0;
-    const frame = needSensor ? sense(T) : null;
+    const frame = needSensor ? sense(T, this.bodyStyle() as BodyStyle) : null;
     const persons = people(T);
 
     if (this.grid() > 0) this.drawGrid(ctx, cam);
@@ -203,7 +210,7 @@ export class Stage extends Rect {
       this.drawFrustum(ctx, cam, T);
       ctx.restore();
     }
-    if (this.figures() > 0) this.drawFigures(ctx, cam, persons, T);
+    if (this.figures() > 0) this.drawFigures(ctx, cam, persons, T, W, H);
     if (frame && this.cloud() > 0) this.drawCloud(ctx, cam, frame, W, H);
     if (frame && this.streaks() > 0) this.drawTrails(ctx, cam, frame);
     if (frame && this.skel() > 0) this.drawSkeletons(ctx, cam, frame);
@@ -675,47 +682,80 @@ export class Stage extends Rect {
 
   // ---------------------------------------------------------------- people
 
-  private drawFigures(ctx: CanvasRenderingContext2D, cam: Camera, list: Pose[], T: number) {
+  private drawFigures(ctx: CanvasRenderingContext2D, cam: Camera, list: Pose[], T: number, W: number, H: number) {
     const alpha = this.figures();
     const colorK = this.figureColor();
     const sil = this.silhouette();
-    const base = hexRgb(C.figure);
-    const ir = hexRgb(C.ir);
-    const sorted = list
-      .map((p) => ({ p, d: cam.view(p.center)[2] }))
-      .filter((e) => e.d > 0.1)
-      .sort((a, b) => b.d - a.d);
-    for (const { p } of sorted) {
-      const hit = this.pulseHit(p.center[2] - KINECT[2], T);
-      let fill: [number, number, number] = [lerp(base[0], p.color[0], colorK), lerp(base[1], p.color[1], colorK), lerp(base[2], p.color[2], colorK)];
-      fill = [lerp(fill[0], ir[0], hit), lerp(fill[1], ir[1], hit), lerp(fill[2], ir[2], hit)];
-      const caps = p.capsules
-        .map((c) => {
-          const a = cam.project(c.a);
-          const b = cam.project(c.b);
-          if (!a || !b) return null;
-          const w = (2 * c.r * cam.focal) / ((a[2] + b[2]) / 2);
-          return { a, b, w };
-        })
-        .filter((c): c is { a: V3; b: V3; w: number } => c !== null);
-      const pass = (extra: number, style: string) => {
-        ctx.strokeStyle = style;
-        for (const c of caps) {
-          ctx.lineWidth = c.w + extra;
-          ctx.beginPath();
-          ctx.moveTo(c.a[0], c.a[1]);
-          ctx.lineTo(c.b[0] + 0.01, c.b[1]);
-          ctx.stroke();
-        }
-      };
-      if (sil > 0) {
-        // dark silhouettes with a colored rim (lit by the wall)
-        pass(5, rgba(p.color, 0.85 * alpha * sil));
-        pass(0, rgba([0.02, 0.025, 0.04], alpha));
-      } else {
-        pass(3, rgba(fill, 0.95 * alpha));
-        pass(-1.5, rgba([fill[0] * 0.22, fill[1] * 0.22, fill[2] * 0.25], 0.92 * alpha));
+    const style = this.bodyStyle() as BodyStyle;
+    const m = ctx.getTransform();
+    const scale = Math.max(0.25, Math.hypot(m.a, m.b));
+    const bodies = list.map((p) => ({ p, mesh: buildBody(p, style) }));
+    // the part of the screen the bodies cover
+    let x0 = Infinity;
+    let y0 = Infinity;
+    let x1 = -Infinity;
+    let y1 = -Infinity;
+    const out = [0, 0, 0];
+    for (const { mesh } of bodies) {
+      const P = mesh.pos;
+      for (let i = 0; i < P.length; i += 3) {
+        if (!cam.projectInto(P[i], P[i + 1], P[i + 2], out)) continue;
+        if (out[0] < x0) x0 = out[0];
+        if (out[0] > x1) x1 = out[0];
+        if (out[1] < y0) y0 = out[1];
+        if (out[1] > y1) y1 = out[1];
       }
+    }
+    x0 = Math.max(-W / 2, Math.floor(x0 - 4));
+    y0 = Math.max(-H / 2, Math.floor(y0 - 4));
+    x1 = Math.min(W / 2, Math.ceil(x1 + 4));
+    y1 = Math.min(H / 2, Math.ceil(y1 + 4));
+    if (!(x1 > x0 && y1 > y0)) return;
+    if (sil <= 0) this.drawContactShadows(ctx, cam, list, alpha);
+    // twice the resolution for smooth edges
+    const k = scale * 2;
+    const r = this.raster;
+    r.begin(x0, y0, x1, y1, k);
+    for (const { p, mesh } of bodies) {
+      const tint = this.pulseHit(p.center[2] - KINECT[2], T);
+      r.add(mesh, cam, sil > 0 ? silhouetteLook(p) : clayLook(p, style, { colorK, tint }));
+    }
+    const img = r.end(cam);
+    ctx.save();
+    ctx.globalAlpha *= alpha;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, x0, y0, r.w / k, r.h / k);
+    ctx.restore();
+  }
+
+  /** a soft shadow on the floor under each person, so they stand on the ground */
+  private drawContactShadows(ctx: CanvasRenderingContext2D, cam: Camera, list: Pose[], alpha: number) {
+    for (const p of list) {
+      const J = p.joints;
+      const c: V3 = [(J[15][0] + J[16][0] + J[18][0]) / 3, 0.002, (J[15][2] + J[16][2] + J[18][2]) / 3];
+      const q = cam.project(c);
+      if (!q) continue;
+      let rx = 1;
+      let ry = 1;
+      for (const d of [[0.34, 0, 0], [0, 0, 0.3], [-0.34, 0, 0], [0, 0, -0.3]] as V3[]) {
+        const e = cam.project([c[0] + d[0], c[1], c[2] + d[2]]);
+        if (!e) continue;
+        rx = Math.max(rx, Math.abs(e[0] - q[0]));
+        ry = Math.max(ry, Math.abs(e[1] - q[1]));
+      }
+      ctx.save();
+      ctx.translate(q[0], q[1]);
+      ctx.scale(1, ry / rx);
+      const g = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+      g.addColorStop(0, `rgba(0,0,0,${0.55 * alpha})`);
+      g.addColorStop(0.5, `rgba(0,0,0,${0.3 * alpha})`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(0, 0, rx, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
     }
   }
 
@@ -841,14 +881,12 @@ export class Stage extends Rect {
 
   /**
    * Motion trails: surface points of the people followed back through the last frames. A point keeps
-   * its place on its body part (same spot along the part, the same offset turned with it), so the
-   * trail is the real path it took, as an optical flow over several frames shows it.
+   * its place on the body (the same spot on the same triangle of the mesh), so the trail is the real
+   * path it took, as an optical flow over several frames shows it.
    */
   private drawTrails(ctx: CanvasRenderingContext2D, cam: Camera, f: SensorFrame) {
     const alpha = this.streaks();
     const K = 12;
-    const past: Map<number, Pose>[] = [];
-    for (let k = 1; k <= K; k++) past.push(new Map(people(f.T - k / SENSOR_FPS).map((p) => [p.slot, p])));
     const paths = [new Path2D(), new Path2D(), new Path2D()];
     const out = [0, 0, 0];
     const step = 7;
@@ -856,26 +894,30 @@ export class Stage extends Rect {
     for (let v = 2; v < INTR.h; v += step) {
       for (let u = 2; u < INTR.w; u += step) {
         const i = v * INTR.w + u;
-        const code = f.cap[i];
+        const pi = f.who[i];
         const d = f.depth[i];
-        if (code < 0 || d <= 0) continue;
-        const pose = f.now[code >> 5];
-        const ci = code & 31;
-        const c = pose.capsules[ci];
-        const P: V3 = [KINECT[0] + rayX(u) * d, KINECT[1] + rayY(v) * d, KINECT[2] + d];
-        const ba: V3 = [c.b[0] - c.a[0], c.b[1] - c.a[1], c.b[2] - c.a[2]];
-        const bb = ba[0] * ba[0] + ba[1] * ba[1] + ba[2] * ba[2];
-        const sAx = bb > 0 ? clamp(((P[0] - c.a[0]) * ba[0] + (P[1] - c.a[1]) * ba[1] + (P[2] - c.a[2]) * ba[2]) / bb) : 0;
-        const o: V3 = [P[0] - c.a[0] - ba[0] * sAx, P[1] - c.a[1] - ba[1] * sAx, P[2] - c.a[2] - ba[2] * sAx];
+        if (pi < 0 || d <= 0) continue;
+        const slot = f.now[pi].slot;
+        const mesh = f.meshes[pi];
+        const t = f.tri[i];
+        const l0 = f.bary[i * 2];
+        const l1 = f.bary[i * 2 + 1];
+        const l2 = 1 - l0 - l1;
+        const ia = mesh.tri[t * 3] * 3;
+        const ib = mesh.tri[t * 3 + 1] * 3;
+        const ic = mesh.tri[t * 3 + 2] * 3;
         pts.length = 0;
-        pts.push(P);
+        pts.push([KINECT[0] + rayX(u) * d, KINECT[1] + rayY(v) * d, KINECT[2] + d]);
         let len = 0;
-        for (let k = 0; k < K; k++) {
-          const q = past[k].get(pose.slot)?.capsules[ci];
+        for (let k = 1; k <= K; k++) {
+          const q = bodyAt(slot, f.seq - k, f.style);
           if (!q) break;
-          const bk: V3 = [q.b[0] - q.a[0], q.b[1] - q.a[1], q.b[2] - q.a[2]];
-          const ok = turnLike(o, ba, bk);
-          const Pk: V3 = [q.a[0] + bk[0] * sAx + ok[0], q.a[1] + bk[1] * sAx + ok[1], q.a[2] + bk[2] * sAx + ok[2]];
+          const Q = q.pos;
+          const Pk: V3 = [
+            Q[ia] * l0 + Q[ib] * l1 + Q[ic] * l2,
+            Q[ia + 1] * l0 + Q[ib + 1] * l1 + Q[ic + 1] * l2,
+            Q[ia + 2] * l0 + Q[ib + 2] * l1 + Q[ic + 2] * l2,
+          ];
           const last = pts[pts.length - 1];
           len += Math.hypot(Pk[0] - last[0], Pk[1] - last[1], Pk[2] - last[2]);
           pts.push(Pk);
@@ -1071,27 +1113,4 @@ export class Stage extends Rect {
     this.callout(ctx, cam, [-TRUSS.x, 2.2, TRUSS.z], -70, -120, 'Truss', clamp(labels * 3 - 0.6), white);
     this.callout(ctx, cam, [KINECT[0], KINECT[1] + 0.04, KINECT[2]], 90, 150, 'Kinect', clamp(labels * 3 - 1.2), hexRgb(C.sensor));
   }
-}
-
-/** v turned by the rotation that takes direction a to direction b (how a body part turned) */
-function turnLike(v: V3, a: V3, b: V3): V3 {
-  const la = Math.hypot(a[0], a[1], a[2]);
-  const lb = Math.hypot(b[0], b[1], b[2]);
-  if (la < 1e-9 || lb < 1e-9) return v;
-  const ax: V3 = [a[0] / la, a[1] / la, a[2] / la];
-  const bx: V3 = [b[0] / lb, b[1] / lb, b[2] / lb];
-  const k: V3 = [ax[1] * bx[2] - ax[2] * bx[1], ax[2] * bx[0] - ax[0] * bx[2], ax[0] * bx[1] - ax[1] * bx[0]];
-  const sin = Math.hypot(k[0], k[1], k[2]);
-  const cos = ax[0] * bx[0] + ax[1] * bx[1] + ax[2] * bx[2];
-  if (sin < 1e-9) return v;
-  k[0] /= sin;
-  k[1] /= sin;
-  k[2] /= sin;
-  const kv = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
-  const kxv: V3 = [k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0]];
-  return [
-    v[0] * cos + kxv[0] * sin + k[0] * kv * (1 - cos),
-    v[1] * cos + kxv[1] * sin + k[1] * kv * (1 - cos),
-    v[2] * cos + kxv[2] * sin + k[2] * kv * (1 - cos),
-  ];
 }

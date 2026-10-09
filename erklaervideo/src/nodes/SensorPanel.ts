@@ -6,6 +6,7 @@ import { SignalValue, SimpleSignal } from '@motion-canvas/core';
 import { depthCss, depthImage, flowColor, flowImage, irImage, maskImage } from '../lib/images';
 import { clamp, easeOutBack, hexRgb, lerp, rgba, smooth } from '../lib/math';
 import { COCO_BONES } from '../lib/people';
+import { BodyStyle, DEFAULT_STYLE } from '../lib/body/styles';
 import { SensorFrame, sense } from '../lib/sensor';
 import { C, FONT } from '../lib/theme';
 import { INTR } from '../lib/world';
@@ -31,6 +32,7 @@ export interface SensorPanelProps extends RectProps {
   pixel?: SignalValue<number>;
   depthMax?: SignalValue<number>;
   edge?: SignalValue<number>;
+  bodyStyle?: SignalValue<string>;
 }
 
 const POINT_NAMES: [number, string][] = [
@@ -60,6 +62,8 @@ export class SensorPanel extends Rect {
   /** show only what is nearer than this (m): the picture builds up with the light, or empties again */
   @initial(99) @signal() public declare readonly depthMax: SimpleSignal<number, this>;
   @initial(0) @signal() public declare readonly edge: SimpleSignal<number, this>;
+  /** the look of the bodies (body/styles.ts) */
+  @initial(DEFAULT_STYLE) @signal() public declare readonly bodyStyle: SimpleSignal<string, this>;
 
   public constructor(props?: SensorPanelProps) {
     super({ width: 512, height: 424, ...props });
@@ -75,7 +79,7 @@ export class SensorPanel extends Rect {
     const s = this.size();
     const W = s.x;
     const H = s.y;
-    const f = sense(this.time());
+    const f = sense(this.time(), this.bodyStyle() as BodyStyle);
     const chrome = this.chrome();
     ctx.save();
     // frame

@@ -1,12 +1,14 @@
-// A simulated Kinect v2: ray-casts the room and the people (people.ts) for every pixel of the
-// 512 × 424 depth camera, 30 times per second of story time. It gives what the real system has:
+// A simulated Kinect v2: ray-casts the room and rasterizes the people's bodies (people.ts,
+// body/styles.ts) for every pixel of the 512 × 424 depth camera, 30 times per second of story time. It gives what the real system has:
 // depth (m), infrared brightness, which person each pixel belongs to, the optical flow and, per
 // person, the box and the 17 keypoints the pose model would find. The images show the Kinect's own
 // view (the hub sends them mirrored): what stands left of the wall as the audience sees it (-x) is on
 // the right of the image, as when you look out from the wall.
 
+import { MAT, Mesh } from './body/mesh';
+import { BodyStyle, DEFAULT_STYLE, buildBody } from './body/styles';
 import { V3, clamp, hash, RGB } from './math';
-import { BONES, Pose, people } from './people';
+import { BONES, Pose, people, personSpec, pose } from './people';
 import { FURNITURE, INTR, KINECT, ROOM } from './world';
 
 export const SENSOR_FPS = 30;
@@ -44,10 +46,15 @@ export interface SensorFrame {
   flowV: Float32Array;
   /** px from the pixel to its person's stick figure (people only) */
   boneDist: Float32Array;
-  /** which body part a person pixel shows: index into now (person * 32 + capsule), -1 for the room */
-  cap: Int16Array;
-  /** the people at the moment of this frame */
+  /** which person a pixel shows (index into now), -1 for the room */
+  who: Int8Array;
+  /** and where on the body: the triangle of its mesh and two of the three barycentric weights */
+  tri: Int32Array;
+  bary: Float32Array;
+  /** the people at the moment of this frame, and their bodies */
   now: Pose[];
+  meshes: Mesh[];
+  style: BodyStyle;
   persons: PersonView[];
 }
 
@@ -94,29 +101,113 @@ export function project(p: V3): [number, number, number] | null {
   return [INTR.cx - (INTR.f * (p[0] - KX)) / z - 0.5, INTR.cy - (INTR.f * (p[1] - KY)) / z - 0.5, z];
 }
 
-const cache = new Map<number, SensorFrame>();
+const cache = new Map<string, SensorFrame>();
 
 /** the sensor frame visible at story time T (the newest one captured at or before T) */
-export function sense(T: number): SensorFrame {
+export function sense(T: number, style: BodyStyle = DEFAULT_STYLE): SensorFrame {
   const seq = Math.floor(T * SENSOR_FPS + 1e-6);
-  const hit = cache.get(seq);
+  const key = `${style}:${seq}`;
+  const hit = cache.get(key);
   if (hit) return hit;
-  const frame = capture(seq);
-  cache.set(seq, frame);
-  if (cache.size > 6) cache.delete(cache.keys().next().value as number);
+  const frame = capture(seq, style);
+  cache.set(key, frame);
+  if (cache.size > 6) cache.delete(cache.keys().next().value as string);
   return frame;
+}
+
+// bodies are built once per person and sensor frame (the motion trails look back a few frames)
+const bodies = new Map<string, Mesh | null>();
+
+/** the body of person `slot` at sensor frame `seq` (null while not in the room) */
+export function bodyAt(slot: number, seq: number, style: BodyStyle): Mesh | null {
+  const key = `${style}:${slot}:${seq}`;
+  const hit = bodies.get(key);
+  if (hit !== undefined) return hit;
+  const spec = personSpec(slot);
+  const p = spec ? pose(spec, seq / SENSOR_FPS) : null;
+  const m = p ? buildBody(p, style) : null;
+  bodies.set(key, m);
+  if (bodies.size > 80) bodies.delete(bodies.keys().next().value as string);
+  return m;
+}
+
+/** infrared reflectivity per material (MAT); shirts and dresses take the person's own value */
+const MAT_IR = [0.7, 0.62, 0.42, 0.3, 0.24, 0.58, 0.66, 0.56];
+
+/** a body into the depth image: per pixel the nearest surface, which triangle, where on it */
+function rasterize(m: Mesh, pi: number, slot: number, depth: Float32Array, label: Uint8Array, cls: Uint8Array, who: Int8Array, tri: Int32Array, bary: Float32Array) {
+  const n = m.vertexCount;
+  const P = m.pos;
+  const U = new Float32Array(n);
+  const V = new Float32Array(n);
+  const Z = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const z = P[i * 3 + 2] - KZ;
+    if (z < 0.1) {
+      Z[i] = -1;
+      continue;
+    }
+    U[i] = INTR.cx - (INTR.f * (P[i * 3] - KX)) / z - 0.5;
+    V[i] = INTR.cy - (INTR.f * (P[i * 3 + 1] - KY)) / z - 0.5;
+    Z[i] = z;
+  }
+  const T = m.tri;
+  for (let t = 0; t < T.length; t += 3) {
+    const a = T[t];
+    const b = T[t + 1];
+    const c = T[t + 2];
+    const z0 = Z[a];
+    const z1 = Z[b];
+    const z2 = Z[c];
+    if (z0 <= 0 || z1 <= 0 || z2 <= 0) continue;
+    const x0 = U[a];
+    const y0 = V[a];
+    const x1 = U[b];
+    const y1 = V[b];
+    const x2 = U[c];
+    const y2 = V[c];
+    const area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+    if (Math.abs(area) < 1e-9) continue;
+    const inv = 1 / area;
+    const u0 = Math.max(0, Math.ceil(Math.min(x0, x1, x2)));
+    const u1 = Math.min(W - 1, Math.floor(Math.max(x0, x1, x2)));
+    const v0 = Math.max(0, Math.ceil(Math.min(y0, y1, y2)));
+    const v1 = Math.min(H - 1, Math.floor(Math.max(y0, y1, y2)));
+    const w0 = 1 / z0;
+    const w1 = 1 / z1;
+    const w2 = 1 / z2;
+    const id = t / 3;
+    for (let v = v0; v <= v1; v++) {
+      for (let u = u0; u <= u1; u++) {
+        const e0 = ((x1 - u) * (y2 - v) - (x2 - u) * (y1 - v)) * inv;
+        const e1 = ((x2 - u) * (y0 - v) - (x0 - u) * (y2 - v)) * inv;
+        const e2 = 1 - e0 - e1;
+        if (e0 < 0 || e1 < 0 || e2 < 0) continue;
+        const iz = e0 * w0 + e1 * w1 + e2 * w2;
+        const z = 1 / iz;
+        const i = v * W + u;
+        if (z >= depth[i]) continue;
+        depth[i] = z;
+        label[i] = slot;
+        cls[i] = 4;
+        who[i] = pi;
+        tri[i] = id;
+        bary[i * 2] = (e0 * w0) / iz;
+        bary[i * 2 + 1] = (e1 * w1) / iz;
+      }
+    }
+  }
 }
 
 // albedo and normal of the room per pixel, filled by the room pass
 const nrm = new Int8Array(N); // 0 floor, 1 back wall, 2 ceiling, 3 side +x, 4 side -x, 5.. furniture faces (5 + 0..5)
 const alb = new Float32Array(N);
-const capOf = new Int16Array(N);
 const NORMALS: V3[] = [
   [0, 1, 0], [0, 0, -1], [0, -1, 0], [-1, 0, 0], [1, 0, 0],
   [-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0], [0, 0, -1], [0, 0, 1],
 ];
 
-function capture(seq: number): SensorFrame {
+function capture(seq: number, style: BodyStyle): SensorFrame {
   const T = seq / SENSOR_FPS;
   const depth = new Float32Array(N);
   const ir = new Float32Array(N);
@@ -198,89 +289,16 @@ function capture(seq: number): SensorFrame {
     }
   }
 
-  // people: per capsule, only inside its projected box
+  // people: their bodies, rasterized
   const now = people(T);
-  const before = people(T - 1 / SENSOR_FPS);
-  for (let pi = 0; pi < now.length; pi++) {
-    const p = now[pi];
-    for (let ci = 0; ci < p.capsules.length; ci++) {
-      const { a, b, r } = p.capsules[ci];
-      const za = a[2] - KZ;
-      const zb = b[2] - KZ;
-      const zmin = Math.min(za, zb) - r;
-      if (zmin < 0.1) continue;
-      const pa = project(a);
-      const pb = project(b);
-      if (!pa || !pb) continue;
-      const rp = (r * INTR.f) / zmin + 2;
-      const u0 = Math.max(0, Math.floor(Math.min(pa[0], pb[0]) - rp));
-      const u1 = Math.min(W - 1, Math.ceil(Math.max(pa[0], pb[0]) + rp));
-      const v0 = Math.max(0, Math.floor(Math.min(pa[1], pb[1]) - rp));
-      const v1 = Math.min(H - 1, Math.ceil(Math.max(pa[1], pb[1]) + rp));
-      if (u0 > u1 || v0 > v1) continue;
-      const sphere = a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
-      const bax = b[0] - a[0];
-      const bay = b[1] - a[1];
-      const baz = b[2] - a[2];
-      const oax = KX - a[0];
-      const oay = KY - a[1];
-      const oaz = KZ - a[2];
-      const obx = KX - b[0];
-      const oby = KY - b[1];
-      const obz = KZ - b[2];
-      const baba = bax * bax + bay * bay + baz * baz;
-      const baoa = bax * oax + bay * oay + baz * oaz;
-      const oaoa = oax * oax + oay * oay + oaz * oaz;
-      const obob = obx * obx + oby * oby + obz * obz;
-      const rr = r * r;
-      const code = pi * 32 + ci;
-      for (let v = v0; v <= v1; v++) {
-        for (let u = u0; u <= u1; u++) {
-          const i = v * W + u;
-          const il = INVL[i];
-          const rx = RX[u] * il;
-          const ry = RY[v] * il;
-          const rz = il;
-          let t = -1;
-          if (sphere) {
-            const bb = rx * oax + ry * oay + rz * oaz;
-            const h = bb * bb - (oaoa - rr);
-            if (h > 0) t = -bb - Math.sqrt(h);
-          } else {
-            const bard = bax * rx + bay * ry + baz * rz;
-            const rdoa = rx * oax + ry * oay + rz * oaz;
-            const qa = baba - bard * bard;
-            const qb = baba * rdoa - baoa * bard;
-            const qc = baba * oaoa - baoa * baoa - rr * baba;
-            let h = qb * qb - qa * qc;
-            if (h >= 0) {
-              const tt = (-qb - Math.sqrt(h)) / qa;
-              const y = baoa + tt * bard;
-              if (y > 0 && y < baba) t = tt;
-              else {
-                const end = y <= 0;
-                const bb = end ? rdoa : rx * obx + ry * oby + rz * obz;
-                const cc = (end ? oaoa : obob) - rr;
-                h = bb * bb - cc;
-                if (h > 0) t = -bb - Math.sqrt(h);
-              }
-            }
-          }
-          if (t <= 0) continue;
-          const z = t * il;
-          if (z < depth[i]) {
-            depth[i] = z;
-            label[i] = p.slot;
-            cls[i] = 4;
-            capOf[i] = code;
-          }
-        }
-      }
-    }
-  }
-
-  const cap = new Int16Array(N).fill(-1);
-  for (let i = 0; i < N; i++) if (label[i]) cap[i] = capOf[i];
+  const meshes = now.map((p) => bodyAt(p.slot, seq, style) ?? buildBody(p, style));
+  // the same bodies one frame earlier (same vertices), for the motion
+  const earlier = now.map((p, k) => bodyAt(p.slot, seq - 1, style) ?? meshes[k]);
+  const who = new Int8Array(N).fill(-1);
+  const tri = new Int32Array(N);
+  const bary = new Float32Array(N * 2);
+  for (let pi = 0; pi < now.length; pi++) rasterize(meshes[pi], pi, now[pi].slot, depth, label, cls, who, tri, bary);
+  const normals = meshes.map((m) => (m.flat ? m.faceNormals() : m.normals()));
 
   // shading, flow, noise
   const G = 5;
@@ -292,45 +310,52 @@ function capture(seq: number): SensorFrame {
       const rx = RX[u] * il;
       const ry = RY[v] * il;
       const rz = il;
-      const px = KX + RX[u] * z;
-      const py = KY + RY[v] * z;
-      const pz = KZ + z;
       let nx: number;
       let ny: number;
       let nz: number;
       let a: number;
       if (label[i]) {
-        const code = capOf[i];
-        const pi = code >> 5;
-        const ci = code & 31;
-        const p = now[pi];
-        const cap = p.capsules[ci];
-        const prev = before.find((q) => q.slot === p.slot)?.capsules[ci] ?? cap;
-        const bax = cap.b[0] - cap.a[0];
-        const bay = cap.b[1] - cap.a[1];
-        const baz = cap.b[2] - cap.a[2];
-        const bb = bax * bax + bay * bay + baz * baz;
-        const s = bb > 0 ? clamp(((px - cap.a[0]) * bax + (py - cap.a[1]) * bay + (pz - cap.a[2]) * baz) / bb) : 0;
-        const qx = cap.a[0] + bax * s;
-        const qy = cap.a[1] + bay * s;
-        const qz = cap.a[2] + baz * s;
-        nx = px - qx;
-        ny = py - qy;
-        nz = pz - qz;
-        const nl = Math.hypot(nx, ny, nz) || 1;
+        const pi = who[i];
+        const m = meshes[pi];
+        const t = tri[i];
+        const l0 = bary[i * 2];
+        const l1 = bary[i * 2 + 1];
+        const l2 = 1 - l0 - l1;
+        const ia = m.tri[t * 3] * 3;
+        const ib = m.tri[t * 3 + 1] * 3;
+        const ic = m.tri[t * 3 + 2] * 3;
+        const Nn = normals[pi];
+        if (m.flat) {
+          nx = Nn[t * 3];
+          ny = Nn[t * 3 + 1];
+          nz = Nn[t * 3 + 2];
+        } else {
+          nx = Nn[ia] * l0 + Nn[ib] * l1 + Nn[ic] * l2;
+          ny = Nn[ia + 1] * l0 + Nn[ib + 1] * l1 + Nn[ic + 1] * l2;
+          nz = Nn[ia + 2] * l0 + Nn[ib + 2] * l1 + Nn[ic + 2] * l2;
+          const nl = Math.hypot(nx, ny, nz) || 1;
+          nx /= nl;
+          ny /= nl;
+          nz /= nl;
+        }
+        // seen from behind (only at the very edge): light it like its front
+        if (nx * rx + ny * ry + nz * rz > 0) {
+          nx = -nx;
+          ny = -ny;
+          nz = -nz;
+        }
         // where this surface point was one frame ago
-        const ox = prev.a[0] + (prev.b[0] - prev.a[0]) * s + nx;
-        const oy = prev.a[1] + (prev.b[1] - prev.a[1]) * s + ny;
-        const oz = prev.a[2] + (prev.b[2] - prev.a[2]) * s + nz;
+        const Q = earlier[pi].pos;
+        const ox = Q[ia] * l0 + Q[ib] * l1 + Q[ic] * l2;
+        const oy = Q[ia + 1] * l0 + Q[ib + 1] * l1 + Q[ic + 1] * l2;
+        const oz = Q[ia + 2] * l0 + Q[ib + 2] * l1 + Q[ic + 2] * l2;
         const zo = oz - KZ;
         if (zo > 0.05) {
           flowU[i] = u - (INTR.cx - (INTR.f * (ox - KX)) / zo - 0.5);
           flowV[i] = v - (INTR.cy - (INTR.f * (oy - KY)) / zo - 0.5);
         }
-        nx /= nl;
-        ny /= nl;
-        nz /= nl;
-        a = p.albedo[ci];
+        const mat = m.mat[t];
+        a = mat === MAT.shirt || mat === MAT.dress ? now[pi].spec.albedo : MAT_IR[mat];
       } else {
         const n = NORMALS[nrm[i]];
         nx = n[0];
@@ -409,5 +434,5 @@ function capture(seq: number): SensorFrame {
     });
   }
 
-  return { T, seq, w: W, h: H, depth, ir, label, cls, flowU, flowV, boneDist, cap, now, persons };
+  return { T, seq, w: W, h: H, depth, ir, label, cls, flowU, flowV, boneDist, who, tri, bary, now, meshes, style, persons };
 }
