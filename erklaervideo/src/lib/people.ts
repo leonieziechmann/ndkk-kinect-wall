@@ -250,7 +250,9 @@ export function pose(spec: PersonSpec, T: number): Pose | null {
     const side = i === 0 ? -1 : 1;
     const hip = 0.4 * amp * Math.sin(ph);
     const swing = Math.max(0, Math.cos(ph + 0.35));
-    const idleBend = (1 - walking) * (weight * side < 0 ? 0.22 : 0.03);
+    // the free knee bends, the standing one stays straight; when the weight shifts they trade over
+    // the moment it takes (not in one frame)
+    const idleBend = (1 - walking) * (0.03 + 0.19 * smooth(0.3, -0.3, weight * side));
     const knee = amp * (0.07 + 0.95 * swing * swing) + idleBend;
     const foot = amp * 0.35 * Math.sin(ph - 0.5) - idleBend * 0.4;
     // in the pelvis frame: [out, up, forward]
@@ -306,10 +308,14 @@ export function pose(spec: PersonSpec, T: number): Pose | null {
       const [au, af] = actionArm(a, T, spec.slot + i * 0.7);
       up = mix(up, norm(au), w);
       fo = mix(fo, norm(af), w);
-      // into and out of a gesture the arm moves through the side, not through the front
-      const mid = 1 - 0.75 * 4 * w * (1 - w);
+      // into and out of a gesture the arm moves through the side, not through the front; going out
+      // to the side also keeps the forearm from flipping over when it turns from down to up
+      const via = 4 * w * (1 - w);
+      const mid = 1 - 0.75 * via;
       up[2] *= mid;
       fo[2] *= mid;
+      up[0] += 0.6 * via;
+      fo[0] += 0.9 * via;
       lift = Math.max(lift, w * Math.max(0, norm(au)[1]));
     }
     const toWorld = (v: V3): V3 => {
