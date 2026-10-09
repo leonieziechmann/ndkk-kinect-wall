@@ -18,7 +18,7 @@ export const P = {
 export const CAPTION: { x: number; y: number; style: CaptionStyle } = { x: 0, y: -630, style: { anchor: 'top', fontSize: 58, lineHeight: 70 } };
 
 /** the two pictures of the Kinect side by side below the 3D view (scenes 2 and 3) */
-export const PAIR = { w: 480, h: 398, gap: 30, y: 310, out: 1100 };
+export const PAIR = { w: 480, h: 398, gap: 30, y: 350, out: 1100 };
 export const PAIR_X = [-(PAIR.w + PAIR.gap) / 2, (PAIR.w + PAIR.gap) / 2];
 
 /** the mask picture below the 3D view (scenes 6 and 7) */

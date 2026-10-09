@@ -5,7 +5,7 @@ Motion-Canvas-Projekt für ein Video von etwa 1:30 min, das erklärt, wie die In
 ```bash
 cd erklaervideo
 npm install
-npm start                                  # Editor: http://localhost:9000 (Vorschau, Zeitleiste, Render-Knopf)
+npm start                                  # Editor: http://localhost:9000 (Video oder Social-Fassung wählen; Vorschau, Zeitleiste, Render-Knopf)
 npm run render                             # ganzes Video → output/kinect-wand.mp4 (1080p, 60 fps)
 npm run render -- --fps 30                 # schnellere Vorschau
 npm run stills -- 12 30.5 47               # Einzelbilder (Sekunden) → output/stills/

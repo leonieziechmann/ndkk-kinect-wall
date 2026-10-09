@@ -148,7 +148,7 @@ try {
       console.log(`${file}  (${Math.round(s.ms)} ms)`);
     }
   } else {
-    const result = await page.evaluate(
+    const { result, name } = await page.evaluate(
       async ({ fps, scale, from, to }) => {
         const { project, Renderer } = window.__mc;
         const r = new Renderer(project);
@@ -169,11 +169,11 @@ try {
         });
         const done = new Promise((resolve) => r.onFinished.subscribe(resolve));
         r.render(settings);
-        return await done;
+        return { result: await done, name: project.name };
       },
       { fps, scale, from, to: Number.isFinite(to) ? to : 1e9 },
     );
-    console.log(result === 0 ? `fertig: ${path.join(root, 'output', 'kinect-wand.mp4')}` : `Rendern fehlgeschlagen (${result})`);
+    console.log(result === 0 ? `fertig: ${path.join(root, 'output', `${name}.mp4`)}` : `Rendern fehlgeschlagen (${result})`);
     if (result !== 0) failed = true;
   }
 } finally {

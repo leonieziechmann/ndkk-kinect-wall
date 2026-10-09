@@ -285,18 +285,20 @@ export class SensorPanel extends Rect {
       const [u, v, c] = person.kp[k];
       if (c < 0.2) continue;
       const [x, y] = this.toLocal(u + 0.5, v + 0.5);
-      const dx = -95 * ts;
-      const dy = (n === 0 ? -40 : n === 1 ? -20 : 10) * ts;
+      // large text (portrait): the head's label goes to the right, clear of the box label above
+      const right = ts > 1 && n === 0;
+      const dx = (right ? 55 : -95) * ts;
+      const dy = (right ? -46 : n === 0 ? -40 : n === 1 ? -20 : 10) * ts;
       ctx.strokeStyle = `rgba(240,244,250,${0.8 * q})`;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(x - 8, y);
+      ctx.moveTo(x + (right ? 8 : -8), y);
       ctx.lineTo(x + dx * q, y + dy * q);
       ctx.stroke();
       ctx.fillStyle = `rgba(240,244,250,${q})`;
-      ctx.textAlign = 'right';
+      ctx.textAlign = right ? 'left' : 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(name, x + dx - 8, y + dy);
+      ctx.fillText(name, x + dx + (right ? 8 : -8), y + dy);
     }
   }
 

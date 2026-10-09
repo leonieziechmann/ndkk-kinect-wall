@@ -65,8 +65,8 @@ export const SHOTS = {
 export const SOCIAL_SHOTS = {
   roomStart: shot({ yaw: 42, pitch: 26, dist: 15, tx: 0, ty: 1.5, tz: 0, fov: 50, shiftX: -60, shiftY: 90 }),
   roomEnd: shot({ yaw: 32, pitch: 15, dist: 13.0, tx: 0, ty: 1.55, tz: 0, fov: 50, shiftX: -80, shiftY: 70 }),
-  sidePanels: shot({ yaw: 58, pitch: 17, dist: 12.5, tx: 0, ty: 1.1, tz: 2.5, fov: 56, shiftX: -130, shiftY: -200 }),
-  sidePanels2: shot({ yaw: 50, pitch: 15, dist: 11.8, tx: 0, ty: 1.1, tz: 2.6, fov: 56, shiftX: -140, shiftY: -200 }),
+  sidePanels: shot({ yaw: 58, pitch: 17, dist: 12.5, tx: 0, ty: 1.1, tz: 2.5, fov: 56, shiftX: -130, shiftY: -160 }),
+  sidePanels2: shot({ yaw: 50, pitch: 15, dist: 11.8, tx: 0, ty: 1.1, tz: 2.6, fov: 56, shiftX: -140, shiftY: -160 }),
   kinectA: shot({ yaw: 200, pitch: 17, dist: 5.6, tx: 0.15, ty: 1.0, tz: 3.0, fov: 56, shiftY: 40 }),
   kinectB: shot({ yaw: 166, pitch: 13, dist: 5.7, tx: 0.1, ty: 1.0, tz: 3.0, fov: 56, shiftY: 40 }),
   kinectC: shot({ yaw: 186, pitch: 11, dist: 5.0, tx: 0.15, ty: 1.1, tz: 2.8, fov: 56, shiftY: 40 }),
