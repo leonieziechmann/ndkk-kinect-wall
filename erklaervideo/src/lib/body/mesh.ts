@@ -5,7 +5,7 @@
 import { V3, cross, dot, norm } from '../math';
 
 /** materials: what the surface is made of (infrared brightness and look) */
-export const MAT = { skin: 0, shirt: 1, pants: 2, shoes: 3, hair: 4, dress: 5, wood: 6, joint: 7 } as const;
+export const MAT = { skin: 0, shirt: 1, pants: 2, shoes: 3, hair: 4 } as const;
 
 export class Mesh {
   pos: number[] = [];

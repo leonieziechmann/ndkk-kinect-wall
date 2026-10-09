@@ -4,6 +4,7 @@
 
 import { Rect, RectProps, initial, signal } from '@motion-canvas/2d';
 import { SignalValue, SimpleSignal } from '@motion-canvas/core';
+import { ROLES } from '../lib/choreo';
 import { FLUID } from '../lib/fluid';
 import { REF_DISTANCE, STRETCH, mapToWall, tracked, wallCenter } from '../lib/mapping';
 import { V3, hexRgb, lerp, rgba, smooth } from '../lib/math';
@@ -152,7 +153,7 @@ export class WallView extends Rect {
 
   /** a dashed mirror line through the person and a double arrow: the right hand is on the right */
   private drawMirror(ctx: CanvasRenderingContext2D, list: Pose[]) {
-    const p = list.find((q) => q.slot === 1);
+    const p = list.find((q) => q.slot === ROLES.lead);
     if (!p) return;
     const a = this.mirror();
     const [hx, hy] = this.toLocal(...mapToWall(p, p.joints[21]));
@@ -166,7 +167,7 @@ export class WallView extends Rect {
 
   /** a ruler from the floor to the head: the body appears in real size */
   private drawRuler(ctx: CanvasRenderingContext2D, list: Pose[]) {
-    const p = list.find((q) => q.slot === 2) ?? list[0];
+    const p = list.find((q) => q.slot === ROLES.second) ?? list[0];
     if (!p) return;
     const a = this.ruler();
     const head = p.joints[19][1] + 0.11;

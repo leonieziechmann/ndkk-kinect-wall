@@ -61,12 +61,12 @@ export interface PersonSpec {
   albedo: number;
   /** body shape: a little wider hips, narrower shoulders */
   female?: boolean;
-  /** wears a dress */
-  dress?: boolean;
-  /** hair: short, long (down the back) or curly (more volume) */
-  hair?: 'short' | 'long' | 'curly';
-  /** sleeves of the top (default short) */
-  sleeves?: 'short' | 'long';
+  /** hair: short, curly (more volume) or pulled back into a ponytail */
+  hair?: 'short' | 'curly' | 'ponytail';
+  /** top: a T-shirt, long sleeves, or a wide, boxy shirt tucked into high-waisted pants */
+  top?: 'tee' | 'sweater' | 'boxy';
+  /** pants: straight, or wide legs down over the shoes */
+  pants?: 'straight' | 'wide';
 }
 
 /** a simplified body of capsules, for the fluid's forces (indices 5..10 are the arms) */
@@ -271,7 +271,7 @@ export function pose(spec: PersonSpec, T: number): Pose | null {
     const swing = -0.36 * amp * Math.sin(legPh) + 0.03 * Math.sin(0.8 * T + i * 1.7) * (1 - walking);
     const bend = 0.22 + 0.32 * amp * Math.max(0, Math.sin(-legPh));
     // hanging a little away from the body, so the hands clear the hips
-    const out = spec.female ? 0.18 : 0.14;
+    const out = spec.female ? 0.16 : 0.14;
     let up: V3 = [out, -Math.cos(swing), Math.sin(swing)];
     let fo: V3 = [out + 0.05, -Math.cos(swing + bend), Math.sin(swing + bend)];
     let lift = 0;

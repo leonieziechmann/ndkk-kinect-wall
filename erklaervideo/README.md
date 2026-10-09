@@ -9,6 +9,8 @@ npm start                                  # Editor: http://localhost:9000 (Vors
 npm run render                             # ganzes Video → output/kinect-wand.mp4 (1080p, 60 fps)
 npm run render -- --fps 30                 # schnellere Vorschau
 npm run stills -- 12 30.5 47               # Einzelbilder (Sekunden) → output/stills/
+npm run stills -- --body natur 19 75       # dasselbe mit den weich schattierten Figuren (Standard: lowpoly)
+npm run stills -- --project figuren --out output/fig 8 33.5   # Modellblatt der Figuren (vorne, Seite, hinten)
 python3 tools/sheet.py output/stills sheet.jpg 2   # Kontaktabzug der Einzelbilder (braucht Pillow)
 ```
 
@@ -23,13 +25,15 @@ Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → End
 | `src/scenes/s1-…s8-*.tsx` | die acht Szenen (Ablauf, Texte, Kamera) |
 | `src/lib/timeline.ts` | wann jede Szene auf der Story-Uhr beginnt; `at(szene, t)` für Zeiten relativ zur Szene |
 | `src/lib/choreo.ts` | wer wann wohin läuft und welche Geste macht |
-| `src/lib/people.ts` | die Figuren: Skelett aus 22 Punkten, Körper aus Kapseln (Kleid, Zopf), Gehen und Gesten |
+| `src/lib/people.ts` | die Figuren: Skelett aus 22 Punkten, Gehen (Gangzyklus, Standbein) und Gesten |
+| `src/lib/body/` | die Körper als Dreiecksnetze: `styles.ts` (Low-Poly oder Natürlich, Kleidung, Haare), `raster.ts` (zeichnet sie mit Tiefenpuffer), `looks.ts` (Farben pro Person, Licht) |
 | `src/lib/world.ts` | der Raum: LED-Wand (12 × 2 Panels à 0,5 × 1 m) an Flugtraverse und Slings, Truss als Rohre, Kinect auf Foto-Stativ, Möbel |
 | `src/lib/testpattern.ts` | das Testbild auf der Wand: Raster der Steuerzentrale (`web/lib/wall-output.js`) mit einer Farbe pro Panel |
 | `src/lib/sensor.ts` | die simulierte Kinect: Tiefe, Infrarot, Masken, Optical Flow, Boxen, Keypoints (512 × 424, 30 Bilder/s) |
 | `src/lib/fluid.ts`, `mapping.ts` | das Fluid auf der Wand und wie Menschen auf die Wand abgebildet werden |
 | `src/lib/shots.ts` | Kamerapositionen der 3D-Ansichten |
-| `src/nodes/Stage.ts` | die 3D-Bühne (Linien, Punktwolke, Skelette) |
+| `src/nodes/Stage.ts` | die 3D-Bühne (Linien, Figuren, Punktwolke, Skelette) |
+| `src/figuren.ts`, `src/scenes/figuren.tsx` | ein zweites Projekt nur zum Vergleichen der Figuren-Stile |
 | `src/nodes/SensorPanel.ts`, `WallView.ts` | die Kinect-Bilder mit KI-Overlay, die Wand von vorne |
 
 Alles hängt an einer Story-Uhr (Sekunden ab Videostart). Die Figuren, die Kinect und das Fluid sind Funktionen dieser Uhr, deshalb sind die Schnitte zwischen den Szenen unsichtbar. Jede Szene muss genau so lang sein, wie `timeline.ts` sagt; ist eine länger, meldet `npm run stills` das.

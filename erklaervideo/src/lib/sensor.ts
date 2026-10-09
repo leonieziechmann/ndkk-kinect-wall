@@ -131,8 +131,8 @@ export function bodyAt(slot: number, seq: number, style: BodyStyle): Mesh | null
   return m;
 }
 
-/** infrared reflectivity per material (MAT); shirts and dresses take the person's own value */
-const MAT_IR = [0.7, 0.62, 0.42, 0.3, 0.24, 0.58, 0.66, 0.56];
+/** infrared reflectivity per material (MAT); the tops take the person's own value */
+const MAT_IR = [0.7, 0.62, 0.42, 0.3, 0.24];
 
 /** a body into the depth image: per pixel the nearest surface, which triangle, where on it */
 function rasterize(m: Mesh, pi: number, slot: number, depth: Float32Array, label: Uint8Array, cls: Uint8Array, who: Int8Array, tri: Int32Array, bary: Float32Array) {
@@ -355,7 +355,7 @@ function capture(seq: number, style: BodyStyle): SensorFrame {
           flowV[i] = v - (INTR.cy - (INTR.f * (oy - KY)) / zo - 0.5);
         }
         const mat = m.mat[t];
-        a = mat === MAT.shirt || mat === MAT.dress ? now[pi].spec.albedo : MAT_IR[mat];
+        a = mat === MAT.shirt ? now[pi].spec.albedo : MAT_IR[mat];
       } else {
         const n = NORMALS[nrm[i]];
         nx = n[0];

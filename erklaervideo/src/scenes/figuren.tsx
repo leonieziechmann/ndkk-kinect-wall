@@ -13,7 +13,7 @@ import { SCENES } from '../lib/timeline';
 import { SensorPanel } from '../nodes/SensorPanel';
 import { Stage } from '../nodes/Stage';
 
-const NAMES: Record<string, string> = { puppe: 'Gliederpuppe', lowpoly: 'Low-Poly', natur: 'Natürlich' };
+const NAMES: Record<string, string> = { lowpoly: 'Low-Poly', natur: 'Natürlich' };
 
 export default makeScene2D(function* (view) {
   const T = yield* begin(view, SCENES.sensor);

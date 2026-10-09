@@ -1,5 +1,6 @@
-// Who walks where and when. Times are relative to the scenes (timeline.ts), so a scene can get
-// shorter or longer without the people falling out of step.
+// Who walks where and when, and what they wear. Times are relative to the scenes (timeline.ts), so a
+// scene can get shorter or longer without the people falling out of step. The slot is the person's
+// number in the tracking and with it their color (PERSON_COLORS: 1 cyan, 2 magenta, 3 yellow).
 //
 // Room: x to the right as the audience sees the wall, z = meters in front of the wall. The Kinect
 // stands at x 0, z 0.25 and sees about 0.7 m to each side per meter of distance.
@@ -7,12 +8,18 @@
 import type { PersonSpec } from './people';
 import { at } from './timeline';
 
+/** who does the demonstrations: the lead waves at the Kinect and the wall, the second gets measured */
+export const ROLES = { lead: 2, second: 1 } as const;
+
 export const CHOREO: PersonSpec[] = [
   {
-    slot: 1,
+    // in pink
+    slot: 2,
     height: 1.78,
     albedo: 0.62,
     hair: 'short',
+    top: 'tee',
+    pants: 'straight',
     path: [
       { t: at('sensor', 1.6), x: -3.3, z: 2.95 },
       { t: at('sensor', 5.4), x: -0.8, z: 2.3 },
@@ -32,12 +39,14 @@ export const CHOREO: PersonSpec[] = [
     ],
   },
   {
-    slot: 2,
+    // boxy shirt, wide high-waisted pants, ponytail
+    slot: 1,
     height: 1.66,
     albedo: 0.55,
     female: true,
-    dress: true,
-    hair: 'long',
+    hair: 'ponytail',
+    top: 'boxy',
+    pants: 'wide',
     path: [
       { t: at('sensor', 2.3), x: 3.6, z: 4.0 },
       { t: at('sensor', 6.6), x: 1.15, z: 3.0 },
@@ -64,7 +73,8 @@ export const CHOREO: PersonSpec[] = [
     height: 1.72,
     albedo: 0.68,
     hair: 'curly',
-    sleeves: 'long',
+    top: 'sweater',
+    pants: 'straight',
     path: [
       { t: at('wand', -0.4), x: 3.8, z: 2.4 },
       { t: at('wand', 3.0), x: 1.05, z: 2.05 },

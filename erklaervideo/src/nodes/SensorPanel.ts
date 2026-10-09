@@ -7,6 +7,7 @@ import { depthCss, depthImage, flowColor, flowImage, irImage, maskImage } from '
 import { clamp, easeOutBack, hexRgb, lerp, rgba, smooth } from '../lib/math';
 import { COCO_BONES } from '../lib/people';
 import { BodyStyle, DEFAULT_STYLE } from '../lib/body/styles';
+import { ROLES } from '../lib/choreo';
 import { SensorFrame, sense } from '../lib/sensor';
 import { C, FONT } from '../lib/theme';
 import { INTR } from '../lib/world';
@@ -268,7 +269,7 @@ export class SensorPanel extends Rect {
 
   private drawPointLabels(ctx: CanvasRenderingContext2D, f: SensorFrame) {
     const p = this.pointLabels();
-    const person = f.persons.find((q) => q.slot === 1);
+    const person = f.persons.find((q) => q.slot === ROLES.lead);
     if (!person) return;
     ctx.font = `600 22px ${FONT}`;
     for (const [n, [k, name]] of POINT_NAMES.entries()) {

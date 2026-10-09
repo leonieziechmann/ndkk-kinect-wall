@@ -8,6 +8,7 @@ import { clayLook, silhouetteLook } from '../lib/body/looks';
 import { FigureRaster } from '../lib/body/raster';
 import { BodyStyle, DEFAULT_STYLE, buildBody } from '../lib/body/styles';
 import { Camera } from '../lib/camera';
+import { ROLES } from '../lib/choreo';
 import { FLUID } from '../lib/fluid';
 import { depthColor, farDim } from '../lib/images';
 import { V3, clamp, easeOutBack, hash, hexRgb, lerp, rgba, smooth } from '../lib/math';
@@ -72,8 +73,8 @@ export interface StageProps extends RectProps {
 const TRUSS_SEGS = trussSegments();
 const CABINETS = cabinets();
 const LENS: V3 = [KINECT[0], KINECT[1], KINECT[2] + 0.035];
-/** the pixel the ray demo picks: on the chest of person 1 */
-export const RAY_PIXEL = { slot: 1 };
+/** the pixel the ray demo picks: on the chest of the lead person */
+export const RAY_PIXEL = { slot: ROLES.lead };
 
 /** the flight of the depth picture into 3D: far points leave first, the nearest last (cloudFly 0..1) */
 export const FLIGHT = { spread: 0.62, dur: 0.32, near: 0.5, range: 4.8 };
@@ -82,7 +83,7 @@ export function flightCut(fly: number) {
   return FLIGHT.near + FLIGHT.range * (1 - fly / FLIGHT.spread);
 }
 
-/** the pixel that becomes a point in the ray demo: on the chest of person 1 */
+/** the pixel that becomes a point in the ray demo: on the chest of the lead person */
 export function rayTarget(f: SensorFrame): { u: number; v: number; p: V3; d: number } | null {
   const person = f.persons.find((p) => p.slot === RAY_PIXEL.slot);
   if (!person) return null;
@@ -718,7 +719,7 @@ export class Stage extends Rect {
     r.begin(x0, y0, x1, y1, k);
     for (const { p, mesh } of bodies) {
       const tint = this.pulseHit(p.center[2] - KINECT[2], T);
-      r.add(mesh, cam, sil > 0 ? silhouetteLook(p) : clayLook(p, style, { colorK, tint }));
+      r.add(mesh, cam, sil > 0 ? silhouetteLook(p) : clayLook(p, { colorK, tint }));
     }
     const img = r.end(cam);
     ctx.save();
