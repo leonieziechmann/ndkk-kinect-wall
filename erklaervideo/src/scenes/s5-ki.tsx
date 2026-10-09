@@ -34,7 +34,7 @@ export default makeScene2D(function* (view) {
       flyH={KI.h}
     />,
   );
-  setShot(st(), SHOTS.kinectC);
+  setShot(st(), SHOTS.kinectC2);
   view.add(<SensorPanel ref={ki} time={T} mode={'ir'} width={KI.w} height={KI.h} x={KI.x} y={KI.y} opacity={0} scale={0.94} />);
   const cap = new Caption(view);
   yield chapterBar(view, 4);
@@ -47,13 +47,13 @@ export default makeScene2D(function* (view) {
     delay(0.4, cap.show('Eine KI erkennt die Menschen und ihr Skelett.')),
   );
   yield* all(
-    ki().scan(1, 1.4, linear),
-    delay(1.2, ki().boxes(1, 1.4, linear)),
-    delay(2.6, ki().points(1, 1.6, linear)),
-    delay(3.2, ki().pointLabels(1, 1.0, linear)),
-    delay(4.2, ki().bones(1, 1.4, linear)),
-    delay(5.0, ki().colorize(1, 0.8)),
-    delay(5.4, ki().pointLabels(0, 0.5)),
+    ki().scan(1, 1.2, linear),
+    delay(1.0, ki().boxes(1, 1.2, linear)),
+    delay(2.2, ki().points(1, 1.4, linear)),
+    delay(2.8, ki().pointLabels(1, 0.9, linear)),
+    delay(3.6, ki().bones(1, 1.2, linear)),
+    delay(4.3, ki().colorize(1, 0.7)),
+    delay(4.8, ki().pointLabels(0, 0.5)),
   );
   // lift the skeletons into 3D
   yield* st().opacity(0, 0.4);
@@ -69,7 +69,7 @@ export default makeScene2D(function* (view) {
     st().skelFly(1, 1.6, easeInOutCubic),
     ki().opacity(0, 0.9),
   );
-  yield* all(...moveTo(st(), SHOTS.kinectD, 2.5, easeInOutSine));
+  yield* all(...moveTo(st(), SHOTS.kinectD, 2.2, easeInOutSine));
   yield* until(duration('ki') - 0.45);
   yield* cap.hide(0.4);
   yield* until(duration('ki'));

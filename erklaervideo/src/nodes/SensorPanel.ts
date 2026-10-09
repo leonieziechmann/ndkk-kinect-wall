@@ -29,6 +29,8 @@ export interface SensorPanelProps extends RectProps {
   room?: SignalValue<number>;
   roomTint?: SignalValue<number>;
   pixel?: SignalValue<number>;
+  depthMax?: SignalValue<number>;
+  edge?: SignalValue<number>;
 }
 
 const POINT_NAMES: [number, string][] = [
@@ -55,6 +57,9 @@ export class SensorPanel extends Rect {
   @initial(1) @signal() public declare readonly room: SimpleSignal<number, this>;
   @initial(0) @signal() public declare readonly roomTint: SimpleSignal<number, this>;
   @initial(0) @signal() public declare readonly pixel: SimpleSignal<number, this>;
+  /** show only what is nearer than this (m): the picture builds up with the light, or empties again */
+  @initial(99) @signal() public declare readonly depthMax: SimpleSignal<number, this>;
+  @initial(0) @signal() public declare readonly edge: SimpleSignal<number, this>;
 
   public constructor(props?: SensorPanelProps) {
     super({ width: 512, height: 424, ...props });
@@ -115,13 +120,13 @@ export class SensorPanel extends Rect {
   private picture(f: SensorFrame) {
     switch (this.mode()) {
       case 'depth':
-        return depthImage(f);
+        return depthImage(f, this.depthMax(), this.edge());
       case 'flow':
         return flowImage(f);
       case 'mask':
         return maskImage(f, this.maskGrow(), this.room(), this.roomTint());
       default:
-        return irImage(f);
+        return irImage(f, this.depthMax(), this.edge());
     }
   }
 

@@ -1,8 +1,8 @@
-// 4 · Optical Flow: close to the people from the front; what moves gets colored by the direction of
-// its motion and drags a short trail.
+// 4 · Optical Flow: from the Kinect's direction, a bit closer; what moves stays bright and draws the
+// path it took over the last frames, the rest goes dark.
 
 import { makeScene2D } from '@motion-canvas/2d';
-import { all, createRef, delay, easeInOutCubic } from '@motion-canvas/core';
+import { all, createRef, delay, easeInOutCubic, easeInOutSine } from '@motion-canvas/core';
 import { SHOTS, begin, moveTo, setShot, until } from '../lib/shots';
 import { SCENES, duration } from '../lib/timeline';
 import { Stage } from '../nodes/Stage';
@@ -23,6 +23,7 @@ export default makeScene2D(function* (view) {
     delay(0.7, st().colorFlow(1, 1.0)),
     delay(0.9, st().streaks(1, 1.0)),
   );
+  yield all(...moveTo(st(), SHOTS.kinectC2, duration('flow') - 1.9, easeInOutSine));
   yield* until(duration('flow') - 0.45);
   yield* cap.hide(0.4);
   yield* until(duration('flow'));

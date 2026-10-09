@@ -44,6 +44,10 @@ export interface SensorFrame {
   flowV: Float32Array;
   /** px from the pixel to its person's stick figure (people only) */
   boneDist: Float32Array;
+  /** which body part a person pixel shows: index into now (person * 32 + capsule), -1 for the room */
+  cap: Int16Array;
+  /** the people at the moment of this frame */
+  now: Pose[];
   persons: PersonView[];
 }
 
@@ -275,6 +279,9 @@ function capture(seq: number): SensorFrame {
     }
   }
 
+  const cap = new Int16Array(N).fill(-1);
+  for (let i = 0; i < N; i++) if (label[i]) cap[i] = capOf[i];
+
   // shading, flow, noise
   const G = 5;
   for (let v = 0; v < H; v++) {
@@ -402,5 +409,5 @@ function capture(seq: number): SensorFrame {
     });
   }
 
-  return { T, seq, w: W, h: H, depth, ir, label, cls, flowU, flowV, boneDist, persons };
+  return { T, seq, w: W, h: H, depth, ir, label, cls, flowU, flowV, boneDist, cap, now, persons };
 }

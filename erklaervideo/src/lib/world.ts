@@ -8,7 +8,11 @@
 import { V3 } from './math';
 
 export const WALL = { w: 6, h: 2, bottom: 0.6, z: 0, cols: 12, rows: 2, depth: 0.09, ledW: 1008, ledH: 336 };
-export const TRUSS = { x: WALL.w / 2 + 0.38, z: -0.07, size: 0.29, height: 3.2 };
+export const TRUSS = { x: WALL.w / 2 + 0.38, z: -0.07, size: 0.29, height: 3.4, chord: 0.05, lacing: 0.022 };
+/** the flying bar on top of the wall: the panels hang from it, it hangs from the truss on slings */
+export const FLYBAR = { x0: -WALL.w / 2 - 0.02, x1: WALL.w / 2 + 0.02, y0: WALL.bottom + WALL.h, y1: WALL.bottom + WALL.h + 0.09, z0: -0.06, z1: 0.02 };
+/** where the round slings go around the truss */
+export const SLINGS = [-2.5, -1.5, -0.5, 0.5, 1.5, 2.5];
 export const KINECT: V3 = [0, 0.85, 0.25];
 /** depth camera intrinsics at 512 × 424 (Kinect v2: about 70° × 60°) */
 export const INTR = { w: 512, h: 424, f: 365, cx: 256, cy: 212, near: 0.5, far: 4.5 };
@@ -41,22 +45,26 @@ export interface Seg {
   b: V3;
   /** build progress (0..1) at which this piece appears */
   at: number;
+  /** tube diameter (m) */
+  d: number;
 }
 
-/** the truss as line pieces: two towers growing up, then the beam across */
+/** the truss as tubes: main chords and zigzag lacing; two towers growing up, then the beam across */
 export function trussSegments(): Seg[] {
   const out: Seg[] = [];
   const h = TRUSS.size / 2;
   const top = TRUSS.height;
   const step = 0.25;
   const towerEnd = 0.62;
+  const chord = TRUSS.chord;
+  const lacing = TRUSS.lacing;
   for (const [ti, x0] of [-TRUSS.x, TRUSS.x].entries()) {
     const delay = ti * 0.08;
     const corners: [number, number][] = [[-h, -h], [h, -h], [h, h], [-h, h]];
     const at = (y: number) => delay + (y / top) * (towerEnd - 0.08);
     for (let y = 0; y < top - 1e-6; y += step) {
       const y1 = Math.min(top, y + step);
-      for (const [cx, cz] of corners) out.push({ a: [x0 + cx, y, TRUSS.z + cz], b: [x0 + cx, y1, TRUSS.z + cz], at: at(y) });
+      for (const [cx, cz] of corners) out.push({ a: [x0 + cx, y, TRUSS.z + cz], b: [x0 + cx, y1, TRUSS.z + cz], at: at(y), d: chord });
       // zigzag lacing on the four faces
       for (let f = 0; f < 4; f++) {
         const [ax, az] = corners[f];
@@ -64,13 +72,9 @@ export function trussSegments(): Seg[] {
         const flip = Math.round(y / step) % 2 === 1;
         const p: V3 = flip ? [x0 + ax, y, TRUSS.z + az] : [x0 + bx, y, TRUSS.z + bz];
         const q: V3 = flip ? [x0 + bx, y1, TRUSS.z + bz] : [x0 + ax, y1, TRUSS.z + az];
-        out.push({ a: p, b: q, at: at(y) + 0.01 });
+        out.push({ a: p, b: q, at: at(y) + 0.01, d: lacing });
       }
     }
-    // base plate
-    const s = 0.32;
-    const base: V3[] = [[x0 - s, 0.005, TRUSS.z - s], [x0 + s, 0.005, TRUSS.z - s], [x0 + s, 0.005, TRUSS.z + s], [x0 - s, 0.005, TRUSS.z + s]];
-    for (let i = 0; i < 4; i++) out.push({ a: base[i], b: base[(i + 1) % 4], at: delay });
   }
   // the beam on top of the towers
   const by = top - h;
@@ -80,18 +84,26 @@ export function trussSegments(): Seg[] {
   for (let x = x0; x < x1 - 1e-6; x += step) {
     const xe = Math.min(x1, x + step);
     const at = towerEnd + ((x - x0) / (x1 - x0)) * (1 - towerEnd);
-    for (const [cy, cz] of yz) out.push({ a: [x, by + cy, TRUSS.z + cz], b: [xe, by + cy, TRUSS.z + cz], at });
+    for (const [cy, cz] of yz) out.push({ a: [x, by + cy, TRUSS.z + cz], b: [xe, by + cy, TRUSS.z + cz], at, d: chord });
     for (let f = 0; f < 4; f++) {
       const [ay, az] = yz[f];
       const [cy, cz] = yz[(f + 1) % 4];
       const flip = Math.round((x - x0) / step) % 2 === 1;
       const p: V3 = flip ? [x, by + ay, TRUSS.z + az] : [x, by + cy, TRUSS.z + cz];
       const q: V3 = flip ? [xe, by + cy, TRUSS.z + cz] : [xe, by + ay, TRUSS.z + az];
-      out.push({ a: p, b: q, at: at + 0.005 });
+      out.push({ a: p, b: q, at: at + 0.005, d: lacing });
     }
   }
   return out;
 }
+
+/** an axis-aligned box as its 8 corners (for solid parts: base plates, corner blocks, the flying bar) */
+export function boxCorners(min: V3, max: V3): V3[] {
+  const [x0, y0, z0] = min;
+  const [x1, y1, z1] = max;
+  return [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+}
+export const BOX_FACES = [[0, 1, 2, 3], [4, 5, 6, 7], [0, 1, 5, 4], [3, 2, 6, 7], [0, 3, 7, 4], [1, 2, 6, 5]];
 
 export interface Cabinet {
   col: number;

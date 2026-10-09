@@ -6,14 +6,14 @@ import { Rect, RectProps, initial, signal } from '@motion-canvas/2d';
 import { SignalValue, SimpleSignal } from '@motion-canvas/core';
 import { Camera } from '../lib/camera';
 import { FLUID } from '../lib/fluid';
-import { depthColor, farDim, flowColor } from '../lib/images';
-import { V3, clamp, easeOutBack, hash, hexRgb, hsv, lerp, rgba, smooth } from '../lib/math';
+import { depthColor, farDim } from '../lib/images';
+import { V3, clamp, easeOutBack, hash, hexRgb, lerp, rgba, smooth } from '../lib/math';
 import { BONES, Pose, people } from '../lib/people';
-import { SensorFrame, rayX, rayXAt, rayY, rayYAt, sense } from '../lib/sensor';
+import { SENSOR_FPS, SensorFrame, rayX, rayY, sense } from '../lib/sensor';
 import { Splatter } from '../lib/splat';
 import { testPattern } from '../lib/testpattern';
 import { C, FONT } from '../lib/theme';
-import { FURNITURE, INTR, KINECT, ROOM, TRUSS, WALL, aboveFloor, cabinets, floorZone, fovCorners, segAboveFloor, trussSegments } from '../lib/world';
+import { BOX_FACES, FLYBAR, FURNITURE, INTR, KINECT, ROOM, SLINGS, TRUSS, WALL, aboveFloor, boxCorners, cabinets, floorZone, fovCorners, segAboveFloor, trussSegments } from '../lib/world';
 
 export interface StageProps extends RectProps {
   time?: SignalValue<number>;
@@ -70,6 +70,13 @@ const CABINETS = cabinets();
 const LENS: V3 = [KINECT[0], KINECT[1], KINECT[2] + 0.035];
 /** the pixel the ray demo picks: on the chest of person 1 */
 export const RAY_PIXEL = { slot: 1 };
+
+/** the flight of the depth picture into 3D: far points leave first, the nearest last (cloudFly 0..1) */
+export const FLIGHT = { spread: 0.62, dur: 0.32, near: 0.5, range: 4.8 };
+/** points farther than this (m) have left the picture at this progress of the flight */
+export function flightCut(fly: number) {
+  return FLIGHT.near + FLIGHT.range * (1 - fly / FLIGHT.spread);
+}
 
 /** the pixel that becomes a point in the ray demo: on the chest of person 1 */
 export function rayTarget(f: SensorFrame): { u: number; v: number; p: V3; d: number } | null {
@@ -198,7 +205,7 @@ export class Stage extends Rect {
     }
     if (this.figures() > 0) this.drawFigures(ctx, cam, persons, T);
     if (frame && this.cloud() > 0) this.drawCloud(ctx, cam, frame, W, H);
-    if (frame && this.streaks() > 0) this.drawStreaks(ctx, cam, frame);
+    if (frame && this.streaks() > 0) this.drawTrails(ctx, cam, frame);
     if (frame && this.skel() > 0) this.drawSkeletons(ctx, cam, frame);
     if (frame && (this.ray() > 0 || this.rayLink() > 0)) this.drawRay(ctx, cam, frame);
     if (this.labels() > 0 || this.dims() > 0) this.drawLabels(ctx, cam);
@@ -278,43 +285,115 @@ export class Stage extends Rect {
     ctx.stroke();
   }
 
+  /** a solid box: faces sorted back to front, filled, with edges */
+  private drawBox(ctx: CanvasRenderingContext2D, cam: Camera, c: V3[], fill: [number, number, number], edge: [number, number, number], alpha: number) {
+    const faces = BOX_FACES.map((f) => ({ f, d: f.reduce((sum, i) => sum + cam.view(c[i])[2], 0) / 4 })).sort((a, b) => b.d - a.d);
+    for (const { f } of faces) {
+      ctx.beginPath();
+      if (!this.poly(ctx, cam, f.map((i) => c[i]))) continue;
+      ctx.fillStyle = rgba(fill, alpha);
+      ctx.fill();
+      ctx.strokeStyle = rgba(edge, alpha);
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    }
+  }
+
+  /** a tube: dark outline, metal body, a light stripe on top; width from its distance */
+  private tube(ctx: CanvasRenderingContext2D, s: [number, number, number, number], w: number, alpha: number, body: [number, number, number]) {
+    ctx.beginPath();
+    ctx.moveTo(s[0], s[1]);
+    ctx.lineTo(s[2], s[3]);
+    ctx.strokeStyle = rgba([0.06, 0.07, 0.09], alpha);
+    ctx.lineWidth = w + 2;
+    ctx.stroke();
+    ctx.strokeStyle = rgba(body, alpha);
+    ctx.lineWidth = w;
+    ctx.stroke();
+    ctx.strokeStyle = rgba([0.96, 0.97, 0.99], 0.55 * alpha);
+    ctx.lineWidth = Math.max(0.6, w * 0.28);
+    ctx.stroke();
+  }
+
   private drawTruss(ctx: CanvasRenderingContext2D, cam: Camera) {
     const p = this.truss();
     if (p <= 0) return;
     const alpha = this.wallAlpha();
-    ctx.lineWidth = 1.4;
-    ctx.strokeStyle = rgba(hexRgb(C.truss), 0.85 * alpha);
-    ctx.beginPath();
-    for (const s of TRUSS_SEGS) {
-      if (s.at > p) continue;
-      this.line(ctx, cam, s.a, s.b);
+    const h = TRUSS.size / 2;
+    // base plates
+    for (const [ti, x0] of [-TRUSS.x, TRUSS.x].entries()) {
+      const a = clamp((p - ti * 0.08) * 12) * alpha;
+      if (a <= 0) continue;
+      this.drawBox(ctx, cam, boxCorners([x0 - 0.3, 0, TRUSS.z - 0.3], [x0 + 0.3, 0.012, TRUSS.z + 0.3]), [0.16, 0.18, 0.21], [0.5, 0.55, 0.62], a);
     }
-    ctx.stroke();
+    // tubes, far ones first
+    const items: { s: [number, number, number, number]; z: number; w: number }[] = [];
+    for (const seg of TRUSS_SEGS) {
+      if (seg.at > p) continue;
+      const sc = cam.segment(seg.a, seg.b);
+      if (!sc) continue;
+      const z = cam.view([(seg.a[0] + seg.b[0]) / 2, (seg.a[1] + seg.b[1]) / 2, (seg.a[2] + seg.b[2]) / 2])[2];
+      items.push({ s: sc, z, w: Math.max(1.2, (seg.d * cam.focal) / Math.max(0.2, z)) });
+    }
+    items.sort((a, b) => b.z - a.z);
+    ctx.lineCap = 'round';
+    const body: [number, number, number] = [0.68, 0.71, 0.76];
+    for (const it of items) this.tube(ctx, it.s, it.w, 0.95 * alpha, body);
+    // corner blocks where towers and beam meet
+    const blocks = clamp((p - 0.6) * 10) * alpha;
+    if (blocks > 0) {
+      for (const x0 of [-TRUSS.x, TRUSS.x]) {
+        const e = 0.02;
+        this.drawBox(ctx, cam, boxCorners([x0 - h - e, TRUSS.height - 2 * h - e, TRUSS.z - h - e], [x0 + h + e, TRUSS.height + e, TRUSS.z + h + e]), [0.22, 0.24, 0.28], [0.72, 0.76, 0.82], blocks);
+      }
+    }
+  }
+
+  /** the flying bar on top of the wall and the round slings that hang it from the truss */
+  private drawRigging(ctx: CanvasRenderingContext2D, cam: Camera, alpha: number) {
+    const p = clamp(this.wall() / 0.08);
+    if (p <= 0) return;
+    const dy = (1 - easeOutBack(p)) * 0.4;
+    const a = clamp(p * 3) * alpha;
+    const h = TRUSS.size / 2;
+    const chordY = TRUSS.height - 2 * h;
+    const sling: [number, number, number] = [0.52, 0.32, 0.78];
+    ctx.lineCap = 'round';
+    for (const x of SLINGS) {
+      const shackle: V3 = [x, FLYBAR.y1 + dy + 0.03, (FLYBAR.z0 + FLYBAR.z1) / 2];
+      for (const z of [TRUSS.z - h, TRUSS.z + h]) {
+        const sc = cam.segment(shackle, [x, chordY - 0.02, z]);
+        if (!sc) continue;
+        const zz = cam.view(shackle)[2];
+        this.tube(ctx, sc, Math.max(1.5, (0.035 * cam.focal) / Math.max(0.2, zz)), a, sling);
+      }
+      // the sling around the bottom chords
+      const wrap = cam.segment([x, chordY - 0.035, TRUSS.z - h - 0.03], [x, chordY - 0.035, TRUSS.z + h + 0.03]);
+      if (wrap) this.tube(ctx, wrap, Math.max(1.5, (0.035 * cam.focal) / Math.max(0.2, cam.view(shackle)[2])), a, sling);
+      // shackle
+      const sp = cam.project(shackle);
+      if (sp) {
+        ctx.strokeStyle = rgba([0.85, 0.87, 0.9], a);
+        ctx.lineWidth = Math.max(1.2, (0.012 * cam.focal) / sp[2]);
+        ctx.beginPath();
+        ctx.arc(sp[0], sp[1], Math.max(2, (0.025 * cam.focal) / sp[2]), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    this.drawBox(ctx, cam, boxCorners([FLYBAR.x0, FLYBAR.y0 + dy, FLYBAR.z0], [FLYBAR.x1, FLYBAR.y1 + dy, FLYBAR.z1]), [0.1, 0.11, 0.14], [0.45, 0.5, 0.58], a);
   }
 
   private cabinetProgress(order: number) {
-    const start = (order / CABINETS.length) * 0.8;
-    return clamp((this.wall() - start) / 0.2);
+    // the flying bar comes first (wall 0..0.08), then the panels column by column
+    const start = 0.08 + (order / CABINETS.length) * 0.74;
+    return clamp((this.wall() - start) / 0.18);
   }
 
   private drawWall(ctx: CanvasRenderingContext2D, cam: Camera, T: number) {
     const alpha = this.wallAlpha();
     const lit = this.wallLit();
     const content = this.wallContent();
-    // chains from the beam to the wall
-    const top = WALL.bottom + WALL.h;
-    const beam = TRUSS.height - TRUSS.size;
-    const chains = clamp(this.wall() * 8);
-    if (chains > 0) {
-      ctx.strokeStyle = rgba(hexRgb(C.truss), 0.7 * alpha * chains);
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      for (let i = 0; i <= 6; i++) {
-        const x = -WALL.w / 2 + (i * WALL.w) / 6;
-        this.line(ctx, cam, [x, top, 0], [x, lerp(top, beam, 1), 0]);
-      }
-      ctx.stroke();
-    }
+    this.drawRigging(ctx, cam, alpha);
     const pattern = content === 'test' && lit > 0 ? testPattern() : null;
     for (const cab of CABINETS) {
       const p = this.cabinetProgress(cab.order);
@@ -690,8 +769,9 @@ export class Stage extends Rect {
         const vz = out[2];
         let size = Math.max(1.6, (1.25 * step * d * cam.focal) / (INTR.f * vz));
         if (fly < 1) {
-          const delay = hash(u, v, 3) * 0.5;
-          const q = clamp((fly - delay) / 0.5);
+          const farness = clamp((d - FLIGHT.near) / FLIGHT.range);
+          const delay = (1 - farness) * FLIGHT.spread + hash(u, v, 3) * 0.04;
+          const q = clamp((fly - delay) / FLIGHT.dur);
           const e = q * q * (3 - 2 * q);
           const ix = fx + (u / INTR.w - 0.5) * fw;
           const iy = fy + (v / INTR.h - 0.5) * fh;
@@ -707,17 +787,11 @@ export class Stage extends Rect {
         let b = col[2] * far;
         if (flowK > 0) {
           const m2 = Math.hypot(f.flowU[i], f.flowV[i]);
-          const k = clamp((m2 - 0.15) / 1.2) * flowK;
-          const dim = 1 - 0.82 * flowK;
-          r *= dim;
-          g *= dim;
-          b *= dim;
-          if (k > 0) {
-            const c = flowColor(f.flowU[i], f.flowV[i]);
-            r = lerp(r, c[0], k);
-            g = lerp(g, c[1], k);
-            b = lerp(b, c[2], k);
-          }
+          const k = clamp((m2 - 0.12) / 0.8) * flowK;
+          const dim = 1 - 0.8 * flowK;
+          r = lerp(r * dim, 0.45 + 0.2 * r, k * 0.85);
+          g = lerp(g * dim, 0.72 + 0.15 * g, k * 0.85);
+          b = lerp(b * dim, 0.95, k * 0.85);
         }
         if (maskK > 0) {
           let tr = slot ? 0.5 : 0.2 * far;
@@ -765,45 +839,78 @@ export class Stage extends Rect {
     ctx.restore();
   }
 
-  private drawStreaks(ctx: CanvasRenderingContext2D, cam: Camera, f: SensorFrame) {
+  /**
+   * Motion trails: surface points of the people followed back through the last frames. A point keeps
+   * its place on its body part (same spot along the part, the same offset turned with it), so the
+   * trail is the real path it took, as an optical flow over several frames shows it.
+   */
+  private drawTrails(ctx: CanvasRenderingContext2D, cam: Camera, f: SensorFrame) {
     const alpha = this.streaks();
-    const bins: Path2D[] = Array.from({ length: 12 }, () => new Path2D());
+    const K = 12;
+    const past: Map<number, Pose>[] = [];
+    for (let k = 1; k <= K; k++) past.push(new Map(people(f.T - k / SENSOR_FPS).map((p) => [p.slot, p])));
+    const paths = [new Path2D(), new Path2D(), new Path2D()];
     const out = [0, 0, 0];
-    const out2 = [0, 0, 0];
-    const len = 5;
-    for (let v = 0; v < INTR.h; v += 3) {
-      for (let u = 0; u < INTR.w; u += 3) {
+    const step = 7;
+    const pts: V3[] = [];
+    for (let v = 2; v < INTR.h; v += step) {
+      for (let u = 2; u < INTR.w; u += step) {
         const i = v * INTR.w + u;
-        if (!f.label[i]) continue;
+        const code = f.cap[i];
         const d = f.depth[i];
-        if (d <= 0) continue;
-        const fu = f.flowU[i];
-        const fv = f.flowV[i];
-        const m = Math.hypot(fu, fv);
-        if (m < 0.35) continue;
-        const x = KINECT[0] + rayX(u) * d;
-        const y = KINECT[1] + rayY(v) * d;
-        const z = KINECT[2] + d;
-        const pu = u - fu * len;
-        const pv = v - fv * len;
-        const x0 = KINECT[0] + rayXAt(pu) * d;
-        const y0 = KINECT[1] + rayYAt(pv) * d;
-        if (!cam.projectInto(x, y, z, out) || !cam.projectInto(x0, y0, z, out2)) continue;
-        const h = (Math.atan2(-fv, fu) / (2 * Math.PI) + 1) % 1;
-        const bin = bins[Math.floor(h * 12) % 12];
-        bin.moveTo(out2[0], out2[1]);
-        bin.lineTo(out[0], out[1]);
+        if (code < 0 || d <= 0) continue;
+        const pose = f.now[code >> 5];
+        const ci = code & 31;
+        const c = pose.capsules[ci];
+        const P: V3 = [KINECT[0] + rayX(u) * d, KINECT[1] + rayY(v) * d, KINECT[2] + d];
+        const ba: V3 = [c.b[0] - c.a[0], c.b[1] - c.a[1], c.b[2] - c.a[2]];
+        const bb = ba[0] * ba[0] + ba[1] * ba[1] + ba[2] * ba[2];
+        const sAx = bb > 0 ? clamp(((P[0] - c.a[0]) * ba[0] + (P[1] - c.a[1]) * ba[1] + (P[2] - c.a[2]) * ba[2]) / bb) : 0;
+        const o: V3 = [P[0] - c.a[0] - ba[0] * sAx, P[1] - c.a[1] - ba[1] * sAx, P[2] - c.a[2] - ba[2] * sAx];
+        pts.length = 0;
+        pts.push(P);
+        let len = 0;
+        for (let k = 0; k < K; k++) {
+          const q = past[k].get(pose.slot)?.capsules[ci];
+          if (!q) break;
+          const bk: V3 = [q.b[0] - q.a[0], q.b[1] - q.a[1], q.b[2] - q.a[2]];
+          const ok = turnLike(o, ba, bk);
+          const Pk: V3 = [q.a[0] + bk[0] * sAx + ok[0], q.a[1] + bk[1] * sAx + ok[1], q.a[2] + bk[2] * sAx + ok[2]];
+          const last = pts[pts.length - 1];
+          len += Math.hypot(Pk[0] - last[0], Pk[1] - last[1], Pk[2] - last[2]);
+          pts.push(Pk);
+        }
+        if (len < 0.06 || pts.length < 3) continue;
+        // newest third bright, then fading towards the tail
+        let prev: number[] | null = null;
+        for (let k = 0; k < pts.length; k++) {
+          if (!cam.projectInto(pts[k][0], pts[k][1], pts[k][2], out)) {
+            prev = null;
+            continue;
+          }
+          if (prev) {
+            const path = paths[Math.min(2, Math.floor((k - 1) / (K / 3)))];
+            path.moveTo(prev[0], prev[1]);
+            path.lineTo(out[0], out[1]);
+          }
+          prev = [out[0], out[1]];
+        }
       }
     }
     ctx.save();
     ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.globalCompositeOperation = 'lighter';
-    for (let b = 0; b < 12; b++) {
-      const c = hsv((b + 0.5) / 12, 0.85, 1);
-      ctx.strokeStyle = rgba(c, 0.85 * alpha);
-      ctx.lineWidth = 2.2;
-      ctx.stroke(bins[b]);
+    const tint = hexRgb(C.sensor);
+    const alphas = [0.75, 0.34, 0.12];
+    for (let n = 2; n >= 0; n--) {
+      ctx.strokeStyle = rgba([lerp(tint[0], 1, 0.5), lerp(tint[1], 1, 0.5), 1], alphas[n] * alpha);
+      ctx.lineWidth = n === 0 ? 2.4 : 1.8;
+      ctx.stroke(paths[n]);
     }
+    ctx.strokeStyle = rgba(tint, 0.14 * alpha);
+    ctx.lineWidth = 7;
+    ctx.stroke(paths[0]);
     ctx.restore();
   }
 
@@ -964,4 +1071,27 @@ export class Stage extends Rect {
     this.callout(ctx, cam, [-TRUSS.x, 2.2, TRUSS.z], -70, -120, 'Truss', clamp(labels * 3 - 0.6), white);
     this.callout(ctx, cam, [KINECT[0], KINECT[1] + 0.04, KINECT[2]], 90, 150, 'Kinect', clamp(labels * 3 - 1.2), hexRgb(C.sensor));
   }
+}
+
+/** v turned by the rotation that takes direction a to direction b (how a body part turned) */
+function turnLike(v: V3, a: V3, b: V3): V3 {
+  const la = Math.hypot(a[0], a[1], a[2]);
+  const lb = Math.hypot(b[0], b[1], b[2]);
+  if (la < 1e-9 || lb < 1e-9) return v;
+  const ax: V3 = [a[0] / la, a[1] / la, a[2] / la];
+  const bx: V3 = [b[0] / lb, b[1] / lb, b[2] / lb];
+  const k: V3 = [ax[1] * bx[2] - ax[2] * bx[1], ax[2] * bx[0] - ax[0] * bx[2], ax[0] * bx[1] - ax[1] * bx[0]];
+  const sin = Math.hypot(k[0], k[1], k[2]);
+  const cos = ax[0] * bx[0] + ax[1] * bx[1] + ax[2] * bx[2];
+  if (sin < 1e-9) return v;
+  k[0] /= sin;
+  k[1] /= sin;
+  k[2] /= sin;
+  const kv = k[0] * v[0] + k[1] * v[1] + k[2] * v[2];
+  const kxv: V3 = [k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0]];
+  return [
+    v[0] * cos + kxv[0] * sin + k[0] * kv * (1 - cos),
+    v[1] * cos + kxv[1] * sin + k[1] * kv * (1 - cos),
+    v[2] * cos + kxv[2] * sin + k[2] * kv * (1 - cos),
+  ];
 }

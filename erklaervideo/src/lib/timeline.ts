@@ -4,13 +4,13 @@
 export const SCENES = {
   aufbau: 0,
   sensor: 11,
-  punktwolke: 23,
-  flow: 34,
-  ki: 40,
-  masken: 52,
-  daten: 61,
-  wand: 73,
-  ende: 85,
+  punktwolke: 20.5,
+  flow: 30.5,
+  ki: 36.5,
+  masken: 48,
+  daten: 56.5,
+  wand: 68,
+  ende: 80,
 } as const;
 
 export type SceneName = keyof typeof SCENES;
@@ -21,5 +21,8 @@ export function duration(name: Exclude<SceneName, 'ende'>) {
   return SCENES[keys[i + 1]] - SCENES[name];
 }
 
+/** a moment inside a scene: its start plus t seconds */
+export const at = (name: SceneName, t: number) => SCENES[name] + t;
+
 /** the fluid on the wall starts here (scene "daten") and runs on until the end */
-export const FLUID_START = 69.5;
+export const FLUID_START = at('daten', 8.0);

@@ -1,6 +1,6 @@
 # Erklärvideo der Kinect-Wand
 
-Motion-Canvas-Projekt für ein Video von etwa 1:30 min, das erklärt, wie die Installation funktioniert. Es braucht weder Kinect noch Hub: Die Kinect-Bilder werden aus einer simulierten 3D-Szene berechnet. Wie das Video aufgebaut ist, steht in [KONZEPT.md](KONZEPT.md); welche echten Aufnahmen die simulierten Figuren ersetzen sollen, in [AUFNAHMEN.md](AUFNAHMEN.md).
+Motion-Canvas-Projekt für ein Video von etwa 1:30 min, das erklärt, wie die Installation funktioniert. Es braucht weder Kinect noch Hub: Die Kinect-Bilder werden aus einer simulierten 3D-Szene mit simulierten Personen berechnet. Wie das Video aufgebaut ist, steht in [KONZEPT.md](KONZEPT.md).
 
 ```bash
 cd erklaervideo
@@ -21,11 +21,11 @@ Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → End
 | Datei | Was |
 |---|---|
 | `src/scenes/s1-…s8-*.tsx` | die acht Szenen (Ablauf, Texte, Kamera) |
-| `src/lib/timeline.ts` | wann jede Szene auf der Story-Uhr beginnt |
+| `src/lib/timeline.ts` | wann jede Szene auf der Story-Uhr beginnt; `at(szene, t)` für Zeiten relativ zur Szene |
 | `src/lib/choreo.ts` | wer wann wohin läuft und welche Geste macht |
-| `src/lib/people.ts` | die einfachen Figuren: Skelett aus 22 Punkten, Körper aus Kapseln |
-| `src/lib/world.ts` | der Raum: LED-Wand (12 × 2 Panels à 0,5 × 1 m), Truss, Kinect auf Foto-Stativ, Möbel |
-| `src/lib/testpattern.ts` | das Raster-Testbild der Steuerzentrale (nachgebaut aus `web/lib/wall-output.js`) |
+| `src/lib/people.ts` | die Figuren: Skelett aus 22 Punkten, Körper aus Kapseln (Kleid, Zopf), Gehen und Gesten |
+| `src/lib/world.ts` | der Raum: LED-Wand (12 × 2 Panels à 0,5 × 1 m) an Flugtraverse und Slings, Truss als Rohre, Kinect auf Foto-Stativ, Möbel |
+| `src/lib/testpattern.ts` | das Testbild auf der Wand: Raster der Steuerzentrale (`web/lib/wall-output.js`) mit einer Farbe pro Panel |
 | `src/lib/sensor.ts` | die simulierte Kinect: Tiefe, Infrarot, Masken, Optical Flow, Boxen, Keypoints (512 × 424, 30 Bilder/s) |
 | `src/lib/fluid.ts`, `mapping.ts` | das Fluid auf der Wand und wie Menschen auf die Wand abgebildet werden |
 | `src/lib/shots.ts` | Kamerapositionen der 3D-Ansichten |

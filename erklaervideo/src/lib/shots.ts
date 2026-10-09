@@ -28,6 +28,8 @@ export const SHOTS = {
   /** scene 2: from the side, the field of view reaches into the room */
   side: shot({ yaw: 58, pitch: 17, dist: 9.6, tx: 0, ty: 1.1, tz: 2.5 }),
   sidePanels: shot({ yaw: 58, pitch: 17, dist: 9.6, tx: 0, ty: 1.1, tz: 2.5, shiftX: -330 }),
+  /** scene 2 drifts on to this, scene 3 starts here */
+  sidePanels2: shot({ yaw: 50, pitch: 15, dist: 9.0, tx: 0, ty: 1.1, tz: 2.6, shiftX: -330 }),
   /**
    * scenes 3–7: the point cloud seen roughly from the Kinect: from behind the sensor (the wall is
    * hidden then), a bit above and to the side, looking at the people; only small swings, enough to
@@ -37,6 +39,7 @@ export const SHOTS = {
   kinectB: shot({ yaw: 162, pitch: 13, dist: 4.5, tx: 0.1, ty: 1.0, tz: 3.0, fov: 46 }),
   /** scene 4: a bit closer */
   kinectC: shot({ yaw: 186, pitch: 11, dist: 3.9, tx: 0.15, ty: 1.1, tz: 2.8, fov: 46 }),
+  kinectC2: shot({ yaw: 176, pitch: 9, dist: 3.7, tx: 0.15, ty: 1.1, tz: 2.8, fov: 46 }),
   /** scene 5: where the skeletons lift out of the picture, then a slow swing */
   kinectK: shot({ yaw: 180, pitch: 6, dist: 3.7, tx: 0.15, ty: 1.0, tz: 2.75, fov: 48 }),
   kinectD: shot({ yaw: 203, pitch: 15, dist: 4.4, tx: 0.1, ty: 1.0, tz: 2.95, fov: 46 }),

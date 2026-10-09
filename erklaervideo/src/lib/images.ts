@@ -60,32 +60,57 @@ export function depthCss(t: number) {
   return `rgb(${LUT[k]},${LUT[k + 1]},${LUT[k + 2]})`;
 }
 
-export function irImage(f: SensorFrame) {
-  return paint(`ir:${f.seq}`, (px) => {
+/**
+ * Only what lies nearer than `depthMax` m (the rest black): the picture builds up as the infrared
+ * light travels. `edge` 0..1 tints the front of it in the infrared red.
+ */
+function windowed(d: number, depthMax: number) {
+  if (depthMax >= 6) return true;
+  return d > 0 && d <= depthMax;
+}
+const IR_RED = [1, 0.3, 0.43];
+function front(d: number, depthMax: number, edge: number) {
+  if (edge <= 0 || depthMax >= 6) return 0;
+  return edge * clamp(1 - (depthMax - d) / 0.35);
+}
+
+export function irImage(f: SensorFrame, depthMax = 99, edge = 0) {
+  const dm = Math.round(depthMax * 50) / 50;
+  const e = Math.round(edge * 20) / 20;
+  return paint(`ir:${f.seq}:${dm}:${e}`, (px) => {
     for (let i = 0; i < f.ir.length; i++) {
-      const g = Math.round(f.ir[i] * 255);
       const o = i * 4;
-      px[o] = g;
-      px[o + 1] = g;
-      px[o + 2] = g;
+      const d = f.depth[i];
+      if (!windowed(d, dm)) {
+        px[o] = px[o + 1] = px[o + 2] = 0;
+      } else {
+        const g = f.ir[i];
+        const k = front(d, dm, e);
+        px[o] = (g + (IR_RED[0] - g) * k) * 255;
+        px[o + 1] = (g + (IR_RED[1] - g) * k) * 255;
+        px[o + 2] = (g + (IR_RED[2] - g) * k) * 255;
+      }
       px[o + 3] = 255;
     }
   });
 }
 
-export function depthImage(f: SensorFrame) {
-  return paint(`depth:${f.seq}`, (px) => {
+export function depthImage(f: SensorFrame, depthMax = 99, edge = 0) {
+  const dm = Math.round(depthMax * 50) / 50;
+  const e = Math.round(edge * 20) / 20;
+  return paint(`depth:${f.seq}:${dm}:${e}`, (px) => {
     for (let i = 0; i < f.depth.length; i++) {
       const d = f.depth[i];
       const o = i * 4;
-      if (d <= 0) {
+      if (d <= 0 || !windowed(d, dm)) {
         px[o] = px[o + 1] = px[o + 2] = 0;
       } else {
         const k = Math.round(depthT(d) * 255) * 3;
         const dim = farDim(d);
-        px[o] = LUT[k] * dim;
-        px[o + 1] = LUT[k + 1] * dim;
-        px[o + 2] = LUT[k + 2] * dim;
+        const fr = front(d, dm, e);
+        px[o] = (LUT[k] * dim * (1 - fr) + IR_RED[0] * 255 * fr);
+        px[o + 1] = (LUT[k + 1] * dim * (1 - fr) + IR_RED[1] * 255 * fr);
+        px[o + 2] = (LUT[k + 2] * dim * (1 - fr) + IR_RED[2] * 255 * fr);
       }
       px[o + 3] = 255;
     }

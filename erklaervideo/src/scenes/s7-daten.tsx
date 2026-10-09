@@ -40,6 +40,8 @@ export default makeScene2D(function* (view) {
   const arrows: Line[] = [];
   const packets: Packets[] = [];
   const card = createRef<Rect>();
+  const latency = createRef<Node>();
+  const bracket = createRef<Line>();
   const wall = createRef<WallView>();
 
   view.add(
@@ -170,7 +172,17 @@ export default makeScene2D(function* (view) {
           count={3}
         />
       ))}
-      <Rect ref={card} x={320} y={216} width={700} height={176} radius={18} fill={'#0b111c'} stroke={'rgba(41,230,255,0.6)'} lineWidth={2} opacity={0} layout direction={'column'} gap={10} padding={[22, 30]} alignItems={'start'}>
+      <Node ref={latency} opacity={0}>
+        <Line
+          ref={bracket}
+          points={[[XS[0] - BOX.w / 2 + 24, ROW_Y + BOX.h / 2 + 76], [XS[0] - BOX.w / 2 + 24, ROW_Y + BOX.h / 2 + 96], [XS[VIS] + BOX.w / 2 - 24, ROW_Y + BOX.h / 2 + 96], [XS[VIS] + BOX.w / 2 - 24, ROW_Y + BOX.h / 2 + 76]]}
+          stroke={C.sensor}
+          lineWidth={2.5}
+          end={0}
+        />
+        <Txt x={(XS[0] + XS[VIS]) / 2} y={ROW_Y + BOX.h / 2 + 126} text={'Latenz ≈ 10 ms (live)'} fontFamily={FONT} fontWeight={600} fontSize={28} fill={C.sensor} />
+      </Node>
+      <Rect ref={card} x={480} y={256} width={700} height={176} radius={18} fill={'#0b111c'} stroke={'rgba(41,230,255,0.6)'} lineWidth={2} opacity={0} layout direction={'column'} gap={10} padding={[22, 30]} alignItems={'start'}>
         <Txt text={'Daten nach dem Tracking'} fontFamily={FONT} fontWeight={600} fontSize={25} fill={C.muted} />
         {[1, 2].map((slot) => (
           <Txt
@@ -200,13 +212,15 @@ export default makeScene2D(function* (view) {
     delay(0.9, sequence(0.18, ...arrows.map((a) => a.end(1, 0.4, easeOutCubic)))),
     delay(1.3, cap.show('30-mal pro Sekunde läuft jedes Bild durch diese Schritte.')),
     delay(1.5, sequence(0.15, ...packets.map((p) => p.flow(1, 0.4)))),
-    delay(2.2, all(card().opacity(1, 0.6), card().y(196, 0.6, easeOutCubic))),
+    delay(2.0, all(latency().opacity(1, 0.4), bracket().end(1, 0.9, easeInOutCubic))),
+    delay(2.6, all(card().opacity(1, 0.6), card().y(236, 0.6, easeOutCubic))),
   );
-  yield* until(5.0);
+  yield* until(4.6);
 
   // part B: the scene opens up into the wall
   yield* all(
     card().opacity(0, 0.5),
+    latency().opacity(0, 0.4),
     ...packets.map((p) => p.flow(0, 0.4)),
     ...arrows.map((a) => a.opacity(0, 0.4)),
     ...labels.map((l) => l.opacity(0, 0.4)),
@@ -221,9 +235,9 @@ export default makeScene2D(function* (view) {
     delay(0.4, wall().mirror(1, 0.6)),
     delay(1.2, wall().topView(1, 0.7)),
   );
-  yield* until(8.4);
+  yield* until(8.0);
   yield* all(wall().mirror(0, 0.5), wall().fluid(1, 2.0, linear));
-  yield* until(10.5);
+  yield* until(10.0);
   yield* all(wall().topView(0, 0.5), wall().ghost(0, 0.5), wall().skel(0.55, 0.6), cap.hide(0.4));
   // back to the size the next scene starts with
   yield* all(wall().y(WALL_VIEW.y, 0.9, easeInOutCubic), wall().width(WALL_VIEW.w, 0.9, easeInOutCubic), wall().height(WALL_VIEW.h, 0.9, easeInOutCubic));

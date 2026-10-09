@@ -29,10 +29,10 @@ export default makeScene2D(function* (view) {
     mk().x(MASK.x, 1.1, easeOutCubic),
     delay(0.5, cap.show('Nur die Menschen bleiben übrig.')),
   );
-  yield* all(st().maskGrow(90, 2.2, easeInCubic), mk().maskGrow(90, 2.2, easeInCubic));
+  yield* all(st().maskGrow(90, 2.0, easeInCubic), mk().maskGrow(90, 2.0, easeInCubic));
   yield* all(st().bgGrey(1, 0.7), mk().roomTint(1, 0.7));
-  yield* all(st().bgDrop(1, 2.4, linear), mk().room(0, 2.0), delay(0.4, st().frustumAlpha(0, 1.2)));
-  yield* all(...moveTo(st(), SHOTS.kinectMaskEnd, 2.0, easeInOutSine));
+  yield* all(st().bgDrop(1, 2.2, linear), mk().room(0, 1.9), delay(0.4, st().frustumAlpha(0, 1.2)));
+  yield* all(...moveTo(st(), SHOTS.kinectMaskEnd, 1.9, easeInOutSine));
   yield* until(duration('masken') - 0.45);
   yield* cap.hide(0.4);
   yield* until(duration('masken'));

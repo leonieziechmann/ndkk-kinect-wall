@@ -55,6 +55,10 @@ export interface PersonSpec {
   actions: Action[];
   /** infrared reflectivity of the clothes */
   albedo: number;
+  /** wears a dress (a wide shape from the hips to the knees) */
+  dress?: boolean;
+  /** hair tied back (a small bun behind the head) */
+  hair?: boolean;
 }
 
 export interface Capsule {
@@ -217,11 +221,15 @@ export function pose(spec: PersonSpec, T: number): Pose | null {
     return { elbow, wrist, hand };
   });
 
-  const nose = local(head, R, U, F, 0, -0.02 * k, 0.1 * k);
-  const lEye = local(head, R, U, F, -0.035 * k, 0.025 * k, 0.085 * k);
-  const rEye = local(head, R, U, F, 0.035 * k, 0.025 * k, 0.085 * k);
-  const lEar = local(head, R, U, F, -0.075 * k, 0, 0);
-  const rEar = local(head, R, U, F, 0.075 * k, 0, 0);
+  // the head looks around a little
+  const look = 0.22 * Math.sin(0.45 * T + spec.slot * 2.1) * (1 - walk);
+  const HF: V3 = [F[0] * Math.cos(look) + R[0] * Math.sin(look), 0, F[2] * Math.cos(look) + R[2] * Math.sin(look)];
+  const HR: V3 = [R[0] * Math.cos(look) - F[0] * Math.sin(look), 0, R[2] * Math.cos(look) - F[2] * Math.sin(look)];
+  const nose = local(head, HR, U, HF, 0, -0.02 * k, 0.1 * k);
+  const lEye = local(head, HR, U, HF, -0.035 * k, 0.025 * k, 0.085 * k);
+  const rEye = local(head, HR, U, HF, 0.035 * k, 0.025 * k, 0.085 * k);
+  const lEar = local(head, HR, U, HF, -0.075 * k, 0, 0);
+  const rEar = local(head, HR, U, HF, 0.075 * k, 0, 0);
 
   const joints: V3[] = [
     nose, lEye, rEye, lEar, rEar,
@@ -250,7 +258,17 @@ export function pose(spec: PersonSpec, T: number): Pose | null {
     { a: Rl.knee, b: Rl.ankle, r: 0.054 * k },
     { a: L.ankle, b: L.toe, r: 0.04 * k },
     { a: Rl.ankle, b: Rl.toe, r: 0.04 * k },
+    // shoulders, chest and hips give the torso its shape
+    { a: lSh, b: rSh, r: 0.06 * k },
+    { a: local(neck, R, U, F, -0.1 * k, -0.17 * k, 0.015), b: local(neck, R, U, F, 0.1 * k, -0.17 * k, 0.015), r: 0.11 * k },
+    { a: local(lHip, R, U, F, 0.01, 0.03, 0), b: local(rHip, R, U, F, -0.01, 0.03, 0), r: 0.1 * k },
   ];
+  if (spec.dress) {
+    // a dress: wide from the hips down to the knees, swinging with the legs
+    const kneeMid: V3 = [(L.knee[0] + Rl.knee[0]) / 2, (L.knee[1] + Rl.knee[1]) / 2, (L.knee[2] + Rl.knee[2]) / 2];
+    capsules.push({ a: local(pelvis, R, U, F, 0, -0.02, 0), b: [kneeMid[0], kneeMid[1] + 0.02, kneeMid[2]], r: 0.165 * k });
+  }
+  if (spec.hair) capsules.push({ a: local(head, HR, U, HF, 0, 0.0, -0.1 * k), b: local(head, HR, U, HF, 0, -0.08 * k, -0.12 * k), r: 0.05 * k });
   const skin = Math.min(1, spec.albedo + 0.12);
   const albedo = capsules.map((_, i) => (i <= 1 || i === 9 || i === 10 ? skin : spec.albedo));
   const css = PERSON_COLORS[spec.slot] ?? '#ffffff';
