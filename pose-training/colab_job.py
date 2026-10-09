@@ -2,6 +2,7 @@
 #   colab upload -s pose <data zip> /content/kinect-pose-daten.zip    (kaggle.py packs it; more: kinect-pose-<x>.zip)
 #   colab upload -s pose pose-training/<each script> /content/pose-training/<script>
 #   colab exec -s pose -f pose-training/colab_job.py                   starts it in the background, returns
+#     (a further round, e.g. after a change to train.py: set POSE_RUN=-2 in the VM's Python before)
 #   echo "print(open('/content/job.log').read()[-3000:])" | colab exec -s pose     progress
 #   colab download -s pose /content/ergebnis.zip <local>                once /content/DONE exists
 # On the VM: unpacks the data, installs Ultralytics, then labels with the teacher (both splits, mirrored
@@ -16,6 +17,7 @@ import textwrap
 C = '/content'
 K = f'{C}/kinect'
 EPOCHS = int(os.environ.get('POSE_EPOCHS', '40'))
+RUN = os.environ.get('POSE_RUN', '')  # a further round with new run names (labels and data stay): e.g. -2
 
 # the start returns at once (the CLI waits only seconds for an answer): unpacking is the job's first step
 job = textwrap.dedent(f"""\
@@ -28,11 +30,11 @@ job = textwrap.dedent(f"""\
     pip install -q ultralytics onnx onnxruntime onnxconverter-common onnxslim
     cd $T/weights
     [ -e $T/done-teacher ] || {{ python -u $P/teacher.py --split val --flip --batch 64 && python -u $P/teacher.py --split train --flip --batch 64 && touch $T/done-teacher; }}
-    [ -e $T/done-n512 ] || {{ python -u $P/train.py --epochs {EPOCHS} --batch 128 --workers 8 --name n-ir || python -u $P/train.py --resume --name n-ir; }} && touch $T/done-n512
-    [ -e $T/done-n384 ] || {{ python -u $P/train.py --epochs {EPOCHS} --batch 128 --workers 8 --imgsz 384 --name n-ir-384 || python -u $P/train.py --resume --name n-ir-384; }} && touch $T/done-n384
+    [ -e $T/done-n512{RUN} ] || {{ python -u $P/train.py --epochs {EPOCHS} --batch 128 --workers 8 --name n-ir{RUN} || python -u $P/train.py --resume --name n-ir{RUN}; }} && touch $T/done-n512{RUN}
+    [ -e $T/done-n384{RUN} ] || {{ python -u $P/train.py --epochs {EPOCHS} --batch 128 --workers 8 --imgsz 384 --name n-ir-384{RUN} || python -u $P/train.py --resume --name n-ir-384{RUN}; }} && touch $T/done-n384{RUN}
     python -u $P/eval.py 2>&1 | tee $T/eval.txt
-    python -u $P/export.py --name n-ir 2>&1 | tee $T/export.txt
-    python -u $P/export.py --name n-ir-384 2>&1 | tee -a $T/export.txt
+    python -u $P/export.py --name n-ir{RUN} 2>&1 | tee $T/export.txt
+    python -u $P/export.py --name n-ir-384{RUN} 2>&1 | tee -a $T/export.txt
     cd $T && rm -f {C}/ergebnis.zip && zip -q -r {C}/ergebnis.zip raw runs export eval.txt export.txt
     touch {C}/DONE
 """)

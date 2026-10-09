@@ -2,7 +2,7 @@
 # Ultralytics' pose metrics (mAP over keypoint similarity, OKS) at the browser's input size, per model, on
 # all held-out frames and on the cases on their own: T-pose (spinning, aiming: space-invaders), jumping, the
 # multi-user recordings (groups, sitting, occlusion).
-# Usage: python eval.py [model[@imgsz] ...]   default: the COCO model at 512 and 384 (the browser now, and
+# Usage: python eval.py [model[@imgsz] ...]   (without @: the width in the checkpoint's train_args, else 512); default: the COCO model at 512 and 384 (the browser now, and
 #   downscaled) and every runs/*/weights/best.pt at the input width it was trained for
 import argparse, glob, os, sys
 
@@ -14,12 +14,12 @@ from teacher import FLIP  # noqa: E402
 CASES = {'alle': '', 'tpose': 'tpose-', 'springen': 'hops-', 'multi': 'multi-'}  # case: image name prefix
 
 
-def subsets(out):
+def subsets(out, cases=CASES):
     """A dataset description per case (a list of its validation images); cases without images are left out."""
     root = out.replace('\\', '/')
     paths = sorted(glob.glob(os.path.join(out, 'images', 'val', '*.png')))
     found = {}
-    for case, prefix in CASES.items():
+    for case, prefix in cases.items():
         sel = [p.replace('\\', '/') for p in paths if os.path.basename(p).startswith(prefix)]
         if not sel:
             continue
@@ -36,6 +36,7 @@ def main():
     ap.add_argument('models', nargs='*')
     ap.add_argument('--out', default=os.path.join(REC, 'training'))
     ap.add_argument('--threads', type=int, default=THREADS)
+    ap.add_argument('--cases', default='', help='other cases: name=prefix,... (e.g. alle=,solo=final-solo-)')
     a = ap.parse_args()
     be_nice()
     import torch
@@ -43,14 +44,16 @@ def main():
     from ultralytics import YOLO
     coco = os.path.join(a.out, 'weights', 'yolo11n-pose.pt')
     models = a.models or [f'{coco}@512', f'{coco}@384'] + [f"{p}@{YOLO(p).ckpt['train_args']['imgsz']}" for p in sorted(glob.glob(os.path.join(a.out, 'runs', '*', 'weights', 'best.pt')))]
-    cases = subsets(a.out)
+    cases = subsets(a.out, dict(c.split('=', 1) for c in a.cases.split(',')) if a.cases else CASES)
     print('pose mAP50-95 (keypoints) / box mAP50-95 (persons found) against the teacher; frames: ' + ', '.join(f'{c} {n}' for c, (_, n) in cases.items()))
     print(f'{"model":44s}' + ''.join(f'{c:>16s}' for c in cases))
     for spec in models:
         m, _, size = spec.partition('@')
-        row = f'{os.path.relpath(m, a.out) + "@" + (size or "512"):44s}'
+        if not size:  # the input width it was trained for (fine-tuned checkpoints; the COCO weights say 640: give @)
+            size = str((getattr(YOLO(m), 'ckpt', None) or {}).get('train_args', {}).get('imgsz', 512))
+        row = f'{os.path.relpath(m, a.out) + "@" + size:44s}'
         for case, (y, _) in cases.items():
-            r = YOLO(m).val(data=y, split='val', imgsz=int(size or 512), batch=16, device=device(), plots=False, verbose=False)
+            r = YOLO(m).val(data=y, split='val', imgsz=int(size), batch=16, device=device(), plots=False, verbose=False)
             row += f'{r.pose.map:9.3f} / {r.box.map:.3f}'
         print(row, flush=True)
 

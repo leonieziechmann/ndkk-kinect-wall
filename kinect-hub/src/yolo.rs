@@ -14,6 +14,11 @@ use crate::protocol::{HEIGHT as H, PIXELS, WIDTH as W};
 
 const MAX_POSES: usize = 16;
 const MIN_SCORE: f32 = 0.35;
+/// A pose needs this many keypoints of at least KEYPOINT_SURE confidence: the fine-tuned models
+/// (pose-training/README.md) otherwise report a "person" without a single sure joint at the image
+/// edge while nobody is in view.
+const MIN_KEYPOINTS: usize = 3;
+const KEYPOINT_SURE: f64 = 0.5;
 const NMS_IOU: f64 = 0.5;
 /// Gray of the letterbox bands, as in training (114 / 255).
 const GRAY: f64 = 114.0 / 255.0;
@@ -131,14 +136,19 @@ fn at(ch: &[f32], a: usize) -> f64 {
     f64::from(ch.get(a).copied().unwrap_or(0.0))
 }
 
-/// Output [1, C, A] (box cx, cy, w, h, score, 17 x (x, y, confidence)): candidates above MIN_SCORE,
-/// greedy non-maximum suppression, at most 16, the most confident first, in image pixels. The
-/// arithmetic follows persons-pose.js (doubles), so both give the same poses.
+/// Output [1, C, A] (box cx, cy, w, h, score, 17 x (x, y, confidence)): candidates above MIN_SCORE
+/// with at least MIN_KEYPOINTS sure keypoints, greedy non-maximum suppression, at most 16, the most
+/// confident first, in image pixels. The arithmetic follows persons-pose.js (doubles), which has no
+/// keypoint rule: otherwise both give the same poses.
 pub fn decode(data: &[f32], channels: usize, anchors: usize, lb: Letterbox) -> Vec<Pose> {
     let score = chan(data, anchors, 4);
     let mut cands: Vec<(usize, f64, [f64; 4])> = Vec::new();
     for (a, s) in score.iter().enumerate() {
         if *s < MIN_SCORE {
+            continue;
+        }
+        let sure = (0..17).filter(|k| 7 + 3 * k < channels && at(chan(data, anchors, 7 + 3 * k), a) >= KEYPOINT_SURE).count();
+        if sure < MIN_KEYPOINTS {
             continue;
         }
         let (cx, cy) = (at(chan(data, anchors, 0), a), at(chan(data, anchors, 1), a));
@@ -309,11 +319,41 @@ mod tests {
             set(2, a, 50.0);
             set(3, a, 200.0);
             set(4, a, score);
+            for k in 0..17 {
+                set(7 + 3 * k, a, 0.9);
+            }
         }
         let poses = decode(&data, channels, anchors, lb);
         assert_eq!(poses.len(), 1);
         let p = poses.first().map(|p| (p.score, p.bbox)).unwrap_or_default();
         assert!((p.0 - 0.9).abs() < 1e-6);
         assert!((p.1[0] - (511.0 - 125.0)).abs() < 1e-4 && (p.1[1] - 112.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn decode_drops_a_pose_without_sure_keypoints() {
+        let lb = Letterbox::new(512, 448);
+        let (channels, anchors) = (56, 2);
+        let mut data = vec![0.0_f32; channels * anchors];
+        let mut set = |c: usize, a: usize, v: f32| {
+            if let Some(x) = data.get_mut(c * anchors + a) {
+                *x = v;
+            }
+        };
+        // a: a confident box with two sure keypoints (the phantom at the image edge); b: three
+        for (a, (cx, sure)) in [(490.0, 2), (200.0, 3)].into_iter().enumerate() {
+            set(0, a, cx);
+            set(1, a, 224.0);
+            set(2, a, 40.0);
+            set(3, a, 120.0);
+            set(4, a, 0.6);
+            for k in 0..17 {
+                set(7 + 3 * k, a, if k < sure { 0.9 } else { 0.3 });
+            }
+        }
+        let poses = decode(&data, channels, anchors, lb);
+        assert_eq!(poses.len(), 1);
+        let left = poses.first().map(|p| p.bbox[0]).unwrap_or_default();
+        assert!((left - (511.0 - 220.0)).abs() < 1e-4); // the second one, mirrored
     }
 }

@@ -58,6 +58,68 @@ colab stop -s pose
 
 After a change to the scripts: `kaggle.py --no-zip` rebuilds only the notebook. The scripts use the GPU when there is one (`POSE_DEVICE` overrides it).
 
+## Results (2026-10-08, Colab A100)
+
+Pose mAP50-95 against the teacher. "val" is the held-out frames (other recordings of the same days, same setup). "unseen" is 283 frames of the backtest recordings, which no training ever saw: `final-*` (final setup, another day) and `alt-live2` (another room, up to 5 people).
+
+| model | val all | val T-pose | val multi | unseen all | final-solo | final-kleid | alt-live2 |
+|---|---|---|---|---|---|---|---|
+| yolo11n COCO @512 (browser) | 0.764 | 0.863 | 0.851 | 0.654 | 0.696 | 0.772 | 0.479 |
+| yolo11n COCO @384 | 0.698 | 0.812 | 0.776 | 0.603 | 0.675 | 0.734 | 0.417 |
+| yolo11n fine-tuned @512 (`n-ir-2`, 50 epochs) | 0.816 | 0.978 | 0.933 | 0.586 | 0.687 | 0.792 | 0.342 |
+| yolo11n fine-tuned @384 (`n-ir-384-2`) | 0.799 | 0.963 | 0.900 | 0.536 | 0.661 | 0.784 | 0.264 |
+| yolo11s COCO @512 | | | | 0.726 | 0.750 | 0.846 | 0.570 |
+| yolo11s COCO @384 | | | | 0.684 | 0.722 | 0.790 | 0.535 |
+| yolo11m COCO @512 | | | | 0.800 | 0.782 | 0.907 | 0.708 |
+
+- The fine-tuning learned the recorded sessions (people, clothes, the T-pose val is the end of a recording whose start is in training), not the setup: on unseen sessions of the final setup it is even, in another room much worse (it finds fewer people: tracker backtest on alt-live2 with 25 % fewer person pixels). The browser keeps the COCO model.
+- The larger model is the lever: yolo11s at 384 beats yolo11n at 512 everywhere.
+- A further fine-tuning would need: a validation split by day/session, a low learning rate and a frozen backbone, COCO person images (gray) mixed in against forgetting.
+
+## Results round 3 (2026-10-09, Colab: 2 A100 + 2 L4)
+
+The hub runs the pose model now (DirectML), the target is yolo11s (384 by default, 512 when the GPU has room). Teacher: yolo11x at 1024+768 and at 512, both mirrored, a keypoint labeled where both agree (`ensemble.py`). "unseen" is now 800 frames (`test/`, `kinect-pose-test.zip`): `final-*` (final setup, another day), `alt-*` (the old small room), `room` (someone right in front of the sensor, overexposed). Pose mAP50-95 against that teacher, best.pt (last.pt where better):
+
+| model | recipe | val | unseen | final | alt | room |
+|---|---|---|---|---|---|---|
+| yolo11n COCO @512 | – | 0.783 | 0.606 | 0.790 | 0.562 | 0.370 |
+| yolo11s COCO @384 | – | 0.787 | 0.617 | 0.808 | 0.632 | 0.163 |
+| yolo11s COCO @512 | – | 0.875 | 0.722 | 0.829 | 0.678 | 0.585 |
+| yolo11m COCO @512 | – | 0.913 | 0.763 | 0.878 | 0.780 | 0.532 |
+| r3a n@512 | lr 5e-4, 80 epochs | 0.840 | 0.440 | 0.786 | 0.359 | 0.012 |
+| r3b n@512 | + gray COCO | 0.829 | 0.558 | 0.805 | 0.473 | 0.184 |
+| r3b-s384 | lr 5e-4, gray COCO | 0.851 | 0.578 | 0.806 | 0.484 | 0.306 |
+| r3c-s384 | + IR augmentation | 0.793 | 0.550 | 0.782 | 0.442 | 0.317 |
+| r3e-s384 | lr 1e-4, COCO, IR aug, 40 epochs | 0.843 | 0.629 | 0.831 | 0.552 | 0.363 |
+| r3d-s384 | lr 5e-5, frozen backbone (10 layers), COCO, IR aug, 30 epochs | 0.847 | 0.676 | 0.837 | 0.606 | 0.489 |
+| r3d50-s384 | same, 60 epochs | 0.846 | 0.647 | 0.832 | 0.596 | 0.412 |
+| **r3f-s384** | lr 5e-5, frozen backbone, COCO, no IR aug, 50 epochs | **0.854** | **0.682** | 0.837 | 0.598 | 0.511 |
+| r3c-s512 | lr 5e-4, COCO, IR aug | 0.841 | 0.563 | 0.805 | 0.496 | 0.246 |
+| r3d-s512 | as r3d-s384 at 512, 50 epochs | 0.877 | 0.683 | 0.853 | 0.663 | 0.419 |
+
+- **Forgetting is the problem, the learning rate the lever.** At the usual fine-tuning rate (5e-4) every model learns the recorded days and loses other rooms (alt, room). Gray COCO persons help a little; a 10x smaller rate with the backbone frozen keeps the general knowledge.
+- **r3f-s384 beats the COCO weights at 384** on the unseen frames (+0.065), in the final setup (+0.03) and on overexposed people (3x), and is slightly behind in the old room. Its person boxes are close to COCO's (box mAP 0.786 against 0.818; with IR augmentation 0.739).
+- **At 512 the COCO weights stay ahead overall** (0.722 against 0.683), mainly on the overexposed `room`; in the final setup the fine-tuned model is better (0.853 against 0.829).
+- The infrared augmentation (blur, gamma, noise, downscaling, rotation) did not help; longer training at the small rate neither.
+- Colab: VMs whose kernel stays idle are reclaimed (keep them busy with a tiny `colab exec`), `colab exec` can hang (time-limit every call), back up `resume.pt` off the VM, and settings set with `os.environ` in one `colab exec` stay for the next (the job scripts clear them).
+
+**Round 3 at 512, and round 5 (labels of four teachers):** the teachers yolo11x at 1024 and at 512, ViTPose++ huge and Sapiens2 1b (`topdown.py`, top-down on the yolo11x boxes), a keypoint labeled where 3 of 4 agree. Unseen frames, against these four-teacher labels:
+
+| model | unseen | final | alt | room |
+|---|---|---|---|---|
+| yolo11s COCO @384 | 0.575 | 0.807 | 0.607 | 0.084 |
+| r3f-s384 (two-teacher labels) | 0.662 | 0.842 | 0.571 | 0.482 |
+| r5-s384 (four-teacher labels, r3f recipe) | 0.647 | 0.847 | 0.602 | 0.350 |
+| yolo11s COCO @512 | 0.674 | 0.831 | 0.636 | 0.457 |
+| r3f-s512 (against the two-teacher labels: 0.723, COCO 0.722) | | | | |
+| r5-s512 (four-teacher labels) | 0.672 | 0.861 | 0.625 | 0.412 |
+| yolo11m COCO @512 | 0.757 | 0.879 | 0.801 | 0.467 |
+
+- The ranking is the same with either label set. Better labels (four teachers) add nothing measurable: the labels are not the bottleneck, forgetting was.
+- At 512 the fine-tuned model (r3f-s512, r5-s512) equals the COCO weights overall and is better in the final setup (+0.03).
+
+**Tracker backtest** (`recordings/backtest`, per-frame poses with `poses.py`, hybrid LAT 4): r3f-s384 finds the person in many more frames (final-solo: 75 frames without a pose instead of 295), but also reports a phantom at the right image edge before the person enters (score 0.4–0.6, no confident keypoint): one extra id. Keeping only poses with at least 3 keypoints above 0.5 removes it (COCO loses a few edge poses with it too). With that filter, against COCO s@384: final-solo and final-kleid equal or slightly better (flicker p99 0.57 % against 0.61 %, 1.94 % against 2.11 %, one id each); alt-live2 (the old crowded room) worse, 8–9 ids instead of 5–6 at LAT 3/4/5.
+
 ## Stopping and going on
 
 Everything can stop at any time and go on later:
