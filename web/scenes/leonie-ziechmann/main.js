@@ -59,6 +59,9 @@ export default {
   streams: ['persons'],
   persons: { mode: 'full', delay: 0 }, // live: the heap and the leaves react at once
   maxFps: 30,
+  // sideways by the angle in the Kinect's view (the play field is the view cone: far back one walks
+  // further to cross the wall); held 0.18 m inside the wall's edges. Tuned in the control center.
+  projection: { field: 'cone', edge: 'clamp', margin: 0.18, smoothing: 0.15 },
 
   params: {
     eyebrow: { value: 'Installation von', label: 'Kleine Zeile oben', folder: 'Text' },
@@ -86,7 +89,6 @@ export default {
     backNear: { value: 3.0, min: 1.5, max: 5, step: 0.05, label: 'Hinterer Wald ab (m Tiefe)', folder: 'Personen' },
     backFar: { value: 5.5, min: 2, max: 9, step: 0.05, label: 'Hinterer Wald bis (m Tiefe)', folder: 'Personen' },
     nearSize: { value: 1, min: 0.4, max: 2, step: 0.01, label: 'Größe (1 = echt bei 1,5 m Tiefe)', folder: 'Personen' },
-    spread: { value: 1, min: 0.5, max: 1.5, step: 0.01, label: 'Sichtfeld über die Wand', folder: 'Personen' },
     near: { value: 0.78, min: 0, max: 1, step: 0.01, label: 'Schatten nah', folder: 'Personen' },
     far: { value: 0.45, min: 0, max: 1, step: 0.01, label: 'Schatten fern', folder: 'Personen' },
     soft: { value: 2.2, min: 0.5, max: 6, step: 0.1, label: 'Weiche Kante', folder: 'Personen' },

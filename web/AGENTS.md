@@ -36,6 +36,7 @@ Before you start, `curl -s http://127.0.0.1:8090/api/status` must answer. If it 
 ```js
 export default {
   wall: true,                       // optional: an LED wall scene, the canvas is the LED image (see WALL.md)
+  projection: { smoothing: 0.3 },   // optional: what the scene needs of the projection by nature (WALL.md)
   streams: ['depth'],               // what to receive: depth, depth_raw, ir, points, persons; or (params) => [...]
   persons: { mode: 'full' },        // optional, with 'persons' in streams: see PERSONS.md
   params: {                         // sliders in the page; the user's changes persist
@@ -74,7 +75,7 @@ export default {
 | `ctx.xSign` | -1 or +1. Multiply Kinect x by it: key `m` mirrors every scene. |
 | `ctx.pointer` | `{ x, y, down }` in canvas pixels |
 | `ctx.persons` | the tracked people (with `streams: ['persons']`), see People below |
-| `ctx.wall` | the LED wall: setup and mapping Kinect → wall (`fromWorld`, `place(person)`, `joint`, `uv`, `px`, `persons`, ...), see LED wall below |
+| `ctx.wall` | the LED wall: setup, the scene's projection and the mapping Kinect → wall (`fromWorld`, `place(person)`, `joint`, `norm`, `uv`, `px`, `persons`, ...), see LED wall below |
 | `ctx.kinectToScreen(u, v)` | depth image pixel -> canvas pixels as `kinectUv()` (2D scenes); `ctx.worldToScreen([x, y, z])` for 3D scenes |
 | `ctx.dom` | a div over the canvas for your own HTML (`pointer-events: none`; set it to `auto` on your elements) |
 | `ctx.on(target, type, fn)` | `addEventListener` that is removed again on hot swap |
@@ -136,12 +137,12 @@ export default {
 
 ## LED wall
 
-The scenes are for a **6 × 2 m LED wall (1008 × 336 LEDs)**. Its setup (size, LED pixels, where the Kinect stands, how people are mapped: mirrored, real size, walk stretched over the whole wall) is shared by every scene and edited in the control center. **Full reference: [WALL.md](WALL.md).**
+The scenes are for a **6 × 2 m LED wall (1008 × 336 LEDs)**. Its setup (size, LED pixels, where the Kinect stands) is shared by every scene; how people are mapped onto it (the play field stretched over the wall, curves, mirror, body size, smoothing) is a **projection per scene** over a default. Both are edited in the control center. **Full reference: [WALL.md](WALL.md).**
 
 - `wall: true` in the scene: the canvas is the LED image (`ctx.width × ctx.height` = LED pixels); the page shows it scaled to fit.
-- `ctx.wall`: `fromWorld(p, person.slot)` → wall meters, `place(person)` (where a person is on the wall), `joint(person, 'rightHand')`, `uv()`, `px()`, `velocity()`, `persons`. Never hard-code wall size, LED resolution, sensor height or a stretch factor.
+- `ctx.wall`: `fromWorld(p, person.slot)` → wall meters, `place(person)` (where a person is on the wall, `.norm` = 0..1 in the play field), `joint(person, 'rightHand')`, `uv()`, `px()`, `velocity()`, `persons`; in per-pixel loops over the masks `roomX(rx, rz, slot)`, `roomY(ry, slot)`, `zone`. Never hard-code wall size, LED resolution, sensor height, a stretch factor, a play area or a zone: they come from the projection, tuned per scene in the control center.
 - WGSL (`createShaderPass`): `wallPerson(uv)` = the people as they fall on the wall (covered, distance, slot, IR); `wallFromWorld(p, slot)`, `wallUv()`, `wallVelocity()`, `WALL.*`. On the LED image `kinectUv()` shows the camera image calibrated to the wall.
-- Control center `/control/` and output window `/wall/` on your dev server: the show (playlist with params per entry), a live preview (no extra window needed; "▶" on a scene shows it at once), test images, calibration view, the setup with a top view of the room and block zones (nobody standing there is tracked, in every scene). `npm run wall` opens the output as a kiosk window on the LED screen.
+- Control center `/control/` and output window `/wall/` on your dev server: the show (playlist with params per entry), a live preview (no extra window needed; "▶" on a scene shows it at once), test images, calibration view, the projections (tab "Projektion": play field, curves, assistant), the setup with a top view of the room and block zones (nobody standing there is tracked, in every scene). `npm run wall` opens the output as a kiosk window on the LED screen.
 - Demo: scene `wand-spiegel`. Porting a scene that emulates the wall itself (its own `ledW`, `wallW`, `stretch`, `viewMode`, ...): WALL.md, "Porting".
 
 ## three.js

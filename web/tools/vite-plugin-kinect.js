@@ -10,6 +10,8 @@
 //   /__thumb/<name>.jpg    thumbnail of a scene; the runtime POSTs one after a few seconds of running
 //   /__wall/setup          GET/PUT the LED wall setup: one file shared by every worktree (the wall
 //                          is the same physical thing): web/.cache/wall/setup.json of the main checkout
+//   /__wall/projection     GET/PUT the projections (the default and one per scene, see lib/wall.js):
+//                          shared like the setup, web/.cache/wall/projection.json of the main checkout
 //   /__wall/show           GET/PUT the show (playlist) of this checkout: web/.cache/wall/show.json
 //   /__wall/launch         POST: opens /wall/ as a kiosk window on the LED screen; GET: is it open;
 //                          /__wall/close (POST) ends it
@@ -36,7 +38,9 @@ const ANNOUNCE_EVERY_MS = 5000;
 const MAX_THUMB_BYTES = 2 * 1024 * 1024;
 const MAX_DOC_BYTES = 512 * 1024;
 const LOADERS_ID = 'virtual:kinect-scene-loaders';
-const WALL_DOCS = ['setup', 'show'];
+const WALL_DOCS = ['setup', 'projection', 'show'];
+/** documents of the wall that every worktree shares (in the main checkout): the wall is one physical thing */
+const SHARED_DOCS = new Set(['setup', 'projection']);
 const CHANGED_EVERY_MS = 15000;
 
 const HOT_SNIPPET = `
@@ -348,7 +352,7 @@ export default function kinect() {
 
   // ---------- LED wall: setup (shared by every worktree), show (this checkout), kiosk window ----------
 
-  const docFile = (kind) => (kind === 'setup' ? path.join(wallDir, 'setup.json') : path.join(cacheDir, 'wall', `${kind}.json`));
+  const docFile = (kind) => (SHARED_DOCS.has(kind) ? path.join(wallDir, `${kind}.json`) : path.join(cacheDir, 'wall', `${kind}.json`));
 
   function wallDoc(req, res, kind) {
     const file = docFile(kind);
@@ -485,7 +489,7 @@ export default function kinect() {
           return sendJson(res, 200, { devserver: serverInfo(), scenes: shownScenes(all), total: listScenes().length, all });
         }
         if (pathname.startsWith('/__thumb/')) return thumbs(req, res, pathname);
-        const doc = /^\/__wall\/(setup|show)$/.exec(pathname);
+        const doc = /^\/__wall\/(setup|projection|show)$/.exec(pathname);
         if (doc) return wallDoc(req, res, doc[1]);
         if (pathname === '/__wall/launch' || pathname === '/__wall/close') {
           wallLaunch(req, res, pathname).catch((e) => send(res, 500, e.message));

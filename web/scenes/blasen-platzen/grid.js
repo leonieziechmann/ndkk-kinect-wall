@@ -1,15 +1,15 @@
 // The people on the wall as a grid of cells in meters: every person pixel is put into the room and
-// mapped onto the wall by the shared wall core (ctx.wall: mirror, walk stretched over the wall,
-// per-person shift; see WALL.md). A person covers as much wall as they are wide, at the place the
+// mapped onto the wall by the scene's projection (ctx.wall: mirror, the play field stretched over the
+// wall, each person's place and body size; see WALL.md). A person covers as much wall as they are wide, at the place the
 // mapping gives them, whether near the sensor or far.
 //
 // Per cell: the slot of the front-most person (0 = nobody), whether it was covered in this frame for
 // the first time (an edge of a body moved in) and a fading "activity" for the picture (moving edges
 // glow). "First time" is measured in real meters: the stretched walk moves a person's silhouette
-// faster than the person (their shift on the wall changes as they walk), and that part is taken out.
-// Each person's shift is snapped to whole cells, so this comparison is exact. Someone held at the
-// wall's edge keeps their exact shift: their silhouette stands still there while they walk on, and
-// that is what counts for them.
+// faster than the person (their offset on the wall changes as they walk), and that part is taken out.
+// Each person's offset (wall x = offset + mirrorSign·planX·scale) is snapped to whole cells, so this
+// comparison is exact. Someone held at the wall's edge keeps their exact offset: their silhouette
+// stands still there while they walk on, and that is what counts for them.
 
 export const CELL = 0.015; // m: 400 x 133 cells on a 6 x 2 m wall, finer than the depth pixels at 2-4 m
 const EMPTY_MM = 0xffff;
@@ -34,8 +34,8 @@ export class WallGrid {
     this.covered = 0; // cells covered in the last update
     this.fresh = 0;
     this.votes = new Uint16Array(SLOTS);
-    // per slot: how it is placed (STRETCHED, SNAPPED, HELD), its shift in whole cells (SNAPPED) or m
-    // (HELD), the person's id; the same of the last update; the cells the shift moved by since then
+    // per slot: how it is placed (STRETCHED, SNAPPED, HELD), its offset in whole cells (SNAPPED) or m
+    // (HELD), the person's id; the same of the last update; the cells the offset moved by since then
     this.mode = new Uint8Array(SLOTS);
     this.shiftCells = new Int32Array(SLOTS);
     this.shiftM = new Float64Array(SLOTS);
@@ -53,28 +53,29 @@ export class WallGrid {
   update(persons, rays, xSign, wall) {
     const { w, h, front, slot, tmp } = this;
     const S = wall.setup;
+    const P = wall.projection;
     const m = wall.room.matrix;
-    const side = wall.side;
-    const perPerson = S.map.apply === 'person';
-    const center = S.size.w / 2 + S.sensor.x; // wall x of the sensor
+    const perPerson = P.apply === 'person';
+    const planX0 = wall.planX0; // plan x of the sensor
+    const ms = wall.mirrorSign;
     const top = S.bottom + S.size.h;
-    const { near, far } = S.zone;
-    const { lift, scaleY } = S.map;
+    const { near, far } = wall.zone; // room z (m from the sensor)
     const inv = 1 / CELL;
 
-    // the persons' shifts as wall.fromRoom(r, slot) applies them: snapped to cells, exact when held
+    // the persons' offsets as wall.fromRoom(r, slot) applies them: snapped to cells, exact when held
     const { mode, shiftCells, shiftM, ids, moved } = this;
     mode.fill(STRETCHED);
     ids.fill(0);
-    const lim = Math.max(0, S.size.w / 2 - S.map.margin) - 1e-6;
+    const lo = Math.min(P.margin, S.size.w / 2) + 1e-6;
+    const hi = S.size.w - P.margin - 1e-6;
     for (const q of wall.persons) {
       const s = q.slot;
       if (!(s >= 1 && s < SLOTS)) continue;
       ids[s] = q.id;
       if (!perPerson || !wall.visible[s]) continue;
-      mode[s] = S.map.clamp && Math.abs(q.x - S.size.w / 2) >= lim ? HELD : SNAPPED;
-      shiftCells[s] = Math.round(wall.shift[s] * inv);
-      shiftM[s] = wall.shift[s];
+      mode[s] = P.edge === 'clamp' && (q.x <= lo || q.x >= hi) ? HELD : SNAPPED;
+      shiftCells[s] = Math.round(wall.offset[s] * inv);
+      shiftM[s] = wall.offset[s];
     }
     // how many cells each silhouette was moved by the change of its shift: not the person's motion
     for (let s = 1; s < SLOTS; s++) {
@@ -97,12 +98,12 @@ export class WallGrid {
       const rx = m[0] * wx + m[4] * wy + m[8] * z + m[12];
       const ry = m[1] * wx + m[5] * wy + m[9] * z + m[13];
       const s = labels[i];
-      const lat = side * rx;
-      const ms = mode[s];
-      // wall.fromRoom(): shifted as a whole, or stretched like points
-      const gx =
-        ms === SNAPPED ? Math.floor((center + lat) * inv) + shiftCells[s] : ms === HELD ? Math.floor((center + lat + shiftM[s]) * inv) : Math.floor((center + lat * wall.k(lat, rz)) * inv);
-      const gy = Math.floor((top - lift - scaleY * ry) * inv);
+      const how = mode[s];
+      // wall.roomX(): the body around the person's place (offset + mirrorSign·planX·scale), or every
+      // point through the projection
+      const body = ms * (planX0 + xSign * rx) * wall.scale[s];
+      const gx = how === SNAPPED ? Math.floor(body * inv) + shiftCells[s] : how === HELD ? Math.floor((body + shiftM[s]) * inv) : Math.floor(wall.roomX(rx, rz, 0) * inv);
+      const gy = Math.floor((top - wall.roomY(ry, s)) * inv);
       if (gx < 0 || gx >= w || gy < 0 || gy >= h) continue;
       const c = gy * w + gx;
       if (mm < front[c]) {

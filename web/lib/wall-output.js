@@ -3,8 +3,8 @@
 // over the wall bus, and reports back what runs (telemetry, preview pictures).
 //
 // On top of the scene: the color correction of the setup (brightness, gamma, white balance, as an
-// SVG filter), test images and the calibration view (a 2D canvas at LED resolution), and a black
-// layer (blackout, transitions over black). Errors do not stop the show: a scene that fails in
+// SVG filter), test images, the calibration view and the play field assistant (a 2D canvas at LED
+// resolution), and a black layer (blackout, transitions over black). Errors do not stop the show: a scene that fails in
 // frame() is retried, one that keeps failing is skipped.
 
 import { loadDoc } from './wall-bus.js';
@@ -34,6 +34,8 @@ export function startOutput(api) {
   let startedAt = performance.now();
   let blackout = false;
   let pattern = null; // name of a test image, or null
+  let wizard = null; // the play field assistant of the control center: what to show (see drawWizard)
+  let wizardAt = 0;
   let over = false; // test image over the scene instead of instead of it
   let waiting = null; // auto advance waits: 'round' (a game's round to end), 'empty' (an empty wall)
   let waitLeft = 0; // s until it switches anyway
@@ -221,6 +223,11 @@ export function startOutput(api) {
     if (api.embedded && msg.from === api.owner) return;
     previewUntil = d.on === false ? 0 : performance.now() + PREVIEW_FOR_MS;
   });
+  bus.on('wizard', (d) => {
+    wizard = d?.on ? d : null;
+    wizardAt = performance.now();
+    telemetry();
+  });
   bus.on('reload', () => location.reload());
   bus.on('close', () => !api.embedded && window.close());
   bus.on('ping', () => telemetry());
@@ -251,8 +258,11 @@ export function startOutput(api) {
 
   api.hooks.afterFrame = (now, inst) => {
     placeOverlay();
-    overlay.style.display = pattern ? 'block' : 'none';
-    if (pattern) drawPattern(now);
+    // the assistant ends by itself when its control center went away
+    if (wizard && now - wizardAt > 10000) wizard = null;
+    overlay.style.display = pattern || wizard ? 'block' : 'none';
+    if (wizard) drawWizard(now);
+    else if (pattern) drawPattern(now);
     if (now < previewUntil && now - lastPreview >= PREVIEW_MS) {
       lastPreview = now;
       sendPreview(inst);
@@ -289,6 +299,16 @@ export function startOutput(api) {
     else startedAt = performance.now(); // only one entry: keep it
   }, 500);
 
+  /** the highest a person reaches (m above the floor): a hand, else the head */
+  function reachOf(info) {
+    let top = null;
+    for (const j of ['leftHand', 'rightHand', 'leftWrist', 'rightWrist', 'head']) {
+      const w = info.person.room?.joints?.[j];
+      if (w && (top === null || w[1] > top)) top = w[1];
+    }
+    return top;
+  }
+
   function telemetry() {
     const s = api.status();
     const ctx = rt.current?.ctx;
@@ -312,7 +332,8 @@ export function startOutput(api) {
         problem: rt.problem || null,
         tracker: api.personsActive() ? kinect.personTracker.statusText : null,
         status: ctx?.status || '',
-        persons: wall.persons.map((p) => ({
+        // where everybody stands (plan) and where the scene's projection puts them (x, y, norm)
+        persons: api.sceneWall().persons.map((p) => ({
           id: p.id,
           slot: p.slot,
           css: p.person.css,
@@ -325,7 +346,15 @@ export function startOutput(api) {
           shift: p.shift,
           inZone: p.inZone,
           top: p.top,
+          feet: p.feet,
+          norm: p.norm,
+          scale: p.scale,
+          gain: p.gain,
+          height: Number.isFinite(p.person.height) ? p.person.height : null,
+          reach: reachOf(p),
         })),
+        projection: { scene: rt.current?.name ?? null, profile: api.sceneWall().projection },
+        wizard: !!wizard,
         room: { found: wall.room.found, height: wall.room.height, source: wall.room.source, pitch: kinect.view.floor?.pitchDeg ?? null, matrix: [...wall.room.matrix] },
         xSign: api.xSign,
         tanH: wall.tanH,
@@ -372,7 +401,7 @@ export function startOutput(api) {
         shotG.drawImage(inst.canvas, 0, 0, w, h);
         shotG.globalAlpha = 1;
       }
-      if (pattern) shotG.drawImage(overlay, 0, 0, w, h);
+      if (pattern || wizard) shotG.drawImage(overlay, 0, 0, w, h);
       bus.send('frame', { jpeg: shot.toDataURL('image/jpeg', 0.72), w, h, blackout }, 'control');
     } catch (e) {
       console.warn('preview', e);
@@ -508,9 +537,10 @@ export function startOutput(api) {
   }
 
   function drawPeople(W, H) {
-    const s = wall.setup;
+    const sw = api.sceneWall(); // the projection of the scene on the wall
+    const s = sw.setup;
     const ppm = W / s.size.w;
-    const toPx = (p) => wall.px(p);
+    const toPx = (p) => sw.px(p);
     // a 1 m grid on the wall, heights every 0.5 m
     g.fillStyle = 'rgba(70, 110, 255, 0.55)';
     for (let m = 0; m <= s.size.w + 1e-6; m += 1) g.fillRect(Math.min(W - 1, Math.round(m * ppm)), 0, 1, H);
@@ -531,19 +561,19 @@ export function startOutput(api) {
     g.lineTo(sx - H * 0.03, sy + H * 0.03);
     g.lineTo(sx + H * 0.03, sy + H * 0.03);
     g.fill();
-    // where the sensor's view ends at the reference distance (the wall edges in mode 'fit')
-    g.strokeStyle = 'rgba(255, 255, 255, 0.5)';
-    g.setLineDash([4, 4]);
-    for (const side of [-1, 1]) {
-      const lat = side * s.map.distance * wall.tanH;
-      const x = (s.size.w / 2 + s.sensor.x + lat * wall.k(lat, s.map.distance)) * ppm;
+    // the projection's target range (where the play field's edges land) and its quarters
+    const [tl, tr] = sw.target;
+    g.strokeStyle = 'rgba(255, 220, 120, 0.75)';
+    for (let q = 0; q <= 4; q++) {
+      const x = (tl + ((tr - tl) * q) / 4) * ppm;
+      g.setLineDash(q % 4 ? [2, 6] : [6, 4]);
       g.beginPath();
       g.moveTo(x, 0);
       g.lineTo(x, H);
       g.stroke();
     }
     g.setLineDash([]);
-    for (const info of wall.persons) {
+    for (const info of sw.persons) {
       const p = info.person;
       const col = p.css ?? '#fff';
       g.globalAlpha = info.inZone ? 1 : 0.35;
@@ -569,8 +599,8 @@ export function startOutput(api) {
       g.lineWidth = 3;
       g.lineCap = 'round';
       for (const [a, b] of BONES) {
-        const ja = wall.joint(p, POINTS[a]);
-        const jb = wall.joint(p, POINTS[b]);
+        const ja = sw.joint(p, POINTS[a]);
+        const jb = sw.joint(p, POINTS[b]);
         if (!ja || !jb) continue;
         const [ax, ay] = toPx(ja);
         const [bx, by] = toPx(jb);
@@ -579,7 +609,7 @@ export function startOutput(api) {
         g.lineTo(bx, by);
         g.stroke();
       }
-      const head = wall.joint(p, 'head');
+      const head = sw.joint(p, 'head');
       if (head) {
         const [hx, hy] = toPx(head);
         g.beginPath();
@@ -594,11 +624,139 @@ export function startOutput(api) {
       g.textAlign = 'center';
       g.textBaseline = 'bottom';
       const [, ty] = toPx([0, info.top + 0.08]);
-      g.fillText(`${info.dist.toFixed(1)} m`, mx, Math.max(px(H / 14), ty));
+      g.fillText(`${info.dist.toFixed(1)} m · ${info.norm[0].toFixed(2)} / ${info.norm[2].toFixed(2)}`, mx, Math.max(px(H / 14), ty));
       g.textAlign = 'left';
       g.globalAlpha = 1;
       g.lineWidth = 1;
     }
+  }
+
+  // ---------- the play field assistant (control center: "Assistent") ----------
+
+  // A small floor plan on the wall, so somebody alone in front of it sees where to go: the wall on
+  // top, the audience below, x as people facing the wall see it. The view cone, the corners caught
+  // so far, the corner asked for, everybody in front (the one being measured with a progress ring).
+  function drawWizard(now) {
+    const W = overlay.width;
+    const H = overlay.height;
+    const s = wall.setup;
+    const w = wizard;
+    g.save();
+    g.fillStyle = '#000';
+    g.fillRect(0, 0, W, H);
+    const depth = Math.max(4, (w.far ?? 4.5) + 0.6);
+    const half = Math.max(s.size.w / 2 + 0.3, (depth - s.sensor.front) * wall.tanH + 0.3);
+    const cx = s.size.w / 2 + s.sensor.x;
+    const scale = Math.min((H * 0.9) / depth, (W * 0.42) / (2 * half));
+    const ox = W / 2 - cx * scale;
+    const oy = H * 0.05;
+    const P = (x, z) => [ox + x * scale, oy + z * scale];
+    // the wall and a 1 m grid
+    g.strokeStyle = 'rgba(80, 110, 200, 0.35)';
+    g.lineWidth = 1;
+    for (let x = Math.ceil(cx - half); x <= cx + half; x++) {
+      const [a, b] = P(x, 0);
+      g.beginPath();
+      g.moveTo(a, b);
+      g.lineTo(a, oy + depth * scale);
+      g.stroke();
+    }
+    for (let z = 1; z < depth; z++) {
+      const [, b] = P(0, z);
+      g.beginPath();
+      g.moveTo(ox + (cx - half) * scale, b);
+      g.lineTo(ox + (cx + half) * scale, b);
+      g.stroke();
+    }
+    g.fillStyle = '#8fc1ff';
+    const [wx0, wy] = P(0, 0);
+    g.fillRect(wx0, wy - 3, s.size.w * scale, 3);
+    // the view cone
+    const [sx, sy] = P(cx, s.sensor.front);
+    g.fillStyle = 'rgba(120, 170, 255, 0.12)';
+    g.beginPath();
+    g.moveTo(sx, sy);
+    const reach = depth - s.sensor.front;
+    g.lineTo(...P(cx - reach * wall.tanH, depth));
+    g.lineTo(...P(cx + reach * wall.tanH, depth));
+    g.closePath();
+    g.fill();
+    g.fillStyle = '#fff';
+    g.fillRect(sx - 4, sy - 2, 8, 4);
+    // the play field so far
+    const pts = (w.corners ?? []).filter(Boolean);
+    if (pts.length >= 2) {
+      g.strokeStyle = 'rgba(255, 220, 120, 0.9)';
+      g.lineWidth = 2;
+      g.beginPath();
+      pts.forEach(([x, z], i) => (i ? g.lineTo(...P(x, z)) : g.moveTo(...P(x, z))));
+      if (pts.length === 4) g.closePath();
+      g.stroke();
+    }
+    for (const [x, z] of pts) {
+      const [a, b] = P(x, z);
+      g.fillStyle = '#ffdc78';
+      g.beginPath();
+      g.arc(a, b, 5, 0, Math.PI * 2);
+      g.fill();
+    }
+    // where to go: a blinking ring at the corner's rough place
+    if (w.hint) {
+      const [a, b] = P(w.hint[0], w.hint[1]);
+      g.strokeStyle = `rgba(255, 255, 255, ${0.45 + 0.4 * Math.sin(now / 180)})`;
+      g.lineWidth = 2;
+      g.setLineDash([5, 4]);
+      g.beginPath();
+      g.arc(a, b, 16, 0, Math.PI * 2);
+      g.stroke();
+      g.setLineDash([]);
+    }
+    // the people
+    for (const p of wall.persons) {
+      const [a, b] = P(p.real, p.z);
+      const me = p.id === w.person;
+      g.fillStyle = p.person.css ?? '#fff';
+      g.beginPath();
+      g.arc(a, b, me ? 9 : 6, 0, Math.PI * 2);
+      g.fill();
+      if (me && w.progress > 0) {
+        g.strokeStyle = '#fff';
+        g.lineWidth = 4;
+        g.beginPath();
+        g.arc(a, b, 17, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, w.progress));
+        g.stroke();
+      }
+    }
+    // the text, left and right of the plan
+    g.fillStyle = '#fff';
+    g.textBaseline = 'top';
+    g.textAlign = 'left';
+    const left = W * 0.03;
+    const maxW = ox + (cx - half) * scale - left - W * 0.02;
+    g.font = `600 ${px(H / 13)}px system-ui, sans-serif`;
+    g.fillText(w.title ?? '', left, H * 0.08, maxW);
+    g.font = `${px(H / 20)}px system-ui, sans-serif`;
+    g.fillStyle = '#c8c8d4';
+    wrap(w.text ?? '', left, H * 0.08 + H / 9, maxW, H / 15);
+    g.textAlign = 'left';
+    const right = ox + (cx + half) * scale + W * 0.02;
+    g.fillStyle = w.ok ? '#8fe0a0' : '#ffcf6b';
+    g.font = `600 ${px(H / 16)}px system-ui, sans-serif`;
+    wrap(w.status ?? '', right, H * 0.1, W - right - W * 0.02, H / 13);
+    g.restore();
+  }
+
+  function wrap(text, x, y, maxW, lh) {
+    let line = '';
+    for (const word of String(text).split(/\s+/)) {
+      const t = line ? `${line} ${word}` : word;
+      if (g.measureText(t).width > maxW && line) {
+        g.fillText(line, x, y);
+        y += lh;
+        line = word;
+      } else line = t;
+    }
+    if (line) g.fillText(line, x, y);
   }
 
   // ---------- start ----------

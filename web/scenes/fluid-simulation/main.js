@@ -74,6 +74,18 @@ const roomPoint = (m, w) => [0, 1, 2].map((r) => m[r] * w[0] + m[4 + r] * w[1] +
 
 export default {
   wall: true, // the canvas is the LED image (ctx.width × ctx.height = LED pixels)
+  // the whole wall can be reached, yet one stands roughly where one shows: a trapezoid between the
+  // view cone and a box (1.8 m wide 0.8 m from the sensor, 5 m at 4 m: from about 2.5 m on the edges
+  // of the view reach the wall's edges; in front the middle 4 m), a curve that keeps the middle calm
+  // (×1.1-1.5 at 2-3 m) and moves faster towards the edges, a little smoothing. Tuned per site in the
+  // control center (tab Projektion).
+  projection: {
+    field: { depth: [0.8, 4], width: [1.8, 5] },
+    'curve.x': [[0.25, 0.29], [0.75, 0.71]],
+    edge: 'clamp',
+    margin: 0.2,
+    smoothing: 0.2,
+  },
   streams: ['persons'], // depth and ir come with it
   persons: (p) => ({ mode: 'full', delay: p.live ? 0 : DEFAULT_DELAY }),
   // the person tracking (pose model) and the Kinect's depth decoding share the GPU

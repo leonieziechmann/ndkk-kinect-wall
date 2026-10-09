@@ -1,15 +1,17 @@
-// The people in perspective: this scene's own projection instead of the shared wall mapping.
+// The people in perspective, on top of the scene's projection (ctx.wall, tab Projektion of the
+// control center; main.js asks for the view cone as its play field):
 //
-//   sideways  by the angle in the Kinect's view: its left and right edge are the wall's edges at
-//             every distance, so far back one has to walk further to cross the wall (parallax,
-//             the view widens with the distance just like the sensor's)
+//   sideways  where the projection puts the person (by default the angle in the Kinect's view: its
+//             left and right edge are the wall's edges at every distance, so far back one has to
+//             walk further to cross the wall, parallax like the sensor's view)
 //   size      shrinks with the distance (1 / z), the body keeps its proportions
 //   height    the feet rise towards the horizon the farther away someone stands, onto the farther
 //             hills of the wood
-//   depth     with `back` the people walk only in the back of the wood: the real distance from
-//             the sensor (1..4 m) becomes a depth in the wood (back[0]..back[1], e.g. 3.0..5.5 m),
-//             so the nearest walk on the hills of the far trees, behind the signs and the mid and
-//             near rows; size, feet and the order between the trees follow that depth
+//   depth     with `back` the people walk only in the back of the wood: the play field's depth
+//             (front 0 .. back 1, with the projection's depth curve) becomes a depth in the wood
+//             (back[0]..back[1], e.g. 3.0..5.5 m), so the nearest walk on the hills of the far
+//             trees, behind the signs and the mid and near rows; size, feet and the order between
+//             the trees follow that depth
 //
 // Every person is placed as a whole: its body center gives the place and the scale, its pixels
 // are drawn around it. JS (Perspective) computes the per-person placement and also hands it to the
@@ -21,13 +23,11 @@ import { checkedModule } from '/lib/shader-pass.js';
 
 const CELL_PX = 2;
 const SLOTS = 17;
-const TAN_H = 0.708; // Kinect v2: half the horizontal field of view, tan(35.3°)
 
 /**
- * The placement. configure(p, L, wall, feet): p: params (spread: how much of the wall the view
- * spans, nearSize: size at the near anchor, 1 = real), feet: two anchors [[z m, y design px], ...]
- * where the feet stand (on the wood's ground). place(lat, z) -> { x px, feet px, scale px/m } for
- * a body center `lat` m beside the sensor (in the wall's direction) at `z` m from it.
+ * The placement. configure(p, L, wall, feet): p: params (nearSize: size at the near anchor, 1 =
+ * real), feet: two anchors [[z m, y design px], ...] where the feet stand (on the wood's ground).
+ * place(pl) -> { x px, feet px, scale px/m, depth m } for a person of ctx.wall.persons.
  */
 export class Perspective {
   constructor() {
@@ -44,8 +44,6 @@ export class Perspective {
     this.ky = L.H / S.size.h;
     this.top = S.bottom + S.size.h;
     this.pxPerM = L.H / S.size.h;
-    this.spread = p.spread;
-    this.margin = 0.03;
     const [[nearZ, yNear], [farZ, yFar]] = feet;
     // feet: y = yh + A / z (a pinhole looking along the floor); size: scale = f / z (px per m)
     this.A = ((yNear - yFar) * L.s) / (1 / nearZ - 1 / farZ);
@@ -56,19 +54,16 @@ export class Perspective {
     this.back = p.backWood ? [p.backNear, Math.max(p.backNear + 0.1, p.backFar)] : null;
   }
 
-  /** the depth in the wood (m) for a real distance z from the sensor */
-  depth(z) {
-    if (!this.back) return z;
-    const t = (z - 1) / 3;
+  /** the depth in the wood (m) of a person: from the play field's depth, or the real distance */
+  depth(pl) {
+    if (!this.back) return pl.dist;
+    const t = pl.norm[2];
     return Math.max(this.back[0] - 0.05, this.back[0] + t * (this.back[1] - this.back[0]));
   }
 
-  place(lat, z) {
-    const zz = Math.max(this.minZ, z);
-    let u = 0.5 + (lat / (2 * zz * TAN_H)) * this.spread;
-    u = Math.min(1 - this.margin, Math.max(this.margin, u));
-    const zv = Math.max(this.minZ, this.depth(z));
-    return { x: u * this.W, feet: this.yh + this.A / zv, scale: this.f / zv, depth: zv };
+  place(pl) {
+    const zv = Math.max(this.minZ, this.depth(pl));
+    return { x: pl.x * this.kx, feet: this.yh + this.A / zv, scale: this.f / zv, depth: zv };
   }
 
   /**
@@ -85,7 +80,7 @@ export class Perspective {
       if (!pl.inZone || !pl.room) continue;
       const lat = wall.side * pl.room[0];
       const z = pl.room[2];
-      const q = this.place(lat, z);
+      const q = this.place(pl);
       const xm = q.x / this.kx;
       let tr = this.track.get(pl.id);
       if (!tr) {

@@ -191,9 +191,11 @@ export class Bodies {
     const m = wall.room.matrix;
     const side = wall.side;
     const xSign = ctx.xSign;
-    const perPerson = S.map.apply === 'person';
-    const cx0 = S.size.w / 2 + S.sensor.x;
-    const { near, far } = S.zone;
+    const { near, far } = wall.zone; // the projection's zone, room z (m from the sensor)
+    // a point of person s on the wall's x, in real meters around the person's place: the projection
+    // places the person (stretched walk), the body keeps its real size here (bodyScale × the
+    // projection's body scale shrinks it when drawn)
+    const metricX = (rx, rz, s, cx) => cx + (wall.roomX(rx, rz, s) - cx) / wall.scale[s];
     const rays = k.rays;
     const { indices, labels, depth } = R;
 
@@ -214,7 +216,7 @@ export class Bodies {
         this.state.set(q.id, st);
       }
       st.seen = time;
-      info[q.slot] = { q, st, n: 0, sx: 0, sz: 0, top: 0, cx: q.x, cz: q.z, hx: 0, hzs: 0, hn: 0 };
+      info[q.slot] = { q, st, n: 0, sx: 0, sz: 0, top: 0, cx: q.x, cz: q.z, x0: q.x, hx: 0, hzs: 0, hn: 0 };
     }
 
     // pass 1: every person pixel into the room and onto the wall's x; the torso band per slot
@@ -234,8 +236,7 @@ export class Bodies {
       if (rz < near - 0.3 || rz > far + 0.3) continue;
       const rx = m[0] * wx + m[4] * wy + m[8] * z + m[12];
       const ry = m[1] * wx + m[5] * wy + m[9] * z + m[13];
-      const lat = side * rx;
-      const x = perPerson && wall.visible[s] ? cx0 + lat + wall.shift[s] : cx0 + lat * wall.k(lat, rz);
+      const x = metricX(rx, rz, s, inf.x0);
       const zw = S.sensor.front + rz;
       const o = n * 4;
       cache[o] = x;
@@ -290,8 +291,9 @@ export class Bodies {
     yhist.fill(0);
     ycount.fill(0);
     const rMin = P.armMin;
-    const ks = P.bodyScale;
-    const { sx, sy, up, zTop, zBot } = L;
+    const { sx, sy, up } = L;
+    // each torso's row on the map (through the projection's depth curve): the body around it
+    for (const inf of info) if (inf) inf.gy0 = L.map(inf.cx, inf.cz)[1];
     const W = this.w;
     const Hh = this.h;
     for (let j = 0; j < n; j++) {
@@ -334,10 +336,9 @@ export class Bodies {
         rhist[(s * BINS + b) * RB + Math.min(RB - 1, Math.floor(r / RSTEP))]++;
       }
       // the grid: the highest point per cell
-      const xs = inf.cx + dx * ks;
-      const zs = inf.cz + dz * ks;
-      const gx = Math.floor(xs * sx);
-      const gy = Math.floor(up ? (zs - zTop) * sy : (zBot - zs) * sy);
+      const ks = P.bodyScale * wall.scale[s];
+      const gx = Math.floor((inf.cx + dx * ks) * sx);
+      const gy = Math.floor(inf.gy0 + dz * ks * sy * (up ? 1 : -1));
       if (gx < 0 || gy < 0 || gx >= W || gy >= Hh) continue;
       const c = gy * W + gx;
       const cm = Math.max(1, Math.min(255, Math.round(ry * 100)));
@@ -403,6 +404,7 @@ export class Bodies {
       this.exactShare = Math.max(this.exactShare, sk.exactShare ?? 0);
       const face = P.turn ? turn(st, sk, m, side, L, time) : L.wallFace;
       const { r: across } = facing(face);
+      const ks = P.bodyScale * wall.scale[s];
       const shrink = (m) => (m ? L.map(inf.cx + (m[0] - inf.cx) * ks, inf.cz + (m[1] - inf.cz) * ks) : null);
       // head and hands seen from above, smoothed (they are only shown, nothing is aimed with them)
       const ema = (old, v, a) => (old && v ? [old[0] + (v[0] - old[0]) * a, old[1] + (v[1] - old[1]) * a] : v);
@@ -425,8 +427,7 @@ export class Bodies {
         const rx = m[0] * w[0] + m[4] * w[1] + m[8] * w[2] + m[12];
         const ry = m[1] * w[0] + m[5] * w[1] + m[9] * w[2] + m[13];
         const rz = m[2] * w[0] + m[6] * w[1] + m[10] * w[2] + m[14];
-        const lat = side * rx;
-        return [perPerson && wall.visible[s] ? cx0 + lat + wall.shift[s] : cx0 + lat * wall.k(lat, rz), ry, S.sensor.front + rz];
+        return [metricX(rx, rz, s, inf.x0), ry, S.sensor.front + rz];
       };
       const seen = P.armSource === 'Maske' ? st.arms.filter((a) => a.on) : skeletonArms(st, sk, toWall, inf, P);
       const arms = [...seen, ...hiddenArm(seen, st, P, time)]

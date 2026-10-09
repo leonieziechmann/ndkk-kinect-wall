@@ -161,7 +161,8 @@ fn bodyPart(s: u32, p: vec2f) -> Part {
   if (acc.best > 1e8) {
     // no skeleton (yet): by height, as a fraction of the person's height
     let h = max(personInfo(s).z, 1.0);
-    let y = (wallAt(p / F.resolution).y - WALL.lift) / max(WALL.scaleY, 0.01);
+    // the wall height back to the room (the projection's height mapping and the person's body scale)
+    let y = wallRoomY(wallAt(p / F.resolution).y) / select(1.0, WALL.slots[s].y, WALL.perPerson > 0.5);
     let f = y / h;
     acc.part = select(select(select(select(SHOES, PANTS, f > 0.06), SHIRT, f > 0.48), SKIN, f > 0.84), HAIR, f > 0.92);
     acc.n = vec2f(0.0);

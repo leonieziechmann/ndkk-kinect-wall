@@ -23,6 +23,7 @@ const COLS = Array.from({ length: 17 }, (_, s) => personColor(s, [0, 0, 0]));
 const gameParams = Object.fromEntries(Object.entries(game.params).map(([k, v]) => [k, v.value]));
 
 export default {
+  projection: game.projection, // the same as the game it checks
   streams: ['persons'],
   // as the game: live masks, live + exact skeletons (or the delayed output alone, for comparison)
   persons: (p) => (p.timing === 'verzögert (genau)' ? { mode: 'full', delay: 12 } : p.exactSlow ? { mode: 'full', live: true } : { mode: 'full', delay: 0 }),

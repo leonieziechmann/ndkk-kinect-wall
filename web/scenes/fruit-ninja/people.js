@@ -367,12 +367,9 @@ export class People {
     cell.fill(0);
     const S = wall.setup;
     const m = wall.room.matrix;
-    const side = wall.side;
-    const perPerson = S.map.apply === 'person';
-    const center = S.size.w / 2 + S.sensor.x; // wall x of the sensor
+    const perPerson = wall.projection.apply === 'person';
     const top = S.bottom + S.size.h;
-    const { near, far } = S.zone;
-    const { lift, scaleY } = S.map;
+    const { near, far } = wall.zone; // the projection's zone, room z (m from the sensor)
     const ppm = L.ppm * RES;
     const { indices, labels, depth } = persons;
     // only the box around the people is worked on afterwards
@@ -392,14 +389,12 @@ export class People {
       const rx = m[0] * wx + m[4] * wy + m[8] * z + m[12];
       const ry = m[1] * wx + m[5] * wy + m[9] * z + m[13];
       const s = labels[i];
-      const lat = side * rx;
-      // wall.fromRoom(): shifted as a whole (the body keeps its size), or stretched like points
-      const x = perPerson && wall.visible[s] ? center + lat + wall.shift[s] : center + lat * wall.k(lat, rz);
-      const ax = Math.floor(x * ppm);
-      const ay = Math.floor((top - lift - scaleY * ry) * ppm);
+      // the scene's projection: the body around the person's place (its size × scale), or every point
+      const ax = Math.floor(wall.roomX(rx, rz, s) * ppm);
+      const ay = Math.floor((top - wall.roomY(ry, s)) * ppm);
       if (ax < 0 || ax >= AW || ay < 0 || ay >= AH) continue;
       const c = ay * AW + ax;
-      const f = z / FOCAL;
+      const f = (z / FOCAL) * (perPerson && wall.visible[s] ? wall.scale[s] : 1);
       area[c] += f * f;
       if (ax < bx0) bx0 = ax;
       if (ax > bx1) bx1 = ax;

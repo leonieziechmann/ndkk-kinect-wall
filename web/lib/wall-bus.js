@@ -1,5 +1,5 @@
 // wall-bus.js — messages between the control center (/control/), the output window (/wall/) and the
-// wall scenes, plus loading and saving the wall setup and the show.
+// wall scenes, plus loading and saving the wall setup, the projections and the show.
 //
 // Transport: the dev server relays every message to all pages it serves (Vite's HMR WebSocket,
 // event 'kinect:wall', see tools/vite-plugin-kinect.js), so the output may run in another browser
@@ -10,9 +10,10 @@
 //   bus.on('telemetry', (data, msg) => …);
 //   bus.send('play', { entry: 'abc' });
 //
-// Documents: setup (the LED wall, lib/wall.js) and show (the playlist, lib/wall-show.js). The dev
-// server keeps them in files: the setup once for every worktree (main checkout:
-// web/.cache/wall/setup.json), the show per checkout (web/.cache/wall/show.json, its scenes differ).
+// Documents: setup (the LED wall, lib/wall.js), projection (the default and per scene, lib/wall.js)
+// and show (the playlist, lib/wall-show.js). The dev server keeps them in files: setup and projection
+// once for every worktree (main checkout: web/.cache/wall/setup.json, projection.json), the show per
+// checkout (web/.cache/wall/show.json, its scenes differ).
 // Without a dev server they live in localStorage.
 
 const CHANNEL = 'kinect-wall';
@@ -114,7 +115,7 @@ function writeLocal(kind, doc) {
   }
 }
 
-/** Loads 'setup' or 'show': { doc, source: 'devserver' | 'local' | 'none' }. */
+/** Loads 'setup', 'projection' or 'show': { doc, source: 'devserver' | 'local' | 'none' }. */
 export async function loadDoc(kind) {
   try {
     const r = await fetch(`/__wall/${kind}`, { cache: 'no-store', signal: AbortSignal.timeout(3000) });
@@ -135,7 +136,7 @@ export async function loadDoc(kind) {
   return { doc: local, source: local ? 'local' : 'none' };
 }
 
-/** Saves 'setup' or 'show' (dev server file and localStorage). Returns where it went. */
+/** Saves 'setup', 'projection' or 'show' (dev server file and localStorage). Returns where it went. */
 export async function saveDoc(kind, doc) {
   writeLocal(kind, doc);
   try {
