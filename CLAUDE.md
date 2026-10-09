@@ -21,9 +21,9 @@ The scenes run on a 6 × 2 m LED wall (1008 × 336). One shared core handles it:
 
 ## Show launcher: `start-wand.cmd`
 
-The user's one-click launcher for the exhibition. It starts the hub, the main checkout's dev server and the kiosk output, and opens the output only on a second display, never on the notebook's panel. Until it ends, it tunes Windows: power plan, priorities, efficiency mode, and stopped services. It keeps its journal and logs in `%LOCALAPPDATA%\kinect-wand\`.
+The user's one-click launcher for the exhibition. It starts the hub, the main checkout's dev server, the kiosk output and the control center. The displays are detected automatically: the output goes only on the second display, never on the notebook's panel, and the control center goes maximized on the notebook's panel. Until it ends, it tunes Windows: power plan, priorities, efficiency mode, and stopped services. It keeps its journal and logs in `%LOCALAPPDATA%\kinect-wand\`.
 - Do not run it unless asked: it changes system settings and stops what it started.
-- To test it, run `-NoWall -NoAdmin -Hub 8091`. For a dev server and kiosk of your own, add `-Checkout <worktree>` and set `KINECT_WALL_DIR`.
+- To test it, run `-NoWall -NoControl -NoAdmin -Hub 8091`. For a dev server and kiosk of your own, add `-Checkout <worktree>` and set `KINECT_WALL_DIR`.
 - End a test run by creating `quit.flag` in that folder.
 - Diff the power plan, priorities and services before and after.
 

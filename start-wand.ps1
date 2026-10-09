@@ -2,17 +2,21 @@
   start-wand.ps1: starts everything the LED wall needs and tunes Windows for it, only while it runs.
 
     start-wand.cmd                     double-click (or the desktop icon "Kinect-Wand starten")
-    .\start-wand.ps1 [-NoWall] [-NoAdmin] [-Control] [-Hub 8091]
+    .\start-wand.ps1 [-NoWall] [-NoControl] [-NoAdmin] [-Hub 8091]
     .\start-wand.ps1 -Panic            NOTAUS (also Strg+Alt+Shift+N, desktop icon "Kinect-Wand NOTAUS")
 
   Starts (or reuses, if they already run) from the main checkout: kinect-hub (real Kinect, :8090),
-  the Vite dev server of web/ (show, control center) and the output window /wall/ as a kiosk window
-  on the LED screen (the same as npm run wall). A watchdog restarts what dies.
+  the Vite dev server of web/ (show, control center), the output window /wall/ as a kiosk window on
+  the LED screen (the same as npm run wall) and the control center /control/ on the notebook's own
+  panel. A watchdog restarts what dies.
 
-  The output window only ever goes to a second display, never the notebook's own panel: the display
-  saved in the wall setup if it is connected, else the first other one; with no second display it
-  stays closed until one is plugged in. Where it really is gets checked twice a second: on the
-  notebook's panel (Windows moves it there when the LED screen goes away) it is closed at once.
+  The displays are found automatically every time (no setting): the output window only ever goes to
+  the second display, never the notebook's own panel (with several other displays the one named in
+  the wall setup, else the leftmost); with no second display it stays closed until one is plugged
+  in. Where it really is gets checked twice a second: a wall window on the notebook's panel (Windows
+  moves it there when the LED screen goes away) is closed at once. The control center opens as an
+  app window of its own, maximized on the notebook's panel; with the lid closed (no notebook panel)
+  it stays closed, so it never covers the wall.
 
   Tunes while it runs:
     - power plan: a temporary copy of "High performance": no sleep, no display off, lid closed = do
@@ -40,7 +44,7 @@
 param(
   [switch]$NoWall,    # no output window (e.g. without the LED screen)
   [switch]$NoAdmin,   # no UAC prompt: Windows services stay as they are
-  [switch]$Control,   # also open the control center in the default browser
+  [switch]$NoControl, # no control center window on the notebook
   [int]$Hub = 8090,   # the hub to use; only the real one on 8090 is started, others must run already
   [switch]$Panic,     # NOTAUS
   [int]$Guard = 0,    # internal: be the guard of this PID
@@ -376,6 +380,37 @@ public static class KinectWandNative {
   }
 
   public static void SetInputMode(long m) { if (m >= 0) SetConsoleMode(GetStdHandle(-10), (uint)m); }
+
+  // ---- placing a window on a display, in physical pixels whatever the scaling
+
+  [DllImport("user32.dll")] static extern IntPtr SetThreadDpiAwarenessContext(IntPtr ctx);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hh, uint flags);
+  [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
+
+  // Moves the largest window of process pid onto the area (x, y, w, h) and maximizes it there;
+  // false while the process shows no window yet.
+  public static bool PlaceMaximized(int pid, int x, int y, int w, int h) {
+    IntPtr old = SetThreadDpiAwarenessContext(new IntPtr(-4));   // per monitor aware v2
+    try {
+      IntPtr best = IntPtr.Zero;
+      long bestArea = 0;
+      EnumWindows((hw, l) => {
+        uint wp;
+        GetWindowThreadProcessId(hw, out wp);
+        Rect r;
+        if (wp == (uint)pid && IsWindowVisible(hw) && GetWindowRect(hw, out r)) {
+          long a = (long)(r.Right - r.Left) * (r.Bottom - r.Top);
+          if (a > bestArea) { bestArea = a; best = hw; }
+        }
+        return true;
+      }, IntPtr.Zero);
+      if (best == IntPtr.Zero) return false;
+      ShowWindow(best, 9);   // SW_RESTORE
+      SetWindowPos(best, IntPtr.Zero, x + 40, y + 40, Math.Max(400, w - 80), Math.Max(300, h - 80), 0x0014);   // NOZORDER | NOACTIVATE
+      ShowWindow(best, 3);   // SW_MAXIMIZE
+      return true;
+    } finally { SetThreadDpiAwarenessContext(old); }
+  }
 }
 '@
 
@@ -516,11 +551,11 @@ function Restore-Processes($j) {
 
 function Stop-Started($j) {
   $stopped = @()
-  foreach ($role in 'wall', 'vite', 'hub') {
+  foreach ($role in 'wall', 'control', 'vite', 'hub') {
     foreach ($s in @($j.started)) {
       if (-not $s -or $s.role -ne $role) { continue }
       if (Get-SameProcess $s.pid $s.start) {
-        Stop-Tree ([int]$s.pid) -Gentle:($role -eq 'wall')
+        Stop-Tree ([int]$s.pid) -Gentle:($role -in 'wall', 'control')
         $stopped += $role
       }
     }
@@ -566,7 +601,7 @@ function Invoke-Notaus([switch]$FromGuard) {
   }
   $r = Restore-All $j -StopStarted
   $servicesOk = Wait-ServicesRestored 20
-  $names = @{ wall = 'Wand-Fenster'; vite = 'Dev-Server'; hub = 'Kinect-Hub' }
+  $names = @{ wall = 'Wand-Fenster'; control = 'Steuerzentrale'; vite = 'Dev-Server'; hub = 'Kinect-Hub' }
   $msg = 'NOTAUS: alle Einstellungen sind zurückgestellt'
   if ($r.stopped.Count) { $msg += ', beendet: ' + (($r.stopped | ForEach-Object { $names[$_] }) -join ', ') }
   $msg += '.'
@@ -904,6 +939,7 @@ foreach ($s in $adopt) {
   if ($s.role -eq 'hub') { $script:HubOurs = $s }
   if ($s.role -eq 'vite') { $script:ViteOurs = $s }
   if ($s.role -eq 'wall') { $script:WallPid = [int]$s.pid; $script:WallStart = $s.start }
+  if ($s.role -eq 'control') { $script:ControlPid = [int]$s.pid; $script:ControlStart = $s.start }
 }
 
 function Add-Started([string]$role, $proc) {
@@ -967,30 +1003,81 @@ function Find-Wall {
   return $null
 }
 
-# The display for the output window, never the notebook's own panel: the one saved in the wall
-# setup if it is connected (by place, then by name), else the first other display; $null while only
-# the notebook's panel is there.
+# The display for the output window, found automatically every time: the second display, never the
+# notebook's own panel. Only with several other displays does the monitor name in the wall setup
+# pick one (else the leftmost); $null while only the notebook's panel is there.
 function Get-WallScreen {
   $all = @([KinectWandNative]::Displays())
   $inner = @($all | Where-Object { $_.Internal } | ForEach-Object { $_.Device })
   # a display that duplicates the notebook's panel shares its desktop: the window would be on both
   $script:ScreenMirrored = [bool]@($all | Where-Object { -not $_.Internal -and $inner -contains $_.Device }).Count
-  $ext = @($all | Where-Object { -not $_.Internal -and $_.Width -gt 0 -and $inner -notcontains $_.Device })
-  if (-not $ext.Count) { return $null }
-  $saved = $null
+  $ext = @($all | Where-Object { -not $_.Internal -and $_.Width -gt 0 -and $inner -notcontains $_.Device } | Sort-Object X, Y)
+  if ($ext.Count -le 1) { return ($ext | Select-Object -First 1) }
   $setup = Read-Json (Join-Path $WallDir 'setup.json')
-  if ($setup -and $setup.output) { $saved = $setup.output.window }
-  if ($saved -and $null -ne $saved.left -and $null -ne $saved.width) {
-    $cx = [double]$saved.left + [double]$saved.width / 2
-    $cy = [double]$saved.top + [double]$saved.height / 2
-    $hit = $ext | Where-Object { $cx -ge $_.X -and $cx -lt $_.X + $_.Width -and $cy -ge $_.Y -and $cy -lt $_.Y + $_.Height } | Select-Object -First 1
-    if ($hit) { return $hit }
-  }
-  if ($saved -and $saved.label) {
-    $hit = $ext | Where-Object { $_.Name -eq $saved.label } | Select-Object -First 1
+  $label = if ($setup -and $setup.output -and $setup.output.window) { [string]$setup.output.window.label } else { '' }
+  if ($label) {
+    $hit = $ext | Where-Object { $_.Name -eq $label } | Select-Object -First 1
     if ($hit) { return $hit }
   }
   return $ext[0]
+}
+
+# The notebook's own panel, $null while it is off (lid closed).
+function Get-NotebookScreen {
+  return [KinectWandNative]::Displays() | Where-Object { $_.Internal -and $_.Width -gt 0 } | Select-Object -First 1
+}
+
+function Get-BrowserExe {
+  $list = @($env:CHROME_PATH, "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+    "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe", "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe",
+    "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe")
+  return $list | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+}
+
+# ---- the control center: an app window of its own (own browser profile), maximized on the
+# notebook's panel; never opened while that panel is off, so it never covers the wall
+$ControlProfile = Join-Path (Split-Path -Parent $WallDir) 'control-browser'
+$script:ControlPid = 0
+$script:ControlStart = $null
+$script:ControlUrl = $null
+
+function Open-Control {
+  if (-not $script:Vite) { Add-Event 'Steuerzentrale: der Dev-Server läuft noch nicht' 'warn'; return }
+  $nb = Get-NotebookScreen
+  if (-not $nb) { Add-Event 'Der Notebook-Bildschirm ist aus (Deckel zu?): die Steuerzentrale bleibt zu, S öffnet sie' 'warn'; return }
+  $url = "$($script:Vite.url)/control/"
+  if (Test-Alive $script:ControlPid $script:ControlStart) {
+    # already open: S brings it back onto the notebook's panel
+    [void][KinectWandNative]::PlaceMaximized($script:ControlPid, $nb.X, $nb.Y, $nb.Width, $nb.Height)
+    return
+  }
+  $exe = Get-BrowserExe
+  if (-not $exe) { Add-Event 'Kein Chrome/Edge gefunden: die Steuerzentrale bleibt zu' 'warn'; return }
+  # a window of this profile from before (one browser per profile): reuse it if it shows this dev server
+  foreach ($c in @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe' OR Name='msedge.exe'" -ErrorAction SilentlyContinue)) {
+    $cl = [string]$c.CommandLine
+    if (-not $cl -or $cl -match '--type=' -or -not $cl.ToLower().Replace('/', '\').Contains($ControlProfile.ToLower())) { continue }
+    if ($cl.Contains("--app=$url")) {
+      $script:ControlPid = [int]$c.ProcessId; $script:ControlStart = [string][KinectWandNative]::StartTime($script:ControlPid); $script:ControlUrl = $script:Vite.url
+      [void][KinectWandNative]::PlaceMaximized($script:ControlPid, $nb.X, $nb.Y, $nb.Width, $nb.Height)
+      Add-Event 'Steuerzentrale ist schon offen, auf den Notebook-Bildschirm geholt'
+      return
+    }
+    Stop-Tree ([int]$c.ProcessId) -Gentle
+  }
+  $browserArgs = @("--user-data-dir=`"$ControlProfile`"", '--no-first-run', '--no-default-browser-check',
+    '--disable-session-crashed-bubble', '--hide-crash-restore-bubble', '--disable-features=Translate',
+    "--window-position=$($nb.X + 40),$($nb.Y + 40)", '--start-maximized', "--app=$url")
+  $p = Start-Process -FilePath $exe -ArgumentList $browserArgs -PassThru
+  $e = Add-Started 'control' $p
+  $script:ControlPid = $p.Id
+  $script:ControlStart = $e.start
+  $script:ControlUrl = $script:Vite.url
+  for ($i = 0; $i -lt 50 -and (Test-Alive $p.Id $e.start); $i++) {
+    if ([KinectWandNative]::PlaceMaximized($p.Id, $nb.X, $nb.Y, $nb.Width, $nb.Height)) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  Add-Event 'Steuerzentrale geöffnet auf dem Notebook-Bildschirm'
 }
 
 # The display the output window is on now, $null while it shows no window yet.
@@ -1141,6 +1228,16 @@ function Watch-Components {
     $script:WallPid = 0
     if ($script:WallAuto) { Add-Event 'Das Wand-Fenster wurde geschlossen: öffne es wieder' 'warn'; $script:NextTry.wall = $now + 3 }
   }
+  # control center: closed by hand stays closed (S); a new dev server address needs a new window
+  if ($script:ControlPid -and -not (Test-Alive $script:ControlPid $script:ControlStart)) {
+    $script:ControlPid = 0
+    Add-Event 'Steuerzentrale geschlossen (S öffnet sie wieder)'
+  }
+  if ($script:ControlPid -and $script:Vite -and $script:ControlUrl -and $script:ControlUrl -ne $script:Vite.url) {
+    Stop-Tree $script:ControlPid -Gentle
+    $script:ControlPid = 0
+    Open-Control
+  }
   if ($script:WallPid -and $script:Vite -and $script:WallUrl -and $script:WallUrl -ne $script:Vite.url) {
     Add-Event "Der Dev-Server hat eine neue Adresse: öffne das Wand-Fenster neu"
     Close-Wall
@@ -1192,7 +1289,7 @@ if ($script:Vite) {
 if (-not $script:Vite) { Start-Vite }
 
 if ($script:WallAuto) { Watch-Components }
-if ($Control -and $script:Vite) { Start-Process "$($script:Vite.url)/control/" }
+if (-not $NoControl) { Open-Control }
 Update-Tuning
 
 # ---------------------------------------------------------------------------------------------
@@ -1264,6 +1361,8 @@ function Show-Status {
   else { $wallText = 'zu' }
   $wallText += if ($script:WallAuto) { ' · geht es zu, öffnet es sich wieder' } else { ' · automatisch öffnen: aus (W)' }
   L "  Wand       $wallText" $(if ($script:WallPid -or -not $script:WallAuto) { 'Gray' } else { 'Yellow' })
+  if ($script:ControlPid) { L '  Steuerung  Steuerzentrale offen auf dem Notebook-Bildschirm (S holt sie dorthin zurück)' }
+  else { L '  Steuerung  Steuerzentrale zu (S öffnet sie auf dem Notebook-Bildschirm)' 'DarkGray' }
   L ('  Schirme    ' + ((@([KinectWandNative]::Displays()) | Sort-Object X | ForEach-Object { Format-Screen $_ }) -join ' · ')) 'DarkGray'
   $cpu = [KinectWandNative]::CpuPercent()
   $power = [KinectWandNative]::Power()
@@ -1283,7 +1382,7 @@ function Show-Status {
     L '  Optimiert  nein, zurückgestellt (der Bildschirm bleibt trotzdem an)' 'DarkGray'
   }
   L ''
-  L '  [Q] Beenden  [W] Wand-Fenster zu/auf  [S] Steuerzentrale  [O] Optimierungen zurück  [L] Logs' 'White'
+  L '  [Q] Beenden  [W] Wand-Fenster zu/auf  [S] Steuerzentrale aufs Notebook  [O] Optimierungen zurück  [L] Logs' 'White'
   L ''
   foreach ($e in $Events) { L ('  {0:HH:mm:ss} {1}' -f $e.t, $e.text) $(if ($e.level -eq 'warn') { 'Yellow' } else { 'DarkGray' }) }
 
@@ -1353,7 +1452,7 @@ while (-not $quit) {
         if ($script:WallPid) { $script:WallAuto = $false; Close-Wall; Add-Event 'Wand-Fenster geschlossen (W öffnet es wieder)' }
         else { $script:WallAuto = $true; $script:WallLaunches.Clear(); $script:NextTry.wall = 0; $nextWatch = 0 }
       } elseif ($ch -eq 's') {
-        if ($script:Vite) { Start-Process "$($script:Vite.url)/control/"; Add-Event 'Steuerzentrale geöffnet' }
+        Open-Control
       } elseif ($ch -eq 'o') {
         if ($script:Optimize) { Stop-Optimizing }
       } elseif ($ch -eq 'l') {
