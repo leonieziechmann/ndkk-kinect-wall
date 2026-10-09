@@ -25,6 +25,17 @@ const PLAY_HYST = 0.15; // m
 // float (lowest point 0.6-1.6 m) and are no people. Someone close to the sensor (0.8 m) shows
 // down to about 0.4 m, everyone else down to the floor.
 const GROUND_MAX = 0.45;
+// the jump (see Figure.startJump, Figure.carry)
+const V_SMALL = 1; // m/s: the takeoff of a small hop (measured 0.7-1.5, median 1.2); below it jumpHeight
+const TA_MIN = 0.12; // s: the fastest rise (an obstacle is already close)
+const TA_MAX = 0.45; // s: the slowest rise
+const G_MIN = 0.5; // carried over an obstacle the figure may fall this much slower (× the jump's gravity)
+
+/** the figure's gravity (m/s²): a small hop (jumpHeight m) lasts jumpTime s */
+export function jumpGravity(p) {
+  const T = Math.max(0.2, p.jumpTime);
+  return (8 * p.jumpHeight) / (T * T);
+}
 
 // bones for the body parts: [from, to, part]; hands and forearms depend on the outfit
 const BONES = [
@@ -143,27 +154,61 @@ export class Figure {
   }
 
   /**
-   * A jump with the boost: not higher, but longer in the air. The figure rises quickly (jumpUp s),
-   * hovers near the top, sinking a little, and comes down (jumpDown s); jumpTime s in all. A small
-   * hop goes jumpHeight m high (enough for every obstacle on the ground), a bigger one higher:
-   * jumpGain × how high the real body would fly with its takeoff speed `v` (v² / 2g). In the air
-   * another hop starts again from where the figure is: air jumps.
-   * lead: s of the jump that already passed when it was detected (only on the ground).
+   * A jump: an arc, as high as the person jumped. A small hop (takeoff V_SMALL m/s or slower) goes
+   * jumpHeight m up and lasts jumpTime s, a strong one (jumpStrong m/s) jumpHeightMax m; in between
+   * by the takeoff speed `v` (the fastest rise of the body since the push-off). Rising it slows down,
+   * falling it speeds up with the same gravity (jumpGravity). The game then stretches the jump over
+   * the obstacle that comes (carry). In the air another hop starts again from where the figure is:
+   * air jumps. lead: s of the jump that already passed when it was detected (only on the ground).
    */
   startJump(time, p, lead = 0, v = 0) {
-    const real = v > 0 ? (v * v) / 19.62 : 0;
-    const H = p.jumpHeight + p.jumpGain * real;
+    const strong = Math.max(V_SMALL + 0.1, p.jumpStrong);
+    const s = Math.min(1, Math.max(0, (v - V_SMALL) / (strong - V_SMALL)));
+    const H = p.jumpHeight + Math.max(0, p.jumpHeightMax - p.jumpHeight) * s;
+    const g = jumpGravity(p);
     this.airJumps = this.air ? this.airJumps + 1 : 0;
     // takes off from where the figure is drawn now (the instant lift may have raised it already)
     const from = this.air ? this.h : Math.max(this.h, this.realRise * this.instant);
-    const up = Math.max(0.05, p.jumpUp);
-    const down = Math.max(0.05, p.jumpDown);
-    this.jump = { t0: time - (this.air ? 0 : lead), from, top: from + H, up, hang: Math.max(0, p.jumpTime - up - down), down };
+    this.jump = { t0: time - (this.air ? 0 : lead), from, apex: from + H, ta: Math.sqrt((2 * H) / g), g, carried: 0 };
     this.air = true;
     this.jumps++;
   }
 
-  /** the jump's height at `time`: up, hover, down, land; the head stays (about) on the wall */
+  /**
+   * Carries the running jump over an obstacle: the figure is at least `clear` m up from `a` to `b` s
+   * from now (Game.carry: while the obstacle passes below). Planned again from where the figure is
+   * now: the rise time that needs the lowest top (the top over the middle of the obstacle, rising in
+   * TA_MIN-TA_MAX s), never lower than the hop itself. At most `p.assistMax` m above the obstacle; if
+   * that is not enough (jumped much too early), it falls a little slower (G_MIN), and then it lands
+   * on the obstacle after all.
+   */
+  carry(time, a, b, clear, p) {
+    const j = this.jump;
+    if (!j) return;
+    const from = this.h;
+    const g = j.g;
+    const own = Math.max(j.apex, from); // the hop's own top
+    let best = null;
+    for (let ta = TA_MIN; ta <= TA_MAX + 1e-6; ta += 0.01) {
+      if (a < TA_MIN && ta > TA_MIN) break; // the obstacle is close: up as fast as possible
+      let apex = Math.max(own, clear + 0.02);
+      if (b > ta) apex = Math.max(apex, clear + (g * (b - ta) ** 2) / 2); // still up when it has passed
+      if (a > 0 && a < ta) {
+        const u = a / ta; // already up when it comes
+        apex = Math.max(apex, from + (clear - from) / (u * (2 - u)));
+      }
+      if (!best || apex < best.apex - 1e-4) best = { ta, apex };
+    }
+    const cap = Math.max(own, clear + p.assistMax);
+    let gDown = g;
+    if (best.apex > cap) {
+      best.apex = cap;
+      if (b > best.ta) gDown = Math.min(g, Math.max(g * G_MIN, (2 * (cap - clear)) / (b - best.ta) ** 2));
+    }
+    this.jump = { t0: time, from, apex: best.apex, ta: best.ta, g: gDown, carried: j.carried + 1 };
+  }
+
+  /** the jump's height at `time`: up (slowing down), down (speeding up), land; the head stays (about) on the wall */
   updateLift(time, dt, L) {
     if (this.air && this.jump) {
       const j = this.jump;
@@ -172,25 +217,19 @@ export class Figure {
       const wallTop = L.groundRow * L.cellMy;
       const head = this.headTop ?? (this.headCell ? (L.groundRow - this.headCell[1]) * L.cellMy : 1.2);
       const ceil = Math.max(0.1, wallTop + this.headroom - head + this.realRise);
-      const top = Math.min(j.top, Math.max(ceil, j.from));
-      const sink = 0.12 * (top - j.from); // hovering, it sinks a little
       const t = time - j.t0;
-      if (t < j.up) {
-        const u = t / j.up;
-        this.h = j.from + (top - j.from) * (1 - (1 - u) * (1 - u)); // fast at first, slowing down
-      } else if (t < j.up + j.hang) {
-        this.h = top - sink * ((t - j.up) / Math.max(1e-3, j.hang));
-      } else {
-        const u = Math.min(1, (t - j.up - j.hang) / j.down);
-        this.h = (top - sink) * (1 - u * u); // falling faster and faster
-        if (u >= 1) {
-          this.h = 0;
-          this.air = false;
-          this.jump = null;
-          this.landed = time;
-          this.justLanded = true;
-        }
-      }
+      let h;
+      if (t < j.ta) {
+        const u = t / j.ta;
+        h = j.from + (j.apex - j.from) * u * (2 - u);
+      } else h = j.apex - (j.g * (t - j.ta) ** 2) / 2;
+      if (t >= j.ta && h <= 0) {
+        this.h = 0;
+        this.air = false;
+        this.jump = null;
+        this.landed = time;
+        this.justLanded = true;
+      } else this.h = Math.min(h, Math.max(ceil, j.from));
     }
     // the figure rises with the real body already (its mask); `instant` lifts it more at once,
     // before the jump is detected; the jump only adds what is missing

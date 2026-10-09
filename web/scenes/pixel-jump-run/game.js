@@ -20,6 +20,13 @@ const rand = (a, b) => a + Math.random() * (b - a);
 const pick = (list) => list[Math.floor(Math.random() * list.length)];
 const COUNT = 3; // s of countdown
 export const GOAL_W = 2; // cells
+const AIR = 0.9; // s: a jump over an obstacle lasts about this long (spacing of the obstacles)
+// the jump assist (carry)
+const CLEAR_CELLS = 1; // the feet pass this many cells above an obstacle
+const LEG_ROWS = 7; // the figure's lowest rows: what a ground obstacle can touch
+const CARRY_AHEAD = 0.8; // s: obstacles that come within this time of the jump are carried over
+const MERGE_GAP = 0.2; // s: two obstacles this close after each other: one long jump over both
+const PAD = 0.03; // s before and after
 
 export class Game {
   constructor() {
@@ -104,7 +111,7 @@ export class Game {
         break;
       }
     }
-    const air = p.jumpTime * this.speed; // m covered during one jump
+    const air = AIR * this.speed; // m covered during one jump
     let len = 0;
     const low = (x) => {
       const type = pick(LOW);
@@ -281,6 +288,7 @@ export class Game {
     }
 
     this.collide(dt, figs, L, p, lag, move);
+    if (p.assist) for (const f of jumped) this.carry(f, L, p, lag);
 
     // particles: cells that fly and fall
     const parts = [];
@@ -336,15 +344,17 @@ export class Game {
       if (gone || th.dead) continue;
       keep.push(th);
       const obstacle = th.kind === 'obstacle';
-      const cc = obstacle ? c0 + back : c0; // where it is checked
-      const lo = obstacle ? cc : Math.min(c0, c0 + back);
-      const hi = (obstacle ? cc : Math.max(c0, c0 + back)) + fr.w - 1;
-      if (hi < 0 || lo >= GW) continue;
+      if (Math.max(c0, c0 + back) + fr.w - 1 < 0 || Math.min(c0, c0 + back) >= GW) continue;
       const flip = flipOf(this, th);
       // obstacles only hit while the round runs; coins can be caught any time (count while it runs)
       const targets = this.phase === 'run' ? players : obstacle ? [] : figs.filter((f) => f.alive !== false);
       for (const f of targets) {
         const [b0, , b1] = f.bbox;
+        // where it is checked: shifted back (latency); for a figure carried over it (see carry), from
+        // the top of the jump on where it is now, so the figure lands right behind it
+        const cc = obstacle ? c0 + ((th.visualFrom?.get(f.id) ?? Infinity) <= t ? 0 : back) : c0;
+        const lo = obstacle ? cc : Math.min(c0, c0 + back);
+        const hi = (obstacle ? cc : Math.max(c0, c0 + back)) + fr.w - 1;
         if (lo > b1 || hi < b0) {
           // past this figure without a hit: it cleared the obstacle
           if (obstacle && !th.hit.has(f.id) && !th.passed.has(f.id)) {
@@ -359,6 +369,7 @@ export class Game {
           }
           continue;
         }
+        if (obstacle && th.passed.has(f.id)) continue; // already past it
         if (obstacle) (th.near ??= new Set()).add(f.id);
         let hits = this.overlap(th, fr, f, L, flip, cc);
         let at = cc;
@@ -413,6 +424,63 @@ export class Game {
       }
     }
     this.things = keep;
+  }
+
+  /**
+   * Jump assist: whoever jumps with the right timing comes over the obstacle well, without flying
+   * much more than needed. The jump that just started (f.jump) is stretched over the ground
+   * obstacles that will pass below the figure's legs. Rising, the figure is checked against where
+   * the obstacle was `lag` s ago (the takeoff was late by the latency, not the person); from the top
+   * on against where it is on the wall, so the figure lands right behind it and does not hang in the
+   * air for the latency (a moment less: half the grace). Two close after each other make one long
+   * jump. See Figure.carry.
+   */
+  carry(f, L, p, lag) {
+    if (!f.jump || !f.grid || f.bbox[2] < f.bbox[0]) return;
+    // the columns of the legs: the lowest rows of the figure (before the lift)
+    const GW = L.GW;
+    const [c0, , c1, r1] = f.bbox;
+    let l0 = GW;
+    let l1 = -1;
+    for (let r = Math.max(0, r1 - LEG_ROWS + 1); r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        if (!f.grid[r * GW + c]) continue;
+        if (c < l0) l0 = c;
+        if (c > l1) l1 = c;
+      }
+    }
+    if (l1 < l0) return;
+    const vc = Math.max(0.1, this.speed) / L.cellMx; // cells per s
+    const late = Math.min(Math.max(0, lag), p.grace * 0.5); // s: the end may use half the grace
+    const wins = [];
+    for (const th of this.things) {
+      if (th.kind !== 'obstacle' || th.high || th.dead || th.hit.has(f.id) || th.passed.has(f.id) || !th.frame) continue;
+      const lo = (th.x * L.pxX - L.ox) / L.cellPx; // its left edge on the wall now (cells)
+      const hi = lo + th.frame.w;
+      // reaches the legs and leaves them, on the wall now
+      const a = (this.dir > 0 ? lo - (l1 + 1) : l0 - hi) / vc;
+      const b = (this.dir > 0 ? hi - l0 : l1 + 1 - lo) / vc;
+      if (b - late <= 0) continue;
+      wins.push({ th, a, up: a + Math.max(0, lag) - PAD, b: b - late + PAD, clear: (th.frame.h + CLEAR_CELLS) * L.cellMy });
+    }
+    wins.sort((x, y) => x.a - y.a);
+    let w = null;
+    for (const x of wins) {
+      if (!w) {
+        if (x.a > CARRY_AHEAD) break;
+        w = { ...x, list: [x.th] };
+      } else if (x.a - w.b <= MERGE_GAP) {
+        w.b = Math.max(w.b, x.b);
+        w.clear = Math.max(w.clear, x.clear);
+        w.list.push(x.th);
+      } else break;
+    }
+    if (!w) return;
+    // up when it comes where it is checked while rising (the takeoff counts with the latency
+    // compensation), still up when it has left the legs where it is seen
+    f.carry(this.time, w.up, w.b, w.clear, p);
+    const top = f.jump.t0 + f.jump.ta;
+    for (const th of w.list) (th.visualFrom ??= new Map()).set(f.id, top);
   }
 
   /** cells where a thing overlaps a figure (lifted by its jump): count and one of them */
