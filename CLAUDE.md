@@ -17,7 +17,7 @@ The user sees the scenes of every worktree at http://127.0.0.1:8090/; each workt
 
 ## LED wall: read `web/WALL.md`
 
-The scenes run on a 6 × 2 m LED wall (1008 × 336). One shared core handles it: `wall: true` makes the canvas the LED image, `ctx.wall` maps the Kinect onto the wall (mirror, real size, stretched walk), and the control center `http://127.0.0.1:<port>/control/` runs the output window `/wall/` (show, params per scene, test images, wall setup). Do not build your own wall emulation into a scene.
+The scenes run on a 6 × 2 m LED wall (1008 × 336). One shared core handles it: `wall: true` makes the canvas the LED image, `ctx.wall` maps the Kinect onto the wall through the scene's projection (play field → wall, curves, mirror, body size; a default plus per-scene values), and the control center `http://127.0.0.1:<port>/control/` runs the output window `/wall/` (show, params per scene, projections, test images, wall setup). Do not build your own wall emulation into a scene.
 
 ## Kinect data: always through kinect-hub
 

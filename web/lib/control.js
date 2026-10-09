@@ -1,12 +1,14 @@
 // control.js — the control center of the LED wall (/control/, see WALL.md). Runs the show of the
 // output window (/wall/): what plays, the params of every entry, blackout, test images; edits the
-// wall setup (with a top view of the room and the mapping); shows what the output reports.
+// projection of every scene (lib/control-projection.js) and the wall setup (with a top view of the
+// room and the block zones); shows what the output reports.
 // Talks to the output over the wall bus (lib/wall-bus.js); setup and show are saved by the dev
 // server (shared by every worktree) and in localStorage.
 
 import GUI from 'lil-gui';
 import { WallBus, loadDoc, saveDoc, debounce } from './wall-bus.js';
-import { WallMap, SETUP_FIELDS, WALL_DEFAULTS, normalizeSetup, getPath, setPath, manualRoom, inPolygon } from './wall.js';
+import { WallMap, SETUP_FIELDS, WALL_DEFAULTS, normalizeSetup, getPath, setPath, manualRoom, inPolygon, coneAt } from './wall.js';
+import { createProjectionTab } from './control-projection.js';
 import { normalizeShow, newEntry, PATTERNS, TRANSITIONS } from './wall-show.js';
 import { normalizeParams, acceptsParam, readStore, storeKey } from './params.js';
 import { hubUrl, getJson, localScenes, allDevServers, devServer } from './hub.js';
@@ -42,6 +44,8 @@ const state = {
   hub: null,
 };
 const map = new WallMap();
+/** the tab "Projektion" (lib/control-projection.js), created further down */
+let proj = null;
 
 // ---------- saving ----------
 
@@ -58,6 +62,7 @@ function setupChanged() {
   lastLocalEdit.setup = Date.now();
   bus.send('setup', { setup: state.setup });
   saveSetup();
+  proj?.setupChanged();
   drawPlan();
 }
 
@@ -85,6 +90,7 @@ const out = () => external()[0] ?? others()[0] ?? outputs()[0] ?? null;
 bus.on('telemetry', (data, msg) => {
   state.outputs.set(msg.from, { data, at: Date.now() });
   renderLive();
+  if (msg.from === out()?.id) proj?.tick();
 });
 bus.on('frame', (data) => {
   $('preview').src = data.jpeg;
@@ -163,6 +169,7 @@ bus.on('setup', (d) => {
   map.setSetup(state.setup);
   setupGui?.refresh();
   renderBlocks();
+  proj?.setupChanged();
   drawPlan();
 });
 bus.on('show', (d) => {
@@ -272,6 +279,7 @@ for (const b of document.querySelectorAll('.tabs button')) {
       // not remembered
     }
     if (b.dataset.tab === 'setup') drawPlan();
+    if (b.dataset.tab === 'projection') proj?.render();
   };
 }
 try {
@@ -645,6 +653,7 @@ function buildSetupGui() {
   const folders = new Map();
   const proxies = [];
   for (const f of SETUP_FIELDS) {
+    if (f.legacy) continue;
     if (!folders.has(f.group)) folders.set(f.group, gui.addFolder(f.group));
     const proxy = { v: getPath(state.setup, f.key) };
     let c;
@@ -668,10 +677,6 @@ function buildSetupGui() {
     const s = state.setup;
     for (const { f, c } of proxies) {
       let show = true;
-      if (f.key === 'map.factor') show = s.map.mode === 'factor';
-      if (f.key === 'map.depth') show = s.map.mode === 'fit';
-      if (f.key === 'map.distance') show = s.map.mode !== 'real';
-      if (f.key === 'map.margin' || f.key === 'map.clamp') show = s.map.apply === 'person';
       if (f.key === 'sensor.height' || f.key === 'sensor.tilt') show = s.sensor.floor === 'manual' || !out()?.room?.found;
       if (f.key === 'output.x' || f.key === 'output.y') show = s.output.fit === 'pixel';
       c.show(show);
@@ -739,7 +744,7 @@ $('screenBtn').onclick = async () => {
 };
 
 $('exportBtn').onclick = () => {
-  const blob = new Blob([JSON.stringify({ setup: state.setup, show: state.show }, null, 2)], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ setup: state.setup, projection: proj.doc, show: state.show }, null, 2)], { type: 'application/json' });
   const a = el('a');
   a.href = URL.createObjectURL(blob);
   a.download = `led-wand-${new Date().toISOString().slice(0, 10)}.json`;
@@ -758,6 +763,7 @@ $('importFile').onchange = async () => {
       setupChanged();
       renderBlocks();
     }
+    if (doc.projection) proj.doc = doc.projection;
     if (doc.show) {
       state.show = normalizeShow(doc.show);
       showChanged();
@@ -786,8 +792,6 @@ const toPlan = (px, py) => [(px - view.ox) / view.scale, (py - view.oy) / view.s
 const BLOCK_RGB = '255, 59, 79';
 const edit = { drawing: null, drag: null, hover: null, selected: null, mouse: null }; // block zone editing
 let roomShot = null; // the floor plan: { x0, z0, nx, nz, hits, top, floor, at, source } (see loadRoomShot)
-let shotCanvas = null;
-let shotKey = '';
 
 // The floor plan of the room: one depth frame of the hub, every point put on the floor (orthographic,
 // from straight above) into cells of 5 cm. A cell is drawn when something stands there between
@@ -835,7 +839,7 @@ async function loadRoomShot() {
       }
     }
     roomShot = { x0, z0, nx, nz, hits, top, floor, at: Date.now(), source: o?.room?.found ? 'erkannter Boden' : 'Boden von Hand' };
-    shotKey = '';
+    proj?.render();
     $('planNote').textContent = `Grundriss von ${new Date().toLocaleTimeString()} (${roomShot.source})`;
   } catch (e) {
     $('planNote').textContent = `Grundriss ging nicht: ${e.message} (läuft der Hub?)`;
@@ -844,25 +848,30 @@ async function loadRoomShot() {
 }
 $('shotBtn').onclick = loadRoomShot;
 
-/** the floor plan at the current transform (cached): cells colored by how high things stand there */
-function shotLayer(cssW, cssH, dpr) {
+/** the floor plan at the transform `v` (cached per view): cells colored by how high things stand there */
+const shotCache = new WeakMap(); // view -> { key, canvas }
+function shotLayer(cssW, cssH, dpr, v = view) {
   if (!roomShot) return null;
-  const key = `${cssW}x${cssH}@${dpr}:${view.ox.toFixed(2)},${view.scale.toFixed(3)}:${roomShot.at}`;
-  if (key === shotKey && shotCanvas) return shotCanvas;
-  shotKey = key;
-  shotCanvas ??= document.createElement('canvas');
+  const key = `${cssW}x${cssH}@${dpr}:${v.ox.toFixed(2)},${v.oy.toFixed(2)},${v.scale.toFixed(3)}:${roomShot.at}`;
+  let cache = shotCache.get(v);
+  if (cache?.key === key) return cache.canvas;
+  cache ??= { key: '', canvas: document.createElement('canvas') };
+  cache.key = key;
+  shotCache.set(v, cache);
+  const shotCanvas = cache.canvas;
   shotCanvas.width = Math.round(cssW * dpr);
   shotCanvas.height = Math.round(cssH * dpr);
   const g = shotCanvas.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, cssW, cssH);
   const { x0, z0, nx, nz, hits, top, floor } = roomShot;
-  const size = PLAN_CELL * view.scale + 0.5; // a hair larger: no seams between cells
+  const size = PLAN_CELL * v.scale + 0.5; // a hair larger: no seams between cells
   for (let cz = 0; cz < nz; cz++) {
     for (let cx = 0; cx < nx; cx++) {
       const c = cz * nx + cx;
       if (!hits[c] && !floor[c]) continue;
-      const [px, py] = toPx(x0 + cx * PLAN_CELL, z0 + cz * PLAN_CELL);
+      const px = v.ox + (x0 + cx * PLAN_CELL) * v.scale;
+      const py = v.oy + (z0 + cz * PLAN_CELL) * v.scale;
       if (px > cssW || py > cssH || px + size < 0 || py + size < 0) continue;
       if (hits[c] >= 2) {
         // low (tables, chairs) dark teal .. tall (walls, stations, people) light
@@ -884,8 +893,10 @@ function drawPlan() {
   const o = out();
   map.setSetup(s);
   if (o?.tanH) map.tanH = o.tanH;
-  const depth = s.zone.far + s.sensor.front + 0.5;
-  const spanW = Math.max(s.size.w, 2 * (s.zone.far * map.tanH) + 1) + 1;
+  const pd = proj?.doc.default ?? map.projection;
+  map.setProjection(pd);
+  const depth = Math.max(pd.zone.far, pd.field.far) + 0.5;
+  const spanW = Math.max(s.size.w, 2 * ((depth - s.sensor.front) * map.tanH) + 1) + 1;
   const ppm = cssW / spanW;
   const cssH = Math.round(Math.min(560, (depth + 0.6) * ppm));
   const dpr = devicePixelRatio || 1;
@@ -927,21 +938,20 @@ function drawPlan() {
     g.stroke();
     g.fillText(`${z} m`, 4, Y(z) - 3);
   }
-  // the sensor's view (gray) and the zone (lighter)
+  // the sensor's view (gray) and the default projection's zone (lighter)
   const sx = s.size.w / 2 + s.sensor.x;
   const sz = s.sensor.front;
   const t = map.tanH;
-  const wedge = (z0, z1, fill) => {
-    g.fillStyle = fill;
-    g.beginPath();
-    g.moveTo(X(sx - z0 * t), Y(sz + z0));
-    g.lineTo(X(sx + z0 * t), Y(sz + z0));
-    g.lineTo(X(sx + z1 * t), Y(sz + z1));
-    g.lineTo(X(sx - z1 * t), Y(sz + z1));
-    g.closePath();
-    g.fill();
-  };
-  wedge(s.zone.near, s.zone.far, 'rgba(120,170,255,0.08)');
+  const [zl0, zr0] = coneAt(s, t, pd.zone.near);
+  const [zl1, zr1] = coneAt(s, t, pd.zone.far);
+  g.fillStyle = 'rgba(120,170,255,0.08)';
+  g.beginPath();
+  g.moveTo(X(zl0), Y(pd.zone.near));
+  g.lineTo(X(zr0), Y(pd.zone.near));
+  g.lineTo(X(zr1), Y(pd.zone.far));
+  g.lineTo(X(zl1), Y(pd.zone.far));
+  g.closePath();
+  g.fill();
   g.strokeStyle = 'rgba(255,255,255,0.28)';
   g.setLineDash([2, 3]);
   g.beginPath();
@@ -960,30 +970,21 @@ function drawPlan() {
   g.fillText(`LED-Wand ${s.size.w} m`, X(s.size.w / 2), Y(0) - 7 < 10 ? Y(0) + 14 : Y(0) - 7);
   g.fillStyle = '#fff';
   g.fillRect(X(sx) - 6, Y(sz) - 3, 12, 6);
-  // the mapping: where the view at the reference distance (and the zone's ends) lands on the wall
-  const marks = s.map.mode === 'real' ? [s.zone.near, s.zone.far] : [s.zone.near, s.map.distance, s.zone.far];
-  for (const d of marks) {
-    const ref = d === s.map.distance && s.map.mode !== 'real';
-    g.strokeStyle = ref ? 'rgba(255,220,120,0.9)' : 'rgba(255,255,255,0.25)';
-    g.setLineDash(ref ? [5, 4] : [2, 4]);
-    g.beginPath();
-    g.moveTo(X(sx - d * t), Y(sz + d));
-    g.lineTo(X(sx + d * t), Y(sz + d));
-    for (const side of [-1, 1]) {
-      const lat = side * d * t;
-      let wx = s.size.w / 2 + s.sensor.x + lat * map.k(lat, d);
-      if (s.map.apply === 'person' && s.map.clamp) wx = Math.min(s.size.w - s.map.margin, Math.max(s.map.margin, wx));
-      g.moveTo(X(sx + lat), Y(sz + d));
-      g.lineTo(X(wx), Y(0));
-    }
-    g.stroke();
-    if (ref) {
-      g.fillStyle = 'rgba(255,220,120,0.95)';
-      g.textAlign = 'left';
-      g.fillText(`${d} m · Faktor ${map.k(1, d).toFixed(2)}`, X(sx + d * t) + 6, Y(sz + d) + 4);
-    }
-  }
+  // the default projection's play field (edited in the tab "Projektion")
+  const F = pd.field;
+  g.strokeStyle = 'rgba(255,220,120,0.6)';
+  g.setLineDash([5, 4]);
+  g.beginPath();
+  g.moveTo(X(F.nearL), Y(F.near));
+  g.lineTo(X(F.nearR), Y(F.near));
+  g.lineTo(X(F.farR), Y(F.far));
+  g.lineTo(X(F.farL), Y(F.far));
+  g.closePath();
+  g.stroke();
   g.setLineDash([]);
+  g.fillStyle = 'rgba(255,220,120,0.85)';
+  g.textAlign = 'left';
+  g.fillText('Spielfeld (Standard)', X(F.farR) + 6, Y(F.far) + 4);
   drawBlocks(g);
   // the people: where they stand -> where the wall shows them
   for (const p of o?.persons ?? []) {
@@ -1301,10 +1302,27 @@ async function loadShow() {
   if (state.selected && !state.show.entries.some((e) => e.id === state.selected)) selectEntry(null);
 }
 
+// ---------- projections (tab "Projektion", lib/control-projection.js) ----------
+
+proj = createProjectionTab({
+  bus,
+  state,
+  out,
+  toast,
+  el,
+  $,
+  drawRoomShot(g, v, cssW, cssH, dpr) {
+    const shot = shotLayer(cssW, cssH, dpr, v);
+    if (shot) g.drawImage(shot, 0, 0, cssW, cssH);
+  },
+});
+
 /** For debugging and tests. */
-globalThis.__wallControl = { state, toPx, toPlan, outputs, edit, view };
+globalThis.__wallControl = { state, toPx, toPlan, outputs, edit, view, proj };
 
 await Promise.all([loadSetup(), loadShow(), loadScenes()]);
+await proj.load();
+await proj.select(out()?.scene && state.scenes.some((x) => x.name === out().scene) ? out().scene : '');
 booted = true;
 const playing = out()?.entry;
 selectEntry(state.show.entries.some((e) => e.id === playing) ? playing : null);

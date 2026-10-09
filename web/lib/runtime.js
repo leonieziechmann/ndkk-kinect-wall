@@ -5,7 +5,8 @@
 // Keys of the runtime: h UI on/off · f fullscreen · m mirror · , . previous/next scene (all worktrees)
 // Person tracking: streams: ['persons'] plus optional persons: {...} (or (params) => {...}), see
 // ../PERSONS.md; ctx.persons is the list of Person objects.
-// LED wall (../WALL.md): ctx.wall is the wall setup and the mapping Kinect -> wall. A scene with
+// LED wall (../WALL.md): ctx.wall is the wall setup, the scene's projection and the mapping Kinect ->
+// wall (one WallMap per scene instance: two scenes in a crossfade map with their own projection). A scene with
 // `wall: true` renders the LED image (canvas = LED pixels, shown scaled to fit). /wall/ is the output
 // window for the LED controller: it plays the show of the control center (/control/, lib/wall-output.js)
 // and switches scenes in place with a crossfade.
@@ -16,7 +17,7 @@ import { KinectData, KinectGpu } from './kinect-data.js';
 import { PERSON_OPTIONS } from './persons.js';
 import { ParamPanel } from './params.js';
 import { OrbitCamera } from './camera.js';
-import { WallMap } from './wall.js';
+import { WallMap, normalizeProjectionDoc, resolveProjection } from './wall.js';
 import { WallBus, loadDoc } from './wall-bus.js';
 import { hubUrl, wsUrl, devServer, localScenes, allDevServers } from './hub.js';
 import loaders from 'virtual:kinect-scene-loaders';
@@ -90,8 +91,11 @@ const kinect = new KinectData(wsUrl(HUB));
 kinect.connect();
 const camera = new OrbitCamera();
 const panel = new ParamPanel();
+/** the wall of the page (setup, block zones, the default projection); each scene has its own (inst.wall) */
 const wall = new WallMap();
 wall.output = OUTPUT && !EMBED;
+let projectionRaw = null; // projection.json as loaded (null: the default comes from the setup)
+let projections = normalizeProjectionDoc(null, wall.setup);
 // block zones of the wall setup: nobody standing in one is tracked, for every scene
 kinect.personFilter = (result, opts) => wall.filterPersons(result, opts);
 const bus = new WallBus(OUTPUT ? 'output' : 'scene');
@@ -166,23 +170,57 @@ if (import.meta.hot) {
 
 // ---------- the LED wall setup (shared by every page, see WALL.md) ----------
 
+/** every scene instance alive on this page (each with its own WallMap) */
+const liveInstances = () => [rt.pending, rt.current, ...rt.leaving.map((l) => l.inst)].filter(Boolean);
+
+/** The projection of a scene instance: the default, the scene's own wishes, the control center's values. */
+const projectionOf = (inst) => resolveProjection(projections, inst.name, inst.def.projection, { setup: wall.setup, tanH: wall.tanH });
+
+/** Setup or projections changed: every wall map takes them. */
+function applyWall() {
+  projections = normalizeProjectionDoc(projectionRaw, wall.setup);
+  wall.setProjection(projections.default);
+  for (const inst of liveInstances()) {
+    inst.wall.setSetup(wall.setup);
+    try {
+      inst.wall.setProjection(projectionOf(inst));
+    } catch (e) {
+      pushError('Projektion', e);
+    }
+  }
+  // the output's camera view mirrors like the default projection (wall scenes map with their own)
+  if (OUTPUT) xSign = projections.default.mirror ? 1 : -1;
+}
+
 async function loadSetup() {
   const { doc, source } = await loadDoc('setup');
   wall.setSetup(doc ?? {});
   rt.setupSource = source;
-  if (OUTPUT) xSign = wall.setup.mirror ? 1 : -1;
+  applyWall();
+}
+async function loadProjections() {
+  const { doc } = await loadDoc('projection');
+  projectionRaw = doc;
+  applyWall();
 }
 // the control center sends every change at once; the file follows a moment later (an older save
 // must not undo a newer live change)
-let liveSetupAt = -1e9;
+const liveAt = { setup: -1e9, projection: -1e9 };
 bus.on('setup', (d) => {
   if (!d?.setup) return;
-  liveSetupAt = performance.now();
+  liveAt.setup = performance.now();
   wall.setSetup(d.setup);
-  if (OUTPUT) xSign = wall.setup.mirror ? 1 : -1;
+  applyWall();
+});
+bus.on('projection', (d) => {
+  if (!d?.projection) return;
+  liveAt.projection = performance.now();
+  projectionRaw = d.projection;
+  applyWall();
 });
 bus.on('file', (d) => {
-  if (d.kind === 'setup' && performance.now() - liveSetupAt > 3000) loadSetup();
+  if (d.kind === 'setup' && performance.now() - liveAt.setup > 3000) loadSetup();
+  if (d.kind === 'projection' && performance.now() - liveAt.projection > 3000) loadProjections();
 });
 
 // ---------- WebGPU: one device per page, shared by every scene instance ----------
@@ -243,16 +281,16 @@ function createContext(inst) {
     get persons() {
       return kinect.view;
     },
-    /** The LED wall: setup and the mapping Kinect -> wall, see WALL.md. */
+    /** The LED wall: setup, this scene's projection and the mapping Kinect -> wall, see WALL.md. */
     get wall() {
-      return wall;
+      return inst.wall;
     },
     /** Depth image pixel (u, v) -> canvas pixels, as kinectUv() in 2D shaders (CSS px: / pixelRatio). */
     kinectToScreen(u, v) {
-      if (wall.active) {
-        const w = wall.imageToWall(u, v, kinect.lut?.data);
+      if (inst.wall.active) {
+        const w = inst.wall.imageToWall(u, v, kinect.lut?.data);
         if (!w) return [-1e4, -1e4];
-        const [px, py] = wall.uv(w);
+        const [px, py] = inst.wall.uv(w);
         return [px * ctx.width, py * ctx.height];
       }
       let kx = (u + 0.5) / 512;
@@ -456,7 +494,17 @@ async function launch(mod, { name = URL_NAME, swap = false, overrides = null, tr
   const dom = el('div', 'k-scene-dom');
   stage.append(canvas, dom);
   const inst = { name, def, canvas, dom, disposers: [], overrides, params: panel.resolve(name, def.params, overrides), started: performance.now(), frame: 0, ready: false };
+  // the scene's own wall map: its projection (default, the scene's wishes, the control center's values)
+  inst.wall = new WallMap(wall.setup, wall.projection);
+  inst.wall.output = wall.output;
+  try {
+    inst.wall.setProjection(projectionOf(inst));
+  } catch (e) {
+    pushError('Projektion', e);
+  }
+  inst.disposers.push(() => inst.wall.destroy());
   inst.ctx = createContext(inst);
+  syncWall(inst, performance.now());
   const ctx = inst.ctx;
   ctx.on(canvas, 'pointermove', (e) => {
     const r = canvas.width / Math.max(1, canvas.clientWidth);
@@ -612,17 +660,28 @@ function renderInstance(inst, now, dt) {
   if (r && typeof r.then === 'function') r.catch((e) => pushError('frame()', e));
 }
 
+/** A scene's wall map before its frame(): the camera's view, the room, the people (once per frame). */
+function syncWall(inst, now) {
+  const w = inst.wall;
+  if (w.syncedAt === now) return;
+  w.syncedAt = now;
+  w.setRays(kinect.lut?.data);
+  w.active = isWall(inst);
+  w.update(kinect.view, xSign, now);
+  wallPointer(inst);
+}
+
 /** The mouse on the wall (wall scenes): canvas pixels are LED pixels. */
 function wallPointer(inst) {
-  const p = wall.pointer;
-  if (!inst || !isWall(inst)) {
+  const p = inst.wall.pointer;
+  if (!isWall(inst) || !inst.ctx) {
     p.inside = false;
     return;
   }
   const c = inst.ctx;
   p.u = c.pointer.x / Math.max(1, c.width);
   p.v = c.pointer.y / Math.max(1, c.height);
-  [p.x, p.y] = wall.fromUv(p.u, p.v);
+  [p.x, p.y] = inst.wall.fromUv(p.u, p.v);
   p.down = c.pointer.down;
   p.inside = p.u >= 0 && p.u < 1 && p.v >= 0 && p.v < 1;
 }
@@ -696,9 +755,13 @@ function loop(now) {
   kinect.beginFrame(now);
   if (kinect.fresh.meta) camera.track(kinect.meta?.stats?.median_mm);
   wall.setRays(kinect.lut?.data); // the camera's real view, once the hub sent it
-  wall.active = isWall(inst);
-  wall.update(kinect.view, xSign);
-  wallPointer(inst);
+  if (wall.tanH !== rt.tanH) {
+    rt.tanH = wall.tanH; // projections that follow the view cone ('cone') follow the real view
+    applyWall();
+  }
+  wall.active = OUTPUT;
+  wall.update(kinect.view, xSign, now);
+  for (const i of liveInstances()) syncWall(i, now);
   hooks.beforeFrame?.(now);
   // scenes fading out (crossfade) render below the new one until the fade is over
   for (const l of [...rt.leaving]) {
@@ -819,9 +882,12 @@ function updateHud(now) {
   el('div', 'k-hud-title', hud, line1);
   el('div', '', hud, line2);
   if (isWall(rt.current)) {
-    const s = wall.setup;
-    const map = { real: 'echt 1:1', factor: `×${s.map.factor}`, fit: `Sichtfeld bei ${s.map.distance} m` }[s.map.mode];
-    el('div', '', hud, `LED-Wand ${s.led.w}×${s.led.h} · ${s.size.w}×${s.size.h} m · ${map}${s.mirror ? ' · gespiegelt' : ''} · Setup: ${{ devserver: 'gemeinsam', local: 'nur dieser Browser', none: 'Standard' }[rt.setupSource] ?? rt.setupSource}`);
+    const w = rt.current.wall;
+    const s = w.setup;
+    const F = w.projection.field;
+    const own = projections.scenes[rt.current.name] || rt.current.def.projection ? 'eigene' : 'Standard';
+    const gain = (t) => w.gain((F.nearL + F.nearR + (F.farL + F.farR - F.nearL - F.nearR) * t) / 2, F.near + (F.far - F.near) * t).toFixed(1);
+    el('div', '', hud, `LED-Wand ${s.led.w}×${s.led.h} · ${s.size.w}×${s.size.h} m · Projektion: ${own}, quer ×${gain(0)} vorne … ×${gain(1)} hinten${w.projection.mirror ? ' · gespiegelt' : ''} · Setup: ${{ devserver: 'gemeinsam', local: 'nur dieser Browser', none: 'Standard' }[rt.setupSource] ?? rt.setupSource}`);
   }
   const keys = el('div', 'k-hud-keys', hud, 'h UI · f Vollbild · m Spiegeln · , . Szene · ');
   const a = el('a', '', keys, 'Galerie');
@@ -947,6 +1013,7 @@ async function play(name, { overrides = null, transition = 'cross', fade = 1 } =
 async function boot() {
   applyUi();
   await loadSetup().catch((e) => pushError('LED-Wand-Setup', e));
+  await loadProjections().catch((e) => pushError('Projektion', e));
   if (OUTPUT) {
     document.title = 'LED-Wand · Ausgabe';
     rt.scenes = await localScenes(true).catch(() => []);
@@ -990,7 +1057,7 @@ function status() {
     swaps: rt.swaps,
     size: rt.current ? [rt.current.ctx.width, rt.current.ctx.height] : null,
     params: rt.current ? { ...rt.current.params.values } : null,
-    wall: isWall(rt.current) ? { led: [wall.setup.led.w, wall.setup.led.h], output: OUTPUT, setup: rt.setupSource } : null,
+    wall: isWall(rt.current) ? { led: [wall.setup.led.w, wall.setup.led.h], output: OUTPUT, setup: rt.setupSource, projection: (rt.current?.wall ?? wall).projection } : null,
     errors: rt.errors.map(({ where, message, stack, count }) => ({ where, message, stack, count })),
     kinect: {
       hub: HUB,
@@ -1039,6 +1106,10 @@ const outputApi = {
   get xSign() {
     return xSign;
   },
+  /** The wall map of the scene on the wall (its projection), else the page's. */
+  sceneWall() {
+    return rt.current?.wall ?? wall;
+  },
   /** Retry a scene stopped by an error in frame(). */
   resume() {
     if (rt.current && rt.state === 'error') rt.state = 'running';
@@ -1055,6 +1126,7 @@ const outputApi = {
     rt.state = 'loading';
   },
   loadSetup,
+  loadProjections,
 };
 
 globalThis.__kinectRuntime = {
@@ -1067,8 +1139,8 @@ globalThis.__kinectRuntime = {
   },
   /** For debugging: what the scene sees as ctx.persons. */
   persons: () => kinect.view,
-  /** For debugging: ctx.wall. */
-  wall: () => wall,
+  /** For debugging: ctx.wall of the running scene. */
+  wall: () => rt.current?.wall ?? wall,
   /** For tools/check.mjs and debugging. */
   status,
 };

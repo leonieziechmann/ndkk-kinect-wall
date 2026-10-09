@@ -318,16 +318,18 @@ export default {
     // ---------- the people ----------
     const k = ctx.kinect;
     if (k.fresh.persons && k.persons) {
-      const map = wall.setup.map;
-      // the mapping draws points wider than real ("alle Punkte" stretched, height scaled): no gaps
-      const wide = map.apply === 'points' ? Math.max(wall.k(1, map.distance), wall.k(-1, map.distance)) : 1;
+      const P = wall.projection;
+      // the projection draws points wider than real (every point stretched, height or body scaled): no gaps
+      const mid = (P.field.near + P.field.far) / 2 - wall.setup.sensor.front;
+      const wide = P.apply === 'points' ? Math.max(wall.k(1, mid), wall.k(-1, mid)) : P.body.scale;
+      const tall = (P.out.top - P.out.bottom) / (P.field.high - P.field.low);
       people.build(k.persons, k.rays, k.ir?.data ?? null, mirror, {
         fx: k.params?.fx ?? 365.5,
         step: Number(p.density) || 3,
         near: p.nearDist,
         far: p.farDist,
         dotLed: p.dotSize * ledPx,
-        spread: Math.max(1, wide, map.scaleY),
+        spread: Math.max(1, wide, tall),
       });
       const since = Math.min(0.1, t - S.lastUpdate || 1 / 30);
       S.lastUpdate = t;

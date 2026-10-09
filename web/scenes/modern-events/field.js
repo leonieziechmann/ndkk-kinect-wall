@@ -1,6 +1,6 @@
 // The people on the wall as a grid of cells (wall meters): every person pixel is mapped onto the
-// wall like the shared wall core does it (mirror, the walk stretched over the wall, per-person shift;
-// see WALL.md and blasen-platzen/grid.js). A chamfer distance transform gives every cell its distance
+// wall by the scene's projection (ctx.wall.roomX/roomY: mirror, the play field stretched over the wall,
+// each person's place; see WALL.md and blasen-platzen/grid.js). A chamfer distance transform gives every cell its distance
 // to the nearest body edge (> 0 outside, < 0 inside).
 //
 // Motion: an outline that moved since the last result covers cells that were more than a cell or two
@@ -56,11 +56,7 @@ export class BodyField {
 
     if (persons?.indices?.length) {
       const m = wall.room.matrix;
-      const side = wall.side;
-      const perPerson = S.map.apply === 'person';
-      const center = S.size.w / 2 + S.sensor.x;
-      const { near, far } = S.zone;
-      const { lift, scaleY } = S.map;
+      const { near, far } = wall.zone; // the projection's zone, room z (m from the sensor)
       const { indices, labels, depth } = persons;
       const stride = Math.max(1, Math.floor(indices.length / 16000));
       for (let k = 0; k < indices.length; k += stride) {
@@ -75,10 +71,8 @@ export class BodyField {
         const rx = m[0] * wx + m[4] * wy + m[8] * z + m[12];
         const ry = m[1] * wx + m[5] * wy + m[9] * z + m[13];
         const s = labels[i];
-        const lat = side * rx;
-        const x = perPerson && wall.visible[s] ? center + lat + wall.shift[s] : center + lat * wall.k(lat, rz);
-        const gx = Math.floor(x * inv);
-        const gy = Math.floor((top - lift - scaleY * ry) * inv);
+        const gx = Math.floor(wall.roomX(rx, rz, s) * inv);
+        const gy = Math.floor((top - wall.roomY(ry, s)) * inv);
         if (gx >= 0 && gx < w && gy >= 0 && gy < h) occ[gy * w + gx] = 1;
       }
     }

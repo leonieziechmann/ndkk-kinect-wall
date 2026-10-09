@@ -16,6 +16,8 @@ const state = new WeakMap();
 
 export default {
   wall: true,
+  // the mirror of the default projection; the place a little smoothed, so the big tiles do not flicker
+  projection: { smoothing: 0.2 },
   streams: ['persons'],
   persons: (p) => ({ mode: 'full', delay: p.exact ? 12 : 0 }),
   maxFps: 30,

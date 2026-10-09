@@ -438,6 +438,9 @@ function makeRaster(L, p) {
 
 export default {
   wall: true, // the canvas is the LED image; wall size, Kinect, zone and mapping: control center
+  // where one stands hardly matters (the obstacles cross the whole wall), but everybody should find
+  // their own figure: right in front of them (1:1), fully on the wall, steady
+  projection: { field: 'real', edge: 'clamp', margin: 0.45, smoothing: 0.3 },
   streams: ['persons'],
   persons: (p) => ({ mode: 'full', delay: p.live ? 0 : DEFAULT_DELAY }),
 

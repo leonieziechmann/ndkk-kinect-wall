@@ -57,6 +57,7 @@
 
   <nav class="tabs">
     <button data-tab="show" class="active">Show</button>
+    <button data-tab="projection">Projektion</button>
     <button data-tab="setup">Wand-Setup</button>
     <button data-tab="status">Status</button>
   </nav>
@@ -92,6 +93,70 @@
     </div>
   </section>
 
+  <section id="tab-projection" class="tab" hidden>
+    <div class="row proj-bar">
+      <label>Projektion für <select id="projSel"></select></label>
+      <button id="projPlay" class="btn small" title="Diese Szene jetzt auf der Wand zeigen">▶ auf der Wand</button>
+      <button id="projCalib" class="btn small" title="Testbild „Kalibrierung“ über der Szene an/aus: Skelette, wo die Projektion sie hinsetzt">Kalibrierung</button>
+      <button id="projWizard" class="btn small">Assistent: Spielfeld ablaufen …</button>
+      <button id="projReset" class="btn small">Zurücksetzen</button>
+    </div>
+    <div id="projNote" class="muted"></div>
+    <div id="wizBox" class="wizard" hidden>
+      <div class="wiz-head"><b id="wizTitle"></b><button id="wizClose" class="icon" title="Abbrechen">✕</button></div>
+      <div id="wizText"></div>
+      <div class="wiz-bar"><div id="wizBar"></div></div>
+      <div id="wizStatus" class="muted"></div>
+      <div class="row">
+        <button id="wizStart" class="btn small">Los</button>
+        <button id="wizBack" class="btn small">← Zurück</button>
+        <button id="wizTake" class="btn small" title="Ohne Warten nehmen, wo die Person jetzt steht">Jetzt nehmen</button>
+        <button id="wizSkip" class="btn small">Überspringen</button>
+      </div>
+      <div id="wizResult" hidden>
+        <div id="wizFieldText"></div>
+        <label><input type="checkbox" id="wizZone" checked> Personen zählen im Spielfeld (± 0,3 m)</label>
+        <label id="wizReachRow"><input type="checkbox" id="wizReach"> Hände oben erreichen die Oberkante der Wand (für Spiele)</label>
+        <div class="row">
+          <button id="wizApply" class="btn">Übernehmen <span id="wizTarget"></span></button>
+          <button id="wizAgain" class="btn small">Nochmal</button>
+        </div>
+      </div>
+    </div>
+    <div class="cols">
+      <div>
+        <h2>Spielfeld <span class="muted">(von oben · Wand oben · Ecken, Zone und Ziel auf der Wand ziehen)</span></h2>
+        <canvas id="projPlan" class="plan"></canvas>
+        <div class="row">
+          <span class="muted">Spielfeld:</span>
+          <button class="btn small" data-field-preset="cone" title="Die Ränder des Spielfelds folgen dem Sichtkegel (0,25 m innen): vorne wie hinten erreicht man die Wandränder">Sichtkegel</button>
+          <button class="btn small" data-field-preset="box" title="Gleich breit vorne und hinten: so breit wie das Sichtfeld in der Mitte">Rechteck</button>
+          <button class="btn small" data-field-preset="real" title="Das Spielfeld ist die Wand selbst: jeder steht genau vor sich (1:1)">echt 1:1</button>
+          <button class="btn small" data-field-preset="center" title="Mittig vor die Kinect schieben">mittig</button>
+          <label class="muted"><input type="checkbox" id="projSym" checked> symmetrisch ziehen</label>
+        </div>
+        <div id="projStats" class="muted legend"></div>
+        <h2>Auf der Wand <span class="muted">(von vorne · links: Raumhöhe → Wandhöhe)</span></h2>
+        <canvas id="projFront" class="plan"></canvas>
+        <div class="muted legend">
+          <b>So wirkt die Projektion:</b> Das Spielfeld (gelb) ist der Bereich auf dem Boden, der auf die Wand abgebildet wird: quer von seinem linken bis zum rechten Rand auf das Ziel auf der Wand (gelbe Dreiecke), in der Tiefe von vorne (0) bis hinten (1). Die feinen Linien teilen die Wand in Viertel: wo sie eng liegen, ist man auf der Wand schnell.
+          Blau: wer gezählt wird (Zone). Lila gepunktet: Bezugsabstand für Kamerabild-Szenen. Punkte: die Personen, die Linie zeigt, wo die Wand sie zeigt; die Zahlen sind quer · tief (0..1).
+          Pro Szene wird nur gespeichert, was vom Standard abweicht (gelb markiert; Klick auf den Namen setzt einen Wert zurück).
+        </div>
+      </div>
+      <div>
+        <h2>Kurven <span class="muted">(Punkte ziehen · Doppelklick: Punkt dazu/weg)</span></h2>
+        <div class="curves">
+          <div><canvas id="curveX" class="curve"></canvas><select id="curveXSel"></select></div>
+          <div><canvas id="curveY" class="curve"></canvas><select id="curveYSel"></select></div>
+          <div><canvas id="curveZ" class="curve"></canvas><select id="curveZSel"></select></div>
+        </div>
+        <h2>Werte</h2>
+        <div id="projGui" class="gui-box"></div>
+      </div>
+    </div>
+  </section>
+
   <section id="tab-setup" class="tab" hidden>
     <div class="cols">
       <div>
@@ -119,7 +184,7 @@
         <canvas id="plan" class="plan" tabindex="0"></canvas>
         <div class="muted legend">
           <b>Grundriss:</b> ein Kinect-Bild senkrecht von oben auf den Boden projiziert, in 5-cm-Feldern: alles, was zwischen 15 cm und 2 m hoch steht (Wände, Tische, andere Stationen, Personen); hell = hoch. Schwach blau: der Boden, den die Kinect sieht. Die Decke ist ausgeblendet.
-          Punktiert: das Sichtfeld der Kinect, hellblau: die Zone. Gelb gestrichelt: der Bezugsabstand und wohin sein Sichtfeld auf der Wand fällt.
+          Punktiert: das Sichtfeld der Kinect, hellblau: die Zone, gelb gestrichelt: das Spielfeld der Standard-Projektion (beides im Tab „Projektion“).
           Punkte: die Personen, wo sie stehen; die Linie zeigt, wo die Wand sie zeigt.
           <b>Sperrzonen</b> (rot): wer mit den Füßen darin steht, wird nicht getrackt – in keiner Szene. Eckpunkte lassen sich ziehen, Entf löscht die gewählte Zone.
         </div>

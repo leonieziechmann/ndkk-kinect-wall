@@ -46,6 +46,15 @@ function makeLayout(ctx, p) {
 
 export default {
   wall: true, // the canvas is the LED image; wall size, Kinect, zone and mapping: control center
+  // the ninja stays near where one stands (the fruit is thrown to the players, nobody has to reach the
+  // whole wall): a box 4.8 m wide around the sensor (×1.25; a box, so stepping closer or back does not
+  // move one sideways), soft at the edges, the place a little smoothed (the hands stay live)
+  projection: {
+    field: { depth: [0.6, 4], width: 4.8 },
+    edge: 'soft',
+    margin: 0.35,
+    smoothing: 0.25,
+  },
   streams: ['persons'],
   persons: (p) => (p.tracking === 'live' ? { mode: 'full', delay: 0 } : p.tracking === 'exakt' ? { mode: 'full' } : { mode: 'full', live: true }),
   get maxFps() {

@@ -437,13 +437,9 @@ export class PeopleLayer {
     const kp = ctx.kinect.persons;
     const rays = ctx.kinect.rays;
     if (!kp || !rays) return;
-    const S = wall.setup;
     const m = wall.room.matrix;
-    const side = wall.side;
     const xSign = ctx.xSign;
-    const perPerson = S.map.apply === 'person';
-    const center = S.size.w / 2 + S.sensor.x;
-    const { near, far } = S.zone;
+    const { near, far } = wall.zone; // the projection's zone, room z (m from the sensor)
     const { GW, GH } = L;
     const n = GW * GH;
 
@@ -467,7 +463,6 @@ export class PeopleLayer {
     const sumY = new Float64Array(SLOTS);
     const cntY = new Uint32Array(SLOTS);
 
-    const shift = wall.shift;
     const invF2 = 1 / (FOCAL * FOCAL);
     const { indices, labels, depth } = kp;
     const pxX = L.pxX / L.cellPx;
@@ -493,8 +488,9 @@ export class PeopleLayer {
       if (hb >= 0 && hb < HIST_BINS) hist[s * HIST_BINS + hb]++;
       sumY[s] += ry;
       cntY[s]++;
-      const lat = side * rx;
-      const x = center + (perPerson ? lat + shift[s] : lat * wall.k(lat, rz));
+      // where the projection puts this point (the figure's own size k replaces the projection's
+      // body scale: everybody to figH)
+      const x = f.cx + (wall.roomX(rx, rz, s) - f.cx) / wall.scale[s];
       const k = f.k;
       const gx = f.cx + (x - f.cx) * k * wide;
       const gy = ry * k;
@@ -586,7 +582,7 @@ export class PeopleLayer {
         const r = room[name];
         if (!r) continue;
         wall.fromRoom(r, f.slot, tmp);
-        J[name] = [f.cx + (tmp[0] - f.cx) * f.k * p.wide, r[1] * f.k];
+        J[name] = [f.cx + ((tmp[0] - f.cx) / wall.scale[f.slot] || 0) * f.k * p.wide, r[1] * f.k];
       }
     }
     const segs = [];

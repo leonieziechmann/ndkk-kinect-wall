@@ -47,9 +47,14 @@ export function makeLayout(ctx, p) {
   const AW = Math.max(40, Math.floor(W / S));
   const AH = Math.max(20, Math.floor(H / S));
   const sx = AW / s.size.w;
-  const zTop = Math.max(0, s.sensor.front + s.zone.near - 0.25);
-  const zBot = s.sensor.front + s.zone.far + 0.1;
+  // the map's depth: the projection's play field (control center: tab Projektion), a little more on
+  // both sides; its depth curve moves the people (a body keeps its shape around its center)
+  const F = wall.projection.field;
+  const zTop = Math.max(0, F.near - 0.25);
+  const zBot = F.far + 0.1;
   const sy = AH / Math.max(0.5, zBot - zTop);
+  /** m in front of the wall -> the same through the depth curve (identity while it is linear) */
+  const curved = (z) => F.near + wall.fieldZ(z) * (F.far - F.near);
   const up = p.orient !== 'zur Wand = unten';
   const cityW = clamp(Math.round(p.cityWidth * sx), 12, AW - 60);
   const cityX0 = Math.round((s.size.w / 2 + s.sensor.x) * sx - cityW / 2);
@@ -73,11 +78,13 @@ export function makeLayout(ctx, p) {
     fogKey: [AW, AH, up, wall.version, p.fog].join(),
     /** wall x (m from the left edge), z (m in front of the wall) -> art px */
     map(x, z) {
-      return [x * sx, up ? (z - zTop) * sy : (zBot - z) * sy];
+      const c = curved(z);
+      return [x * sx, up ? (c - zTop) * sy : (zBot - c) * sy];
     },
     /** art row -> m in front of the wall */
     rowZ(y) {
-      return up ? zTop + y / sy : zBot - y / sy;
+      const c = up ? zTop + y / sy : zBot - y / sy;
+      return wall.fieldDepth((c - F.near) / (F.far - F.near));
     },
   };
 }
@@ -86,16 +93,21 @@ export function makeLayout(ctx, p) {
 function fogMask(ctx, L, p) {
   const wall = ctx.wall;
   const s = wall.setup;
+  const P = wall.projection;
   const mask = new Uint8Array(L.AW * L.AH);
   if (!p.fog) return mask.fill(255);
   const cx = s.size.w / 2 + s.sensor.x;
   for (let y = 0; y < L.AH; y++) {
-    const d = L.rowZ(y + 0.5) - s.sensor.front;
-    if (d < s.zone.near - 0.15 || d > s.zone.far + 0.15) continue;
-    let xl = cx - wall.k(-1e-3, d) * wall.tanH * d - 0.35;
-    let xr = cx + wall.k(1e-3, d) * wall.tanH * d + 0.35;
-    if (xl < s.map.margin + 0.2) xl = 0;
-    if (xr > s.size.w - s.map.margin - 0.2) xr = s.size.w;
+    const z = L.rowZ(y + 0.5); // m in front of the wall
+    if (z < P.zone.near - 0.15 || z > P.zone.far + 0.15) continue;
+    // the edges of the view there, through the projection
+    const half = Math.max(0, (z - s.sensor.front) * wall.tanH);
+    const el = wall.mapX(cx - half, z);
+    const er = wall.mapX(cx + half, z);
+    let xl = Math.min(el, er) - 0.35;
+    let xr = Math.max(el, er) + 0.35;
+    if (xl < P.margin + 0.2) xl = 0;
+    if (xr > s.size.w - P.margin - 0.2) xr = s.size.w;
     const a = Math.max(0, Math.floor(xl * L.sx));
     const b = Math.min(L.AW, Math.ceil(xr * L.sx));
     mask.fill(255, y * L.AW + a, y * L.AW + b);
@@ -157,6 +169,9 @@ function collectPeople(ctx, S, p) {
 
 export default {
   wall: true, // the canvas is the LED image; wall size, Kinect, zone and mapping: control center
+  // seen from above: a box (straight walks stay straight on the map, footprints line up), 2.9 m of
+  // floor across the wall (×2), 0.5-4 m from the sensor as the map's depth; steadier units (forts)
+  projection: { field: { depth: [0.5, 4], width: 2.9 }, smoothing: 0.25 },
   streams: ['persons'],
   // live masks for the bodies; live + exact skeletons (param exactSlow): body.js takes a joint from the
   // exact skeleton while it moves slowly and from the live one when it is fast
