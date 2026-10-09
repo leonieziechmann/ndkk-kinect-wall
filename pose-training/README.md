@@ -76,6 +76,33 @@ Pose mAP50-95 against the teacher. "val" is the held-out frames (other recording
 - The larger model is the lever: yolo11s at 384 beats yolo11n at 512 everywhere.
 - A further fine-tuning would need: a validation split by day/session, a low learning rate and a frozen backbone, COCO person images (gray) mixed in against forgetting.
 
+## Results round 3 (2026-10-09, Colab: 2 A100 + 2 L4)
+
+The hub runs the pose model now (DirectML), the target is yolo11s (384 by default, 512 when the GPU has room). Teacher: yolo11x at 1024+768 and at 512, both mirrored, a keypoint labeled where both agree (`ensemble.py`). "unseen" is now 800 frames (`test/`, `kinect-pose-test.zip`): `final-*` (final setup, another day), `alt-*` (the old small room), `room` (someone right in front of the sensor, overexposed). Pose mAP50-95 against that teacher, best.pt (last.pt where better):
+
+| model | recipe | val | unseen | final | alt | room |
+|---|---|---|---|---|---|---|
+| yolo11n COCO @512 | – | 0.783 | 0.606 | 0.790 | 0.562 | 0.370 |
+| yolo11s COCO @384 | – | 0.787 | 0.617 | 0.808 | 0.632 | 0.163 |
+| yolo11s COCO @512 | – | 0.875 | 0.722 | 0.829 | 0.678 | 0.585 |
+| yolo11m COCO @512 | – | 0.913 | 0.763 | 0.878 | 0.780 | 0.532 |
+| r3a n@512 | lr 5e-4, 80 epochs | 0.840 | 0.440 | 0.786 | 0.359 | 0.012 |
+| r3b n@512 | + gray COCO | 0.829 | 0.558 | 0.805 | 0.473 | 0.184 |
+| r3b-s384 | lr 5e-4, gray COCO | 0.851 | 0.578 | 0.806 | 0.484 | 0.306 |
+| r3c-s384 | + IR augmentation | 0.793 | 0.550 | 0.782 | 0.442 | 0.317 |
+| r3e-s384 | lr 1e-4, COCO, IR aug, 40 epochs | 0.843 | 0.629 | 0.831 | 0.552 | 0.363 |
+| r3d-s384 | lr 5e-5, frozen backbone (10 layers), COCO, IR aug, 30 epochs | 0.847 | 0.676 | 0.837 | 0.606 | 0.489 |
+| r3d50-s384 | same, 60 epochs | 0.846 | 0.647 | 0.832 | 0.596 | 0.412 |
+| **r3f-s384** | lr 5e-5, frozen backbone, COCO, no IR aug, 50 epochs | **0.854** | **0.682** | 0.837 | 0.598 | 0.511 |
+| r3c-s512 | lr 5e-4, COCO, IR aug | 0.841 | 0.563 | 0.805 | 0.496 | 0.246 |
+| r3d-s512 | as r3d-s384 at 512, 50 epochs | 0.877 | 0.683 | 0.853 | 0.663 | 0.419 |
+
+- **Forgetting is the problem, the learning rate the lever.** At the usual fine-tuning rate (5e-4) every model learns the recorded days and loses other rooms (alt, room). Gray COCO persons help a little; a 10x smaller rate with the backbone frozen keeps the general knowledge.
+- **r3f-s384 beats the COCO weights at 384** on the unseen frames (+0.065), in the final setup (+0.03) and on overexposed people (3x), and is slightly behind in the old room. Its person boxes are close to COCO's (box mAP 0.786 against 0.818; with IR augmentation 0.739).
+- **At 512 the COCO weights stay ahead overall** (0.722 against 0.683), mainly on the overexposed `room`; in the final setup the fine-tuned model is better (0.853 against 0.829).
+- The infrared augmentation (blur, gamma, noise, downscaling, rotation) did not help; longer training at the small rate neither.
+- Colab: VMs whose kernel stays idle are reclaimed (keep them busy with a tiny `colab exec`), `colab exec` can hang (time-limit every call), back up `resume.pt` off the VM.
+
 ## Stopping and going on
 
 Everything can stop at any time and go on later:
