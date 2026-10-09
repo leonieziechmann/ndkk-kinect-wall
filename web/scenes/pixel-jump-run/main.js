@@ -215,6 +215,13 @@ function drawFigure(S, f, p, t, liftRows, ghost) {
   }
 }
 
+/** rows a figure is drawn higher than its person: the jump, or a ghost floating and bobbing */
+function raised(f, L, t) {
+  if (f.alive !== false) return f.liftRows;
+  const ph = (typeof f.id === 'number' ? f.id : f.slot) * 1.7;
+  return Math.round((0.22 + 0.08 * Math.sin(t * 2.2 + ph)) / L.cellMy) + f.liftRows;
+}
+
 /** a ghost (no lives left): the person's silhouette, pale and see-through, floating and bobbing */
 function drawGhost(S, f, t) {
   const { cells, layout: L } = S;
@@ -223,7 +230,7 @@ function drawGhost(S, f, t) {
   const [c0, r0, c1, r1] = f.bbox;
   if (c1 < c0) return;
   const ph = (typeof f.id === 'number' ? f.id : f.slot) * 1.7;
-  const up = Math.round((0.22 + 0.08 * Math.sin(t * 2.2 + ph)) / L.cellMy) + f.liftRows;
+  const up = raised(f, L, t);
   const dx = Math.round(Math.sin(t * 1.3 + ph) * 1.2);
   const tail = r1 - Math.round((r1 - r0) * 0.3);
   for (let y = r0; y <= r1; y++) {
@@ -249,7 +256,7 @@ function drawBadges(S, f, p, t, crown) {
   if (!f.headCell) return;
   const [b0, , b1] = f.bbox;
   const cx = Math.round((b0 + b1) / 2);
-  let y = f.headCell[1] - f.liftRows - 4;
+  let y = f.headCell[1] - raised(f, S.layout, t) - 4;
   if (f.alive && (game.phase === 'run' || game.phase === 'count') && f.round === game.round) {
     const heart = SPRITES.heart[0];
     for (let i = 0; i < p.lives; i++) {
@@ -342,8 +349,15 @@ function drawScene(S, figs, back, p, t) {
     if (!r) continue;
     const str = String(r.score);
     const [b0, , b1] = f.bbox;
-    const x = Math.round((b0 + b1) / 2 - textWidth(str) / 2);
-    let y = f.headCell[1] - (f.alive === false ? Math.round(0.25 / L.cellMy) : f.liftRows) - 7;
+    const cx = Math.round((b0 + b1) / 2);
+    // above the head; the best ones' above their crown (it lies 5 rows above the head, see drawBadges)
+    const crownY = f.headCell[1] - raised(f, L, t) - 5;
+    let x = Math.round((b0 + b1) / 2 - textWidth(str) / 2);
+    let y = r.best ? crownY - 6 : crownY - 2;
+    if (y < 0 && r.best) {
+      x = cx + 4; // no room above the crown: beside it
+      y = Math.max(0, crownY - 1);
+    }
     y = Math.max(0, y);
     const col = r.best ? (Math.floor(t * 6) % 2 ? GOLD : WHITE) : f.outfit.shirt;
     cells.text(str, x, y, col);
@@ -351,8 +365,7 @@ function drawScene(S, figs, back, p, t) {
       // the crown falls from the sky onto the winner
       const cr = SPRITES.crown[0];
       const u = Math.min(1, et / 1.2);
-      const ty = f.headCell[1] - f.liftRows - 5;
-      cells.sprite(cr, Math.round((b0 + b1) / 2) - 2, Math.round(-3 + (ty + 3) * (1 - (1 - u) ** 3)));
+      cells.sprite(cr, cx - 2, Math.round(-3 + (crownY + 3) * (1 - (1 - u) ** 3)));
     }
   }
 
