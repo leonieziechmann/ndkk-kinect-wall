@@ -1041,6 +1041,32 @@ $script:ControlPid = 0
 $script:ControlStart = $null
 $script:ControlUrl = $null
 
+# No "translate this page?" bubble in the control center: its profile gets German as the browser's
+# language and translation switched off (Preferences, written while that browser is closed).
+function Set-NoTranslate([string]$profileDir) {
+  try {
+    $file = Join-Path $profileDir 'Default\Preferences'
+    New-Item -ItemType Directory -Force (Split-Path -Parent $file) | Out-Null
+    Add-Type -AssemblyName System.Web.Extensions
+    $js = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+    $js.MaxJsonLength = [int]::MaxValue
+    $prefs = $null
+    if (Test-Path -LiteralPath $file) { $prefs = $js.DeserializeObject([IO.File]::ReadAllText($file)) }
+    if ($prefs -isnot [System.Collections.Generic.Dictionary[string, object]]) { $prefs = New-Object 'System.Collections.Generic.Dictionary[string, object]' }
+    $translate = New-Object 'System.Collections.Generic.Dictionary[string, object]'
+    $translate['enabled'] = $false
+    $prefs['translate'] = $translate.PSObject.BaseObject   # unwrapped: the serializer chokes on PowerShell's wrapper
+    $intl = $prefs['intl']
+    if ($intl -isnot [System.Collections.Generic.Dictionary[string, object]]) { $intl = New-Object 'System.Collections.Generic.Dictionary[string, object]' }
+    $intl['accept_languages'] = 'de-DE,de'
+    $intl['selected_languages'] = 'de-DE,de'
+    $prefs['intl'] = $intl.PSObject.BaseObject
+    [IO.File]::WriteAllText($file, $js.Serialize($prefs.PSObject.BaseObject), (New-Object Text.UTF8Encoding $false))
+  } catch {
+    Add-Event "Steuerzentrale: Übersetzen ließ sich nicht abschalten ($($_.Exception.Message))" 'warn'
+  }
+}
+
 function Open-Control {
   if (-not $script:Vite) { Add-Event 'Steuerzentrale: der Dev-Server läuft noch nicht' 'warn'; return }
   $nb = Get-NotebookScreen
@@ -1065,7 +1091,8 @@ function Open-Control {
     }
     Stop-Tree ([int]$c.ProcessId) -Gentle
   }
-  $browserArgs = @("--user-data-dir=`"$ControlProfile`"", '--no-first-run', '--no-default-browser-check',
+  Set-NoTranslate $ControlProfile
+  $browserArgs = @("--user-data-dir=`"$ControlProfile`"", '--no-first-run', '--no-default-browser-check', '--lang=de',
     '--disable-session-crashed-bubble', '--hide-crash-restore-bubble', '--disable-features=Translate',
     "--window-position=$($nb.X + 40),$($nb.Y + 40)", '--start-maximized', "--app=$url")
   $p = Start-Process -FilePath $exe -ArgumentList $browserArgs -PassThru
