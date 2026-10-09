@@ -11,7 +11,8 @@ export const SCENES = {
   daten: 56.5,
   wand: 68,
   abspann: 80,
-  ende: 90,
+  bunt: 90,
+  ende: 97,
 } as const;
 
 export type SceneName = keyof typeof SCENES;
