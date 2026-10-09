@@ -1,5 +1,8 @@
 * text=auto
 *.sh text eol=lf
+# Windows scripts: CRLF in every checkout (start-wand.cmd / .ps1)
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
 # applied byte-for-byte to the libfreenect2 checkout
 *.patch -text
 # models: never touch line endings
