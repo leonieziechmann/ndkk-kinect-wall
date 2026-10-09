@@ -1,0 +1,6 @@
+{
+  "title": "Space Invaders (Draufsicht)",
+  "description": "Spiel für die LED-Wand, klar von oben gesehen: der Boden vor der Wand als Hex-Karte, jede Person eine Top-down-Figur, die sich mit dem Körper dreht (Schultern, Kopf, Füße, Schatten, Fußspuren bei jedem Schritt). Invader von oben (Tintenfisch, Krabbe, Oktopus mit Blick zur Stadt, Schatten, Schweben) kommen von links und rechts auf die Stadt in der Mitte zu – ein nächtliches Satellitenbild mit Straßen, Laternen, fahrenden Autos, Parks und Kuppel. Auto-Feuer, Fort beim Stillstehen, Zeigen mit Zielhilfe, Team-Laser, Springen startet den Boost (das Hexagon ist die Energieleiste), Powerups, Schlachtschiff und Laser vom Rand. Licht, Bloom, Wellen; moiré-sicher für P5.9. Ein Director skaliert mit der Spielerzahl, allein leichter; die Stadt kann fallen.",
+  "author": "claude/space-invaders-game-402af9",
+  "created": "2026-10-08"
+}

@@ -1,7 +1,0 @@
-{
-  "title": "Neonwand",
-  "description": "Fluid auf der LED-Wand, auf der Personenerkennung (live): Bewegung wird auf den Masken gemessen (Optical Flow × Tiefe, m/s) und landet dort auf der Wand, wo das gemeinsame Wand-Setup die Person abbildet (gespiegelt, Laufweg gedehnt, Körper in echter Größe). Arme zählen mehr und reichen weiter, eine Automatik hält die Wand weder leer noch voll.",
-  "author": "claude/fluid-simulation-optical-flow-7cd5f8",
-  "based_on": "flow-fluid",
-  "created": "2026-10-07"
-}

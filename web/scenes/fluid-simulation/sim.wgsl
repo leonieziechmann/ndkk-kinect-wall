@@ -1,13 +1,14 @@
 // The wall: motion field, stable fluids (after Stam / Dobryakov) and display. Everything here lives
-// in wall uv (0..1, y down): the wall image and motion from kinect.wgsl, the simulation and the dye
-// (one texel per LED). Velocity is in simulation cells per second; dye is linear color, advected
-// with MacCormack so that filaments stay crisp.
+// in wall uv (0..1, y down): the people's image (per LED, blurred here at half size) and their
+// motion (coarse cells) from kinect.wgsl, the simulation and the dye (one texel per LED). Velocity is in simulation cells
+// per second; dye is linear color, advected with MacCormack so that filaments stay crisp.
 @group(0) @binding(1) var texA: texture_2d<f32>;
 @group(0) @binding(2) var texB: texture_2d<f32>;
 @group(0) @binding(3) var samp: sampler;
 @group(0) @binding(4) var outTex: texture_storage_2d<rgba16float, write>;
 @group(0) @binding(5) var texC: texture_2d<f32>;
 @group(0) @binding(11) var statsTex: texture_2d<f32>; // dyeStats: r fill, g balance gain
+@group(0) @binding(12) var bodyTex: texture_2d<f32>; // bodyBlurY, one texel per 2x2 LEDs: r cover, g cover * nearness, b cover * slot
 
 fn ldA(p: vec2i) -> vec4f { return textureLoad(texA, clamp(p, vec2i(0), vec2i(textureDimensions(texA)) - 1), 0); }
 fn ldB(p: vec2i) -> vec4f { return textureLoad(texB, clamp(p, vec2i(0), vec2i(textureDimensions(texB)) - 1), 0); }
@@ -47,26 +48,6 @@ fn dyeStats(@builtin(local_invocation_index) li: u32) {
     let rate = select(0.03, 0.15, wanted < gain0);
     textureStore(outTex, vec2i(0), vec4f(mix(prev.r, now, 0.1), mix(gain0, wanted, rate), now, 1.0));
   }
-}
-
-// ---- wall image for colors and the people overlay: texA collect output, texB previous.
-// Gaussian 5x5, averaged with the previous frame. out: r now, g before, b slot of the nearest person
-@compute @workgroup_size(8, 8)
-fn wallSignal(@builtin(global_invocation_id) id: vec3u) {
-  let size = textureDimensions(outTex);
-  if (id.x >= size.x || id.y >= size.y) { return; }
-  let p = vec2i(id.xy);
-  var sum = 0.0;
-  var wsum = 0.0;
-  for (var y = -2; y <= 2; y++) {
-    for (var x = -2; x <= 2; x++) {
-      let w = exp(-f32(x * x + y * y) / 3.0);
-      sum += w * ldA(p + vec2i(x, y)).g;
-      wsum += w;
-    }
-  }
-  let before = ldB(p).r;
-  textureStore(outTex, p, vec4f(mix(sum / wsum, before, U.wallSmooth), before, ldA(p).b, 0.0));
 }
 
 // ---- wall motion: texA vcollect body motion, texC arm motion. Gaussian 7x7 over the cells that got
@@ -114,13 +95,15 @@ fn wallMotion(@builtin(global_invocation_id) id: vec3u) {
   textureStore(outTex, p, vec4f(sum / max(wsum, 0.0001), wsum / gsum));
 }
 
-// wall motion (texB) at wall uv -> velocity in sim cells/s, a weight for pushing (sideways motion)
-// and one for dye (3D speed: walking towards the wall colors too, but pushes nothing)
-struct Motion { vel: vec2f, push: f32, paint: f32, dir: f32, speed: f32, speed3: f32 };
+// wall motion (texB) at wall uv -> velocity in sim cells/s (and in m/s on the wall), a weight for
+// pushing (sideways motion) and one for dye (3D speed: walking towards the wall colors too, but
+// pushes nothing)
+struct Motion { vel: vec2f, wall: vec2f, push: f32, paint: f32, dir: f32, speed: f32, speed3: f32 };
 fn motionAt(uv: vec2f) -> Motion {
-  var m = Motion(vec2f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0);
+  var m = Motion(vec2f(0.0), vec2f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0);
   let s = textureSampleLevel(texB, samp, uv, 0.0);
   let cover = smoothstep(0.15, 0.6, s.a) * U.motionOn;
+  m.wall = s.rg;
   m.speed = length(s.rg);
   m.vel = s.rg / WALL.size * simSize() * U.flowGain;
   m.push = smoothstep(U.threshold, U.threshold * 3.0 + 0.1, m.speed) * cover;
@@ -163,7 +146,71 @@ fn dyeColor(dir: f32, near: f32, slot: u32, speed: f32) -> vec3f {
   return vec3f(U.tintR, U.tintG, U.tintB);
 }
 
-// ---- dye injection: texA dye, texB wall motion, texC wall image (wallSignal)
+// ---- the people's image (kinect.wgsl bodyImage, one texel per LED) blurred with a Gaussian of
+// BODY_BLUR m, at half resolution, one direction per pass. Cut at a level (dye), it gives the bodies
+// as rounded shapes with an edge as sharp as the LEDs (a blurred image can be sampled linearly), as
+// wide as the body or wider. The color rides along, weighted by cover: out r cover, g cover *
+// nearness (mixed with IR), b cover * slot
+const BODY_BLUR = 0.04;
+fn bodyLed(q: vec2i) -> vec3f {
+  let s = ldA(q);
+  return s.r * vec3f(1.0, mix(wallNear(vec3f(0.0, 0.0, s.g)), s.a, U.irMix), s.b);
+}
+// texA the LEDs -> out at half size: Gaussian along x over blocks of 2x2 LEDs
+@compute @workgroup_size(8, 8)
+fn bodyBlurX(@builtin(global_invocation_id) id: vec3u) {
+  let size = textureDimensions(outTex);
+  if (id.x >= size.x || id.y >= size.y) { return; }
+  let p = vec2i(id.xy);
+  let sigma = max(0.5 * BODY_BLUR * U.dyeW / WALL.size.x, 0.5);
+  let r = min(i32(ceil(3.0 * sigma)), 24);
+  var sum = vec3f(0.0);
+  var wsum = 0.0;
+  for (var k = -r; k <= r; k++) {
+    let w = exp(-f32(k * k) / (2.0 * sigma * sigma));
+    let q = (p + vec2i(k, 0)) * 2;
+    sum += w * (bodyLed(q) + bodyLed(q + vec2i(1, 0)) + bodyLed(q + vec2i(0, 1)) + bodyLed(q + vec2i(1, 1)));
+    wsum += 4.0 * w;
+  }
+  textureStore(outTex, p, vec4f(sum / wsum, 1.0));
+}
+// texA bodyBlurX -> out: Gaussian along y
+@compute @workgroup_size(8, 8)
+fn bodyBlurY(@builtin(global_invocation_id) id: vec3u) {
+  let size = textureDimensions(outTex);
+  if (id.x >= size.x || id.y >= size.y) { return; }
+  let p = vec2i(id.xy);
+  let sigma = max(0.5 * BODY_BLUR * U.dyeW / WALL.size.x, 0.5);
+  let r = min(i32(ceil(3.0 * sigma)), 24);
+  var sum = vec3f(0.0);
+  var wsum = 0.0;
+  for (var k = -r; k <= r; k++) {
+    let w = exp(-f32(k * k) / (2.0 * sigma * sigma));
+    sum += w * ldA(p + vec2i(0, k)).rgb;
+    wsum += w;
+  }
+  textureStore(outTex, p, vec4f(sum / wsum, 1.0));
+}
+
+// The people's image (bodyTex) swept back along their motion over the time since the last tracking
+// result: where a body is now or passed on its way here. A fast arm leaves a closed trail instead of
+// separate stamps. vel: m/s on the wall (y down), from the coarse motion at uv.
+struct Body { cover: f32, near: f32, slot: u32 };
+fn sweptBody(uv: vec2f, vel: vec2f) -> Body {
+  let reach = vel / WALL.size * (U.frameStep / KINECT_FPS); // uv the body moved since the last result
+  let n = min(16, i32(ceil(length(reach * vec2f(textureDimensions(bodyTex)))))); // a step per 2 LEDs
+  var s = textureSampleLevel(bodyTex, samp, uv, 0.0);
+  for (var k = 1; k <= n && s.r < 0.95; k++) {
+    let t = textureSampleLevel(bodyTex, samp, uv + reach * (f32(k) / f32(n)), 0.0);
+    if (t.r > s.r) { s = t; }
+  }
+  let w = max(s.r, 0.0001);
+  return Body(s.r, s.g / w, u32(s.b / w + 0.5));
+}
+
+// ---- dye injection: texA dye, texB wall motion. Dye goes only on the bodies (or where they just
+// passed), cut sharp at the LEDs; the coarse motion field only says how much. An empty wall (balance
+// > 1) cuts lower, so the shapes grow; a full one cuts at the bodies' own outline.
 @compute @workgroup_size(8, 8)
 fn dye(@builtin(global_invocation_id) id: vec3u) {
   let size = textureDimensions(outTex);
@@ -171,10 +218,14 @@ fn dye(@builtin(global_invocation_id) id: vec3u) {
   let p = vec2i(id.xy);
   let uv = (vec2f(p) + 0.5) / vec2f(size);
   let m = motionAt(uv);
-  let near = textureSampleLevel(texC, samp, uv, 0.0).r;
-  let slot = u32(ldC(vec2i(uv * vec2f(textureDimensions(texC)))).b + 0.5);
-  // blend towards the color instead of adding it: moving longer in one place does not burn out to white
-  var c = mix(ldA(p).rgb, dyeColor(m.dir, near, slot, m.speed3) * U.dyeAmount, saturate(m.paint * 15.0 * U.dt * balance()));
+  var c = ldA(p).rgb;
+  if (m.paint > 0.0) {
+    let body = sweptBody(uv, m.wall);
+    let edge = clamp(mix(0.5, 0.1, U.grow) / balance(), 0.04, 0.5);
+    let shape = smoothstep(edge, edge + 0.06, body.cover);
+    // blend towards the color instead of adding it: moving longer in one place does not burn out to white
+    c = mix(c, dyeColor(m.dir, body.near, body.slot, m.speed3) * U.dyeAmount, saturate(m.paint * shape * 15.0 * U.dt * balance()));
+  }
   let mv = mouseVel();
   let mouseColor = dyeColor(atan2(mv.y, mv.x) / 6.2831853, 0.8, 0u, 0.0) * U.dyeAmount;
   c = mix(c, mouseColor, saturate(mouseSplat(uv) * 15.0 * U.dt));
@@ -296,7 +347,7 @@ fn maccormackDye(@builtin(global_invocation_id) id: vec3u) {
   textureStore(outTex, p, vec4f(faded, 1.0));
 }
 
-// ---- display: texA dye, texB wall motion, texC wall image. The canvas is the LED image: one dye
+// ---- display: texA dye, texB wall motion, bodyTex the people. The canvas is the LED image: one dye
 // texel per pixel.
 @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
   var p = array<vec2f, 3>(vec2f(-1.0, -1.0), vec2f(3.0, -1.0), vec2f(-1.0, 3.0));
@@ -340,7 +391,7 @@ fn skeletonDist(px: vec2f) -> vec2f {
 
   if (U.showPeople > 0.5) {
     // the people, projected onto the wall, and a 1 m grid on the wall (from the Kinect) to check sizes
-    c += vec3f(0.35) * textureSampleLevel(texC, samp, uv, 0.0).r;
+    c += vec3f(0.35) * smoothstep(0.45, 0.55, textureSampleLevel(bodyTex, samp, uv, 0.0).r);
     let pxPerM = U.dyeW / WALL.size.x;
     let m = wallAt(uv) - vec2f(WALL.size.x * 0.5 + WALL.sensorX, 0.0); // m beside the sensor, above the floor
     let dist = abs(fract(m + 0.5) - 0.5) * pxPerM;
