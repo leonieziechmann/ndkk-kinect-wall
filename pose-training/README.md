@@ -101,7 +101,24 @@ The hub runs the pose model now (DirectML), the target is yolo11s (384 by defaul
 - **r3f-s384 beats the COCO weights at 384** on the unseen frames (+0.065), in the final setup (+0.03) and on overexposed people (3x), and is slightly behind in the old room. Its person boxes are close to COCO's (box mAP 0.786 against 0.818; with IR augmentation 0.739).
 - **At 512 the COCO weights stay ahead overall** (0.722 against 0.683), mainly on the overexposed `room`; in the final setup the fine-tuned model is better (0.853 against 0.829).
 - The infrared augmentation (blur, gamma, noise, downscaling, rotation) did not help; longer training at the small rate neither.
-- Colab: VMs whose kernel stays idle are reclaimed (keep them busy with a tiny `colab exec`), `colab exec` can hang (time-limit every call), back up `resume.pt` off the VM.
+- Colab: VMs whose kernel stays idle are reclaimed (keep them busy with a tiny `colab exec`), `colab exec` can hang (time-limit every call), back up `resume.pt` off the VM, and settings set with `os.environ` in one `colab exec` stay for the next (the job scripts clear them).
+
+**Round 3 at 512, and round 5 (labels of four teachers):** the teachers yolo11x at 1024 and at 512, ViTPose++ huge and Sapiens2 1b (`topdown.py`, top-down on the yolo11x boxes), a keypoint labeled where 3 of 4 agree. Unseen frames, against these four-teacher labels:
+
+| model | unseen | final | alt | room |
+|---|---|---|---|---|
+| yolo11s COCO @384 | 0.575 | 0.807 | 0.607 | 0.084 |
+| r3f-s384 (two-teacher labels) | 0.662 | 0.842 | 0.571 | 0.482 |
+| r5-s384 (four-teacher labels, r3f recipe) | 0.647 | 0.847 | 0.602 | 0.350 |
+| yolo11s COCO @512 | 0.674 | 0.831 | 0.636 | 0.457 |
+| r3f-s512 (against the two-teacher labels: 0.723, COCO 0.722) | | | | |
+| r5-s512 (four-teacher labels) | 0.672 | 0.861 | 0.625 | 0.412 |
+| yolo11m COCO @512 | 0.757 | 0.879 | 0.801 | 0.467 |
+
+- The ranking is the same with either label set. Better labels (four teachers) add nothing measurable: the labels are not the bottleneck, forgetting was.
+- At 512 the fine-tuned model (r3f-s512, r5-s512) equals the COCO weights overall and is better in the final setup (+0.03).
+
+**Tracker backtest** (`recordings/backtest`, per-frame poses with `poses.py`, hybrid LAT 4): r3f-s384 finds the person in many more frames (final-solo: 75 frames without a pose instead of 295), but also reports a phantom at the right image edge before the person enters (score 0.4–0.6, no confident keypoint): one extra id. Keeping only poses with at least 3 keypoints above 0.5 removes it (COCO loses a few edge poses with it too). With that filter, against COCO s@384: final-solo and final-kleid equal or slightly better (flicker p99 0.57 % against 0.61 %, 1.94 % against 2.11 %, one id each); alt-live2 (the old crowded room) worse, 8–9 ids instead of 5–6 at LAT 3/4/5.
 
 ## Stopping and going on
 
