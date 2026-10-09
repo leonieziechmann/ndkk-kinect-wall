@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+  <head><meta charset="utf-8" /><title>render harness</title></head>
+  <body style="margin: 0; background: #000">
+    <script type="module">
+      // Loads the project without the editor, for tools/render.mjs (stills and the full video).
+      import project from '/src/project.ts?project';
+      import { PlaybackState, Renderer } from '@motion-canvas/core';
+      window.__mc = { project, PlaybackState, Renderer };
+    </script>
+  </body>
+</html>

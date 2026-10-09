@@ -1,114 +1,73 @@
-# Erklärvideo Kinect-Wand: Konzept (Entwurf 1)
+# Erklärvideo Kinect-Wand: Konzept (Stand: Entwurf 2)
 
-Ein Video von etwa 1:30 min, das erklärt, wie die Installation funktioniert. Es läuft auf einem eigenen Rechner neben der Wand.
+Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Installation funktioniert. Es läuft auf einem Notebook neben der Wand.
 
-- **Format:** MP4, 1920 × 1080, 60 fps, ohne Ton. Es endet in Schwarz und läuft deshalb nahtlos in Schleife (VLC oder Browser). Kinect und Hub braucht es nicht.
-- **Technik:** Motion Canvas in `erklaervideo/` mit eigener `package.json`; `web/` bleibt unberührt. Alles ist gezeichnet, es gibt kein Fremdmaterial.
-- **Daten:** IR, Tiefe, Punktwolke, Optical Flow und Masken werden aus *einer* simulierten 3D-Szene (Raum plus animierte Personen) berechnet. Dadurch passen alle Bilder exakt zusammen.
+- **Format:** 16:9, MP4, 1920 × 1080, ohne Ton. Fertig mit 60 fps, die Vorschau mit 30 fps. Es endet in Schwarz und läuft so nahtlos in Schleife.
+- **Text:** möglichst wenig. Pro Szene steht ein kurzer, einfacher Satz unten links, dazu Beschriftungen im Bild. Erklären soll die Animation.
+- **Personen:** vorerst einfache simulierte Figuren. Die echten Aufnahmen sind in [AUFNAHMEN.md](AUFNAHMEN.md) beschrieben.
+- **Branding** (Modern Events und Leonie Ziechmann) kommt später als Szene 9.
 
 ## Look
 
-- Dunkler, leicht blauer Raum. Der 3D-Raum ist eine stilisierte Linienzeichnung aus dünnen, leuchtenden Linien.
-- Szenen 1–6 sind eine durchgehende Kamerafahrt ohne harte Schnitte.
-- Die Farben kommen aus dem echten System:
-  - Personen in ihren Tracking-Farben: Cyan `#29e6ff`, Magenta `#ff3fd0`, Gold `#ffc23a`.
-  - Tiefe als Verlauf: nah = warm, fern = kalt.
-  - Infrarot in Graustufen.
-- **Roter Faden:** Die Personen bleiben neutral grau, bis die KI sie erkennt (Szene 5). Erst dann bekommen sie ihre Farbe und ihre ID.
-- **Schrift:** Inter, technische Zahlen in Mono.
-- **Text pro Szene:** eine große, einfache Zeile für alle, darunter eine kleine Technik-Zeile.
-- **Kapitel-Leiste unten:** Aufbau · Licht · 3D · Bewegung · KI · Masken · Szene · Wand.
+- Dunkler Raum, der 3D-Raum als Linienzeichnung. Szenen 1–6 sind eine durchgehende Kamerafahrt, auch die Schnitte zwischen den Szenen sind unsichtbar.
+- Personen in den Tracking-Farben des echten Systems: Cyan, Magenta, Gold. Bis die KI sie erkennt, sind sie grau.
+- Tiefe als Farbverlauf (nah = warm, fern = kalt), Infrarot in Graustufen.
+- Unten eine schmale Fortschrittsleiste mit 8 Kapiteln (ohne Text).
 
 ## Szenen
 
-### 1 · Aufbau (0:00–0:11)
-- **Bild:** leerer Raum, Kamera schräg von vorne oben. Sie fährt langsam heran.
-- **Ablauf:**
-  1. Das Bodenraster zeichnet sich.
-  2. Zwei Truss-Türme wachsen hoch, die Traverse schiebt sich darüber.
-  3. 48 LED-Kabinette (12 × 4 à 0,5 m) hängen sich Reihe für Reihe ein und schwingen kurz nach.
-  4. Die Wand zeigt kurz das Testbild der Steuerzentrale.
-  5. Die Kinect setzt mittig vor der Wand auf ihr Stativ (kleiner Ping).
-- **Text:** „So sieht dich die Wand.“
-- **Maßlinien:** 6 × 2 m · 1008 × 336 LEDs · Kinect v2, mittig, 0,85 m hoch
+| # | Zeit | Szene | Satz im Bild |
+|---|---|---|---|
+| 1 | 0:00 | Aufbau | Titel „So funktioniert die Kinect-Wand“, dann nur Beschriftungen |
+| 2 | 0:11 | Sichtfeld, Infrarot, Abstand | „Die Kinect misst mit Infrarot-Licht, wie weit alles entfernt ist.“ |
+| 3 | 0:23 | Punktwolke | „Aus jedem Bildpunkt wird ein Punkt im Raum.“ |
+| 4 | 0:34 | Optical Flow | „Sie sieht auch, wie sich alles bewegt.“ |
+| 5 | 0:40 | KI-Tracking | „Eine KI erkennt die Menschen und ihr Skelett.“ |
+| 6 | 0:52 | Masken | „Nur die Menschen bleiben übrig.“ |
+| 7 | 1:01 | Daten an die Szene | „30-mal pro Sekunde gehen die Daten an die Szene.“ / „Daraus malt die Szene das Bild auf der Wand.“ |
+| 8 | 1:13 | Interaktion | „Deine Bewegung malt auf der Wand.“ |
+| 9 | 1:25 | Abspann | später |
 
-### 2 · Sichtfeld, Infrarot, Tiefe (0:11–0:23)
-- **Bild:** Die Kamera schwenkt seitlich hinter die Kinect.
-- **Ablauf:**
-  1. Das Sichtfeld wächst als Pyramide aus der Linse (70° × 60°, 0,5–4,5 m), und die Spielfläche leuchtet auf dem Boden auf.
-  2. Zwei Personen laufen hinein, noch grau.
-  3. Infrarot-Pulse wandern von der Kinect zu den Personen und zurück.
-  4. Rechts fahren zwei Bildschirme herein: das Infrarotbild und das Tiefenbild mit Farbskala. Beide zeigen live dieselbe Szene.
-- **Text:** „Die Kinect leuchtet den Raum mit unsichtbarem Infrarot aus und misst für jedes Pixel den Abstand.“
-- **Technik-Zeile:** Time-of-Flight · 512 × 424 Pixel · 30 Bilder/s
+**1 · Aufbau**
+- Das Bodenraster zeichnet sich. Die Truss-Türme wachsen hoch, und die Traverse zieht sich darüber.
+- 48 LED-Kabinette hängen sich Reihe für Reihe ein und zeigen das Testbild.
+- Die Kinect setzt mittig vor der Wand auf ihr Stativ.
+- Beschriftungen: LED-Wand, Truss, Kinect, 6 m, 2 m.
 
-### 3 · Punktwolke (0:23–0:34)
-- **Ablauf:**
-  1. Ein Pixel wird hervorgehoben: Sein Strahl aus der Linse und der gemessene Abstand ergeben einen Punkt im Raum.
-  2. Alle Pixel lösen sich aus dem Tiefenbild und fliegen an ihre 3D-Position im Sichtfeld.
-  3. Die Kamera kreist etwa 90° zur Seite. Die Personen haben Tiefe, aber man sieht nur ihre Vorderseite, weil die Kinect nicht um Ecken schaut. Das zeigt, dass es echte 3D-Daten sind.
-  4. Die Kamera kehrt in die Schrägansicht zurück.
-- **Text:** „Aus jedem Pixel wird ein Punkt im Raum.“
-- **Technik-Zeile:** bis zu 217.088 Punkte pro Bild, in Millimetern
+**2 · Sichtfeld, Infrarot, Abstand**
+- Die Kamera fährt zur Seite. Das Sichtfeld wächst als Pyramide aus der Kinect und wird am Boden abgeschnitten; die Spielfläche leuchtet.
+- Zwei graue Figuren laufen hinein. Rote Infrarot-Pulse laufen durch das Sichtfeld und lassen die Figuren kurz aufleuchten.
+- Dann fahren zwei Bilder herein: „Infrarot“ und „Abstand“ mit der Skala nah–fern.
 
-### 4 · Optical Flow (0:34–0:40, kurz)
-- **Ablauf:** Eine Person winkt, die andere macht einen Schritt. Auf den bewegten Punkten erscheinen kurze Bewegungsspuren. Ihre Farbe zeigt die Richtung, ein kleines Farbrad dient als Legende.
-- **Text:** „Optical Flow: Wohin bewegt sich jedes Pixel von Bild zu Bild?“
-- **Technik-Zeile:** Er hält die Skelette zwischen zwei KI-Bildern flüssig und liefert später die Strömung fürs Fluid.
+**3 · Punktwolke**
+- Ein Bildpunkt auf der Brust einer Figur wird markiert. Eine Linie führt zur Kinect, ein Strahl in den Raum, und ein Punkt erscheint mit seiner Entfernung („2,05 m“).
+- Dann fliegen alle Bildpunkte aus dem Bild an ihre Stelle im Raum.
+- Die Kamera fährt um die Punktwolke herum, bis vor die Leute. Man sieht ihre Körper und die „Schatten“ auf der Rückwand, wo die Kinect nicht hinsieht: echte 3D-Daten.
 
-### 5 · KI-Tracking (0:40–0:52)
-- **Bild:** Das Infrarotbild steht groß in der Mitte, in einem Rahmen „KI-Modell“.
-- **Ablauf:**
-  1. Eine Scan-Linie läuft über das Bild.
-  2. Um jede Person rastet eine Box ein („Person 94 %“).
-  3. 17 Punkte ploppen auf: Nase, Augen, Ohren, Schultern, Ellbogen, Handgelenke, Hüften, Knie, Knöchel.
-  4. Die Knochen verbinden sich zum Skelett. Jede Person bekommt ihre Farbe und ihre ID.
-  5. Das Bild kippt zurück in die 3D-Punktwolke. Die Skelette sitzen jetzt räumlich in den Personen.
-- **Text:** „Ein KI-Modell findet die Menschen: erst als Box, dann als Skelett.“
-- **Technik-Zeile:** YOLO11-Pose im kinect-hub, bis 15×/s auf der GPU · Gelenke in Metern aus der Tiefe der eigenen Pixel · dazwischen interpoliert auf 30 fps
+**4 · Optical Flow**
+- Nah von vorne: Was sich bewegt, leuchtet in der Farbe seiner Bewegungsrichtung und zieht kurze Spuren. Der Rest wird dunkel.
 
-### 6 · Silhouetten und Masken (0:52–1:01)
-- **Ablauf:**
-  1. Von den Skeletten aus wächst die Maske über den Körper, bis die Tiefe springt. Jedes Pixel gehört jetzt einer Person, in ihrer Farbe.
-  2. Der gelernte Hintergrund (Boden, Wände, Möbel, Rauschen) wird grau markiert.
-  3. In der 3D-Ansicht fällt er nach unten weg und löst sich auf. Übrig bleiben nur die farbigen Menschen mit ihren Skeletten.
-- **Text:** „Nur die Menschen bleiben übrig, der Raum fällt raus.“
-- **Technik-Zeile:** eine Maske pro Person in jedem Bild (30 fps), bis zu Fingern und Haaren
+**5 · KI-Tracking**
+- Das Infrarotbild steht groß in der Mitte. Eine Scan-Linie läuft darüber, dann rasten Boxen ein („Mensch 93 %“).
+- 17 Punkte ploppen auf; Kopf, Hand und Knie sind beschriftet. Die Knochen verbinden sich, und die Personen bekommen ihre Farbe.
+- Die Skelette heben sich in 3D in die (graue) Punktwolke.
 
-### 7 · Daten an die Szene (1:01–1:13)
-- **Teil A, im Hintergrund:**
-  - Die Menschen schrumpfen zu einem Datenpaket.
-  - Die Pipeline erscheint als Kette: Kinect → kinect-hub (Rust: Tiefe, KI, Tracking) → WebSocket → Szene im Browser (WebGPU) → Ausgabe → LED-Wand.
-  - Eine Datenkarte (`persons`: ID, Farbe, Gelenke in m …) fliegt die Kette entlang. Dazu: 30× pro Sekunde, ≈ 7 ms.
-- **Teil B, in der Szene:**
-  - Die Kette öffnet sich zur LED-Wand in frontaler Ansicht, und die Skelette blenden dort ein.
-  - Drei kurze Hinweise:
-    - **gespiegelt:** wie ein Spiegel
-    - **echte Größe:** 1:1
-    - **Laufweg gedehnt:** Eine kleine Draufsicht zeigt, dass die Kinect in 3 m Abstand etwa 4 m Breite sieht, die Wand aber 6 m breit ist. Die Position wird gestreckt, der Körper nicht.
-  - Optional ein kleiner Code-Schnipsel (`ctx.persons`, `ctx.wall.joint(p, 'rightHand')`).
-  - Am Ende beginnt das Fluid aus den Skeletten zu fließen, noch mit Debug-Overlay.
-- **Text:** „Die Daten gehen live an die Szene auf der Wand.“
+**6 · Masken**
+- Links 3D, rechts das Maskenbild. Von den Skeletten aus wächst die Farbe über die Körper.
+- Der Raum wird grau markiert, fällt nach unten weg und löst sich auf. Übrig bleiben nur die Menschen.
 
-### 8 · Interaktion: Fluid (1:13–1:25)
-- **Bild:** Kamera auf Augenhöhe hinter dem Publikum, die Wand frontal. Das Debug-Overlay blendet aus.
-- **Ablauf:**
-  - Drei Personen bewegen sich vor der Wand, als dunkle Silhouetten mit Lichtkante in ihrer Farbe. Eine läuft quer, eine winkt, eine wirbelt mit den Armen.
-  - Auf der Wand läuft die Fluid-Simulation. Die Farbe entsteht an den bewegten Körpern, gespiegelt an ihrer Stelle, und ihre Bewegung schiebt sie weg.
-  - Unten rechts zeigt ein kleines Bild-im-Bild live die Sicht der Kinect (Punktwolke und Skelette).
-  - Zum Schluss treten alle zurück, und das Fluid beruhigt sich.
-- **Text:** „Bewegung schiebt die Strömung.“
+**7 · Daten an die Szene**
+- Die Kette Kinect → Computer → Szene → LED-Wand erscheint, und Datenpunkte strömen hindurch.
+- Ein „Datenpaket“ zeigt live, wo die Hände gerade sind.
+- Die Szene öffnet sich zur LED-Wand mit den Skeletten, dazu zwei Hinweise:
+  - **„wie ein Spiegel“:** Die rechte Hand ist rechts.
+  - **Laufweg × 1,4:** Eine Draufsicht zeigt, wie die Position gestreckt wird, damit man die ganze Wand erreicht.
+- Dann beginnt das Fluid zu fließen.
 
-### 9 · Abspann (1:25–1:32)
-- **Ablauf:** Blende zu Schwarz, dann teilt eine Linie das Bild.
-  - **Links, Modern Events:** Verlauf Blau → Violett → Magenta, das Logo als LED-Punktraster wie in der Werbeszene. Darunter „LED-Wand“ · modern-events.de
-  - **Rechts, Leonie Ziechmann:** heller Betula-Look mit grünem Akzent. Darunter „Creative & Implementierung“ · Softwareentwicklung und IT Solutions · github.com/leonieziechmann
-- **Schluss:** Blende zu Schwarz, dann beginnt die Schleife von vorn.
+**8 · Interaktion**
+- Von hinten über das Publikum: Drei Silhouetten mit farbiger Lichtkante bewegen sich vor der Wand, das Fluid folgt ihrer Bewegung.
+- Unten rechts zeigt ein Bild-im-Bild die Sicht der Kinect.
+- Zum Schluss Blende zu Schwarz.
 
-## Offene Fragen
-
-1. **Personen:** simulierte, stilisierte Figuren (Vorschlag) oder echte Daten aus einer Aufnahme in `recordings/`? Echte Daten sind authentischer, aber man erkennt die Leute, dann braucht es ihr Einverständnis. Außerdem müssten die Frames auf dem Windows-Rechner exportiert werden.
-2. **Bildschirm:** 16:9 (Monitor, TV, Beamer)? Oder soll es auch auf der LED-Wand selbst laufen (3:1)?
-3. **Zielgruppe:** Passt die Mischung aus einfacher Zeile für Gäste und kleiner Technik-Zeile?
-4. **Ton:** ohne Ton (Vorschlag) oder mit Musik?
-5. **Logos:** Gibt es das Modern-Events-Logo und dein Logo als SVG/PNG? Sonst baue ich beide nach wie in den Werbeszenen. Welcher Link soll bei dir stehen: GitHub, betula.app oder E-Mail?
+**9 · Abspann (später)**
+- Split-Screen: links Modern Events (LED-Wand), rechts Leonie Ziechmann (Creative und Implementierung).

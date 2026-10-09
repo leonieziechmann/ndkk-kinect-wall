@@ -5,6 +5,8 @@
   "description": "Erklärvideo der Kinect-LED-Wand mit Motion Canvas",
   "scripts": {
     "start": "vite",
+    "render": "node tools/render.mjs video",
+    "stills": "node tools/render.mjs stills",
     "build": "tsc && vite build"
   },
   "dependencies": {
@@ -17,6 +19,7 @@
     "@motion-canvas/ffmpeg": "^3.17.2",
     "@motion-canvas/ui": "^3.17.2",
     "@motion-canvas/vite-plugin": "^3.17.2",
+    "puppeteer-core": "^24.43.1",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   }
