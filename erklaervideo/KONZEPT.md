@@ -6,7 +6,7 @@ Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Insta
 - **Erklären über Bewegung:** Es passiert immer etwas. Pro Szene steht höchstens ein kurzer, einfacher Satz im Bild, dazu ein paar Beschriftungen und für Technik-Interessierte zwei Zahlen (30 Bilder/s, Latenz ≈ 10 ms).
 - **Personen:** drei simulierte Figuren im Low-Poly-Stil (facettierte 3D-Körper mit Kleidung und Haaren, ohne Gesicht). Ohne Geschlechterklischees: Er trägt ein pinkes T-Shirt und wird im Tracking magenta, sie trägt ein türkises Boxy-Shirt, eine weite helle High-Waist-Hose und einen Pferdeschwanz und wird cyan, die dritte Person einen ockerfarbenen Pullover. Die Hauttöne sind verschieden. Echte Aufnahmen sind nicht nötig. Als Alternative gibt es denselben Körper weich schattiert („Natürlich“).
 - **Abspann** (Szene 9): eine geteilte Seite. Links Modern Events (hat die LED-Wand gestellt, Verleih und Betreuung) mit dem LED-Punkt-Logo aus ihrer Wand-Szene, rechts Leonie Ziechmann (Konzept, Umsetzung, Erklärung) auf der Kontaktkarte im Betula-Look mit E-Mail und Telefon. Danach Schwarz.
-- **Schluss** (Szene 10): eine wehende Regenbogenflagge, darunter „Die Zukunft ist bunt“ und „Cottbus ist bunt“, das Wort „bunt“ in den Farben der Flagge. Danach Schwarz, das Video läuft in Schleife.
+- **Schluss** (Szene 10): der ganze Bildschirm wird eine Regenbogenflagge aus LED-Punkten (wie das Modern-Events-Logo), die leicht im Wind weht. Darauf leuchtet in weißen Punkten „COTTBUS IST BUNT“, dann wird COTTBUS Spalte für Spalte zu DIE ZUKUNFT umgeschrieben: „DIE ZUKUNFT IST BUNT“. Danach Schwarz, das Video läuft in Schleife.
 - **Keine heiklen Gesten:** Arme gehen nur nach oben oder zur Seite, Ellbogen gebeugt, nie gestreckt nach vorne. `npm run check-arms` prüft jedes Bild.
 
 ## Look
@@ -30,7 +30,7 @@ Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Insta
 | 7 | 0:56 | Der Weg der Daten | „30-mal pro Sekunde läuft jedes Bild durch diese Schritte.“ / „Daraus entsteht das Bild auf der Wand.“ |
 | 8 | 1:08 | Interaktion | „Deine Bewegung malt auf der Wand.“ |
 | 9 | 1:20 | Abspann | Modern Events: „LED-Wand · Verleih und Betreuung · modern-events.de“ / Leonie Ziechmann: „Konzept · Umsetzung · Erklärung“, Anfragen per E-Mail und Telefon |
-| 10 | 1:30 | Bunt | „Die Zukunft ist bunt“ / „Cottbus ist bunt“ unter einer wehenden Regenbogenflagge |
+| 10 | 1:30 | Bunt | „COTTBUS IST BUNT“, dann „DIE ZUKUNFT IST BUNT“ auf einer Regenbogenflagge aus LED-Punkten |
 
 **1 · Aufbau (11 s)**
 - Das Bodenraster zeichnet sich, die Truss-Türme wachsen hoch, die Traverse zieht sich darüber.

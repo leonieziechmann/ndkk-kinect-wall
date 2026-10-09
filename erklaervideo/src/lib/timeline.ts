@@ -12,7 +12,7 @@ export const SCENES = {
   wand: 68,
   abspann: 80,
   bunt: 90,
-  ende: 97,
+  ende: 99,
 } as const;
 
 export type SceneName = keyof typeof SCENES;
