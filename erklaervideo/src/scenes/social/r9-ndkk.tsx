@@ -3,9 +3,9 @@
 // then where to find the wall: Station Ludwig-Leichhardt-Gymnasium (spelled as on ndkk.de). Then
 // black, and the Reel starts over.
 
-import { Gradient, Img, Node, Rect, Txt, makeScene2D } from '@motion-canvas/2d';
+import { Img, Node, Rect, Txt, makeScene2D } from '@motion-canvas/2d';
 import { all, createRef, delay, easeInCubic, easeInOutCubic, easeOutBack, easeOutCubic, linear, sequence } from '@motion-canvas/core';
-import { NDKK_BOX, NDKK_COLORS, NDKK_LETTERS, NDKK_LINE } from '../../lib/ndkk';
+import { NDKK_COLORS } from '../../lib/ndkk';
 import { P } from '../../lib/portrait';
 import { begin, until } from '../../lib/shots';
 import { cue } from '../../lib/sound';
@@ -13,20 +13,12 @@ import { FONT } from '../../lib/theme';
 import { SCENES, duration } from '../../lib/timeline';
 import { Halftone } from '../../nodes/Halftone';
 import { LucideIcon } from '../../nodes/LucideIcon';
+import { ndkkBackdrop, ndkkLogo } from '../../nodes/ndkk';
 
 /** the logo 900 px wide, its top here */
 const LOGO_W = 900;
 const LOGO_TOP = -360;
-const S = LOGO_W / NDKK_BOX.w;
 const STATION_Y = 150;
-
-/** a part of the logo at its place: x, y from its box in the heading of ndkk.de */
-const at = (p: { x: number; y: number; w: number; h: number }) => ({
-  x: (p.x - NDKK_BOX.x + p.w / 2) * S - LOGO_W / 2,
-  y: LOGO_TOP + (p.y - NDKK_BOX.y + p.h / 2) * S,
-  width: p.w * S,
-  height: p.h * S,
-});
 
 export default makeScene2D(function* (view) {
   const T = yield* begin(view, SCENES.abspann);
@@ -39,29 +31,8 @@ export default makeScene2D(function* (view) {
   const black = createRef<Rect>();
   const C = NDKK_COLORS;
 
-  view.add(
-    <Node ref={bg} opacity={0}>
-      <Rect
-        width={P.w}
-        height={P.h}
-        fill={new Gradient({ type: 'linear', from: [0, -P.h / 2], to: [0, P.h / 2], stops: [{ offset: 0, color: C.pale }, { offset: 0.5, color: C.mint }, { offset: 1, color: C.blue }] })}
-      />
-      <Rect
-        width={P.w}
-        height={P.h}
-        fill={new Gradient({ type: 'radial', from: [380, -640], to: [380, -640], fromRadius: 0, toRadius: 760, stops: [{ offset: 0, color: 'rgba(241,237,180,0.85)' }, { offset: 1, color: 'rgba(241,237,180,0)' }] })}
-      />
-      <Halftone ref={dots} width={P.w} height={P.h} time={local} pitch={16} dotAlpha={0.14} reveal={0} />
-    </Node>,
-  );
-  view.add(
-    <Node>
-      {NDKK_LETTERS.map((p) => (
-        <Img ref={(i: Img) => letters.push(i)} src={p.src} {...at(p)} opacity={0} />
-      ))}
-      <Img ref={line} src={NDKK_LINE.src} {...at(NDKK_LINE)} opacity={0} />
-    </Node>,
-  );
+  view.add(ndkkBackdrop({ ref: bg, dots, time: local, width: P.w, height: P.h, opacity: 0, reveal: 0 }));
+  view.add(ndkkLogo({ width: LOGO_W, top: LOGO_TOP, letters, line, opacity: 0 }));
   view.add(
     <Rect
       ref={station}

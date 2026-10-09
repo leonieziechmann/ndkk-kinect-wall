@@ -80,7 +80,9 @@ Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Insta
 
 ## Social-Fassung (Instagram)
 
-Eine kurze Fassung als Reel: 1080 × 1920 (9:16), 57 s, 30 fps, mit Ton. Dieselben acht Szenen bis zur Wand, jede knapper: Animationen schneller, Pausen kürzer, die Leute kommen früher und machen ihre Gesten dichter hintereinander. Der Titel steht gleich in der ersten Sekunde im Bild.
+Eine kurze Fassung als Reel: 1080 × 1920 (9:16), 58 s, 30 fps, mit Ton. Dieselben acht Szenen bis zur Wand, jede knapper: Animationen schneller, Pausen kürzer, die Leute kommen früher und machen ihre Gesten dichter hintereinander.
+
+- **Anfang:** schon im ersten Bild die Nacht der kreativen Köpfe im Look von ndkk.de: das NDKK-Logo und „Die magische Videowand“, 1,2 s lang; dann wischt die Fläche nach oben weg und der Titel „So funktioniert die Kinect-Wand“ kommt über dem Aufbau.
 
 - **Schluss:** statt Abspann und Flagge die Nacht der kreativen Köpfe im Look von ndkk.de: Pastellverlauf (Mint, Hellblau, Gelb) mit Rasterpunkten, das NDKK-Logo baut sich Buchstabe für Buchstabe auf (das geschwungene K zuletzt), darunter „NACHT DER KREATIVEN KÖPFE“, dann ein dunkelblauer Kasten „Station Ludwig-Leichhardt-Gymnasium“. Schreibweisen wie auf ndkk.de.
 

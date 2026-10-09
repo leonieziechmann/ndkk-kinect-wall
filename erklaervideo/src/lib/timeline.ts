@@ -23,19 +23,22 @@ const FULL = {
   ende: 99,
 };
 
-/** the short cut ends with the wall and the NDKK (in the place of the credits); no flag */
+/**
+ * The short cut starts with a moment of the NDKK (in its first scene) and ends with the wall and the
+ * NDKK again (in the place of the credits); no flag.
+ */
 const SOCIAL: typeof FULL = {
   aufbau: 0,
-  sensor: 6,
-  punktwolke: 12.5,
-  flow: 19,
-  ki: 23.5,
-  masken: 31,
-  daten: 37,
-  wand: 45,
-  abspann: 52.5,
-  bunt: 57,
-  ende: 57,
+  sensor: 7.2,
+  punktwolke: 13.7,
+  flow: 20.2,
+  ki: 24.7,
+  masken: 32.2,
+  daten: 38.2,
+  wand: 46.2,
+  abspann: 53.7,
+  bunt: 58.2,
+  ende: 58.2,
 };
 
 export const SCENES: Readonly<typeof FULL> = CUT === 'social' ? SOCIAL : FULL;
