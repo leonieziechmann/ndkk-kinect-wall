@@ -312,7 +312,11 @@ function renderLive() {
   if (o?.state === 'switching') meta.push('wechselt …');
   else if (o?.state === 'error') meta.push('Fehler – neuer Versuch …');
   if (o?.elapsed != null && o.scene) meta.push(`läuft ${fmtTime(o.elapsed)}`);
-  if (o?.remaining != null) meta.push(o.waiting ? 'wartet, bis niemand davor steht' : `weiter in ${fmtTime(o.remaining)}`);
+  if (o?.remaining != null && o.waiting) {
+    const why = o.waiting === 'round' ? 'wartet auf Rundenende' : 'wartet, bis niemand davor steht';
+    const limit = o.waiting === 'empty' && o.waitLimit != null ? ` · Grenze ${fmtTime(o.waitLimit)} bei ${o.crowd} Person${o.crowd === 1 ? '' : 'en'}` : '';
+    meta.push(o.waitLeft > 0 ? `${why} (höchstens noch ${fmtTime(Math.ceil(o.waitLeft))}${limit})` : why);
+  } else if (o?.remaining != null) meta.push(`weiter in ${fmtTime(o.remaining)}`);
   if (o?.entryRemoved) meta.push('nicht mehr im Ablauf');
   $('nowMeta').textContent = meta.join(' · ');
   $('nowStatus').textContent = o?.status ?? '';
@@ -358,7 +362,7 @@ function renderPlaylist() {
       showChanged({ rerender: false });
     };
     const info = sceneInfo(e.scene);
-    const sub = el('div', 'entry-sub muted', main, `${e.scene}${info ? '' : ' – fehlt auf diesem Dev-Server'}${Object.keys(e.params).length ? ` · ${Object.keys(e.params).length} Werte angepasst` : ''}`);
+    const sub = el('div', 'entry-sub muted', main, `${e.scene}${info ? '' : ' – fehlt auf diesem Dev-Server'}${e.wait ? '' : ' · pünktlich'}${Object.keys(e.params).length ? ` · ${Object.keys(e.params).length} Werte angepasst` : ''}`);
     if (!info) sub.classList.add('bad-text');
     const dur = el('label', 'entry-dur', row);
     const di = el('input', '', dur);
@@ -372,6 +376,14 @@ function renderPlaylist() {
       showChanged({ rerender: false });
     };
     el('span', 'muted', dur, 'min');
+    const wait = el('button', `icon wait${e.wait ? '' : ' punctual'}`, row, '⧗');
+    wait.title = e.wait
+      ? 'Darf überziehen: wartet nach der Dauer, bis niemand davor steht bzw. die Runde endet (Klick: pünktlich)'
+      : 'Pünktlich: wechselt genau nach der Dauer, auch wenn jemand davor steht, z. B. Werbung (Klick: darf überziehen)';
+    wait.onclick = () => {
+      e.wait = !e.wait;
+      showChanged();
+    };
     const en = el('input', '', row);
     en.type = 'checkbox';
     en.checked = e.enabled;
@@ -395,7 +407,7 @@ function renderPlaylist() {
     const dup = el('button', 'icon', row, '⧉');
     dup.title = 'Duplizieren (z. B. andere Werte)';
     dup.onclick = () => {
-      const copy = { ...newEntry(e.scene, e.label ? `${e.label} (2)` : ''), duration: e.duration, params: { ...e.params } };
+      const copy = { ...newEntry(e.scene, e.label ? `${e.label} (2)` : ''), duration: e.duration, wait: e.wait, params: { ...e.params } };
       state.show.entries.splice(i + 1, 0, copy);
       showChanged();
     };
@@ -423,6 +435,10 @@ function renderShowSettings() {
   $('autoOn').checked = s.auto;
   $('waitEmpty').checked = s.waitForEmpty;
   $('maxWait').value = String(s.maxWait);
+  $('maxWaitMany').value = String(s.maxWaitMany);
+  $('manyPersons').value = String(s.manyPersons);
+  $('waitRound').checked = s.waitForRound;
+  $('maxRoundWait').value = String(s.maxRoundWait);
   $('transSel').value = s.transition;
   $('fadeSec').value = String(s.fade);
 }
@@ -437,6 +453,22 @@ $('waitEmpty').onchange = () => {
 };
 $('maxWait').onchange = () => {
   state.show.maxWait = Number($('maxWait').value) || 0;
+  showChanged({ rerender: false });
+};
+$('maxWaitMany').onchange = () => {
+  state.show.maxWaitMany = Number($('maxWaitMany').value) || 0;
+  showChanged({ rerender: false });
+};
+$('manyPersons').onchange = () => {
+  state.show.manyPersons = Math.max(2, Math.round(Number($('manyPersons').value) || 10));
+  showChanged({ rerender: false });
+};
+$('waitRound').onchange = () => {
+  state.show.waitForRound = $('waitRound').checked;
+  showChanged({ rerender: false });
+};
+$('maxRoundWait').onchange = () => {
+  state.show.maxRoundWait = Number($('maxRoundWait').value) || 0;
   showChanged({ rerender: false });
 };
 $('transSel').onchange = () => {

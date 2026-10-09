@@ -189,6 +189,10 @@ export default {
       script: (pts, dur) => S.people.script(pts, dur, [1, 1, 1]),
     });
     game.events.length = 0;
+    // the show switches between rounds (WALL.md, "Games: switch between rounds"): from the countdown
+    // until the crown has been seen; endless rounds have no end to wait for
+    const ph = game.phase;
+    ctx.holdSwitch = p.roundTime > 0 ? ph === 'ready' || ph === 'play' || (ph === 'end' && game.phaseT < Math.min(2.5, p.endTime - 1)) : undefined;
     const t2 = performance.now();
 
     drawArt(S);

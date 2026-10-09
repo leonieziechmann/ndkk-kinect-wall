@@ -8,7 +8,7 @@
 // frame() is retried, one that keeps failing is skipped.
 
 import { loadDoc } from './wall-bus.js';
-import { normalizeShow, stepEntry } from './wall-show.js';
+import { crowdWait, normalizeShow, stepEntry } from './wall-show.js';
 import { BONES, POINTS } from './persons.js';
 
 const TELEMETRY_MS = 250;
@@ -18,6 +18,7 @@ const RETRY_MS = 2000; // a scene stopped by an error in frame() gets another go
 const FAILS_TO_SKIP = 3; // ... and is skipped after this many errors within FAIL_WINDOW_MS
 const FAIL_WINDOW_MS = 30000;
 const CURRENT_KEY = 'kinect-wall:current';
+const CROWD_SAMPLES = 16; // the crowd for the overrun limit: the most people seen in the last 16 × 0.5 s
 
 function el(tag, className, parent) {
   const e = document.createElement(tag);
@@ -34,7 +35,11 @@ export function startOutput(api) {
   let blackout = false;
   let pattern = null; // name of a test image, or null
   let over = false; // test image over the scene instead of instead of it
-  let waiting = false; // auto advance waits for an empty wall
+  let waiting = null; // auto advance waits: 'round' (a game's round to end), 'empty' (an empty wall)
+  let waitLeft = 0; // s until it switches anyway
+  let waitLimit = 0; // s it may run over in all (maxWait … maxWaitMany by the crowd, or maxRoundWait)
+  const seen = []; // people in front of the wall, every 0.5 s
+  let crowd = 0; // the most of them: a track lost for a moment does not shrink the limit
   let previewUntil = 0;
   let lastPreview = 0;
   let errorAt = 0;
@@ -120,7 +125,7 @@ export function startOutput(api) {
     try {
       current = entry;
       startedAt = performance.now();
-      waiting = false;
+      waiting = null;
       fails = [];
       rememberCurrent();
       if (!entry) {
@@ -187,7 +192,7 @@ export function startOutput(api) {
 
   bus.on('play', (d) => {
     // an entry of the show, or just a scene to look at (not in the show: id 'adhoc')
-    const entry = d.scene ? { id: 'adhoc', scene: String(d.scene), label: '', duration: 300, enabled: true, params: {} } : show.entries.find((e) => e.id === d.entry);
+    const entry = d.scene ? { id: 'adhoc', scene: String(d.scene), label: '', duration: 300, enabled: true, wait: true, params: {} } : show.entries.find((e) => e.id === d.entry);
     if (entry) playEntry(entry, d.transition ?? show.transition);
   });
   bus.on('next', () => step(1));
@@ -257,14 +262,27 @@ export function startOutput(api) {
   // ---------- auto advance, telemetry ----------
 
   setInterval(() => {
-    if (!show.auto || !current || blackout || switching) {
-      waiting = false;
-      return;
-    }
+    seen.push(kinect.view.length);
+    if (seen.length > CROWD_SAMPLES) seen.shift();
+    crowd = Math.max(...seen);
+    waiting = null;
+    if (!show.auto || !current || blackout || switching) return;
     const elapsed = (performance.now() - startedAt) / 1000;
     if (elapsed < current.duration) return;
-    const busy = show.waitForEmpty && kinect.view.length > 0;
-    waiting = busy && elapsed < current.duration + show.maxWait;
+    // an entry with wait off (ads) switches on time; a game says whether a round runs (ctx.holdSwitch
+    // true/false): it switches between rounds, people in front or not; every other scene when nobody
+    // stands in front of the wall, at most longer the more people there are
+    const inst = rt.current;
+    const hold = inst?.name === current.scene && rt.state === 'running' ? inst.ctx?.holdSwitch : undefined;
+    let limit = 0;
+    if (current.wait !== false) {
+      if (typeof hold === 'boolean' && show.waitForRound) {
+        if (hold) [waiting, limit] = ['round', show.maxRoundWait];
+      } else if (show.waitForEmpty && kinect.view.length > 0) [waiting, limit] = ['empty', crowdWait(show, crowd)];
+    }
+    waitLimit = limit;
+    waitLeft = current.duration + limit - elapsed;
+    if (waitLeft <= 0) waiting = null;
     if (waiting) return;
     const next = stepEntry(show, current.id, 1);
     if (next && next.id !== current.id) playEntry(next);
@@ -286,6 +304,9 @@ export function startOutput(api) {
         elapsed,
         remaining: show.auto && current ? Math.max(0, current.duration - elapsed) : null,
         waiting,
+        waitLeft: waiting ? waitLeft : null,
+        waitLimit: waiting ? waitLimit : null,
+        crowd,
         fps: s.fps,
         kinect: s.kinect,
         problem: rt.problem || null,

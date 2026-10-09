@@ -24,7 +24,7 @@ export const newId = () => Math.random().toString(36).slice(2, 10);
 const num = (v, min, max, fallback) => (typeof v === 'number' && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback);
 
 export function newEntry(scene, label = '') {
-  return { id: newId(), scene, label, duration: 300, enabled: true, params: {} };
+  return { id: newId(), scene, label, duration: 300, enabled: true, wait: true, params: {} };
 }
 
 /** A complete, valid show from anything. */
@@ -42,17 +42,29 @@ export function normalizeShow(raw) {
       label: typeof e.label === 'string' ? e.label.slice(0, 120) : '',
       duration: num(e.duration, 5, 86400, 300),
       enabled: e.enabled !== false,
+      wait: e.wait !== false, // may run over its duration (show.waitForEmpty, waitForRound); false: on time (ads)
       params: e.params && typeof e.params === 'object' && !Array.isArray(e.params) ? { ...e.params } : {},
     });
   }
+  const maxWait = num(raw?.maxWait, 0, 3600, 120);
   return {
     entries,
     auto: raw?.auto === true, // switch to the next entry after its duration
     waitForEmpty: raw?.waitForEmpty !== false, // ... but only when nobody is in front of the wall
-    maxWait: num(raw?.maxWait, 0, 3600, 120), // s: at most this much longer
+    maxWait, // s: at most this much longer with one person in front (see crowdWait)
+    maxWaitMany: num(raw?.maxWaitMany, 0, 3600, maxWait), // ... with manyPersons or more
+    manyPersons: Math.round(num(raw?.manyPersons, 2, 50, 10)),
+    waitForRound: raw?.waitForRound !== false, // a game (ctx.holdSwitch) switches between its rounds instead
+    maxRoundWait: num(raw?.maxRoundWait, 0, 3600, 120), // s: at most this much longer
     transition: Object.values(TRANSITIONS).includes(raw?.transition) ? raw.transition : 'cross',
     fade: num(raw?.fade, 0, 10, 1.5), // s
   };
+}
+
+/** s an entry may run over while `crowd` people stand in front: from maxWait (1) to maxWaitMany (manyPersons). */
+export function crowdWait(show, crowd) {
+  const u = Math.min(1, Math.max(0, (crowd - 1) / Math.max(1, show.manyPersons - 1)));
+  return show.maxWait + (show.maxWaitMany - show.maxWait) * u;
 }
 
 /** The next enabled entry after `id` (dir +1) or before it (-1); null if there is none. */
