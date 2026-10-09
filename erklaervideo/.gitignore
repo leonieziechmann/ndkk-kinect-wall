@@ -1,0 +1,4 @@
+node_modules/
+# rendered videos and image sequences (Motion Canvas output)
+output/
+dist/
