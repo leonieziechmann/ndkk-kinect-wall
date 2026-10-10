@@ -21,11 +21,13 @@ The scenes run on a 6 × 2 m LED wall (1008 × 336). One shared core handles it:
 
 ## Show launcher: `start-wand.cmd`
 
-The user's one-click launcher for the exhibition. It starts the hub, the main checkout's dev server, the kiosk output and the control center. The displays are detected automatically: the output goes only on the second display, never on the notebook's panel, and the control center goes maximized on the notebook's panel. Until it ends, it tunes Windows: power plan, priorities, efficiency mode, and stopped services. It keeps its journal and logs in `%LOCALAPPDATA%\kinect-wand\`.
+The user's one-click launcher for the exhibition. It starts the hub, the main checkout's dev server, the kiosk output and the control center. The displays are detected automatically: the output goes only on the second display, never on the notebook's panel, and the control center goes maximized on the notebook's panel. Until it ends, it tunes Windows: power plan, priorities and efficiency mode. Windows services stay as they are: Windows restarts them within seconds. It keeps its journal and logs in `%LOCALAPPDATA%\kinect-wand\`.
 - Do not run it unless asked: it changes system settings and stops what it started.
-- To test it, run `-NoWall -NoControl -NoAdmin -Hub 8091`. For a dev server and kiosk of your own, add `-Checkout <worktree>` and set `KINECT_WALL_DIR`.
+- It shares the notebook with the show, so it must stay cheap (about 5 ms CPU per second). Keep WMI, `Get-Process`, `Invoke-RestMethod`, display queries and `Write-Host` out of its loop; the header of `start-wand.ps1` says how.
+- To test it, run `-NoWall -NoControl -Hub 8091`. For a dev server and kiosk of your own, add `-Checkout <worktree>` and set `KINECT_WALL_DIR`.
 - End a test run by creating `quit.flag` in that folder.
-- Diff the power plan, priorities and services before and after.
+- Diff the power plan and priorities before and after.
+- From a Claude session, `%LOCALAPPDATA%` is virtualized: the desktop app is an MSIX package. Your test runs write to `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Local\kinect-wand\`, and those files hide the user's real ones. To read or write the real files, such as the `quit.flag` of the user's run, use a process started outside the package: `Invoke-CimMethod Win32_Process -MethodName Create`. To start the real launcher, run `explorer.exe <path>\start-wand.cmd`.
 
 ## Kinect data: always through kinect-hub
 
