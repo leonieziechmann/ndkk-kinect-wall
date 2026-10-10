@@ -293,7 +293,7 @@ export default {
       people: [],
       invCol: null,
       destroy() {
-        sound.stopAll();
+        sound.close();
         renderer.destroy();
       },
     };

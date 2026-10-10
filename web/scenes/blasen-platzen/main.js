@@ -185,6 +185,7 @@ export default {
       },
       destroy() {
         this.gridTex?.destroy();
+        sound.close();
       },
     };
     ctx.track(S);

@@ -532,7 +532,7 @@ export default {
       fake: [],
       mouseFake: { id: 'mouse', x: 3, h: 1.7, crouch: 0, slot: 2 },
       destroy() {
-        sound.stopAll();
+        sound.close();
       },
     };
     ctx.on(window, 'keydown', (e) => {

@@ -162,4 +162,17 @@ export class Sound {
   stopAll() {
     this.recent.clear();
   }
+
+  /**
+   * Ends the audio context (the scene's dispose). A running one is never garbage collected: left
+   * open, every start of the scene in the show added one more, each with its own audio stream and
+   * real-time thread, for as long as the output window ran.
+   */
+  close() {
+    const ac = this.ac;
+    this.ac = null;
+    this.out = null;
+    this.noise = null;
+    ac?.close().catch(() => {});
+  }
 }
