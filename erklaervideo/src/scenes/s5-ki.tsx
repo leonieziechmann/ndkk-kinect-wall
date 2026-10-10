@@ -3,6 +3,7 @@
 
 import { makeScene2D } from '@motion-canvas/2d';
 import { all, createRef, delay, easeInOutCubic, easeInOutSine, easeOutCubic, linear } from '@motion-canvas/core';
+import { TEXT } from '../lib/layout';
 import { SHOTS, begin, moveTo, setShot, until } from '../lib/shots';
 import { cue } from '../lib/sound';
 import { SCENES, duration } from '../lib/timeline';
@@ -20,6 +21,7 @@ export default makeScene2D(function* (view) {
     <Stage
       ref={st}
       time={T}
+      textScale={TEXT}
       wallLit={0.55}
       wallAlpha={0}
       roomAlpha={0}
@@ -36,37 +38,37 @@ export default makeScene2D(function* (view) {
     />,
   );
   setShot(st(), SHOTS.kinectC2);
-  view.add(<SensorPanel ref={ki} time={T} mode={'ir'} width={KI.w} height={KI.h} x={KI.x} y={KI.y} opacity={0} scale={0.94} />);
+  view.add(<SensorPanel ref={ki} time={T} mode={'ir'} width={KI.w} height={KI.h} x={KI.x} y={KI.y} opacity={0} scale={0.94} textScale={TEXT} />);
   const cap = new Caption(view);
   yield chapterBar(view, 4);
 
-  cue(T, 'pop', 0.3, { n: 0, gain: 0.8 });
+  cue(T, 'pop', 0.25, { n: 0, gain: 0.8 });
   yield* all(
-    st().streaks(0, 0.6),
-    st().colorFlow(0, 0.8),
-    st().opacity(0.15, 1.0),
-    delay(0.3, all(ki().opacity(1, 0.8, easeOutCubic), ki().scale(1, 0.8, easeOutCubic))),
-    delay(0.4, cap.show('Eine KI erkennt die Menschen und ihr Skelett.')),
+    st().streaks(0, 0.5),
+    st().colorFlow(0, 0.7),
+    st().opacity(0.15, 0.9),
+    delay(0.25, all(ki().opacity(1, 0.7, easeOutCubic), ki().scale(1, 0.7, easeOutCubic))),
+    delay(0.35, cap.show('Eine KI erkennt die Menschen und ihr Skelett.')),
   );
-  cue(T, 'scan', 0, { dur: 1.2, pan: -0.6, panTo: 0.6 });
-  cue(T, 'lock', 1.15, { pan: -0.35 });
-  cue(T, 'lock', 1.75, { pan: 0.35 });
-  cue(T, 'dots', 2.2, { dur: 1.4, n: 34 });
-  for (const at of [2.8, 3.1, 3.4]) cue(T, 'tick', at, { pan: 0.4 });
-  cue(T, 'connect', 3.6, { dur: 1.2 });
-  cue(T, 'chord', 4.3);
+  cue(T, 'scan', 0, { dur: 1.0, pan: -0.6, panTo: 0.6 });
+  cue(T, 'lock', 0.95, { pan: -0.35 });
+  cue(T, 'lock', 1.5, { pan: 0.35 });
+  cue(T, 'dots', 1.9, { dur: 1.2, n: 30 });
+  for (const at of [2.4, 2.7, 3.0]) cue(T, 'tick', at, { pan: 0.4 });
+  cue(T, 'connect', 3.1, { dur: 1.0 });
+  cue(T, 'chord', 3.7);
   yield* all(
-    ki().scan(1, 1.2, linear),
-    delay(1.0, ki().boxes(1, 1.2, linear)),
-    delay(2.2, ki().points(1, 1.4, linear)),
-    delay(2.8, ki().pointLabels(1, 0.9, linear)),
-    delay(3.6, ki().bones(1, 1.2, linear)),
-    delay(4.3, ki().colorize(1, 0.7)),
-    delay(4.8, ki().pointLabels(0, 0.5)),
+    ki().scan(1, 1.0, linear),
+    delay(0.85, ki().boxes(1, 1.0, linear)),
+    delay(1.9, ki().points(1, 1.2, linear)),
+    delay(2.4, ki().pointLabels(1, 0.8, linear)),
+    delay(3.1, ki().bones(1, 1.0, linear)),
+    delay(3.7, ki().colorize(1, 0.6)),
+    delay(4.3, ki().pointLabels(0, 0.45)),
   );
   // lift the skeletons into 3D
-  cue(T, 'lift', 0.4, { dur: 1.6 });
-  yield* st().opacity(0, 0.4);
+  cue(T, 'lift', 0.35, { dur: 1.45 });
+  yield* st().opacity(0, 0.35);
   setShot(st(), SHOTS.kinectK);
   st().colorFlow(0);
   st().streaks(0);
@@ -75,12 +77,11 @@ export default makeScene2D(function* (view) {
   st().skel(1);
   st().skelFly(0);
   yield* all(
-    st().opacity(1, 1.0),
-    st().skelFly(1, 1.6, easeInOutCubic),
-    ki().opacity(0, 0.9),
+    st().opacity(1, 0.9),
+    st().skelFly(1, 1.45, easeInOutCubic),
+    ki().opacity(0, 0.8),
   );
-  yield* all(...moveTo(st(), SHOTS.kinectD, 2.2, easeInOutSine));
-  yield* until(duration('ki') - 0.45);
-  yield* cap.hide(0.4);
+  const rest = duration('ki') - (T() - SCENES.ki);
+  yield* all(...moveTo(st(), SHOTS.kinectD, rest, easeInOutSine), delay(rest - 0.45, cap.hide(0.4)));
   yield* until(duration('ki'));
 });

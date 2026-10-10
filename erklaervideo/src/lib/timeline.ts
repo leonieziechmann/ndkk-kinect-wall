@@ -9,18 +9,19 @@
 /** which cut this page renders */
 export const CUT: 'full' | 'social' = (globalThis as { __CUT?: string }).__CUT === 'social' ? 'social' : 'full';
 
+/** the full cut: a moment of the NDKK first (in its first scene), the story, the credits, the flag */
 const FULL = {
   aufbau: 0,
-  sensor: 11,
-  punktwolke: 20.5,
-  flow: 30.5,
-  ki: 36.5,
-  masken: 48,
-  daten: 56.5,
-  wand: 68,
-  abspann: 80,
-  bunt: 90,
-  ende: 99,
+  sensor: 10,
+  punktwolke: 18.5,
+  flow: 27,
+  ki: 32.5,
+  masken: 42.5,
+  daten: 50,
+  wand: 62.5,
+  abspann: 73.5,
+  bunt: 82.5,
+  ende: 91.5,
 };
 
 /**
@@ -55,4 +56,4 @@ export function duration(name: Exclude<SceneName, 'ende'>) {
 export const at = (name: SceneName, t: number) => SCENES[name] + t;
 
 /** the fluid on the wall starts here (scene "daten") and runs on until the end */
-export const FLUID_START = at('daten', CUT === 'social' ? 6.0 : 8.0);
+export const FLUID_START = at('daten', CUT === 'social' ? 6.0 : 9.4);

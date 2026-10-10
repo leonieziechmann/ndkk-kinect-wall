@@ -35,6 +35,8 @@ export interface SensorPanelProps extends RectProps {
   edge?: SignalValue<number>;
   bodyStyle?: SignalValue<string>;
   textScale?: SignalValue<number>;
+  titlePlate?: SignalValue<number>;
+  legendCenter?: SignalValue<number>;
 }
 
 const POINT_NAMES: [number, string][] = [
@@ -68,6 +70,10 @@ export class SensorPanel extends Rect {
   @initial(DEFAULT_STYLE) @signal() public declare readonly bodyStyle: SimpleSignal<string, this>;
   /** size of the text (1 = for 1080p landscape; larger for a phone screen) */
   @initial(1) @signal() public declare readonly textScale: SimpleSignal<number, this>;
+  /** a dark strip of this height (px) behind the title, so nothing of the 3D view shows through around it */
+  @initial(0) @signal() public declare readonly titlePlate: SimpleSignal<number, this>;
+  /** the legend in the middle under the picture (narrow layouts) instead of under its right half */
+  @initial(0) @signal() public declare readonly legendCenter: SimpleSignal<number, this>;
 
   public constructor(props?: SensorPanelProps) {
     super({ width: 512, height: 424, ...props });
@@ -112,6 +118,11 @@ export class SensorPanel extends Rect {
       ctx.lineWidth = 1.5;
       ctx.strokeRect(-W / 2, -H / 2, W, H);
       const title = this.title();
+      const plate = this.titlePlate();
+      if (title && plate > 0) {
+        ctx.fillStyle = `rgba(5,7,12,${0.96 * chrome})`;
+        ctx.fillRect(-W / 2, -H / 2 - plate, W, plate - 0.75);
+      }
       if (title) {
         ctx.font = `600 ${26 * this.textScale()}px ${FONT}`;
         ctx.textBaseline = 'bottom';
@@ -143,8 +154,7 @@ export class SensorPanel extends Rect {
     const k = this.textScale();
     const y = H / 2 + 22 * k;
     const w = W * 0.55;
-    // under the right half of the picture; centered when the text is large (narrow layouts)
-    const x0 = k > 1 ? -w / 2 : W / 2 - w;
+    const x0 = this.legendCenter() > 0 ? -w / 2 : W / 2 - w;
     const grad = ctx.createLinearGradient(x0, 0, x0 + w, 0);
     for (let i = 0; i <= 10; i++) grad.addColorStop(i / 10, depthCss(1 - i / 10));
     ctx.globalAlpha *= a;

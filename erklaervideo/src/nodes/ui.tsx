@@ -16,7 +16,7 @@ export interface CaptionStyle {
 export class Caption {
   readonly ref: Reference<Txt> = createRef<Txt>();
 
-  constructor(view: View2D, x = -860, y = 432, { anchor = 'bottom-left', fontSize = 50, lineHeight = 62 }: CaptionStyle = {}) {
+  constructor(view: View2D, x = -860, y = 432, { anchor = 'bottom-left', fontSize = 54, lineHeight = 66 }: CaptionStyle = {}) {
     view.add(
       <Txt
         ref={this.ref}

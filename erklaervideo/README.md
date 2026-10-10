@@ -6,8 +6,8 @@ Motion-Canvas-Projekt für ein Video von etwa 1:30 min, das erklärt, wie die In
 cd erklaervideo
 npm install
 npm start                                  # Editor: http://localhost:9000 (Video oder Social-Fassung wählen; Vorschau, Zeitleiste, Render-Knopf)
-npm run render                             # ganzes Video → output/kinect-wand.mp4 (1080p, 60 fps)
-npm run render -- --fps 30                 # schnellere Vorschau
+npm run render -- --fps 30                 # ganzes Video → output/kinect-wand.mp4 (1080p, 30 fps, mit Ton)
+npm run render                             # dasselbe mit 60 fps (dauert doppelt so lang)
 npm run stills -- 12 30.5 47               # Einzelbilder (Sekunden) → output/stills/
 npm run stills -- --body natur 19 75       # dasselbe mit den weich schattierten Figuren (Standard: lowpoly)
 npm run stills -- --project figuren --out output/fig 8 33.5   # Modellblatt der Figuren (vorne, Seite, hinten)
@@ -33,7 +33,8 @@ Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → End
 
 | Datei | Was |
 |---|---|
-| `src/scenes/s1-…s10-*.tsx` | die zehn Szenen (Ablauf, Texte, Kamera); s9 ist der Abspann, s10 „Cottbus ist bunt“ → „Die Zukunft ist bunt“ |
+| `src/scenes/s1-…s10-*.tsx` | die zehn Szenen (Ablauf, Texte, Kamera); s1 beginnt mit 1,6 s Nacht der kreativen Köpfe (NDKK-Logo, „Die magische Videowand“), s9 ist der Abspann, s10 „Cottbus ist bunt“ → „Die Zukunft ist bunt“ |
+| `src/lib/layout.ts` | wo die Kinect-Bilder neben der 3D-Ansicht sitzen, und `TEXT`: um wie viel die Schrift in den Bildern größer ist (1,25, lesbar aus einem Schritt Abstand) |
 | `src/nodes/LedLogo.ts`, `LucideIcon.ts`, `LedFlag.ts` | das Modern-Events-Logo als LED-Punktfeld, die Icons der Kontaktkarte, die wehende Regenbogenflagge aus LED-Punkten |
 | `src/lib/timeline.ts` | wann jede Szene auf der Story-Uhr beginnt; `at(szene, t)` für Zeiten relativ zur Szene |
 | `src/lib/choreo.ts` | wer wann wohin läuft und welche Geste macht |
@@ -53,7 +54,7 @@ Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → End
 
 ## Social-Fassung
 
-`src/social.ts` ist ein zweites Projekt: dieselbe Geschichte als Instagram Reel, 1080 × 1920 (9:16), 58 s statt 99 s. Es beginnt mit 1,2 s Nacht der kreativen Köpfe (NDKK-Logo, „Die magische Videowand“, in r1) und endet statt mit Abspann und Flagge wieder mit der NDKK: Logo und „Station Ludwig-Leichhardt-Gymnasium“ (r9). Beides im Look von ndkk.de (`src/nodes/ndkk.tsx`); das Logo liegt in Buchstaben zerlegt in `src/assets/ndkk/`, siehe `src/lib/ndkk.ts`. Die Szenen liegen in `src/scenes/social/` (r1 … r8, je eine Hochformat-Fassung von s1 … s8) und nutzen dieselben Bausteine (`Stage`, `SensorPanel`, `WallView`, die Icons der Datenkette in `src/nodes/pipeline.tsx`), mit größerer Schrift (`textScale`).
+`src/social.ts` ist ein zweites Projekt: dieselbe Geschichte als Instagram Reel, 1080 × 1920 (9:16), 58 s statt 91,5 s. Es beginnt mit 1,2 s Nacht der kreativen Köpfe (NDKK-Logo, „Die magische Videowand“, in r1) und endet statt mit Abspann und Flagge wieder mit der NDKK: Logo und „Station Ludwig-Leichhardt-Gymnasium“ (r9). Beides im Look von ndkk.de (`src/nodes/ndkk.tsx`); das Logo liegt in Buchstaben zerlegt in `src/assets/ndkk/`, siehe `src/lib/ndkk.ts`. Die Szenen liegen in `src/scenes/social/` (r1 … r8, je eine Hochformat-Fassung von s1 … s8) und nutzen dieselben Bausteine (`Stage`, `SensorPanel`, `WallView`, die Icons der Datenkette in `src/nodes/pipeline.tsx`), mit größerer Schrift (`textScale`).
 
 - **Zeitplan und Choreografie:** `timeline.ts` und `choreo.ts` haben für die kurze Fassung eigene Zeiten (`CUT === 'social'`); `src/lib/cut-social.ts` schaltet um und muss in `social.ts` als Erstes importiert werden. Die Leute machen dieselben Gesten, nur schneller hintereinander.
 - **Layout:** `src/lib/portrait.ts`. Instagram legt oben (Name) und unten (Beschreibung, Knöpfe rechts) eigene Dinge über das Reel und zeigt im Feed nur die mittleren 4:5 (1080 × 1350). Deshalb steht der Satz jeder Szene groß oben in der Mitte (mit dunklem Verlauf dahinter), die Kinect-Bilder sitzen unter der 3D-Ansicht, und nichts Wichtiges liegt in den äußeren Rändern.

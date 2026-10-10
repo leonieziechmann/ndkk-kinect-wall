@@ -40,7 +40,7 @@ export default makeScene2D(function* (view) {
   topShade(view, P.w, P.h);
   const panel = { width: PAIR.w, height: PAIR.h, textScale: P.text };
   view.add(<SensorPanel ref={ir} time={T} mode={'ir'} title={'Infrarot'} {...panel} x={PAIR_X[0]} y={PAIR.y} />);
-  view.add(<SensorPanel ref={dp} time={T} mode={'depth'} title={'Abstand'} legend={1} {...panel} x={PAIR_X[1]} y={PAIR.y} />);
+  view.add(<SensorPanel ref={dp} time={T} mode={'depth'} title={'Abstand'} legend={1} legendCenter={1} {...panel} x={PAIR_X[1]} y={PAIR.y} />);
   const cap = new Caption(view, CAPTION.x, CAPTION.y, CAPTION.style);
 
   // one pixel: its ray out of the lens and its distance give a point in the room

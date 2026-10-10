@@ -25,7 +25,7 @@ export default makeScene2D(function* (view) {
   topShade(view, P.w, P.h);
   const panel = { width: PAIR.w, height: PAIR.h, depthMax: 0.5, edge: 1, textScale: P.text };
   view.add(<SensorPanel ref={ir} time={T} mode={'ir'} title={'Infrarot'} {...panel} x={PAIR_X[0]} y={PAIR.y + PAIR.out} />);
-  view.add(<SensorPanel ref={dp} time={T} mode={'depth'} title={'Abstand'} legend={1} {...panel} x={PAIR_X[1]} y={PAIR.y + PAIR.out} />);
+  view.add(<SensorPanel ref={dp} time={T} mode={'depth'} title={'Abstand'} legend={1} legendCenter={1} {...panel} x={PAIR_X[1]} y={PAIR.y + PAIR.out} />);
   const cap = new Caption(view, CAPTION.x, CAPTION.y, CAPTION.style);
 
   cue(T, 'whoosh', 0, { dur: 1.8, gain: 0.45, pan: -0.3, panTo: 0.3 });
