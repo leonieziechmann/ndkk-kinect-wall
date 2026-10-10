@@ -16,6 +16,11 @@ import './control.css';
 
 const HUB = hubUrl();
 const OUTPUT_ALIVE_MS = 2500;
+// An output window that stops reporting may only hang (a sensor restart, a scene setting up, a GPU
+// reset reloading it). It counts as closed only after this long, so no preview starts here in the
+// meantime: a second output on the same GPU, with its own hub connection and person tracking, would
+// make the hang longer.
+const OUTPUT_GONE_MS = 30000;
 const $ = (id) => document.getElementById(id);
 
 function el(tag, className, parent, text) {
@@ -86,9 +91,36 @@ const external = () => outputs().filter((o) => !o.embedded);
 const others = () => outputs().filter((o) => o.owner !== bus.id);
 /** the output whose state is shown: an output window, else another preview, else the one here */
 const out = () => external()[0] ?? others()[0] ?? outputs()[0] ?? null;
+// when an output window last reported; kept over a reload of this page (a dev server restart reloads
+// this page and the output window at once, and the output takes longer to come back)
+const WINDOW_KEY = 'kinect-wall:window-at';
+let windowAt = 0;
+let windowSaved = 0;
+try {
+  windowAt = Number(sessionStorage.getItem(WINDOW_KEY)) || 0;
+} catch {
+  // not remembered
+}
+function noteWindow(at) {
+  windowAt = at;
+  if (at && at - windowSaved < 1000) return;
+  windowSaved = at;
+  try {
+    sessionStorage.setItem(WINDOW_KEY, String(at));
+  } catch {
+    // not remembered
+  }
+}
+/** ms since the output window went silent (it may only hang), or null: one reports, or none for OUTPUT_GONE_MS */
+function windowSilentMs() {
+  if (external().length) return null;
+  const ms = Date.now() - windowAt;
+  return ms < OUTPUT_GONE_MS ? ms : null;
+}
 
 bus.on('telemetry', (data, msg) => {
   state.outputs.set(msg.from, { data, at: Date.now() });
+  if (!data.embedded) noteWindow(Date.now());
   renderLive();
   if (msg.from === out()?.id) proj?.tick();
 });
@@ -135,7 +167,7 @@ function syncEmbed() {
   const visible = !hiddenSince || performance.now() - hiddenSince < 3000;
   // two tabs that started at the same time: the preview of the smaller page id stays
   const blockers = others().filter((o) => !o.embedded || !embedFrame || String(o.owner) < bus.id);
-  const want = embedReady && visible && $('embedOn').checked && blockers.length === 0;
+  const want = embedReady && visible && $('embedOn').checked && blockers.length === 0 && windowSilentMs() === null;
   if (want && !embedFrame) {
     const hub = new URLSearchParams(location.search).get('hub');
     embedFrame = el('iframe', '', $('embedBox'));
@@ -152,7 +184,9 @@ function syncEmbed() {
     ? '· läuft hier live (eigene Kinect-Verbindung und Personenerkennung)'
     : $('embedOn').checked && external().length
       ? '· aus, weil ein Ausgabefenster läuft (zeigt dessen Bild)'
-      : $('embedOn').checked && others().length
+      : $('embedOn').checked && windowSilentMs() !== null
+        ? `· aus, solange das Ausgabefenster hängt (gilt nach ${OUTPUT_GONE_MS / 1000} s als geschlossen)`
+        : $('embedOn').checked && others().length
         ? '· aus, weil die Vorschau schon in einem anderen Tab läuft (zeigt deren Bild)'
         : '';
 }
@@ -231,6 +265,7 @@ $('openWindow').onclick = () => {
 };
 $('reloadOut').onclick = () => bus.send('reload', {}, 'output');
 $('closeOut').onclick = () => {
+  noteWindow(0); // closed on purpose: the preview here may start at once
   bus.send('close', {}, 'output');
   fetch('/__wall/close', { method: 'POST' }).catch(() => {});
 };
@@ -298,9 +333,18 @@ function renderLive() {
   const windows = external();
   const o = out();
   const pill = $('outPill');
-  if (!o) {
+  const silent = windowSilentMs();
+  if (!o && silent !== null) {
+    // the output window went silent: it may only hang. Its last picture stays (the wall shows it too).
+    pill.className = 'pill bad';
+    pill.textContent = `Ausgabe hängt (${Math.round(silent / 1000)} s)`;
+    pill.title = 'Das Ausgabefenster meldet sich nicht (hängt oder lädt neu)';
+    $('previewNote').hidden = !!$('preview').getAttribute('src');
+    $('previewNote').textContent = 'Das Ausgabefenster meldet sich nicht (hängt oder lädt neu) …';
+  } else if (!o) {
     pill.className = 'pill bad';
     pill.textContent = 'keine Ausgabe';
+    pill.title = '';
     $('previewNote').hidden = !!embedFrame;
     $('previewNote').textContent = 'Keine Ausgabe verbunden – „Ausgabe öffnen“ oder die Live-Vorschau einschalten';
     $('preview').removeAttribute('src');
@@ -1251,7 +1295,8 @@ planCanvas.addEventListener('keydown', (e) => {
 function renderStatus(o) {
   const t = $('statusTable');
   const rows = [];
-  if (!o) rows.push(['Ausgabe', 'nicht verbunden']);
+  const silent = windowSilentMs();
+  if (!o) rows.push(['Ausgabe', silent !== null ? `meldet sich seit ${Math.round(silent / 1000)} s nicht (hängt oder lädt neu)` : 'nicht verbunden']);
   else {
     rows.push(['Szene', `${o.title || '–'} (${o.scene ?? '–'})`]);
     rows.push(['Zustand', o.state]);
