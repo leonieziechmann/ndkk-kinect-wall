@@ -82,6 +82,7 @@ export default makeScene2D(function* (view) {
     ki().opacity(0, 0.8),
   );
   const rest = duration('ki') - (T() - SCENES.ki);
-  yield* all(...moveTo(st(), SHOTS.kinectD, rest, easeInOutSine), delay(rest - 0.45, cap.hide(0.4)));
+  // up to the cut (alongside: until() alone decides where the scene ends, to the frame)
+  yield all(...moveTo(st(), SHOTS.kinectD, rest, easeInOutSine), delay(rest - 0.45, cap.hide(0.4)));
   yield* until(duration('ki'));
 });

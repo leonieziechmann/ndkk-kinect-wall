@@ -14,6 +14,10 @@
 //                                         src/audio/soundtrack-social.m4a (npm run sound:social)
 //
 // Everything is synthesized here (no samples): same input, same sound.
+//
+// The full video loops next to the wall, so its track is a loop too: what still sounds at the end
+// (a tail, the reverb) comes in again at the start, and the filters and the limiter run around the
+// seam. The short cut fades out at its end as before.
 
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -40,6 +44,8 @@ const FFMPEG = process.env.FFMPEG ?? ffmpegInstaller.path;
 /** loudness of the finished track (LUFS) and the highest sample (dBFS) */
 const TARGET_I = -17;
 const CEILING = -1.5;
+/** the full video loops: its end runs on into its start (see the master below) */
+const LOOP = project === 'project';
 
 const cuesFile = path.join(root, 'output', `cues${suffix}.json`);
 if (!fs.existsSync(cuesFile)) {
@@ -56,6 +62,9 @@ for (const w of waves) {
 }
 cues.sort((a, b) => a.t - b.t);
 const END = SCENES.ende;
+// the AAC encoder works in blocks of 1024 samples (after 1024 of its own at the start): a loop that
+// does not end on a block ends on a little silence in the MP4
+if (LOOP && Math.round(END * SR) % 1024) console.warn(`Achtung: ${END} s sind kein Vielfaches von 1024 Samples; im MP4 bleibt am Ende des Loops eine kleine Lücke (timeline.ts).`);
 const ctx = {
   scenes: SCENES,
   end: END,
@@ -68,8 +77,11 @@ const ctx = {
 // --- every sound alone, leveled, onto the buses -------------------------------------------------------
 
 const t0 = Date.now();
-const LEN = END + 2;
-const bus = { dry: new Track(LEN), verb: new Track(LEN), delay: new Track(LEN) };
+// for the loop: room for what sounds before 0 and long after the end (it comes in at the other side)
+const PRE = LOOP ? 1 : 0;
+const POST = LOOP ? 14 : 2;
+const LEN = PRE + END + POST;
+const bus = { dry: new Track(LEN, -PRE), verb: new Track(LEN, -PRE), delay: new Track(LEN, -PRE) };
 const buses = (seconds, start) => ({ dry: new Track(seconds, start), verb: new Track(seconds, start), delay: new Track(seconds, start) });
 
 /** how loud a sound is on its own: its loudest moment, or for a texture what it mostly is (LUFS) */
@@ -98,7 +110,7 @@ function level(b, name, gain, texture) {
 
 const report = [];
 if (!solo) {
-  const b = buses(LEN, 0);
+  const b = buses(END + POST, 0);
   pad(b, ctx);
   report.push({ t: 0, name: 'pad', ...level(b, 'pad', 1, true) });
 }
@@ -118,7 +130,7 @@ if (args.includes('--levels')) {
 const echo = pingPong(bus.delay, 0.32, 0.38);
 bus.verb.mix(echo, 0.35);
 const wet = reverb(bus.verb, { room: 0.84, damp: 0.55, predelay: 0.025 });
-const mix = new Track(LEN);
+const mix = new Track(LEN, -PRE);
 mix.mix(bus.dry, 1);
 mix.mix(echo, 0.75);
 mix.mix(wet, 3);
@@ -128,14 +140,29 @@ mix.mix(wet, 3);
 const n = Math.round(END * SR);
 /** a gentle dip around 3 kHz and less of the very top: nothing pierces */
 const soften = (x) => biquad(biquad(svf(svf(x, 'hp', 35, 0.6), 'hp', 35, 0.6), 'peak', 3000, -1.5, 0.9), 'highshelf', 7000, -2);
-const L = soften(mix.L.subarray(0, n));
-const R = soften(mix.R.subarray(0, n));
-for (let i = 0; i < n; i++) {
-  const t = i / SR;
-  // the last fade to black ends at the very end: silence, so the loop starts clean
-  const g = smooth(t / 0.01) * (1 - smooth((t - (END - 1.25)) / 1.2));
-  L[i] *= g;
-  R[i] *= g;
+const pre = Math.round(PRE * SR);
+let L;
+let R;
+if (LOOP) {
+  // around the seam: what sounds past the end comes in at the start, what starts before 0 at the end ...
+  const fold = (x) => {
+    const y = new Float32Array(n);
+    for (let i = 0; i < x.length; i++) y[(((i - pre) % n) + n) % n] += x[i];
+    return y;
+  };
+  // ... and the filters run around it too
+  L = around(fold(mix.L), soften, SR);
+  R = around(fold(mix.R), soften, SR);
+} else {
+  L = soften(mix.L.subarray(pre, pre + n));
+  R = soften(mix.R.subarray(pre, pre + n));
+  for (let i = 0; i < n; i++) {
+    const t = i / SR;
+    // the last fade to black ends at the very end: silence
+    const g = smooth(t / 0.01) * (1 - smooth((t - (END - 1.25)) / 1.2));
+    L[i] *= g;
+    R[i] *= g;
+  }
 }
 
 const outDir = path.join(root, 'output');
@@ -150,7 +177,7 @@ for (let i = 0; i < n; i++) {
   L[i] *= k;
   R[i] *= k;
 }
-const squeezed = limit(L, R, 10 ** (CEILING / 20));
+const squeezed = LOOP ? limitAround(L, R, 10 ** (CEILING / 20)) : limit(L, R, 10 ** (CEILING / 20));
 const wav = path.join(outDir, solo ? 'solo.wav' : `soundtrack${suffix}.wav`);
 writeWav(wav, L, R);
 
@@ -167,6 +194,32 @@ if (solo) {
 }
 
 // --- helpers ---------------------------------------------------------------------------------------
+
+/** the loop with `pad` samples of its end before it and of its start after it */
+function wrap(x, pad) {
+  const len = x.length;
+  const ext = new Float32Array(len + 2 * pad);
+  ext.set(x.subarray(len - pad), 0);
+  ext.set(x, pad);
+  ext.set(x.subarray(0, pad), pad + len);
+  return ext;
+}
+
+/** f over a loop: it runs across the seam */
+function around(x, f, pad) {
+  return f(wrap(x, pad)).slice(pad, pad + x.length);
+}
+
+/** the limiter (below) over a loop: it sees across the seam */
+function limitAround(l, r, ceiling) {
+  const pad = Math.round(0.5 * SR);
+  const wl = wrap(l, pad);
+  const wr = wrap(r, pad);
+  const report = limit(wl, wr, ceiling);
+  l.set(wl.subarray(pad, pad + l.length));
+  r.set(wr.subarray(pad, pad + r.length));
+  return report;
+}
 
 /** 32-bit float stereo WAV */
 function writeWav(file, l, r) {

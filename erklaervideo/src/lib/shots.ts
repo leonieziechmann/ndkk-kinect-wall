@@ -2,7 +2,7 @@
 // next one starts with, so the cut between scenes is invisible.
 
 import { View2D } from '@motion-canvas/2d';
-import { TimingFunction, createSignal, easeInOutCubic, linear, useTime, waitFor } from '@motion-canvas/core';
+import { ThreadGenerator, TimingFunction, createSignal, easeInOutCubic, linear, usePlayback, useScene, useThread } from '@motion-canvas/core';
 import type { Stage } from '../nodes/Stage';
 import { fontsReady } from './fonts';
 import { WALL_P } from './portrait';
@@ -118,9 +118,18 @@ export function* begin(view: View2D, start: number) {
   return clock;
 }
 
-/** wait until the scene's own clock reaches t seconds */
-export function* until(t: number) {
-  const now = useTime();
-  if (t > now + 1e-6) yield* waitFor(t - now);
-  else if (now > t + 1e-3) console.error(`[render] scene runs ${(now - t).toFixed(2)} s longer than planned (${t} s)`);
+/**
+ * Wait until the scene's own clock reaches t seconds, counted in frames: the scene goes on at frame
+ * t × fps exactly. (Motion Canvas's waitFor counts with a sum of 1/fps, and its rounding now and then
+ * adds a frame to a scene: the picture drifts away from the sound, and the video would not loop on
+ * the frame.)
+ */
+export function* until(t: number): ThreadGenerator {
+  const playback = usePlayback();
+  const scene = useScene();
+  const target = Math.round(t * playback.fps);
+  const frame = () => playback.frame - scene.firstFrame;
+  if (frame() > target) console.error(`[render] scene runs ${((frame() - target) / playback.fps).toFixed(2)} s longer than planned (${t} s)`);
+  while (frame() < target) yield;
+  useThread().time(t);
 }

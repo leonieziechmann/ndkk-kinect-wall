@@ -28,13 +28,16 @@ export const LEVEL = {
   // someone waves
   huhu: -20,
   // movement (whooshes only where the camera moves): the noise stays in the background
-  whoosh: -22, swish: -25, scan: -22, zap: -24, laser: -22, word: -21, glint: -22, line: -21,
+  whoosh: -22, swish: -25, scan: -22, zap: -24, laser: -22, word: -21, glint: -22, line: -21, curtain: -24,
   // accents
   rise: -20, title: -17, build: -20, powerup: -20, ping: -17, chord: -17, lift: -21, grow: -21, dim: -19, drop: -21,
   ledreveal: -18, riser: -20, transform: -16, bloom: -18,
 };
 /** sounds measured by what they mostly are, not by their loudest moment */
 export const TEXTURES = new Set(['pulses', 'swarm', 'shimmer', 'data', 'fluid', 'specks', 'sparkle']);
+
+/** where the picture goes out after `after`: a fade to black, or the curtain at the end of the full cut */
+const goesOut = (ctx, after) => ctx.cues.find((c) => (c.name === 'black' || c.name === 'curtain') && c.t >= after);
 
 /** put a mono sound on the buses */
 function out(bus, sig, t, { gain = 1, pan = 0, panTo = pan, verb = 0.2, delay = 0 } = {}) {
@@ -475,12 +478,13 @@ const SOUNDS = {
     const r = rng(seedOf('sparkle', c.t));
     const t1 = c.t + (c.dur ?? 8);
     const change = ctx.cue('transform')?.t ?? Infinity;
-    const black = ctx.cue('black', c.t)?.t ?? t1;
+    const end = goesOut(ctx, c.t);
+    const black = end?.t ?? t1;
     for (let t = c.t; t < t1; ) {
       const burst = Math.exp(-(((t - change - 0.3) / 0.6) ** 2));
       const rate = 6 + 34 * burst;
       t += -Math.log(1 - r()) / rate;
-      const fade = smooth((t - c.t) / 0.8) * (1 - smooth((t - black) / 1.0));
+      const fade = smooth((t - c.t) / 0.8) * (1 - smooth((t - black) / Math.min(1.0, end?.dur ?? 1.0)));
       if (fade <= 0) continue;
       const star = r() < 0.15;
       const note = pick(HIGH, 4 + r() * 7);
@@ -523,9 +527,11 @@ const SOUNDS = {
   /** the last chord, "Die Zukunft ist bunt": D major with a ninth, warm and wide */
   bloom(bus, c, ctx) {
     const dur = c.dur ?? 4;
-    const black = ctx.cue('black', c.t)?.t ?? c.t + dur;
-    const total = black + 1.2 - c.t;
-    const env = (t) => smooth(t / 0.7) * (1 - smooth((t - (black - c.t)) / 1.1));
+    const end = goesOut(ctx, c.t);
+    const black = end?.t ?? c.t + dur;
+    const fade = Math.min(1.1, end?.dur ?? 1.1);
+    const total = black + fade + 0.1 - c.t;
+    const env = (t) => smooth(t / 0.7) * (1 - smooth((t - (black - c.t)) / fade));
     [50, 57, 66, 76, 81].forEach((m, i) => {
       for (const [det, pan] of [[-0.0028, -0.6], [0.0028, 0.6]]) {
         const s = sum([[triangle(total, midi(m) * (1 + det)), 1], [sine(total, midi(m) * 2 * (1 - det)), 0.12]]);
@@ -534,6 +540,13 @@ const SOUNDS = {
         out(bus, f, c.t, { gain: 0.028 * (i < 2 ? 1.2 : 1), pan, verb: 0.45 });
       }
     });
+  },
+
+  /** the NDKK comes down over the picture like a curtain (the end of the full cut, which loops): air that falls and settles as it lands */
+  curtain(bus, c) {
+    const dur = c.dur ?? 0.5;
+    const env = (x) => smooth(x / 0.45) * (1 - smooth((x - 0.55) / 0.45));
+    out(bus, shape(svf(pink(dur, seedOf('curtain', c.t)), 'bp', (t) => 2000 * 2 ** (-2 * (t / dur)), 0.8), env), c.t, { gain: 0.12 * (c.gain ?? 1), verb: 0.35 });
   },
 
   black() {

@@ -83,6 +83,6 @@ export default makeScene2D(function* (view) {
   );
   yield* until(duration('abspann') - 0.6);
   cue(T, 'black', 0, { dur: 0.6 });
-  yield* all(black().opacity(1, 0.6, easeInCubic), station().y(STATION_Y - 10, 0.6, easeInOutCubic));
+  yield* all(black().opacity(1, 0.55, easeInCubic), station().y(STATION_Y - 10, 0.55, easeInOutCubic));
   yield* until(duration('abspann'));
 });

@@ -1,10 +1,12 @@
-// The look of the Nacht der kreativen Köpfe for the short cut, at its start and its end: the
-// background of ndkk.de (pale mint, blue and yellow with a halftone screen) and the logo, built from
-// its letters (src/lib/ndkk.ts) so they can come in one by one.
+// The look of the Nacht der kreativen Köpfe, at the start of both cuts and at the end of the short
+// one: the background of ndkk.de (pale mint, blue and yellow with a halftone screen) and the logo,
+// built from its letters (src/lib/ndkk.ts) so they can come in one by one.
 
-import { Gradient, Img, Node, Rect } from '@motion-canvas/2d';
+import { Gradient, Img, Node, Rect, Txt } from '@motion-canvas/2d';
 import { Reference, SignalValue } from '@motion-canvas/core';
 import { NDKK_BOX, NDKK_COLORS, NDKK_LETTERS, NDKK_LINE } from '../lib/ndkk';
+import { FONT } from '../lib/theme';
+import { loopTime } from '../lib/timeline';
 import { Halftone } from './Halftone';
 
 /** the background, `width` × `height` */
@@ -41,6 +43,22 @@ export function ndkkLogo(o: { width: number; top: number; letters?: Img[]; line?
         <Img ref={(i: Img) => o.letters?.push(i)} src={p.src} {...place(p)} opacity={o.opacity ?? 1} />
       ))}
       <Img ref={o.line} src={NDKK_LINE.src} {...place(NDKK_LINE)} opacity={o.opacity ?? 1} />
+    </Node>
+  );
+}
+
+/**
+ * The first picture of the full cut, and its last: the NDKK and what the installation is. The video
+ * starts on it and comes back to it, so it loops; the dots and the line of type drift with the loop
+ * clock (timeline.ts, loopTime), so the last frame runs on into the first.
+ */
+export function ndkkOpening(o: { ref?: Reference<Node>; time: () => number; y?: number }) {
+  const t = () => loopTime(o.time());
+  return (
+    <Node ref={o.ref} y={o.y ?? 0}>
+      {ndkkBackdrop({ time: t, width: 1920, height: 1080 })}
+      {ndkkLogo({ width: 1100, top: -330 })}
+      <Txt text={'Die magische Videowand'} fontFamily={FONT} fontWeight={800} fontSize={104} letterSpacing={-1} fill={NDKK_COLORS.navy} y={() => 250 - 10 * t()} />
     </Node>
   );
 }

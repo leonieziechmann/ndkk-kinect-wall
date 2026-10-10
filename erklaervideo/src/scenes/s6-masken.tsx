@@ -38,6 +38,7 @@ export default makeScene2D(function* (view) {
   cue(T, 'drop', 0, { dur: 2.0 });
   yield* all(st().bgDrop(1, 2.0, linear), mk().room(0, 1.7), delay(0.35, st().frustumAlpha(0, 1.1)));
   const rest = duration('masken') - (T() - SCENES.masken);
-  yield* all(...moveTo(st(), SHOTS.kinectMaskEnd, rest, easeInOutSine), delay(rest - 0.45, cap.hide(0.4)));
+  // up to the cut (alongside: until() alone decides where the scene ends, to the frame)
+  yield all(...moveTo(st(), SHOTS.kinectMaskEnd, rest, easeInOutSine), delay(rest - 0.45, cap.hide(0.4)));
   yield* until(duration('masken'));
 });

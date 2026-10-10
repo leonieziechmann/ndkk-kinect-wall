@@ -12,7 +12,8 @@
     "sound": "node tools/render.mjs cues && node tools/sound.mjs",
     "render:social": "node tools/render.mjs video --project social --fps 30",
     "stills:social": "node tools/render.mjs stills --project social",
-    "sound:social": "node tools/render.mjs cues --project social && node tools/sound.mjs --project social"
+    "sound:social": "node tools/render.mjs cues --project social && node tools/sound.mjs --project social",
+    "loop": "node tools/loop.mjs"
   },
   "dependencies": {
     "@fontsource/inter": "^5.3.0",

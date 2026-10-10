@@ -47,6 +47,6 @@ export default makeScene2D(function* (view) {
   yield* all(pip().opacity(0, 0.5), cap.hide(0.5));
   yield* until(duration('wand') - 1.0);
   cue(T, 'black', 0, { dur: 1.0 });
-  yield* black().opacity(1, 1.0);
+  yield* black().opacity(1, 0.95);
   yield* until(duration('wand'));
 });

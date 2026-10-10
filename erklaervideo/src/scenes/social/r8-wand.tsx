@@ -29,6 +29,6 @@ export default makeScene2D(function* (view) {
   yield* all(...moveTo(st(), SOCIAL_SHOTS.wallWideEnd, 3.3, easeInOutSine), delay(2.9, cap.hide(0.4)));
   yield* until(duration('wand') - 0.8);
   cue(T, 'black', 0, { dur: 0.8 });
-  yield* black().opacity(1, 0.8);
+  yield* black().opacity(1, 0.75);
   yield* until(duration('wand'));
 });

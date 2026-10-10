@@ -72,6 +72,7 @@ export default makeScene2D(function* (view) {
   dp().depthMax(() => flightCut(st().cloudFly()));
   yield* st().cloudFly(1, 2.6, linear);
   const rest = duration('punktwolke') - (T() - SCENES.punktwolke);
-  yield* all(dp().x(PANEL.x + PANEL.out, 0.8, easeInOutCubic), ...moveTo(st(), SHOTS.kinectB, rest, easeInOutSine), delay(rest - 0.45, cap.hide(0.4)));
+  // up to the cut (alongside: until() alone decides where the scene ends, to the frame)
+  yield all(dp().x(PANEL.x + PANEL.out, 0.8, easeInOutCubic), ...moveTo(st(), SHOTS.kinectB, rest, easeInOutSine), delay(rest - 0.45, cap.hide(0.4)));
   yield* until(duration('punktwolke'));
 });

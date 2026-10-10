@@ -158,7 +158,7 @@ export default makeScene2D(function* (view) {
   cue(T, 'fluid', 0);
   yield* wall().fluid(1, 1.8, linear);
   yield* all(wall().topView(0, 0.4), wall().ghost(0, 0.4), wall().skel(0.55, 0.5), cap.hide(0.4));
-  // back to the size the next scene starts with
-  yield* all(wall().y(WALL_VIEW.y, 0.8, easeInOutCubic), wall().width(WALL_VIEW.w, 0.8, easeInOutCubic), wall().height(WALL_VIEW.h, 0.8, easeInOutCubic));
+  // back to the size the next scene starts with, up to the cut (alongside: until() alone decides where the scene ends)
+  yield all(wall().y(WALL_VIEW.y, 0.8, easeInOutCubic), wall().width(WALL_VIEW.w, 0.8, easeInOutCubic), wall().height(WALL_VIEW.h, 0.8, easeInOutCubic));
   yield* until(duration('daten'));
 });

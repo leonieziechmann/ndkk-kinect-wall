@@ -9,6 +9,9 @@
 // Options: --fps N, --scale S (resolution factor), --from S --to S (seconds), --out DIR (stills),
 // --body puppe|lowpoly|natur (the look of the people), --project figuren (the comparison of the looks).
 // The browser: CHROME_PATH, else Chrome/Edge/Chromium from the usual places.
+//
+// The video loops: it ends one frame before the end of the story, because that frame is the first
+// one again. `cues` and `stills` check that every scene has exactly the frames timeline.ts plans.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -57,6 +60,26 @@ function findBrowser() {
   ].find((p) => p && fs.existsSync(p));
 }
 
+/** the scenes as timeline.ts plans them, for the cut this project renders (none for the other projects) */
+async function plannedScenes() {
+  const project = opt('project', 'project');
+  if (project !== 'project' && project !== 'social') return null;
+  globalThis.__CUT = project === 'social' ? 'social' : 'full';
+  const { SCENES } = await server.ssrLoadModule('/src/lib/timeline.ts');
+  return SCENES;
+}
+
+/** every scene exactly as many frames long as planned: otherwise picture and sound drift apart */
+function checkFrames(scenes, fps) {
+  if (!SCENES) return;
+  const keys = Object.keys(SCENES);
+  const planned = keys.slice(0, -1).map((k, i) => Math.round((SCENES[keys[i + 1]] - SCENES[k]) * fps)).filter((n) => n > 0);
+  if (planned.length !== scenes.length) return console.log(`[render] ${scenes.length} Szenen, timeline.ts plant ${planned.length}`);
+  scenes.forEach((s, i) => {
+    if (s.frames !== planned[i]) console.log(`[render] Szene ${s.name}: ${s.frames} Bilder statt ${planned[i]} (${s.frames > planned[i] ? '+' : ''}${s.frames - planned[i]})`);
+  });
+}
+
 const exe = findBrowser();
 if (!exe) {
   console.error('Kein Chrome/Edge gefunden. Pfad mit CHROME_PATH=... angeben.');
@@ -66,6 +89,7 @@ if (!exe) {
 const server = await createServer({ root, configFile: path.join(root, 'vite.config.ts'), logLevel: 'warn', server: { port: 9123, strictPort: false } });
 await server.listen();
 const base = server.resolvedUrls.local[0];
+const SCENES = await plannedScenes();
 const browser = await puppeteer.launch({
   executablePath: exe,
   headless: true,
@@ -89,7 +113,7 @@ try {
 
   if (mode === 'cues') {
     // run every scene once through (as for the length of the video) and collect the cue() calls
-    const cues = await page.evaluate(async () => {
+    const found = await page.evaluate(async () => {
       const { project, PlaybackState, Renderer } = window.__mc;
       globalThis.__cues = [];
       const r = new Renderer(project);
@@ -101,8 +125,10 @@ try {
       await r.playback.recalculate();
       const cues = globalThis.__cues;
       globalThis.__cues = undefined;
-      return cues;
+      return { cues, scenes: r.playback.scenes.current.map((s) => ({ name: s.name, frames: s.lastFrame - s.firstFrame })) };
     });
+    checkFrames(found.scenes, 30);
+    const cues = found.cues;
     // a scene may run more than once: keep each cue once
     const seen = new Set();
     const list = cues
@@ -129,6 +155,7 @@ try {
         r.playback.state = PlaybackState.Rendering;
         await r.reloadScenes(settings);
         await r.playback.recalculate();
+        const scenes = r.playback.scenes.current.map((s) => ({ name: s.name, frames: s.lastFrame - s.firstFrame }));
         await r.playback.reset();
         const out = [];
         for (const t of list) {
@@ -138,11 +165,12 @@ try {
           out.push({ t, data: r.stage.finalBuffer.toDataURL('image/jpeg', 0.9), ms: performance.now() - t0 });
           console.log(`[render] still ${t}s`);
         }
-        return out;
+        return { out, scenes };
       },
       { list, fps, scale },
     );
-    for (const s of shots) {
+    checkFrames(shots.scenes, fps);
+    for (const s of shots.out) {
       const file = path.join(outDir, `t${String(s.t.toFixed(2)).padStart(6, '0')}.jpg`);
       fs.writeFileSync(file, Buffer.from(s.data.split(',')[1], 'base64'));
       console.log(`${file}  (${Math.round(s.ms)} ms)`);
@@ -171,7 +199,7 @@ try {
         r.render(settings);
         return { result: await done, name: project.name };
       },
-      { fps, scale, from, to: Number.isFinite(to) ? to : 1e9 },
+      { fps, scale, from, to: Number.isFinite(to) ? to : SCENES ? (Math.round(SCENES.ende * fps) - 1.5) / fps : 1e9 },
     );
     console.log(result === 0 ? `fertig: ${path.join(root, 'output', `${name}.mp4`)}` : `Rendern fehlgeschlagen (${result})`);
     if (result !== 0) failed = true;

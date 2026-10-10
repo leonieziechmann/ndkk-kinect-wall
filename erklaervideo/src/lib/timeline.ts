@@ -9,7 +9,12 @@
 /** which cut this page renders */
 export const CUT: 'full' | 'social' = (globalThis as { __CUT?: string }).__CUT === 'social' ? 'social' : 'full';
 
-/** the full cut: a moment of the NDKK first (in its first scene), the story, the credits, the flag */
+/**
+ * The full cut: a moment of the NDKK first (in its first scene), the story, the credits, the flag, and
+ * the NDKK again, on which it loops. Its length is a multiple of 16 frames (8/15 s): that is 25 600
+ * samples of sound at 48 kHz, exactly 25 blocks of the AAC encoder, so the sound in the MP4 ends
+ * without filling up its last block with silence, and the loop has no gap (tools/sound.mjs checks it).
+ */
 const FULL = {
   aufbau: 0,
   sensor: 10,
@@ -20,8 +25,8 @@ const FULL = {
   daten: 50,
   wand: 62.5,
   abspann: 73.5,
-  bunt: 82.5,
-  ende: 91.5,
+  bunt: 82.2,
+  ende: 91.2,
 };
 
 /**
@@ -57,3 +62,10 @@ export const at = (name: SceneName, t: number) => SCENES[name] + t;
 
 /** the fluid on the wall starts here (scene "daten") and runs on until the end */
 export const FLUID_START = at('daten', CUT === 'social' ? 6.0 : 9.4);
+
+/**
+ * The full cut loops: it ends on its first picture. This is the story clock run on across its end and
+ * its start without a jump: just before the end it is a little below 0. What stands on the screen
+ * around that moment moves with it.
+ */
+export const loopTime = (t: number) => (t > SCENES.ende / 2 ? t - SCENES.ende : t);

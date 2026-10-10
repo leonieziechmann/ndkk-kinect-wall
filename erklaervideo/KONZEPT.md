@@ -2,13 +2,13 @@
 
 Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Installation funktioniert. Es läuft auf einem Notebook neben der Wand.
 
-- **Format:** 16:9, MP4, 1920 × 1080, 30 fps, mit Ton (funktioniert auch stumm), 1:31 min. Es endet in Schwarz und Stille und läuft so nahtlos in Schleife.
-- **Anfang:** schon im ersten Bild die Nacht der kreativen Köpfe im Look von ndkk.de: das NDKK-Logo und „Die magische Videowand“, 1,6 s lang; dann wischt die Fläche nach oben weg, und der Titel „So funktioniert die Kinect-Wand“ kommt über dem Aufbau. Nach der Flagge und Schwarz beginnt die Schleife so wieder mit der NDKK.
+- **Format:** 16:9, MP4, 1920 × 1080, 30 fps, mit Ton (funktioniert auch stumm), 1:31 min, ein nahtloser Loop.
+- **Anfang und Loop:** schon im ersten Bild die Nacht der kreativen Köpfe im Look von ndkk.de: das NDKK-Logo und „Die magische Videowand“, 1,6 s lang; dann wischt die Fläche nach oben weg, und der Titel „So funktioniert die Kinect-Wand“ kommt über dem Aufbau. Am Ende kommt dieselbe Fläche wie ein Vorhang von oben über die Flagge herunter und landet genau auf dem ersten Bild; Rasterpunkte und Schriftzug driften dabei ohne Sprung über die Nahtstelle weiter. Im Ton klingt der Vorhang aus, und mit dem ersten Bild kommt wieder der Akkord der NDKK. Man sieht nicht, wo das Video anfängt.
 - **Erklären über Bewegung:** Es passiert immer etwas. Pro Szene stehen ein, höchstens zwei kurze, einfache Sätze im Bild, dazu ein paar Beschriftungen und für Technik-Interessierte ein paar Zahlen (30 Bilder/s, Latenz ≈ 10 ms, die Körpergröße in echt).
 - **Schrift:** groß genug für das Notebook aus einem Schritt Abstand: die Sätze mit 54 px, Beschriftungen und Bildtitel 1,25-mal so groß wie im ersten Entwurf (`TEXT` in `src/lib/layout.ts`).
 - **Personen:** drei simulierte Figuren im Low-Poly-Stil (facettierte 3D-Körper mit Kleidung und Haaren, ohne Gesicht). Ohne Geschlechterklischees: Er trägt ein pinkes T-Shirt und wird im Tracking magenta, sie trägt ein türkises Boxy-Shirt, eine weite helle High-Waist-Hose und einen Pferdeschwanz und wird cyan, die dritte Person einen ockerfarbenen Pullover. Die Hauttöne sind verschieden. Echte Aufnahmen sind nicht nötig. Als Alternative gibt es denselben Körper weich schattiert („Natürlich“).
 - **Abspann** (Szene 9): eine geteilte Seite. Links Modern Events (hat die LED-Wand gestellt, Verleih und Betreuung) mit dem LED-Punkt-Logo aus ihrer Wand-Szene, rechts Leonie Ziechmann (Konzept, Umsetzung, Erklärung) auf der Kontaktkarte im Betula-Look mit E-Mail und Telefon. Danach Schwarz.
-- **Schluss** (Szene 10): der ganze Bildschirm wird eine Regenbogenflagge aus LED-Punkten (wie das Modern-Events-Logo), die wie Satin im Wind weht: dunkle Falten, Glanz auf den Kämmen, jede LED etwas anders hell, einzelne Punkte funkeln (manche als Sterne), ab und zu läuft ein Glanz darüber. Darauf steht in großer weißer Schrift mit weichem Schatten „Cottbus ist bunt“; dann verschwimmt „Cottbus“ nach oben, „Die Zukunft“ wird von unten scharf, und die Flagge funkelt einmal auf: „Die Zukunft ist bunt“. Danach Schwarz, das Video läuft in Schleife.
+- **Schluss** (Szene 10): der ganze Bildschirm wird eine Regenbogenflagge aus LED-Punkten (wie das Modern-Events-Logo), die wie Satin im Wind weht: dunkle Falten, Glanz auf den Kämmen, jede LED etwas anders hell, einzelne Punkte funkeln (manche als Sterne), ab und zu läuft ein Glanz darüber. Darauf steht in großer weißer Schrift mit weichem Schatten „Cottbus ist bunt“; dann verschwimmt „Cottbus“ nach oben, „Die Zukunft“ wird von unten scharf, und die Flagge funkelt einmal auf: „Die Zukunft ist bunt“. Dann fällt die NDKK-Fläche vom Anfang wie ein Vorhang darüber, und das Video beginnt von vorn.
 - **Keine heiklen Gesten:** Arme gehen nur nach oben oder zur Seite, Ellbogen gebeugt, nie gestreckt nach vorne. `npm run check-arms` prüft jedes Bild.
 
 ## Look
@@ -76,11 +76,11 @@ Ein Video von etwa 1:30 min, das Gästen ohne Technikwissen zeigt, wie die Insta
 - Der zweite Satz, wenn alle drei in Bewegung sind: „Alle vor der Wand malen mit.“
 - Zum Schluss Blende zu Schwarz.
 
-**9 · Abspann (9 s)**
+**9 · Abspann (8,7 s)**
 - Split-Screen: links Modern Events (LED-Wand, Verleih und Betreuung) mit dem LED-Punkt-Logo, rechts Leonie Ziechmann (Konzept, Umsetzung, Erklärung) mit E-Mail und Telefon.
 
 **10 · Bunt (9 s)**
-- Die Regenbogenflagge aus LED-Punkten, „Cottbus ist bunt“ → „Die Zukunft ist bunt“, dann Schwarz.
+- Die Regenbogenflagge aus LED-Punkten, „Cottbus ist bunt“ → „Die Zukunft ist bunt“, dann kommt in der letzten halben Sekunde der NDKK-Vorhang herunter und landet auf dem ersten Bild.
 
 ## Social-Fassung (Instagram)
 
@@ -104,5 +104,6 @@ Keine Musik von außen, keine Samples: Jeder Klang wird aus Sinustönen und Raus
 - **Winken:** Wer winkt, ruft „Hu-hu!“: zwei weiche, ansteigende Töne wie von einer Okarina, jede Person in ihrer eigenen Tonlage. Die Hu-hus entstehen automatisch aus der Choreografie (jede Winkgeste eine, zwei dicht hintereinander eine).
 - **Fluid:** fließende Harfen-Arpeggien in D-Dur, nach der D-Dur-Suite von Händels Wassermusik, mit einem Bass auf jedem Takt wie ein Continuo. Je mehr sich die Menschen bewegen, desto dichter, höher und lauter spielen sie; dazu ein paar Tropfen, wo Hände schnell sind.
 - **Wisch-Budget:** Rauschen und Wischen nur bei echten Kamerafahrten, höchstens vier pro Fassung (Sichtfeld, Drehung zur Kinect, Masken, Wand); Panels, Karten und Boxen kommen ohne.
-- **Pegel:** Jeder Klang wird gemessen und auf seinen Platz gebracht (`LEVEL` in `tools/sound/sfx.mjs`): Teppich unten, Texturen knapp darüber, Blips und Hu-hus deutlich, Akzente oben; die wenigen Wischer bleiben im Hintergrund. Die ganze Spur hat -17 LUFS, wenig Bass, damit sie auch aus Notebook-Lautsprechern klingt, und endet in Stille.
+- **Pegel:** Jeder Klang wird gemessen und auf seinen Platz gebracht (`LEVEL` in `tools/sound/sfx.mjs`): Teppich unten, Texturen knapp darüber, Blips und Hu-hus deutlich, Akzente oben; die wenigen Wischer bleiben im Hintergrund. Die ganze Spur hat -17 LUFS und wenig Bass, damit sie auch aus Notebook-Lautsprechern klingt.
+- **Loop:** Die Spur des langen Videos ist ringförmig gemischt: Was am Ende noch klingt (Nachhall, Ausklang), kommt am Anfang dazu, und Filter und Limiter laufen über die Nahtstelle hinweg. So gibt es dort weder Knacken noch Loch. Die Social-Fassung blendet an ihrem Ende aus wie bisher.
 - **Angenehm für die Ohren:** Töne meist unter 1,5 kHz (das Ohr ist zwischen 2 und 5 kHz am empfindlichsten), weiche Einsätze, dunkles Rauschen, gedämpfter Hall; auf der ganzen Spur eine leichte Absenkung um 3 kHz und der obersten Höhen.

@@ -1,19 +1,23 @@
 // 10 · Bunt: the last picture before the video starts over. The whole screen becomes a rainbow flag
 // of LED dots, like the Modern Events logo, waving like satin and sparkling. On it, in big white
 // type, "Cottbus ist bunt"; then "Cottbus" drifts up and dissolves while "Die Zukunft" comes into
-// focus from below, and the flag sparkles up once: "Die Zukunft ist bunt". Then black.
+// focus from below, and the flag sparkles up once: "Die Zukunft ist bunt". Then the NDKK picture of
+// the start comes down over it like a curtain and lands on the first frame: the video loops.
 
-import { Node, Rect, Txt, TxtProps, blur, makeScene2D } from '@motion-canvas/2d';
-import { all, createRef, delay, easeInCubic, easeInOutCubic, easeInOutSine, easeOutCubic, linear } from '@motion-canvas/core';
+import { Node, Txt, TxtProps, blur, makeScene2D } from '@motion-canvas/2d';
+import { all, createRef, delay, easeInCubic, easeInOutSine, easeOutCubic, linear } from '@motion-canvas/core';
 import { begin, until } from '../lib/shots';
 import { cue } from '../lib/sound';
 import { FONT } from '../lib/theme';
 import { SCENES, duration } from '../lib/timeline';
 import { LedFlag } from '../nodes/LedFlag';
+import { ndkkOpening } from '../nodes/ndkk';
 
 const LINE1 = -96;
 const LINE2 = 96;
 const DRIFT = 46;
+/** the NDKK curtain comes down in this time, the way it went up at the start (just the other way round) */
+const DROP = 0.5;
 
 const TYPE: TxtProps = { fontFamily: FONT, fontWeight: 700, fontSize: 172, letterSpacing: -4 };
 
@@ -35,13 +39,13 @@ export default makeScene2D(function* (view) {
   const cottbus = createRef<Node>();
   const zukunft = createRef<Node>();
   const rest = createRef<Node>();
-  const black = createRef<Rect>();
+  const curtain = createRef<Node>();
 
   view.add(<LedFlag ref={flag} width={1920} height={1080} pitch={12} time={local} reveal={0} />);
   view.add(line(cottbus, 'Cottbus', LINE1 + DRIFT * 0.6, 14));
   view.add(line(zukunft, 'Die Zukunft', LINE1 + DRIFT, 16));
   view.add(line(rest, 'ist bunt', LINE2 + DRIFT * 0.6, 14));
-  view.add(<Rect ref={black} width={1920} height={1080} fill={'#000'} opacity={0} />);
+  view.add(ndkkOpening({ ref: curtain, time: T, y: -1080 }));
 
   /** into focus: fade in, rise, sharpen */
   const focusIn = (n: Node, y: number, d: number) => all(n.opacity(1, d * 0.8, easeOutCubic), n.y(y, d, easeOutCubic), n.filters.blur(0, d, easeOutCubic));
@@ -67,8 +71,9 @@ export default makeScene2D(function* (view) {
     delay(0.28, focusIn(zukunft(), LINE1, 0.85)),
   );
   yield* flag().burst(0, 1.2, easeInOutSine);
-  yield* until(duration('bunt') - 1.2);
-  cue(T, 'black', 0, { dur: 1.1 });
-  yield* black().opacity(1, 1.1, easeInOutCubic);
+  // the curtain lands on the first frame of the video, which follows this one
+  yield* until(duration('bunt') - DROP);
+  cue(T, 'curtain', 0, { dur: DROP });
+  yield curtain().y(0, DROP, easeOutCubic);
   yield* until(duration('bunt'));
 });

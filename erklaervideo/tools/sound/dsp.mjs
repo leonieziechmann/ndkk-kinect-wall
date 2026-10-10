@@ -343,7 +343,7 @@ export function reverb(track, { room = 0.84, damp = 0.35, predelay = 0.02 } = {}
   const alls = [556, 441, 341, 225].map((x) => Math.round(x * scale));
   const spread = Math.round(23 * scale);
   const pre = Math.round(predelay * SR);
-  const out = new Track(track.n / SR);
+  const out = new Track(track.n / SR, track.start);
   for (const [chan, src, off] of [[out.L, track.L, 0], [out.R, track.R, spread]]) {
     const cb = combs.map((c) => ({ buf: new Float32Array(c + off), i: 0, store: 0 }));
     const ab = alls.map((c) => ({ buf: new Float32Array(c + off), i: 0 }));
@@ -372,7 +372,7 @@ export function reverb(track, { room = 0.84, damp = 0.35, predelay = 0.02 } = {}
 /** a ping-pong delay: left after `time`, right after twice that, fading */
 export function pingPong(track, time = 0.32, feedback = 0.35) {
   const d = Math.round(time * SR);
-  const out = new Track(track.n / SR);
+  const out = new Track(track.n / SR, track.start);
   const bl = new Float32Array(d);
   const br = new Float32Array(d);
   let lpL = 0;

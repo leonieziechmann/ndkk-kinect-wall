@@ -8,6 +8,7 @@ npm install
 npm start                                  # Editor: http://localhost:9000 (Video oder Social-Fassung wählen; Vorschau, Zeitleiste, Render-Knopf)
 npm run render -- --fps 30                 # ganzes Video → output/kinect-wand.mp4 (1080p, 30 fps, mit Ton)
 npm run render                             # dasselbe mit 60 fps (dauert doppelt so lang)
+npm run loop                               # danach: das Video 10-mal nahtlos am Stück → output/kinect-wand-loop.mp4 (für den Dauerbetrieb)
 npm run stills -- 12 30.5 47               # Einzelbilder (Sekunden) → output/stills/
 npm run stills -- --body natur 19 75       # dasselbe mit den weich schattierten Figuren (Standard: lowpoly)
 npm run stills -- --project figuren --out output/fig 8 33.5   # Modellblatt der Figuren (vorne, Seite, hinten)
@@ -27,7 +28,7 @@ npm run sound:social                       # ihre Tonspur neu → src/audio/soun
 
 Das Video hat Ton (Effekte und ein leiser Klangteppich, alles synthetisiert, siehe [KONZEPT.md](KONZEPT.md#ton)); es funktioniert auch stumm. Die Tonspur ist `src/audio/soundtrack.m4a` und kommt beim Rendern automatisch dazu. Ändert sich das Timing einer Szene, `npm run sound` neu laufen lassen, sonst passt der Ton nicht mehr zum Bild.
 
-Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → Endlosschleife) oder `ffplay -loop 0 -fs output/kinect-wand.mp4`.
+Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → Endlosschleife) oder `ffplay -loop 0 -fs output/kinect-wand.mp4`. Das Video ist ein nahtloser Loop: Es endet auf seinem ersten Bild (die NDKK-Fläche kommt wie ein Vorhang herunter), und die Tonspur ist ringförmig gemischt (was am Ende noch klingt, klingt am Anfang weiter). Viele Player setzen beim Neustart einer Datei kurz ab; an der Nahtstelle fällt das kaum auf, weil das Bild dort ruhig steht. Ganz ohne Absetzen läuft `output/kinect-wand-loop.mp4` (`npm run loop`): dasselbe Video 10-mal hintereinander in einer Datei, nahtlos, so setzt der Player nur alle 15 Minuten neu an.
 
 ## Aufbau
 
@@ -54,7 +55,7 @@ Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → End
 
 ## Social-Fassung
 
-`src/social.ts` ist ein zweites Projekt: dieselbe Geschichte als Instagram Reel, 1080 × 1920 (9:16), 58 s statt 91,5 s. Es beginnt mit 1,2 s Nacht der kreativen Köpfe (NDKK-Logo, „Die magische Videowand“, in r1) und endet statt mit Abspann und Flagge wieder mit der NDKK: Logo und „Station Ludwig-Leichhardt-Gymnasium“ (r9). Beides im Look von ndkk.de (`src/nodes/ndkk.tsx`); das Logo liegt in Buchstaben zerlegt in `src/assets/ndkk/`, siehe `src/lib/ndkk.ts`. Die Szenen liegen in `src/scenes/social/` (r1 … r8, je eine Hochformat-Fassung von s1 … s8) und nutzen dieselben Bausteine (`Stage`, `SensorPanel`, `WallView`, die Icons der Datenkette in `src/nodes/pipeline.tsx`), mit größerer Schrift (`textScale`).
+`src/social.ts` ist ein zweites Projekt: dieselbe Geschichte als Instagram Reel, 1080 × 1920 (9:16), 58 s statt 91 s. Es beginnt mit 1,2 s Nacht der kreativen Köpfe (NDKK-Logo, „Die magische Videowand“, in r1) und endet statt mit Abspann und Flagge wieder mit der NDKK: Logo und „Station Ludwig-Leichhardt-Gymnasium“ (r9). Beides im Look von ndkk.de (`src/nodes/ndkk.tsx`); das Logo liegt in Buchstaben zerlegt in `src/assets/ndkk/`, siehe `src/lib/ndkk.ts`. Die Szenen liegen in `src/scenes/social/` (r1 … r8, je eine Hochformat-Fassung von s1 … s8) und nutzen dieselben Bausteine (`Stage`, `SensorPanel`, `WallView`, die Icons der Datenkette in `src/nodes/pipeline.tsx`), mit größerer Schrift (`textScale`).
 
 - **Zeitplan und Choreografie:** `timeline.ts` und `choreo.ts` haben für die kurze Fassung eigene Zeiten (`CUT === 'social'`); `src/lib/cut-social.ts` schaltet um und muss in `social.ts` als Erstes importiert werden. Die Leute machen dieselben Gesten, nur schneller hintereinander.
 - **Layout:** `src/lib/portrait.ts`. Instagram legt oben (Name) und unten (Beschreibung, Knöpfe rechts) eigene Dinge über das Reel und zeigt im Feed nur die mittleren 4:5 (1080 × 1350). Deshalb steht der Satz jeder Szene groß oben in der Mitte (mit dunklem Verlauf dahinter), die Kinect-Bilder sitzen unter der 3D-Ansicht, und nichts Wichtiges liegt in den äußeren Rändern.
@@ -62,4 +63,4 @@ Abspielen auf dem Notebook in Schleife, zum Beispiel mit VLC (Wiedergabe → End
 
 ## Story-Uhr
 
-Alles hängt an einer Story-Uhr (Sekunden ab Videostart). Die Figuren, die Kinect und das Fluid sind Funktionen dieser Uhr, deshalb sind die Schnitte zwischen den Szenen unsichtbar. Jede Szene muss genau so lang sein, wie `timeline.ts` sagt; ist eine länger, meldet `npm run stills` das.
+Alles hängt an einer Story-Uhr (Sekunden ab Videostart). Die Figuren, die Kinect und das Fluid sind Funktionen dieser Uhr, deshalb sind die Schnitte zwischen den Szenen unsichtbar. Jede Szene muss aufs Bild genau so lang sein, wie `timeline.ts` sagt, sonst läuft der Ton dem Bild davon und der Loop stimmt nicht: `until()` (`src/lib/shots.ts`) zählt dafür Bilder, und `npm run stills` und `npm run sound` melden jede Szene, die länger oder kürzer ist. Eine Animation, die bis zum Schnitt läuft, läuft deshalb nebenher (`yield` statt `yield*`) oder endet einen Hauch vorher. Das Video endet ein Bild vor dem Ende der Story-Uhr, denn dieses Bild ist wieder das erste.
