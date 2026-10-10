@@ -171,6 +171,7 @@ Es gibt keine Frame-Anzahl im Kopf, damit eine abgebrochene Aufnahme lesbar blei
 
 - Im Code gibt es kein `unwrap`, `expect`, `panic!` und keine ungeprüfte Indizierung (Clippy-Lints auf `deny`). Fehler werden behandelt und geloggt.
 - **libfreenect2 läuft nie im Hub.** Stürzt der Worker ab, hängt er (5 s ohne Heartbeat) oder spinnt die Kinect, beendet der Hub ihn und startet ihn neu (Backoff 0,25–5 s). Gemessen: harter Kill bis wieder Bilder kommen ≈ 1,1 s; die Clients bleiben verbunden.
+  - Der Heartbeat kommt aus einem eigenen Thread des Workers. Ein Sensor-Neustart blockiert dessen Schleife bis zu ≈ 8 s (libfreenect2 wartet, bis der Sensor bereit ist), und das gilt nicht als Hängen. Erst wenn ein einzelner Schritt 10 s hängt, schweigt der Heartbeat und der Hub greift ein.
 - Stirbt der Hub, merkt der Worker das an seinem geschlossenen stdin und gibt die Kinect sauber frei. Es bleibt kein verwaister Prozess zurück.
 - **Standby:** Ein zweiter Hub auf demselben Port fasst die Kinect nicht an, sondern wartet. Fällt der erste aus, übernimmt er nach ≈ 3 s. Browser-Clients verbinden sich automatisch neu.
 - Jeder Client läuft in einer eigenen Task:

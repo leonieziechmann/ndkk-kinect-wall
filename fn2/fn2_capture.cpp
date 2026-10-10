@@ -428,23 +428,39 @@ int main(int argc, char **argv)
   auto *dump = fast ? static_cast<libfreenect2::DumpPacketPipeline *>(shared) : nullptr;
   Listener listener(out, fast);
   libfreenect2::Freenect2Device *dev = nullptr;
-  int64_t started_ms = 0, next_heartbeat = now_ms();
+  int64_t started_ms = 0;
   bool searching_reported = false, streaming_reported = false;
-  uint32_t reconnects = 0;
+  std::atomic<uint32_t> reconnects{0};
+
+  // The heartbeat has a thread of its own: opening, starting and closing the Kinect block this loop
+  // (startStreams waits up to 500 x 10 ms for the sensor, about 8 s with Windows' 15.6 ms sleeps),
+  // longer than the hub's 5 s silence limit. Sent from the loop, the hub could kill a worker that was
+  // only restarting the sensor, and restarting the whole worker turns a gap of ~4 s into 8-15 s.
+  // A loop stuck in one step for LOOP_STUCK_MS stops the heartbeat: the hub restarts the worker.
+  constexpr int64_t LOOP_STUCK_MS = 10000;
+  std::atomic<int64_t> loop_alive_ms{now_ms()};
+  auto alive = [&loop_alive_ms] { loop_alive_ms = now_ms(); };
+  std::thread heartbeat([&] {
+    int64_t next = 0;
+    while (!g_quit)
+    {
+      const int64_t t = now_ms();
+      if (t >= next && t - loop_alive_ms.load() < LOOP_STUCK_MS)
+      {
+        char buf[256];
+        std::snprintf(buf, sizeof(buf), "{\"frames\":%llu,\"dropped\":%llu,\"written\":%llu,\"reconnects\":%u}",
+                      (unsigned long long)listener.frames(), (unsigned long long)out.dropped(),
+                      (unsigned long long)out.written(), reconnects.load());
+        out.send_json(HEARTBEAT, buf);
+        next = t + 1000;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+  });
 
   while (!g_quit)
   {
-    const int64_t t = now_ms();
-    if (t >= next_heartbeat)
-    {
-      char buf[256];
-      std::snprintf(buf, sizeof(buf), "{\"frames\":%llu,\"dropped\":%llu,\"written\":%llu,\"reconnects\":%u}",
-                    (unsigned long long)listener.frames(), (unsigned long long)out.dropped(),
-                    (unsigned long long)out.written(), reconnects);
-      out.send_json(HEARTBEAT, buf);
-      next_heartbeat = t + 1000;
-    }
-
+    alive();
     if (!dev)
     {
       if (ctx.enumerateDevices() == 0)
@@ -455,6 +471,7 @@ int main(int argc, char **argv)
         continue;
       }
       searching_reported = false;
+      alive();
       dev = ctx.openDevice(0, new SharedPipeline(shared));
       if (!dev)
       {
@@ -465,6 +482,7 @@ int main(int argc, char **argv)
       listener.reset();
       g_lost = false;
       dev->setIrAndDepthFrameListener(&listener);
+      alive();
       if (!dev->startStreams(false, true))
       {
         dev->close();
@@ -494,7 +512,10 @@ int main(int argc, char **argv)
 
     const bool usb_gone = g_lost;
     send_status(out, "searching", usb_gone ? "Kinect dropped off USB" : "frames stopped, restarting the sensor");
+    std::fprintf(stderr, "%s: restarting the sensor (%lld ms since the last frame)\n",
+                 usb_gone ? "Kinect dropped off USB" : "frames stopped", (long long)(last > 0 ? now_ms() - last : -1));
     dev->stop();
+    alive();
     dev->close();
     delete dev;
     dev = nullptr;
@@ -504,6 +525,7 @@ int main(int argc, char **argv)
     std::this_thread::sleep_for(std::chrono::milliseconds(usb_gone ? 50 : 300));
   }
 
+  heartbeat.join();
   if (dev)
   {
     dev->stop();
