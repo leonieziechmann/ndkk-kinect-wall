@@ -34,6 +34,9 @@ export interface SensorPanelProps extends RectProps {
   depthMax?: SignalValue<number>;
   edge?: SignalValue<number>;
   bodyStyle?: SignalValue<string>;
+  textScale?: SignalValue<number>;
+  titlePlate?: SignalValue<number>;
+  legendCenter?: SignalValue<number>;
 }
 
 const POINT_NAMES: [number, string][] = [
@@ -65,6 +68,12 @@ export class SensorPanel extends Rect {
   @initial(0) @signal() public declare readonly edge: SimpleSignal<number, this>;
   /** the look of the bodies (body/styles.ts) */
   @initial(DEFAULT_STYLE) @signal() public declare readonly bodyStyle: SimpleSignal<string, this>;
+  /** size of the text (1 = for 1080p landscape; larger for a phone screen) */
+  @initial(1) @signal() public declare readonly textScale: SimpleSignal<number, this>;
+  /** a dark strip of this height (px) behind the title, so nothing of the 3D view shows through around it */
+  @initial(0) @signal() public declare readonly titlePlate: SimpleSignal<number, this>;
+  /** the legend in the middle under the picture (narrow layouts) instead of under its right half */
+  @initial(0) @signal() public declare readonly legendCenter: SimpleSignal<number, this>;
 
   public constructor(props?: SensorPanelProps) {
     super({ width: 512, height: 424, ...props });
@@ -109,12 +118,17 @@ export class SensorPanel extends Rect {
       ctx.lineWidth = 1.5;
       ctx.strokeRect(-W / 2, -H / 2, W, H);
       const title = this.title();
+      const plate = this.titlePlate();
+      if (title && plate > 0) {
+        ctx.fillStyle = `rgba(5,7,12,${0.96 * chrome})`;
+        ctx.fillRect(-W / 2, -H / 2 - plate, W, plate - 0.75);
+      }
       if (title) {
-        ctx.font = `600 26px ${FONT}`;
+        ctx.font = `600 ${26 * this.textScale()}px ${FONT}`;
         ctx.textBaseline = 'bottom';
         ctx.textAlign = 'left';
         ctx.fillStyle = rgba([0.93, 0.95, 0.98], chrome);
-        ctx.fillText(title, -W / 2, -H / 2 - 12);
+        ctx.fillText(title, -W / 2, -H / 2 - 12 * this.textScale());
       }
     }
     if (this.legend() > 0) this.drawLegend(ctx, W, H);
@@ -137,21 +151,22 @@ export class SensorPanel extends Rect {
 
   private drawLegend(ctx: CanvasRenderingContext2D, W: number, H: number) {
     const a = this.legend();
-    const y = H / 2 + 22;
+    const k = this.textScale();
+    const y = H / 2 + 22 * k;
     const w = W * 0.55;
-    const x0 = W / 2 - w;
+    const x0 = this.legendCenter() > 0 ? -w / 2 : W / 2 - w;
     const grad = ctx.createLinearGradient(x0, 0, x0 + w, 0);
     for (let i = 0; i <= 10; i++) grad.addColorStop(i / 10, depthCss(1 - i / 10));
     ctx.globalAlpha *= a;
     ctx.fillStyle = grad;
-    ctx.fillRect(x0, y - 5, w, 10);
-    ctx.font = `500 20px ${FONT}`;
+    ctx.fillRect(x0, y - 5 * k, w, 10 * k);
+    ctx.font = `500 ${20 * k}px ${FONT}`;
     ctx.textBaseline = 'middle';
     ctx.fillStyle = 'rgba(220,228,240,0.9)';
     ctx.textAlign = 'right';
-    ctx.fillText('nah', x0 - 12, y);
+    ctx.fillText('nah', x0 - 12 * k, y);
     ctx.textAlign = 'left';
-    ctx.fillText('fern', x0 + w + 12, y);
+    ctx.fillText('fern', x0 + w + 12 * k, y);
     ctx.globalAlpha /= a;
   }
 
@@ -208,14 +223,15 @@ export class SensorPanel extends Rect {
         ctx.fillStyle = rgba(col, 0.06 * full);
         ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
         const label = `Mensch ${Math.round(person.score * 100)} %`;
-        ctx.font = `600 22px ${FONT}`;
-        const w = ctx.measureText(label).width + 18;
+        const k = this.textScale();
+        ctx.font = `600 ${22 * k}px ${FONT}`;
+        const w = ctx.measureText(label).width + 18 * k;
         ctx.fillStyle = rgba(col, 0.92 * full);
-        ctx.fillRect(x0 - 1.75, y0 - 34, w, 32);
+        ctx.fillRect(x0 - 1.75, y0 - 34 * k, w, 32 * k);
         ctx.fillStyle = rgba([0.03, 0.04, 0.06], full);
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'left';
-        ctx.fillText(label, x0 + 7, y0 - 17);
+        ctx.fillText(label, x0 + 7 * k, y0 - 17 * k);
       }
     }
   }
@@ -271,25 +287,28 @@ export class SensorPanel extends Rect {
     const p = this.pointLabels();
     const person = f.persons.find((q) => q.slot === ROLES.lead);
     if (!person) return;
-    ctx.font = `600 22px ${FONT}`;
+    const ts = this.textScale();
+    ctx.font = `600 ${22 * ts}px ${FONT}`;
     for (const [n, [k, name]] of POINT_NAMES.entries()) {
       const q = clamp(p * 1.6 - n * 0.3);
       if (q <= 0) continue;
       const [u, v, c] = person.kp[k];
       if (c < 0.2) continue;
       const [x, y] = this.toLocal(u + 0.5, v + 0.5);
-      const dx = -95;
-      const dy = n === 0 ? -40 : n === 1 ? -20 : 10;
+      // large text (portrait): the head's label goes to the right, clear of the box label above
+      const right = ts > 1 && n === 0;
+      const dx = (right ? 55 : -95) * ts;
+      const dy = (right ? -46 : n === 0 ? -40 : n === 1 ? -20 : 10) * ts;
       ctx.strokeStyle = `rgba(240,244,250,${0.8 * q})`;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(x - 8, y);
+      ctx.moveTo(x + (right ? 8 : -8), y);
       ctx.lineTo(x + dx * q, y + dy * q);
       ctx.stroke();
       ctx.fillStyle = `rgba(240,244,250,${q})`;
-      ctx.textAlign = 'right';
+      ctx.textAlign = right ? 'left' : 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(name, x + dx - 8, y + dy);
+      ctx.fillText(name, x + dx + (right ? 8 : -8), y + dy);
     }
   }
 

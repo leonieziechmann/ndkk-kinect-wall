@@ -4,10 +4,14 @@
 //   npm run render                         the whole video → output/kinect-wand.mp4 (ffmpeg exporter)
 //   npm run render -- --fps 30 --scale 0.5 a quicker preview
 //   npm run stills -- 3 12.5 40            single frames (seconds) → output/stills/*.jpg
+//   node tools/render.mjs cues             the sound cues of all scenes → output/cues.json (npm run sound)
 //
 // Options: --fps N, --scale S (resolution factor), --from S --to S (seconds), --out DIR (stills),
 // --body puppe|lowpoly|natur (the look of the people), --project figuren (the comparison of the looks).
 // The browser: CHROME_PATH, else Chrome/Edge/Chromium from the usual places.
+//
+// The video loops: it ends one frame before the end of the story, because that frame is the first
+// one again. `cues` and `stills` check that every scene has exactly the frames timeline.ts plans.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,8 +20,10 @@ import { createServer } from 'vite';
 import puppeteer from 'puppeteer-core';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// the exporter finds the soundtrack by a path relative to the working directory
+process.chdir(root);
 const args = process.argv.slice(2);
-const mode = args[0] === 'stills' ? 'stills' : 'video';
+const mode = args[0] === 'stills' ? 'stills' : args[0] === 'cues' ? 'cues' : 'video';
 const opt = (name, def) => {
   const i = args.indexOf(`--${name}`);
   return i >= 0 ? args[i + 1] : def;
@@ -30,6 +36,8 @@ const outDir = path.resolve(root, opt('out', 'output/stills'));
 const query = new URLSearchParams();
 if (opt('body')) query.set('body', opt('body'));
 if (opt('project')) query.set('project', opt('project'));
+/** the cues of the full video go to output/cues.json, those of another project to cues-<project>.json */
+const cuesName = opt('project', 'project') === 'project' ? 'cues.json' : `cues-${opt('project')}.json`;
 const times = args.slice(1).filter((a, i, all) => !a.startsWith('--') && !(all[i - 1] ?? '').startsWith('--')).map(Number);
 
 function findBrowser() {
@@ -52,6 +60,26 @@ function findBrowser() {
   ].find((p) => p && fs.existsSync(p));
 }
 
+/** the scenes as timeline.ts plans them, for the cut this project renders (none for the other projects) */
+async function plannedScenes() {
+  const project = opt('project', 'project');
+  if (project !== 'project' && project !== 'social') return null;
+  globalThis.__CUT = project === 'social' ? 'social' : 'full';
+  const { SCENES } = await server.ssrLoadModule('/src/lib/timeline.ts');
+  return SCENES;
+}
+
+/** every scene exactly as many frames long as planned: otherwise picture and sound drift apart */
+function checkFrames(scenes, fps) {
+  if (!SCENES) return;
+  const keys = Object.keys(SCENES);
+  const planned = keys.slice(0, -1).map((k, i) => Math.round((SCENES[keys[i + 1]] - SCENES[k]) * fps)).filter((n) => n > 0);
+  if (planned.length !== scenes.length) return console.log(`[render] ${scenes.length} Szenen, timeline.ts plant ${planned.length}`);
+  scenes.forEach((s, i) => {
+    if (s.frames !== planned[i]) console.log(`[render] Szene ${s.name}: ${s.frames} Bilder statt ${planned[i]} (${s.frames > planned[i] ? '+' : ''}${s.frames - planned[i]})`);
+  });
+}
+
 const exe = findBrowser();
 if (!exe) {
   console.error('Kein Chrome/Edge gefunden. Pfad mit CHROME_PATH=... angeben.');
@@ -61,6 +89,7 @@ if (!exe) {
 const server = await createServer({ root, configFile: path.join(root, 'vite.config.ts'), logLevel: 'warn', server: { port: 9123, strictPort: false } });
 await server.listen();
 const base = server.resolvedUrls.local[0];
+const SCENES = await plannedScenes();
 const browser = await puppeteer.launch({
   executablePath: exe,
   headless: true,
@@ -82,7 +111,38 @@ try {
   await page.goto(new URL(`tools/harness.html?${query}`, base).href);
   await page.waitForFunction(() => window.__mc, { timeout: 120000 });
 
-  if (mode === 'stills') {
+  if (mode === 'cues') {
+    // run every scene once through (as for the length of the video) and collect the cue() calls
+    const found = await page.evaluate(async () => {
+      const { project, PlaybackState, Renderer } = window.__mc;
+      globalThis.__cues = [];
+      const r = new Renderer(project);
+      const settings = { ...project.meta.getFullRenderingSettings(), name: project.name, fps: 30, resolutionScale: 0.25 };
+      r.stage.configure(settings);
+      r.playback.fps = 30;
+      r.playback.state = PlaybackState.Rendering;
+      await r.reloadScenes(settings);
+      await r.playback.recalculate();
+      const cues = globalThis.__cues;
+      globalThis.__cues = undefined;
+      return { cues, scenes: r.playback.scenes.current.map((s) => ({ name: s.name, frames: s.lastFrame - s.firstFrame })) };
+    });
+    checkFrames(found.scenes, 30);
+    const cues = found.cues;
+    // a scene may run more than once: keep each cue once
+    const seen = new Set();
+    const list = cues
+      .filter((c) => {
+        const k = JSON.stringify(c);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      })
+      .sort((a, b) => a.t - b.t);
+    fs.mkdirSync(path.join(root, 'output'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'output', cuesName), JSON.stringify(list, null, 1));
+    console.log(`${list.length} Cues → output/${cuesName}`);
+  } else if (mode === 'stills') {
     fs.mkdirSync(outDir, { recursive: true });
     const list = [...times].sort((a, b) => a - b);
     const shots = await page.evaluate(
@@ -95,6 +155,7 @@ try {
         r.playback.state = PlaybackState.Rendering;
         await r.reloadScenes(settings);
         await r.playback.recalculate();
+        const scenes = r.playback.scenes.current.map((s) => ({ name: s.name, frames: s.lastFrame - s.firstFrame }));
         await r.playback.reset();
         const out = [];
         for (const t of list) {
@@ -104,17 +165,18 @@ try {
           out.push({ t, data: r.stage.finalBuffer.toDataURL('image/jpeg', 0.9), ms: performance.now() - t0 });
           console.log(`[render] still ${t}s`);
         }
-        return out;
+        return { out, scenes };
       },
       { list, fps, scale },
     );
-    for (const s of shots) {
+    checkFrames(shots.scenes, fps);
+    for (const s of shots.out) {
       const file = path.join(outDir, `t${String(s.t.toFixed(2)).padStart(6, '0')}.jpg`);
       fs.writeFileSync(file, Buffer.from(s.data.split(',')[1], 'base64'));
       console.log(`${file}  (${Math.round(s.ms)} ms)`);
     }
   } else {
-    const result = await page.evaluate(
+    const { result, name } = await page.evaluate(
       async ({ fps, scale, from, to }) => {
         const { project, Renderer } = window.__mc;
         const r = new Renderer(project);
@@ -124,7 +186,7 @@ try {
           fps,
           resolutionScale: scale,
           range: [from, to],
-          exporter: { name: '@motion-canvas/ffmpeg', options: { fastStart: true, includeAudio: false } },
+          exporter: { name: '@motion-canvas/ffmpeg', options: { fastStart: true, includeAudio: true } },
         };
         let last = 0;
         r.onFrameChanged.subscribe((f) => {
@@ -135,11 +197,11 @@ try {
         });
         const done = new Promise((resolve) => r.onFinished.subscribe(resolve));
         r.render(settings);
-        return await done;
+        return { result: await done, name: project.name };
       },
-      { fps, scale, from, to: Number.isFinite(to) ? to : 1e9 },
+      { fps, scale, from, to: Number.isFinite(to) ? to : SCENES ? (Math.round(SCENES.ende * fps) - 1.5) / fps : 1e9 },
     );
-    console.log(result === 0 ? `fertig: ${path.join(root, 'output', 'kinect-wand.mp4')}` : `Rendern fehlgeschlagen (${result})`);
+    console.log(result === 0 ? `fertig: ${path.join(root, 'output', `${name}.mp4`)}` : `Rendern fehlgeschlagen (${result})`);
     if (result !== 0) failed = true;
   }
 } finally {

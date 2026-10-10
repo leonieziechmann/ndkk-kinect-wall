@@ -21,6 +21,9 @@ export interface WallViewProps extends RectProps {
   mirror?: SignalValue<number>;
   ruler?: SignalValue<number>;
   topView?: SignalValue<number>;
+  topScale?: SignalValue<number>;
+  topLabelBelow?: SignalValue<number>;
+  textScale?: SignalValue<number>;
 }
 
 export class WallView extends Rect {
@@ -32,6 +35,12 @@ export class WallView extends Rect {
   @initial(0) @signal() public declare readonly mirror: SimpleSignal<number, this>;
   @initial(0) @signal() public declare readonly ruler: SimpleSignal<number, this>;
   @initial(0) @signal() public declare readonly topView: SimpleSignal<number, this>;
+  /** px per m of the top view below the wall */
+  @initial(58) @signal() public declare readonly topScale: SimpleSignal<number, this>;
+  /** 1: the label of the top view goes below it instead of to the right (narrow pictures) */
+  @initial(0) @signal() public declare readonly topLabelBelow: SimpleSignal<number, this>;
+  /** size of the text (1 = for 1080p landscape; larger for a phone screen) */
+  @initial(1) @signal() public declare readonly textScale: SimpleSignal<number, this>;
 
   public constructor(props?: WallViewProps) {
     super({ width: 1500, height: 500, ...props });
@@ -134,16 +143,17 @@ export class WallView extends Rect {
   }
 
   private tag(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, a: number, color: [number, number, number]) {
+    const k = this.textScale();
     ctx.save();
-    ctx.font = `600 26px ${FONT}`;
+    ctx.font = `600 ${26 * k}px ${FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const w = ctx.measureText(text).width + 28;
+    const w = ctx.measureText(text).width + 28 * k;
     ctx.fillStyle = `rgba(5,7,12,${0.85 * a})`;
     ctx.strokeStyle = rgba(color, 0.9 * a);
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = 1.5 * k;
     ctx.beginPath();
-    ctx.roundRect(x - w / 2, y - 21, w, 42, 21);
+    ctx.roundRect(x - w / 2, y - 21 * k, w, 42 * k, 21 * k);
     ctx.fill();
     ctx.stroke();
     ctx.fillStyle = `rgba(240,244,250,${a})`;
@@ -162,7 +172,8 @@ export class WallView extends Rect {
     ctx.beginPath();
     ctx.arc(hx, hy, 26 + 6 * Math.sin(this.time() * 6), 0, Math.PI * 2);
     ctx.stroke();
-    this.tag(ctx, 'wie ein Spiegel', hx + 40, hy - 70, a, [1, 1, 1]);
+    const k = this.textScale();
+    this.tag(ctx, 'wie ein Spiegel', hx + 40 * k, hy - 70 * k, a, [1, 1, 1]);
   }
 
   /** a ruler from the floor to the head: the body appears in real size */
@@ -207,7 +218,8 @@ export class WallView extends Rect {
   /** top view below the wall: the Kinect's view at 3 m is narrower than the wall, so the walk is stretched */
   private drawTopView(ctx: CanvasRenderingContext2D, list: Pose[], H: number) {
     const a = this.topView();
-    const scale = 58; // px per m
+    const scale = this.topScale();
+    const k = this.textScale();
     const ox = 0;
     const oy = H / 2 + 56;
     const X = (x: number) => ox + x * scale;
@@ -266,11 +278,17 @@ export class WallView extends Rect {
       ctx.arc(onWall[0], onWall[1], 7, 0, Math.PI * 2);
       ctx.fill();
     }
-    ctx.font = `600 24px ${FONT}`;
+    ctx.font = `600 ${24 * k}px ${FONT}`;
     ctx.fillStyle = 'rgba(235,240,248,0.95)';
-    ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText('Laufweg × ' + STRETCH.toFixed(1).replace('.', ','), X(WALL.w / 2) + 24, Z(0));
+    const label = 'Laufweg × ' + STRETCH.toFixed(1).replace('.', ',');
+    if (this.topLabelBelow() > 0) {
+      ctx.textAlign = 'center';
+      ctx.fillText(label, X(0), Z(KINECT[2] + reach) + 34 * k);
+    } else {
+      ctx.textAlign = 'left';
+      ctx.fillText(label, X(WALL.w / 2) + 24 * k, Z(0));
+    }
     ctx.restore();
   }
 }

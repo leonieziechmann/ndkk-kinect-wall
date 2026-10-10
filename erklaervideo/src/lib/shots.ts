@@ -2,10 +2,12 @@
 // next one starts with, so the cut between scenes is invisible.
 
 import { View2D } from '@motion-canvas/2d';
-import { TimingFunction, createSignal, easeInOutCubic, linear, useTime, waitFor } from '@motion-canvas/core';
+import { ThreadGenerator, TimingFunction, createSignal, easeInOutCubic, linear, usePlayback, useScene, useThread } from '@motion-canvas/core';
 import type { Stage } from '../nodes/Stage';
 import { fontsReady } from './fonts';
+import { WALL_P } from './portrait';
 import { C } from './theme';
+import { WALL } from './world';
 
 export interface Shot {
   yaw: number;
@@ -54,6 +56,31 @@ export const SHOTS = {
   pip: shot({ yaw: 176, pitch: 10, dist: 4.4, tx: 0.1, ty: 1.0, tz: 2.9, fov: 50 }),
 };
 
+/**
+ * The same story in portrait (the short cut for social media, 1080 × 1920): the camera's field of
+ * view is vertical, so the picture is as tall as before but much narrower; the shots step back or
+ * turn so that what matters fits the width, and leave room for the text at the top and the
+ * pictures of the Kinect below.
+ */
+export const SOCIAL_SHOTS = {
+  roomStart: shot({ yaw: 42, pitch: 26, dist: 15, tx: 0, ty: 1.5, tz: 0, fov: 50, shiftX: -60, shiftY: 90 }),
+  roomEnd: shot({ yaw: 32, pitch: 15, dist: 13.0, tx: 0, ty: 1.55, tz: 0, fov: 50, shiftX: -80, shiftY: 70 }),
+  sidePanels: shot({ yaw: 58, pitch: 17, dist: 12.5, tx: 0, ty: 1.1, tz: 2.5, fov: 56, shiftX: -130, shiftY: -160 }),
+  sidePanels2: shot({ yaw: 50, pitch: 15, dist: 11.8, tx: 0, ty: 1.1, tz: 2.6, fov: 56, shiftX: -140, shiftY: -160 }),
+  kinectA: shot({ yaw: 200, pitch: 17, dist: 5.6, tx: 0.15, ty: 1.0, tz: 3.0, fov: 56, shiftY: 40 }),
+  kinectB: shot({ yaw: 166, pitch: 13, dist: 5.7, tx: 0.1, ty: 1.0, tz: 3.0, fov: 56, shiftY: 40 }),
+  kinectC: shot({ yaw: 186, pitch: 11, dist: 5.0, tx: 0.15, ty: 1.1, tz: 2.8, fov: 56, shiftY: 40 }),
+  kinectC2: shot({ yaw: 177, pitch: 9, dist: 4.8, tx: 0.15, ty: 1.1, tz: 2.8, fov: 56, shiftY: 40 }),
+  kinectK: shot({ yaw: 180, pitch: 6, dist: 4.8, tx: 0.15, ty: 1.0, tz: 2.75, fov: 56, shiftY: 40 }),
+  kinectD: shot({ yaw: 200, pitch: 15, dist: 5.6, tx: 0.1, ty: 1.0, tz: 2.95, fov: 56, shiftY: 40 }),
+  kinectMask: shot({ yaw: 194, pitch: 14, dist: 8.2, tx: 0.1, ty: 1.0, tz: 2.95, fov: 56, shiftY: -250 }),
+  kinectMaskEnd: shot({ yaw: 168, pitch: 12, dist: 8.0, tx: 0.1, ty: 1.0, tz: 2.95, fov: 56, shiftY: -250 }),
+  /** the wall as a flat rectangle where the wall picture of scene 7 ends (WALL_P) */
+  wallClose: shot({ yaw: 0, pitch: 0, dist: (WALL.w * (960 / Math.tan((70 * Math.PI) / 360))) / WALL_P.w, tx: 0, ty: WALL.bottom + WALL.h / 2, tz: 0, fov: 70, shiftY: WALL_P.y }),
+  wallWide: shot({ yaw: 0, pitch: 8, dist: 8.8, tx: 0, ty: 1.3, tz: 0.6, fov: 66, shiftY: -140 }),
+  wallWideEnd: shot({ yaw: -3, pitch: 9, dist: 8.6, tx: -0.15, ty: 1.3, tz: 0.6, fov: 66, shiftY: -140 }),
+};
+
 export function setShot(st: Stage, s: Shot) {
   st.yaw(s.yaw);
   st.pitch(s.pitch);
@@ -91,9 +118,18 @@ export function* begin(view: View2D, start: number) {
   return clock;
 }
 
-/** wait until the scene's own clock reaches t seconds */
-export function* until(t: number) {
-  const now = useTime();
-  if (t > now + 1e-6) yield* waitFor(t - now);
-  else if (now > t + 1e-3) console.error(`[render] scene runs ${(now - t).toFixed(2)} s longer than planned (${t} s)`);
+/**
+ * Wait until the scene's own clock reaches t seconds, counted in frames: the scene goes on at frame
+ * t × fps exactly. (Motion Canvas's waitFor counts with a sum of 1/fps, and its rounding now and then
+ * adds a frame to a scene: the picture drifts away from the sound, and the video would not loop on
+ * the frame.)
+ */
+export function* until(t: number): ThreadGenerator {
+  const playback = usePlayback();
+  const scene = useScene();
+  const target = Math.round(t * playback.fps);
+  const frame = () => playback.frame - scene.firstFrame;
+  if (frame() > target) console.error(`[render] scene runs ${((frame() - target) / playback.fps).toFixed(2)} s longer than planned (${t} s)`);
+  while (frame() < target) yield;
+  useThread().time(t);
 }
