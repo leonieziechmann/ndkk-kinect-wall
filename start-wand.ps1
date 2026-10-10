@@ -2,7 +2,7 @@
   start-wand.ps1: starts everything the LED wall needs and tunes Windows for it, only while it runs.
 
     start-wand.cmd                     double-click (or the desktop icon "Kinect-Wand starten")
-    .\start-wand.ps1 [-NoWall] [-NoControl] [-Hub 8091]
+    .\start-wand.ps1 [-NoWall] [-NoControl] [-Hub 8091] [-RecordMinutes 5]
     .\start-wand.ps1 -Panic            NOTAUS (also Strg+Alt+Shift+N, desktop icon "Kinect-Wand NOTAUS")
 
   Starts (or reuses, if they already run) from the main checkout: kinect-hub (real Kinect, :8090),
@@ -17,6 +17,13 @@
   moves it there when the LED screen goes away) is closed at once. The control center opens as an
   app window of its own, maximized on the notebook's panel; with the lid closed (no notebook panel)
   it stays closed, so it never covers the wall.
+
+  R records training data while the show goes on: RecordMinutes (5) of depth and infrared from the
+  running hub (kinect-hub-probe record, never the sensor itself) into recordings\wand-<date>-<time>.k2rec
+  of the checkout, about 20 MB/s (5 min = 5.5 GB). Only after a yes (consent asked?) and only if the
+  disk keeps 5 GB free after it; the recorder runs hidden below normal priority (the show goes first)
+  and is stopped below 2 GB free. R again stops it early: kept or deleted. Q, NOTAUS and the guard
+  stop it too and keep what it has. A recording ended early is cut back to its last whole frame.
 
   Tunes while it runs:
     - power plan: a temporary copy of "High performance": no sleep, no display off, lid closed = do
@@ -50,6 +57,7 @@ param(
   [switch]$NoWall,    # no output window (e.g. without the LED screen)
   [switch]$NoControl, # no control center window on the notebook
   [int]$Hub = 8090,   # the hub to use; only the real one on 8090 is started, others must run already
+  [ValidateRange(1, 60)][int]$RecordMinutes = 5,   # R: length of a recording (training data)
   [switch]$Panic,     # NOTAUS
   [int]$Guard = 0,    # internal: be the guard of this PID
   [string]$Checkout,  # for tests: use this checkout instead of the main one
@@ -77,6 +85,11 @@ $Balanced = '381b4222-f694-41f0-9685-ff5bb260df2e'
 $HotkeyText = 'Strg+Alt+Shift+N'
 $HotkeyMods = 0x0002 -bor 0x0001 -bor 0x0004   # MOD_CONTROL | MOD_ALT | MOD_SHIFT
 $HotkeyVk = 0x4E                                # N
+# recordings (R): depth u16 and infrared u8 of 512 x 424 pixels at 30 fps, 19.6 MB per second; one
+# starts only if the disk keeps RecordReserve free after it, and is stopped below RecordMinFree
+$RecordRate = 19.6e6
+$RecordReserve = 5GB
+$RecordMinFree = 2GB
 
 # apps put into efficiency mode while the show runs (process names without .exe; also their WebView2)
 $BackgroundApps = @('ms-teams', 'Teams', 'WhatsApp', 'WhatsApp.Root', 'Signal', 'PhoneExperienceHost',
@@ -630,6 +643,54 @@ public static class KinectWandNative {
     } catch { return null; }
   }
 
+  // ---- recordings: kinect-hub-probe record writes them (format: kinect-hub/src/recording.rs)
+
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool GetDiskFreeSpaceEx(string dir, out ulong callerFree, out ulong total, out ulong free);
+
+  // Bytes this user can still write on the drive of dir (an existing folder); -1 if unknown.
+  public static long FreeBytes(string dir) {
+    ulong callerFree, total, free;
+    return GetDiskFreeSpaceEx(dir, out callerFree, out total, out free) ? (long)callerFree : -1;
+  }
+
+  public class Recording { public string File; public long Frames; public long Skipped; public double Seconds; public long Bytes; }
+
+  // Reads a .k2rec frame header by frame header: whole frames, frames the hub stream skipped, length.
+  // cut: a recording whose recorder was ended (its last frame may be half written) is cut back to
+  // its last whole frame. null if the file is no recording; Frames -1 for a format version this
+  // does not know (left as it is).
+  public static Recording ReadRecording(string path, bool cut) {
+    using (var fs = new FileStream(path, FileMode.Open, cut ? FileAccess.ReadWrite : FileAccess.Read, FileShare.Read)) {
+      var b = new byte[32];
+      if (fs.Read(b, 0, 32) != 32 || BitConverter.ToUInt32(b, 0) != 0x4352324Bu) return null;   // "K2RC"
+      if (BitConverter.ToUInt32(b, 4) != 1) return new Recording { File = path, Frames = -1 };
+      long pixels = (long)BitConverter.ToUInt16(b, 12) * BitConverter.ToUInt16(b, 14);
+      long pos = BitConverter.ToUInt32(b, 8), len = fs.Length;
+      if (pos < 32) return null;
+      var r = new Recording { File = path };
+      ulong first = 0, last = 0;
+      uint seq = 0;
+      while (pos + 24 <= len) {
+        fs.Position = pos;
+        if (fs.Read(b, 0, 24) != 24 || BitConverter.ToUInt32(b, 0) != 0x4652324Bu) break;   // "K2RF"
+        long payload = BitConverter.ToUInt32(b, 20);
+        if (pixels == 0 || (payload != pixels * 2 && payload != pixels * 3) || pos + 24 + payload > len) break;
+        uint s = BitConverter.ToUInt32(b, 4);
+        ulong t = BitConverter.ToUInt64(b, 8);
+        if (r.Frames == 0) first = t;
+        else { uint gap = unchecked(s - seq - 1); if (gap < 1000) r.Skipped += gap; }   // a restarted hub counts anew
+        last = t;
+        seq = s;
+        r.Frames++;
+        pos += 24 + payload;
+      }
+      if (cut && pos < len) { fs.SetLength(pos); len = pos; }
+      r.Seconds = last > first ? (last - first) / 1e6 : 0;
+      r.Bytes = len;
+      return r;
+    }
+  }
+
   // ---- console: quick edit off (a click into the window would pause this program until a key),
   // and a wait that ends at once when a key is pressed
 
@@ -840,14 +901,62 @@ function Restore-Processes($j) {
   }
 }
 
+# What the recorder wrote to $out, once it no longer runs. A recording it did not finish itself
+# (ended, or the PC went down: still .part) is cut back to its last whole frame and gets its real
+# name; if that is less than a second, it is deleted. Returns the numbers of ReadRecording
+# (Frames -1: unreadable, left as it is), $null if there is nothing.
+function Save-Recording([string]$out) {
+  $part = "$out.part"
+  $file = if (Test-Path -LiteralPath $part) { $part } elseif (Test-Path -LiteralPath $out) { $out } else { $null }
+  if (-not $file) { return $null }
+  $isPart = $file -eq $part
+  $info = $null
+  $read = $false
+  for ($i = 0; $i -lt 10 -and -not $read; $i++) {
+    # the ended recorder or a virus scanner may still hold the file for a moment
+    try { $info = [KinectWandNative]::ReadRecording($file, $isPart); $read = $true } catch { Start-Sleep -Milliseconds 200 }
+  }
+  # still held, a format version this script does not know, or no recording although the recorder
+  # finished it: nothing is touched
+  if (-not $read -or ($info -and $info.Frames -lt 0) -or (-not $info -and -not $isPart)) {
+    return New-Object 'KinectWandNative+Recording' -Property @{ File = $file; Frames = -1 }
+  }
+  if ($isPart -and (-not $info -or $info.Frames -lt 30)) {
+    Remove-Item -LiteralPath $part -ErrorAction SilentlyContinue
+    return $null
+  }
+  for ($i = 0; $i -lt 10 -and $info.File -eq $part; $i++) {
+    try { [IO.File]::Move($part, $out); $info.File = $out } catch { Start-Sleep -Milliseconds 200 }
+  }
+  return $info
+}
+
+# 302.4 s -> "5:02"; 299.97 s (the frames of a 5 minute recording) -> "5:00"
+function Format-Time([double]$seconds) {
+  $s = [Math]::Max(0, [long][Math]::Round($seconds))
+  return '{0}:{1:00}' -f [long][Math]::Floor($s / 60), ($s % 60)
+}
+
+# A recording in one line: "wand-2026-10-10-140312.k2rec · 5:00 min · 8990 Bilder · 5,5 GB".
+function Format-Recording($info) {
+  if (-not $info) { return 'nichts Brauchbares aufgenommen' }
+  if ($info.Frames -lt 0) { return "nicht lesbar, liegt unverändert in $($info.File)" }
+  $text = '{0} · {1} min · {2} Bilder' -f (Split-Path -Leaf $info.File), (Format-Time $info.Seconds), $info.Frames
+  if ($info.Skipped) { $text += " ($($info.Skipped) übersprungen)" }
+  return $text + (' · {0:0.0} GB' -f ($info.Bytes / 1GB))
+}
+
 function Stop-Started($j) {
   $stopped = @()
-  foreach ($role in 'wall', 'control', 'vite', 'hub') {
+  foreach ($role in 'record', 'wall', 'control', 'vite', 'hub') {
     foreach ($s in @($j.started)) {
       if (-not $s -or $s.role -ne $role) { continue }
       if (Test-Alive $s.pid $s.start) {
         Stop-Tree ([int]$s.pid) -Gentle:($role -in 'wall', 'control')
         $stopped += $role
+      }
+      if ($role -eq 'record' -and $s.out) {
+        Write-EventLog "Aufnahme beendet: $(Format-Recording (Save-Recording ([string]$s.out)))"
       }
     }
   }
@@ -872,7 +981,7 @@ function Invoke-Notaus([switch]$FromGuard) {
   if (-not $FromGuard -and $j -and (Test-Alive $j.guardPid $j.guardStart)) { Stop-Process -Id ([int]$j.guardPid) -Force -ErrorAction SilentlyContinue }
   if ($j -and (Test-Alive $j.mainPid $j.mainStart)) { Stop-Process -Id ([int]$j.mainPid) -Force -ErrorAction SilentlyContinue }
   $r = Restore-All $j -StopStarted
-  $names = @{ wall = 'Wand-Fenster'; control = 'Steuerzentrale'; vite = 'Dev-Server'; hub = 'Kinect-Hub' }
+  $names = @{ record = 'Aufnahme'; wall = 'Wand-Fenster'; control = 'Steuerzentrale'; vite = 'Dev-Server'; hub = 'Kinect-Hub' }
   $msg = 'NOTAUS: alle Einstellungen sind zurückgestellt'
   if ($r.stopped.Count) { $msg += ', beendet: ' + (($r.stopped | ForEach-Object { $names[$_] }) -join ', ') }
   $msg += '.'
@@ -942,7 +1051,11 @@ if ($old -and $old.active -and (Test-Alive $old.mainPid $old.mainStart)) {
 $adopt = @()
 if ($old -and $old.active) {
   Write-Host '  Der letzte Lauf endete nicht sauber: stelle zurück, was noch übrig ist ...' -ForegroundColor Yellow
-  foreach ($s in @($old.started)) { if ($s -and (Test-Alive $s.pid $s.start)) { $adopt += $s } }
+  foreach ($s in @($old.started)) {
+    if (-not $s) { continue }
+    if (Test-Alive $s.pid $s.start) { $adopt += $s }
+    elseif ($s.role -eq 'record' -and $s.out) { Write-EventLog "Aufnahme vom letzten Lauf: $(Format-Recording (Save-Recording ([string]$s.out)))" }
+  }
   $r = Restore-All $old
   foreach ($p in $r.problems) { Write-Host "  $p" -ForegroundColor Yellow }
 }
@@ -1123,12 +1236,14 @@ $script:NextTry = @{ hub = 0; vite = 0; wall = 0; hubPoll = 0 }
 $script:ControlPid = 0
 $script:ControlStart = $null
 $script:ControlUrl = $null
+$script:Rec = $null         # the running recording (its journal entry)
 $Clock = [Diagnostics.Stopwatch]::StartNew()
 foreach ($s in $adopt) {
   if ($s.role -eq 'hub') { $script:HubOurs = $s }
   if ($s.role -eq 'vite') { $script:ViteOurs = $s }
   if ($s.role -eq 'wall') { $script:WallPid = [int]$s.pid; $script:WallStart = $s.start }
   if ($s.role -eq 'control') { $script:ControlPid = [int]$s.pid; $script:ControlStart = $s.start }
+  if ($s.role -eq 'record') { $script:Rec = $s }
 }
 
 function Add-Started([string]$role, [int]$id) {
@@ -1463,6 +1578,125 @@ function Watch-Components {
   }
 }
 
+# ---- recordings for training data (R): kinect-hub-probe record reads depth and infrared from the
+# running hub (never the sensor) in a hidden process of its own. It has no window to close, so it
+# is ended hard when it has to stop early; Save-Recording keeps what it wrote.
+$RecordDir = Join-Path $Main 'recordings'
+$RecordSize = $RecordMinutes * 60 * $RecordRate
+
+function Get-ProbeExe {
+  $exe = Join-Path $Main 'kinect-hub\target\release\kinect-hub-probe.exe'
+  # a test checkout (-Checkout) has no build of its own
+  if (-not (Test-Path -LiteralPath $exe) -and $Checkout) { $exe = Join-Path (Get-MainCheckout) 'kinect-hub\target\release\kinect-hub-probe.exe' }
+  if (Test-Path -LiteralPath $exe) { return $exe }
+  return $null
+}
+
+# Free bytes where the recordings go (the checkout's drive while that folder does not exist yet).
+function Get-RecordFree {
+  return [KinectWandNative]::FreeBytes($(if ([IO.Directory]::Exists($RecordDir)) { $RecordDir } else { $Main }))
+}
+
+function Test-Recording { return [bool]($script:Rec -and $script:Rec.start -and (Test-Alive $script:Rec.pid $script:Rec.start)) }
+
+# Why no recording can start now; '' if one can.
+function Get-RecordBlocker {
+  if ($script:Rec) { return 'Es läuft schon eine Aufnahme' }
+  if (-not (Get-ProbeExe)) { return 'Aufnahme: kinect-hub-probe.exe fehlt (im main bauen: cargo build --release in kinect-hub)' }
+  $h = Get-HubStatus
+  if (-not $h) { return "Aufnahme: der Hub $HubUrl antwortet nicht" }
+  if ([string]$h.sensor.state -ne 'streaming') { return "Aufnahme: die Kinect liefert gerade keine Bilder (Sensor $($h.sensor.state))" }
+  $free = Get-RecordFree
+  if ($free -ge 0 -and $free -lt $RecordSize + $RecordReserve) {
+    return 'Aufnahme: zu wenig Platz, {0:0.0} GB frei; {1} min brauchen etwa {2:0.0} GB, und {3:0} GB sollen frei bleiben' -f ($free / 1GB), $RecordMinutes, ($RecordSize / 1GB), ($RecordReserve / 1GB)
+  }
+  return ''
+}
+
+function Start-Recording {
+  $why = Get-RecordBlocker
+  if ($why) { Add-Event $why 'warn'; return }
+  $now = Get-Date
+  $out = Join-Path $RecordDir ('wand-{0:yyyy-MM-dd-HHmmss}.k2rec' -f $now)
+  $log = Join-Path $LogDir ('record-{0:yyyyMMdd-HHmmss}' -f $now)
+  $seconds = $RecordMinutes * 60
+  try {
+    $p = Start-Process -FilePath (Get-ProbeExe) -WorkingDirectory $Main -WindowStyle Hidden -PassThru -ErrorAction Stop `
+      -ArgumentList @('record', '--seconds', $seconds, '--url', "ws://127.0.0.1:$Hub/ws", '--out', "`"$out`"") `
+      -RedirectStandardInput $NoInput -RedirectStandardOutput "$log.log" -RedirectStandardError "$log.err.log"
+  } catch { Add-Event "Aufnahme startet nicht: $($_.Exception.Message)" 'warn'; return }
+  # below the show (hub, worker, wall browser: above normal); a frame it is too slow for is skipped
+  # by the hub, nothing waits for it
+  [void][KinectWandNative]::SetPriority($p.Id, 'BelowNormal')
+  $script:Rec = [pscustomobject]@{ role = 'record'; pid = $p.Id; start = (Get-StartKey $p.Id); out = $out; log = $log; seconds = $seconds }
+  # one that ended at once has nothing to stop (and its PID may belong to another process soon)
+  if ($script:Rec.start) {
+    $J.started = @($J.started | Where-Object { $_ -and $_.role -ne 'record' }) + $script:Rec
+    [void](Save-Journal)
+  }
+  Add-Event ('Aufnahme läuft: {0} ({1} min, etwa {2:0.0} GB)' -f (Split-Path -Leaf $out), $RecordMinutes, ($RecordSize / 1GB))
+}
+
+# The first group of the last line in a log that matches pattern; '' if none.
+function Get-LogMatch([string]$file, [string]$pattern) {
+  $hit = ''
+  try { foreach ($line in [IO.File]::ReadAllLines($file)) { if ($line -match $pattern) { $hit = $Matches[1] } } } catch { }
+  return $hit
+}
+
+# The recorder has ended (finished, failed or stopped): keep what it wrote and say so.
+function Complete-Recording([switch]$Stopped) {
+  $r = $script:Rec
+  $info = Save-Recording ([string]$r.out)
+  $script:Rec = $null
+  $J.started = @($J.started | Where-Object { $_ -and $_.role -ne 'record' })
+  [void](Save-Journal)
+  if ($script:ConfirmKind -eq 'stoprec') { $script:ConfirmUntil = 0 }
+  if ($Stopped) { Add-Event "Aufnahme beendet: $(Format-Recording $info)"; return }
+  if (-not $info) {
+    $why = Get-LogMatch "$($r.log).err.log" 'record failed: (.+)'
+    Add-Event ('Aufnahme fehlgeschlagen: ' + $(if ($why) { $why } else { 'nichts Brauchbares aufgenommen (Logs: L)' })) 'warn'
+  } elseif ($info.Frames -lt 0) {
+    Add-Event "Aufnahme: $(Format-Recording $info)" 'warn'
+  } elseif ($info.Seconds -ge [double]$r.seconds - 2) {
+    Add-Event "Aufnahme fertig: $(Format-Recording $info)"
+  } else {
+    # the recorder's own reason, e.g. "connection lost: ..." when the hub restarted
+    $why = Get-LogMatch "$($r.log).log" ' MB \((.+)\)\s*$'
+    Add-Event ("Aufnahme vorzeitig zu Ende: $(Format-Recording $info)" + $(if ($why) { " ($why)" })) 'warn'
+  }
+}
+
+# Ends the running recording now: keeps what it has, or deletes it.
+function Stop-Recording([switch]$Delete) {
+  $r = $script:Rec
+  if (-not $r) { return }
+  if (Test-Recording) { Stop-Tree ([int]$r.pid) }
+  if (-not $Delete) { Complete-Recording -Stopped; return }
+  $files = @("$($r.out).part", [string]$r.out)
+  for ($i = 0; $i -lt 10 -and @($files | Where-Object { Test-Path -LiteralPath $_ }).Count; $i++) {
+    if ($i) { Start-Sleep -Milliseconds 200 }   # the ended recorder may still hold the file for a moment
+    Remove-Item -LiteralPath $files -Force -ErrorAction SilentlyContinue
+  }
+  $left = @($files | Where-Object { Test-Path -LiteralPath $_ })
+  $script:Rec = $null
+  $J.started = @($J.started | Where-Object { $_ -and $_.role -ne 'record' })
+  [void](Save-Journal)
+  if ($left.Count) { Add-Event "Aufnahme ließ sich nicht löschen: $($left -join ', ')" 'warn' }
+  else { Add-Event "Aufnahme gelöscht: $(Split-Path -Leaf $r.out)" }
+}
+
+# Every 2 s while one runs: the recorder ended by itself (done or failed), or the disk is nearly full.
+function Watch-Recording {
+  if (-not $script:Rec) { return }
+  if (-not (Test-Recording)) { Complete-Recording; return }
+  $free = Get-RecordFree
+  if ($free -ge 0 -and $free -lt $RecordMinFree) {
+    Add-Event ('Nur noch {0:0.0} GB frei: Aufnahme beendet' -f ($free / 1GB)) 'warn'
+    Stop-Recording
+  }
+}
+
 # ---- start everything
 $script:HubStatus = Get-HubStatus
 if ($script:HubStatus) {
@@ -1516,7 +1750,12 @@ function Show-Status {
   function L([string]$text, [string]$color = 'Gray') { [void]$lines.Add(@($text, $color)) }
   $up = $Clock.Elapsed
   if ($script:ConfirmUntil -gt $up.TotalSeconds) {
-    L ('  Wirklich beenden? Die Wand geht aus.  [J] ja, andere Taste: nein  ({0:0} s)' -f ($script:ConfirmUntil - $up.TotalSeconds)) 'Yellow'
+    $ask = switch ($script:ConfirmKind) {
+      'record' { '{0} min aufnehmen (etwa {1:0.0} GB)? Einverständnis eingeholt?  [J] ja, andere Taste: nein' -f $RecordMinutes, ($RecordSize / 1GB) }
+      'stoprec' { 'Aufnahme beenden?  [J] ja, behalten  [X] ja, löschen  andere Taste: weiter aufnehmen' }
+      default { 'Wirklich beenden? Die Wand geht aus' + $(if ($script:Rec) { ', die Aufnahme endet (bleibt gespeichert)' }) + '.  [J] ja, andere Taste: nein' }
+    }
+    L ('  {0}  ({1:0} s)' -f $ask, ($script:ConfirmUntil - $up.TotalSeconds)) 'Yellow'
   }
   L ('  Kinect-Wand · läuft seit {0}:{1:00} h' -f [int][Math]::Floor($up.TotalHours), $up.Minutes) 'Cyan'
   if ($null -eq $script:HotkeyBusy) {
@@ -1556,6 +1795,19 @@ function Show-Status {
   L "  Wand       $wallText" $(if ($script:WallPid -or -not $script:WallAuto) { 'Gray' } else { 'Yellow' })
   if ($script:ControlPid) { L '  Steuerung  Steuerzentrale offen auf dem Notebook-Bildschirm (S holt sie dorthin zurück)' }
   else { L '  Steuerung  Steuerzentrale zu (S öffnet sie auf dem Notebook-Bildschirm)' 'DarkGray' }
+  if ($script:Rec) {
+    $t = 0; $bytes = 0
+    if ($script:Rec.start) { $t = ([DateTime]::UtcNow - [DateTime]::FromFileTimeUtc([long]$script:Rec.start)).TotalSeconds }
+    foreach ($f in "$($script:Rec.out).part", [string]$script:Rec.out) { if ([IO.File]::Exists($f)) { $bytes = (New-Object IO.FileInfo $f).Length; break } }
+    L ('  Aufnahme   LÄUFT {0} von {1} min · {2:0.0} GB · {3} · R beendet' -f (Format-Time $t), (Format-Time $script:Rec.seconds), ($bytes / 1GB), (Split-Path -Leaf $script:Rec.out)) 'Magenta'
+  } else {
+    $free = Get-RecordFree
+    $room = $free -lt 0 -or $free -ge $RecordSize + $RecordReserve
+    $text = '  Aufnahme   R nimmt {0} min auf (Tiefe + Infrarot, etwa {1:0.0} GB)' -f $RecordMinutes, ($RecordSize / 1GB)
+    if ($free -ge 0) { $text += ' · frei: {0:0.0} GB' -f ($free / 1GB) }
+    if (-not $room) { $text += ', zu wenig Platz' }
+    L $text $(if ($room) { 'DarkGray' } else { 'Yellow' })
+  }
   if ($script:ScreensTextVer -ne [KinectWandNative]::ScreensVersion) {
     $script:ScreensTextVer = [KinectWandNative]::ScreensVersion
     $script:ScreensText = (@([KinectWandNative]::Screens()) | Sort-Object X | ForEach-Object { Format-Screen $_ }) -join ' · '
@@ -1569,7 +1821,7 @@ function Show-Status {
   if ($script:Optimize) { L "  Optimiert  Energieplan · kein Standby/Bildschirm aus · $($script:TuneSummary)" 'DarkGreen' }
   else { L '  Optimiert  nein, zurückgestellt (der Bildschirm bleibt trotzdem an)' 'DarkGray' }
   L ''
-  L '  [Q] Beenden  [W] Wand-Fenster zu/auf  [S] Steuerzentrale aufs Notebook  [O] Optimierungen zurück  [L] Logs' 'White'
+  L '  [Q] Beenden  [W] Wand-Fenster zu/auf  [S] Steuerzentrale  [R] Aufnahme  [O] Optimierungen zurück  [L] Logs' 'White'
   L ''
   foreach ($e in $Events) { L ('  {0:HH:mm:ss} {1}' -f $e.t, $e.text) $(if ($e.level -eq 'warn') { 'Yellow' } else { 'DarkGray' }) }
 
@@ -1607,6 +1859,8 @@ function Invoke-Quit {
   try { [Console]::CursorVisible = $true } catch { }
   Clear-Host
   Write-Host "`n  Beende: stelle alles zurück und stoppe, was hier gestartet wurde ...`n" -ForegroundColor Cyan
+  $script:Drawn = $false   # events go straight to the console again
+  if ($script:Rec) { Stop-Recording }
   $r = Restore-All $J -StopStarted
   [KinectWandNative]::KeepAwake($false)
   New-Item -ItemType File -Force $GuardStopFlag | Out-Null
@@ -1625,6 +1879,7 @@ try { [Console]::CursorVisible = $false } catch { }
 Clear-Host
 $nextWatch = 0; $nextTune = 15; $nextDraw = 0; $nextCpu = 9; $nextPlace = 0; $nextScan = 0; $nextAwake = 60
 $script:ConfirmUntil = 0
+$script:ConfirmKind = ''   # what the question at the top is about: quit, record, stoprec
 $quit = $false
 while (-not $quit) {
   $now = $Clock.Elapsed.TotalSeconds
@@ -1635,10 +1890,24 @@ while (-not $quit) {
       $ch = [char]::ToLower($k.KeyChar)
       if ($script:ConfirmUntil -gt $now) {
         $script:ConfirmUntil = 0
-        if ($ch -in 'j', 'y') { $quit = $true; break }
-        Add-Event 'Beenden abgebrochen'
+        $yes = $ch -in 'j', 'y'
+        if ($script:ConfirmKind -eq 'record') {
+          if ($yes) { Start-Recording } else { Add-Event 'Aufnahme nicht gestartet' }
+        } elseif ($script:ConfirmKind -eq 'stoprec') {
+          if ($yes) { Stop-Recording } elseif ($ch -eq 'x') { Stop-Recording -Delete } else { Add-Event 'Aufnahme läuft weiter' }
+        } elseif ($yes) { $quit = $true; break }
+        else { Add-Event 'Beenden abgebrochen' }
       } elseif ($ch -eq 'q' -or ($k.Key -eq 'C' -and ($k.Modifiers -band [ConsoleModifiers]::Control))) {
+        $script:ConfirmKind = 'quit'
         $script:ConfirmUntil = $now + 10
+      } elseif ($ch -eq 'r') {
+        Watch-Recording   # one that just ended is taken in first
+        if ($script:Rec) { $script:ConfirmKind = 'stoprec'; $script:ConfirmUntil = $now + 10 }
+        else {
+          # what would stop a recording is said before anyone is asked
+          $why = Get-RecordBlocker
+          if ($why) { Add-Event $why 'warn' } else { $script:ConfirmKind = 'record'; $script:ConfirmUntil = $now + 10 }
+        }
       } elseif ($ch -eq 'w') {
         if ($script:WallPid) { $script:WallAuto = $false; Close-Wall; Add-Event 'Wand-Fenster geschlossen (W öffnet es wieder)' }
         else { $script:WallAuto = $true; $script:WallLaunches.Clear(); $script:NextTry.wall = 0; $nextWatch = 0 }
@@ -1661,6 +1930,7 @@ while (-not $quit) {
     }
     if ($now -ge $nextWatch) {
       Watch-Components
+      Watch-Recording
       if (-not (Test-Alive $J.guardPid $J.guardStart)) { Add-Event 'Wächter neu gestartet' 'warn'; Start-Guard }
       $nextWatch = $now + 2
     }
@@ -1671,7 +1941,7 @@ while (-not $quit) {
       if ($now -ge $nextCpu) { $script:TopCpu = [KinectWandNative]::TopCpu(5); $nextCpu = $now + 9 }
       Show-Status
       $script:Dirty = $false
-      $nextDraw = $now + $(if ($script:ConfirmUntil) { 1 } else { 10 })
+      $nextDraw = $now + $(if ($script:ConfirmUntil) { 1 } elseif ($script:Rec) { 5 } else { 10 })
     }
   } catch {
     Add-Event "Fehler: $($_.Exception.Message)" 'warn'

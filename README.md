@@ -24,7 +24,15 @@ Die Bildschirme erkennt das Programm bei jedem Start von selbst, einstellen muss
 - Das Wand-Fenster geht auf dem Zweitmonitor auf, nie auf dem Notebook. Ohne Zweitmonitor bleibt es zu, bis einer angeschlossen ist. Landet ein Wand-Fenster doch auf dem Notebook, schließt das Programm es sofort.
 - Die Steuerzentrale geht als eigenes Fenster maximiert auf dem Notebook-Bildschirm auf. Bei zugeklapptem Deckel bleibt sie zu, damit sie nie auf der Wand landet. **S** holt sie zurück.
 
-Beenden mit **Q** im Fenster. **NOTAUS: Strg+Alt+Shift+N** (wirkt in jedem Fenster) oder das Desktop-Symbol „Kinect-Wand NOTAUS“: Das beendet alles, was das Programm gestartet hat, und stellt alle Werte zurück. Jeder alte Wert steht in `%LOCALAPPDATA%\kinect-wand\journal.json`, bevor er geändert wird. Wird das Fenster geschlossen oder stürzt es ab, stellt ein Wächter-Prozess alles zurück. Nach einem Absturz des PCs passiert das bei der nächsten Anmeldung, und den Rest räumt der nächste Start auf. Optionen: `-NoWall`, `-NoControl`, `-NoAdmin`, `-Hub 8091`.
+Beenden mit **Q** im Fenster. **NOTAUS: Strg+Alt+Shift+N** (wirkt in jedem Fenster) oder das Desktop-Symbol „Kinect-Wand NOTAUS“: Das beendet alles, was das Programm gestartet hat, und stellt alle Werte zurück. Jeder alte Wert steht in `%LOCALAPPDATA%\kinect-wand\journal.json`, bevor er geändert wird. Wird das Fenster geschlossen oder stürzt es ab, stellt ein Wächter-Prozess alles zurück. Nach einem Absturz des PCs passiert das bei der nächsten Anmeldung, und den Rest räumt der nächste Start auf. Optionen: `-NoWall`, `-NoControl`, `-NoAdmin`, `-Hub 8091`, `-RecordMinutes 10`.
+
+**Aufnahmen für Trainingsdaten:** **R** im Fenster nimmt 5 Minuten Tiefe und Infrarot vom laufenden Hub auf, wie `kinect-hub-probe record`. Die Wand läuft dabei weiter.
+- Vorher fragt das Programm: „Einverständnis eingeholt?“ Erst nach **J** startet die Aufnahme.
+- Sie landet in `recordings/wand-<Datum>-<Uhrzeit>.k2rec` des main-Checkouts. 5 Minuten sind etwa 5,5 GB. Die Aufnahme startet nur, wenn danach noch 5 GB frei bleiben, und endet von selbst, wenn weniger als 2 GB frei sind.
+- Noch einmal **R** beendet sie vorzeitig: **J** behält sie, **X** löscht sie. Auch **Q**, NOTAUS und der Wächter beenden sie und behalten, was schon aufgenommen ist.
+- Eine andere Länge: `start-wand.cmd -RecordMinutes 10`.
+- Fürs Training des Pose-Modells kommen neue Aufnahmen in die Listen von `pose-training/frames.py` (siehe [`pose-training/README.md`](pose-training/README.md)).
+- Aufnahmen zeigen Menschen: nie committen oder hochladen.
 
 ## Schnellstart
 
