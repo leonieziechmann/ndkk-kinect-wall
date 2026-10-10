@@ -2,7 +2,7 @@
   start-wand.ps1: starts everything the LED wall needs and tunes Windows for it, only while it runs.
 
     start-wand.cmd                     double-click (or the desktop icon "Kinect-Wand starten")
-    .\start-wand.ps1 [-NoWall] [-NoControl] [-Hub 8091] [-RecordMinutes 5]
+    .\start-wand.ps1 [-NoWall] [-NoControl] [-Hub 8091] [-RecordMinutes 5] [-Minimal]
     .\start-wand.ps1 -Panic            NOTAUS (also Strg+Alt+Shift+N, desktop icon "Kinect-Wand NOTAUS")
 
   Starts (or reuses, if they already run) from the main checkout: kinect-hub (real Kinect, :8090),
@@ -42,6 +42,17 @@
   monitors change; the screen redraws only lines that changed; the C# part is compiled once and
   cached, so neither a start nor the guard nor NOTAUS runs the compiler.
 
+  -Minimal (desktop icon "Kinect-Wand starten (minimal)"), for when the show stutters now and then:
+  everything that could take time or power from it stays off.
+    - power plan: a copy of Windows' "Balanced" with only what the show needs (no sleep, display
+      on, lid closed = do nothing, USB selective suspend and PCIe link power saving off). The CPU
+      gets no minimum clock and no forced boost: on this APU the CPU and the integrated GPU share
+      one power and heat budget, and a CPU held at full clock takes it from the GPU (the notebook
+      heats up, then both throttle)
+    - no priorities or efficiency mode (no process lists), no "Viel CPU"
+    - the graphics driver is asked about the displays only when they change (not once a minute);
+      the wall window's place every 2 s (all windows every 10 s); the hub and the screen every 30 s
+
   Getting the old values back, whatever happens:
     - every original value is written to %LOCALAPPDATA%\kinect-wand\journal.json BEFORE it is changed
     - Q here: everything back, and what this program started is stopped
@@ -58,6 +69,7 @@ param(
   [switch]$NoControl, # no control center window on the notebook
   [int]$Hub = 8090,   # the hub to use; only the real one on 8090 is started, others must run already
   [ValidateRange(1, 60)][int]$RecordMinutes = 5,   # R: length of a recording (training data)
+  [switch]$Minimal,   # nothing that could take time or power from the show (see above)
   [switch]$Panic,     # NOTAUS
   [int]$Guard = 0,    # internal: be the guard of this PID
   [string]$Checkout,  # for tests: use this checkout instead of the main one
@@ -96,20 +108,21 @@ $BackgroundApps = @('ms-teams', 'Teams', 'WhatsApp', 'WhatsApp.Root', 'Signal', 
   'CrossDeviceService', 'OneDrive', 'Spotify', 'Discord', 'Dropbox', 'GoogleDriveFS', 'Widgets',
   'WidgetService', 'Telegram', 'slack', 'Zoom', 'olk', 'OUTLOOK', 'steam', 'steamwebhelper',
   'EpicGamesLauncher', 'EADesktop', 'Battle.net')
-# power plan values: subgroup, setting, AC, DC ($null: as in "High performance")
+# power plan values: subgroup, setting, AC, DC ($null: as in the base plan), and whether -Minimal sets
+# it too (what the show needs; the others are for speed)
 $PowerSettings = @(
-  @('238c9fa8-0aad-41ed-83f4-97be242c8f20', '29f6c1db-86da-48c5-9fdb-f2b67b1f44da', 0, 0),       # sleep after: never
-  @('238c9fa8-0aad-41ed-83f4-97be242c8f20', '9d7815a6-7ee4-497e-8888-515a05f02364', 0, 0),       # hibernate after: never
-  @('7516b95f-f776-4464-8c53-06167f40cc99', '3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e', 0, 0),       # display off after: never
-  @('7516b95f-f776-4464-8c53-06167f40cc99', '17aaa29b-8b43-4b94-aafe-35f64daaf1ee', 0, 0),       # dim display after: never
-  @('0012ee47-9041-4b5d-9b77-535fba8b1442', '6738e2c4-e8a5-4a42-b16a-e040e769756e', 0, 0),       # disk off after: never
-  @('4f971e89-eebd-4455-a8de-9e59040e7347', '5ca83367-6e45-459f-a27b-476b1d01c936', 0, 0),       # lid closed: do nothing
-  @('2a737441-1930-4402-8d77-b2bebba308a3', '48e6b7a6-50f5-4782-a5d4-53bb8f07e226', 0, 0),       # USB selective suspend: off
-  @('501a4d13-42af-4429-9fd1-a8218c268e20', 'ee12f906-d277-404b-b6da-e5fa1a576df5', 0, 0),       # PCIe link power saving: off
-  @('54533251-82be-4824-96c1-47b60b740d00', '893dee8e-2bef-41e0-89c6-b55d0929964c', 100, $null), # min processor state: 100 %
-  @('54533251-82be-4824-96c1-47b60b740d00', 'be337238-0d82-4146-a960-4f3749d470c7', 2, $null),   # processor boost: aggressive
-  @('19cbb8fa-5279-450e-9fac-8a3d5fedd0c1', '12bbebe6-58d6-4636-95bb-3217ef867c1a', 0, 0),       # Wi-Fi power saving: off
-  @('de830923-a562-41af-a086-e3a2c6bad2da', 'e69653ca-cf7f-4f05-aa73-cb833fa90ad4', $null, 0)    # energy saver from battery level: never
+  @('238c9fa8-0aad-41ed-83f4-97be242c8f20', '29f6c1db-86da-48c5-9fdb-f2b67b1f44da', 0, 0, $true),        # sleep after: never
+  @('238c9fa8-0aad-41ed-83f4-97be242c8f20', '9d7815a6-7ee4-497e-8888-515a05f02364', 0, 0, $true),        # hibernate after: never
+  @('7516b95f-f776-4464-8c53-06167f40cc99', '3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e', 0, 0, $true),        # display off after: never
+  @('7516b95f-f776-4464-8c53-06167f40cc99', '17aaa29b-8b43-4b94-aafe-35f64daaf1ee', 0, 0, $true),        # dim display after: never
+  @('0012ee47-9041-4b5d-9b77-535fba8b1442', '6738e2c4-e8a5-4a42-b16a-e040e769756e', 0, 0, $true),        # disk off after: never
+  @('4f971e89-eebd-4455-a8de-9e59040e7347', '5ca83367-6e45-459f-a27b-476b1d01c936', 0, 0, $true),        # lid closed: do nothing
+  @('2a737441-1930-4402-8d77-b2bebba308a3', '48e6b7a6-50f5-4782-a5d4-53bb8f07e226', 0, 0, $true),        # USB selective suspend: off
+  @('501a4d13-42af-4429-9fd1-a8218c268e20', 'ee12f906-d277-404b-b6da-e5fa1a576df5', 0, 0, $true),        # PCIe link power saving: off
+  @('54533251-82be-4824-96c1-47b60b740d00', '893dee8e-2bef-41e0-89c6-b55d0929964c', 100, $null, $false), # min processor state: 100 %
+  @('54533251-82be-4824-96c1-47b60b740d00', 'be337238-0d82-4146-a960-4f3749d470c7', 2, $null, $false),   # processor boost: aggressive
+  @('19cbb8fa-5279-450e-9fac-8a3d5fedd0c1', '12bbebe6-58d6-4636-95bb-3217ef867c1a', 0, 0, $false),       # Wi-Fi power saving: off
+  @('de830923-a562-41af-a086-e3a2c6bad2da', 'e69653ca-cf7f-4f05-aa73-cb833fa90ad4', $null, 0, $true)     # energy saver from battery level: never
 )
 
 $NativeSource = @'
@@ -323,6 +336,7 @@ public static class KinectWandNative {
   static Dictionary<IntPtr, string> monitorDevice = new Dictionary<IntPtr, string>();
   static HashSet<IntPtr> internalMonitors = new HashSet<IntPtr>();
   public static int ScreensVersion;   // goes up whenever Displays() was asked again
+  public static bool ScreensEachMinute = true;   // false (-Minimal): only when the monitors changed
 
   // Displays(), cheap to call often: the graphics driver is asked only when the monitors changed
   // (names and places from EnumDisplayMonitors, which Windows keeps at hand) and once a minute.
@@ -340,7 +354,7 @@ public static class KinectWandNative {
     }, IntPtr.Zero);
     string k = key.ToString();
     long now = clock.ElapsedMilliseconds;
-    if (k != screensKey || screensAt < 0 || now - screensAt > 60000) {
+    if (k != screensKey || screensAt < 0 || (ScreensEachMinute && now - screensAt > 60000)) {
       var all = Displays();
       // in the middle of a change the driver may answer with nothing: ask again next time
       if (all.Length > 0 || mons.Count == 0) { screens = all; screensKey = k; screensAt = now; ScreensVersion++; }
@@ -1102,6 +1116,7 @@ function Set-Shortcut([string]$name, [string]$target, [string]$arguments, [strin
 $LinkDir = if (Test-Path (Join-Path $Main 'start-wand.ps1')) { $Main } else { $Here }
 Set-Shortcut 'Kinect-Wand NOTAUS' $Ps "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $LinkDir 'start-wand.ps1')`" -Panic" "$env:SystemRoot\System32\shell32.dll,27"
 Set-Shortcut 'Kinect-Wand starten' (Join-Path $LinkDir 'start-wand.cmd') '' "$env:SystemRoot\System32\imageres.dll,186"
+Set-Shortcut 'Kinect-Wand starten (minimal)' (Join-Path $LinkDir 'start-wand.cmd') '-Minimal' "$env:SystemRoot\System32\imageres.dll,186"
 
 # ---- the guard: puts everything back when this window closes or crashes; NOTAUS hotkey
 $script:HotkeyBusy = $null
@@ -1121,7 +1136,8 @@ function Enable-PowerPlan {
   if (-not $orig -or $schemes[$orig] -eq $PowerName) { Add-Event 'Energieplan: aktiver Plan unklar, bleibt, wie er ist' 'warn'; return }
   $J.power.original = $orig
   if (-not (Save-Journal)) { return }
-  $base = if (Test-Scheme $HighPerf) { $HighPerf } else { $orig }
+  # -Minimal: Windows' own "Balanced" (the CPU clocks as Windows and the chip decide), else "High performance"
+  $base = if ($Minimal) { if (Test-Scheme $Balanced) { $Balanced } else { $orig } } elseif (Test-Scheme $HighPerf) { $HighPerf } else { $orig }
   $out = & powercfg.exe /duplicatescheme $base 2>$null
   if ("$out" -notmatch '([0-9a-fA-F]{8}-[0-9a-fA-F-]{27})') { Add-Event 'Energieplan: Kopie fehlgeschlagen' 'warn'; return }
   $temp = $Matches[1].ToLower()
@@ -1130,6 +1146,7 @@ function Enable-PowerPlan {
   & powercfg.exe /changename $temp $PowerName 'Voruebergehend von start-wand.ps1, wird beim Beenden geloescht' 2>$null | Out-Null
   $failed = 0
   foreach ($s in $PowerSettings) {
+    if ($Minimal -and -not $s[4]) { continue }
     if ($null -ne $s[2]) { & powercfg.exe /setacvalueindex $temp $s[0] $s[1] $s[2] 2>$null | Out-Null; if ($LASTEXITCODE) { $failed++ } }
     if ($null -ne $s[3]) { & powercfg.exe /setdcvalueindex $temp $s[0] $s[1] $s[3] 2>$null | Out-Null; if ($LASTEXITCODE) { $failed++ } }
   }
@@ -1137,7 +1154,8 @@ function Enable-PowerPlan {
     -Value "cmd.exe /c powercfg /setactive $orig & powercfg /delete $temp" | Out-Null
   & powercfg.exe /setactive $temp 2>$null | Out-Null
   if ((Get-ActiveScheme) -eq $temp) {
-    Add-Event ("Energieplan '$PowerName' aktiv" + $(if ($failed) { " ($failed Werte gibt es auf diesem Rechner nicht)" } else { '' }))
+    Add-Event ("Energieplan '$PowerName' aktiv" + $(if ($Minimal) { ' (minimal: nur kein Standby, Deckel, USB; die CPU regelt Windows)' }) +
+      $(if ($failed) { " ($failed Werte gibt es auf diesem Rechner nicht)" } else { '' }))
   } else {
     Add-Event 'Energieplan ließ sich nicht aktivieren' 'warn'
   }
@@ -1238,6 +1256,12 @@ $script:ControlStart = $null
 $script:ControlUrl = $null
 $script:Rec = $null         # the running recording (its journal entry)
 $Clock = [Diagnostics.Stopwatch]::StartNew()
+# how often the loop looks at things, in seconds (-Minimal: less often)
+$PlaceEvery = if ($Minimal) { 2 } else { 0.5 }   # where our wall window is
+$ScanEvery = if ($Minimal) { 10 } else { 2 }     # all windows (a wall browser opened elsewhere)
+$HubEvery = if ($Minimal) { 30 } else { 10 }     # the hub's status, while it answers
+$DrawEvery = if ($Minimal) { 30 } else { 10 }    # the status screen
+if ($Minimal) { [KinectWandNative]::ScreensEachMinute = $false }
 foreach ($s in $adopt) {
   if ($s.role -eq 'hub') { $script:HubOurs = $s }
   if ($s.role -eq 'vite') { $script:ViteOurs = $s }
@@ -1515,13 +1539,13 @@ function Test-WallPlace($bad = $null) {
 
 function Watch-Components {
   $now = $Clock.Elapsed.TotalSeconds
-  # hub: asked every 10 s while it answers (for the screen), every 2 s while it does not
+  # hub: asked every 10 s (minimal: 30 s) while it answers (for the screen), every 2 s while it does not
   if ($now -ge $script:NextTry.hubPoll) {
     $was = [bool]$script:HubStatus
     $script:HubStatus = Get-HubStatus
     if ($script:HubStatus) { $script:HubFails = 0 } else { $script:HubFails++ }
     if ([bool]$script:HubStatus -ne $was) { $script:Dirty = $true }
-    $script:NextTry.hubPoll = $now + $(if ($script:HubStatus) { 10 } else { 2 })
+    $script:NextTry.hubPoll = $now + $(if ($script:HubStatus) { $HubEvery } else { 2 })
     if (-not $script:HubStatus -and $script:HubFails -ge 3 -and $now -ge $script:NextTry.hub) {
       if (Test-Ours $script:HubOurs) {
         Add-Event 'Kinect-Hub antwortet nicht' 'warn'
@@ -1728,13 +1752,13 @@ if (-not $script:Vite) { Start-Vite }
 $script:NextTry.hubPoll = 10
 if ($script:WallAuto) { Watch-Components }
 if (-not $NoControl) { Open-Control }
-Update-Tuning
+if (-not $Minimal) { Update-Tuning }
 
 # ---------------------------------------------------------------------------------------------
 # status screen and keys
 
 $script:TopCpu = ''
-[void][KinectWandNative]::TopCpu(5)   # the first call only takes the baseline
+if (-not $Minimal) { [void][KinectWandNative]::TopCpu(5) }   # the first call only takes the baseline
 [void][KinectWandNative]::CpuPercent()
 
 $script:Shown = @()          # the lines on screen ("color|text"): only changed lines get written
@@ -1757,7 +1781,7 @@ function Show-Status {
     }
     L ('  {0}  ({1:0} s)' -f $ask, ($script:ConfirmUntil - $up.TotalSeconds)) 'Yellow'
   }
-  L ('  Kinect-Wand · läuft seit {0}:{1:00} h' -f [int][Math]::Floor($up.TotalHours), $up.Minutes) 'Cyan'
+  L ('  Kinect-Wand · {0}läuft seit {1}:{2:00} h' -f $(if ($Minimal) { 'Minimalmodus · ' } else { '' }), [int][Math]::Floor($up.TotalHours), $up.Minutes) 'Cyan'
   if ($null -eq $script:HotkeyBusy) {
     $t = Get-Content -LiteralPath $HotkeyFile -ErrorAction SilentlyContinue
     if ($t) { $script:HotkeyBusy = ($t -eq 'busy') }
@@ -1816,9 +1840,10 @@ function Show-Status {
   $cpu = [KinectWandNative]::CpuPercent()
   $power = [KinectWandNative]::Power()
   L ('  Rechner    CPU {0:0} % · RAM frei {1:0.0} GB · {2}' -f [Math]::Max(0, $cpu), [KinectWandNative]::FreeMemoryGB(), $power) $(if ($power -like 'AKKU*') { 'Yellow' } else { 'Gray' })
-  L "  Viel CPU   $($script:TopCpu)" 'DarkGray'
+  if (-not $Minimal) { L "  Viel CPU   $($script:TopCpu)" 'DarkGray' }
   L ''
-  if ($script:Optimize) { L "  Optimiert  Energieplan · kein Standby/Bildschirm aus · $($script:TuneSummary)" 'DarkGreen' }
+  if ($script:Optimize -and $Minimal) { L '  Optimiert  minimal: Energieplan nur gegen Standby/Deckel/USB-Sparen, die CPU regelt Windows · keine Prioritäten' 'DarkGreen' }
+  elseif ($script:Optimize) { L "  Optimiert  Energieplan · kein Standby/Bildschirm aus · $($script:TuneSummary)" 'DarkGreen' }
   else { L '  Optimiert  nein, zurückgestellt (der Bildschirm bleibt trotzdem an)' 'DarkGray' }
   L ''
   L '  [Q] Beenden  [W] Wand-Fenster zu/auf  [S] Steuerzentrale  [R] Aufnahme  [O] Optimierungen zurück  [L] Logs' 'White'
@@ -1921,12 +1946,13 @@ while (-not $quit) {
       $nextDraw = 0
     }
     if ($now -ge $nextPlace) {
-      # twice a second our window(s), every 2 s all windows (a wall browser opened elsewhere)
+      # our window(s) twice a second, all windows every 2 s (a wall browser opened elsewhere);
+      # minimal: every 2 s and every 10 s
       $full = $now -ge $nextScan
-      if ($full) { $nextScan = $now + 2 }
+      if ($full) { $nextScan = $now + $ScanEvery }
       $bad = [KinectWandNative]::WallScan([int]$script:WallPid, $WallProfile, $full)
       if ($bad.Length -or $script:InternalSince.Count -or $script:WallPlaceVer -ne [KinectWandNative]::PlaceVersion) { [void](Test-WallPlace $bad) }
-      $nextPlace = $now + 0.5
+      $nextPlace = $now + $PlaceEvery
     }
     if ($now -ge $nextWatch) {
       Watch-Components
@@ -1936,12 +1962,12 @@ while (-not $quit) {
     }
     if ($now -ge $nextAwake) { [KinectWandNative]::KeepAwake($true); $nextAwake = $now + 60 }
     if ($script:ConfirmUntil -and $script:ConfirmUntil -le $now) { $script:ConfirmUntil = 0; $nextDraw = 0 }
-    if ($script:Optimize -and $now -ge $nextTune) { Update-Tuning; $nextTune = $now + 15 }
+    if ($script:Optimize -and -not $Minimal -and $now -ge $nextTune) { Update-Tuning; $nextTune = $now + 15 }
     if ($now -ge $nextDraw -or $script:Dirty) {
-      if ($now -ge $nextCpu) { $script:TopCpu = [KinectWandNative]::TopCpu(5); $nextCpu = $now + 9 }
+      if (-not $Minimal -and $now -ge $nextCpu) { $script:TopCpu = [KinectWandNative]::TopCpu(5); $nextCpu = $now + 9 }
       Show-Status
       $script:Dirty = $false
-      $nextDraw = $now + $(if ($script:ConfirmUntil) { 1 } elseif ($script:Rec) { 5 } else { 10 })
+      $nextDraw = $now + $(if ($script:ConfirmUntil) { 1 } elseif ($script:Rec) { 5 } else { $DrawEvery })
     }
   } catch {
     Add-Event "Fehler: $($_.Exception.Message)" 'warn'
