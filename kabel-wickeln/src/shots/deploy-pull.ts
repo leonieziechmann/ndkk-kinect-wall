@@ -209,19 +209,18 @@ const mixGrip = (a: Grip, b: Grip, u: number): Grip => ({ p: lerpV(a.p, b.p, u),
  * hand moves between grip frames (open or closed), so its target never jumps.
  */
 export function pullRig(p: Plan) {
-  const axis = normalize(v3(p, SLOTS.axis));
-  const leftGrip = gripFrame(v3(p, SLOTS.left), axis, [0, 1, 0]);
-  const takeA = v3(p, SLOTS.takeA), dirA = normalize(v3(p, SLOTS.dirA));
-  const takeB = v3(p, SLOTS.takeB), dirB = normalize(v3(p, SLOTS.dirB));
+  // read the plan lazily: the bake fills in the other end's grip while it runs (T.plan)
+  const axis = () => normalize(v3(p, SLOTS.axis));
+  const leftGrip = () => gripFrame(v3(p, SLOTS.left), axis(), [0, 1, 0]);
   // the right hand: pads on the start end, the cable leaving past the thumb towards the plug; it
   // turns the plug outwards (to her right) as it pulls
-  const gripA = gripFrame(takeA, dirA, [0, 1, -0.3]);
+  const gripA = () => gripFrame(v3(p, SLOTS.takeA), normalize(v3(p, SLOTS.dirA)), [0, 1, -0.3]);
   const pullA = gripFrame(PULL_R, [-1, 0.05, 0], [0, 1, -0.3]);
   // the left hand: the same on the other end, its plug out to her left
-  const gripB = gripFrame(takeB, dirB, [0, 1, -0.3]);
+  const gripB = () => gripFrame(v3(p, SLOTS.takeB), normalize(v3(p, SLOTS.dirB)), [0, 1, -0.3]);
   const pullB = gripFrame(PULL_L, [1, 0.05, 0], [0, 1, -0.3]);
   /** the open left hand backs off the dropped ring a little and waits */
-  const away: Grip = { p: add(leftGrip.p, [0.05, -0.05, -0.03]), q: leftGrip.q };
+  const away = (): Grip => ({ p: add(leftGrip().p, [0.05, -0.05, -0.03]), q: leftGrip().q });
   const tieGrip = (t: number): Grip => {
     const s = tieShape(p, t);
     return gripFrame(s.tip, s.dir, [0, 1, 0]);
@@ -244,10 +243,10 @@ export function pullRig(p: Plan) {
       free = 1;
     } else if (t < T.takeA) {
       // to the start end next to its plug, closing on it
-      g = mixGrip(tieGrip(T.letTie), gripA, ease(t, T.letTie, T.takeA - 0.05));
+      g = mixGrip(tieGrip(T.letTie), gripA(), ease(t, T.letTie, T.takeA - 0.05));
       open = 1 - ease(t, T.takeA - 0.3, T.takeA);
     } else {
-      g = mixGrip(mixGrip(gripA, pullA, ease(t, T.pull0, T.pull1)), { p: LAY_R, q: pullA.q }, ease(t, T.pull1, T.lay1));
+      g = mixGrip(mixGrip(gripA(), pullA, ease(t, T.pull0, T.pull1)), { p: LAY_R, q: pullA.q }, ease(t, T.pull1, T.lay1));
       open = 0;
       free = 0.5;
     }
@@ -255,16 +254,16 @@ export function pullRig(p: Plan) {
   };
 
   const left = (t: number): HandRig => {
-    if (t < T.drop + 0.2) return { grip: leftGrip, hold: 'coil', radius: 0.012, free: 0.5, open: ease(t, T.drop, T.drop + 0.2) };
+    if (t < T.drop + 0.2) return { grip: leftGrip(), hold: 'coil', radius: 0.012, free: 0.5, open: ease(t, T.drop, T.drop + 0.2) };
     let g: Grip, open = 1;
     // open: back off and wait for the plan (the other end hangs where the dropped ring put it) …
-    if (t < T.plan + 0.15) g = mixGrip(leftGrip, away, ease(t, T.drop + 0.2, T.plan));
+    if (t < T.plan + 0.15) g = mixGrip(leftGrip(), away(), ease(t, T.drop + 0.2, T.plan));
     // … then to the other end, closing on it
     else if (t < T.takeB) {
-      g = mixGrip(away, gripB, ease(t, T.plan + 0.15, T.takeB - 0.05));
+      g = mixGrip(away(), gripB(), ease(t, T.plan + 0.15, T.takeB - 0.05));
       open = 1 - ease(t, T.takeB - 0.3, T.takeB);
     } else {
-      g = mixGrip(mixGrip(gripB, pullB, ease(t, T.pull0, T.pull1)), { p: LAY_L, q: pullB.q }, ease(t, T.pull1, T.lay1));
+      g = mixGrip(mixGrip(gripB(), pullB, ease(t, T.pull0, T.pull1)), { p: LAY_L, q: pullB.q }, ease(t, T.pull1, T.lay1));
       open = 0;
     }
     return { grip: g, ...PINCH, open, free: t < T.takeB ? 0.7 : 0.5 };

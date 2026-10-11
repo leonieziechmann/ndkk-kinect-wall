@@ -135,6 +135,46 @@ function layout(spec: RingSpec, rc: number) {
  * rest with the strands remembering the coiled shape. Deterministic.
  */
 export function windRing(spec: RingSpec, onFrame?: (rod: Rod, t: number) => void): Ring {
+  const cache = onFrame ? null : ringCache(spec);
+  const hit = cache?.read();
+  if (hit) return hit;
+  const ring = layRing(spec, onFrame);
+  cache?.write(ring);
+  return ring;
+}
+
+/**
+ * Laying out and pressing a long ring takes minutes; in Node (bakes, checks) the result is kept in
+ * bakes/cache/ring-<hash>.json, keyed by the spec and the source of the functions that make it.
+ * Deterministic either way; in the browser there is no cache (and no call: scenes read bakes).
+ */
+function ringCache(spec: RingSpec) {
+  const pr = (globalThis as { process?: { getBuiltinModule?: (id: string) => unknown; cwd: () => string } }).process;
+  const get = pr?.getBuiltinModule;
+  if (!pr || !get) return null;
+  const fs = get('node:fs') as typeof import('node:fs');
+  const path = get('node:path') as typeof import('node:path');
+  const crypto = get('node:crypto') as typeof import('node:crypto');
+  const key = crypto.createHash('sha1').update(JSON.stringify(spec)).update(layRing.toString()).update(layout.toString()).update(buildCable.toString()).digest('hex').slice(0, 16);
+  const file = path.join(pr.cwd(), 'bakes', 'cache', `ring-${key}.json`);
+  const F64 = ['L', 'c', 'q', 'v', 'om', 'rest', 'restNat', 'restFric', 'alpha1', 'alpha2', 'alphaT'] as const;
+  return {
+    read(): Ring | null {
+      if (!fs.existsSync(file)) return null;
+      const j = JSON.parse(fs.readFileSync(file, 'utf8'));
+      for (const k of F64) j.state[k] = Float64Array.from(j.state[k]);
+      return j as Ring;
+    },
+    write(r: Ring) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const st: Record<string, unknown> = { ...r.state };
+      for (const k of F64) st[k] = Array.from(r.state[k] ?? []);
+      fs.writeFileSync(file, JSON.stringify({ ...r, state: st }));
+    },
+  };
+}
+
+function layRing(spec: RingSpec, onFrame?: (rod: Rod, t: number) => void): Ring {
   const rc = spec.cable.od / 2;
   const L = layout(spec, rc);
   const pts = L.dense.map((p) => add(p, FIST));
@@ -258,11 +298,16 @@ export function crossings(rod: Rod, ring: Ring): number[] {
   for (let k = 0; k < N; k++) {
     const [a, b] = ring.loops[k];
     const per = b - a + 1;
-    // the strand that follows: the next loop's first 40 %, or the end tail's first 25 cm
-    const s0 = k + 1 < N ? ring.loops[k + 1][0] + Math.round(0.08 * per) : b + 1;
-    const s1 = k + 1 < N ? ring.loops[k + 1][0] + Math.round(0.4 * per) : Math.min(rod.n - 1, rod.segmentAt(rod.sNode[b + 1] + 0.25));
+    // the strand that follows: the next loop's first 40 %, or the end tail where it hangs down past
+    // the loop's bottom (out of the eye)
+    const last = k + 1 >= N;
+    const s0 = last ? b + 1 : ring.loops[k + 1][0] + Math.round(0.08 * per);
+    const s1 = last ? rod.n - 1 : ring.loops[k + 1][0] + Math.round(0.4 * per);
+    let yb = Infinity;
+    for (let j = a; j <= b; j++) yb = Math.min(yb, x[3 * j + 1]);
     let sum = 0, cnt = 0;
     for (let i = s0; i <= s1; i++) {
+      if (last && Math.abs(x[3 * i + 1] - yb) > 0.02) continue;
       // where it lies over loop k, seen along the stack: the nearest node of loop k in x-y
       let best = Infinity, bz = 0;
       for (let j = a; j <= b; j++) {

@@ -169,10 +169,16 @@ export class CoilController {
     homeQ: Quat | null;
     /** the pads' frame at the hand-over */
     qMeet: Quat | null;
+    /** where the cable is at the left hand's medial edge (read at the loop's start), in the left grip's frame */
+    gripLocal: V3 | null;
+    /** the roll the hand turns to on the way back, so that the cable's remembered bend curls into the loop */
+    rollTo: number | null;
     gripped: boolean;
     held: boolean;
     added: boolean;
   } | null = null;
+  /** the roll each loop ended with */
+  private readonly rolls: number[] = [];
   private maxPen = 0;
   private maxPenWhere = '';
   private ikIssues: string[] = [];
@@ -216,12 +222,15 @@ export class CoilController {
    */
   private meetPoint(i: number, t: number): V3 {
     const f = leftGrip(this.leftPoint(t));
-    return stackPoint(f, this.bs[i].k, GEOM.half + 0.015);
+    return stackPoint(f, this.bs[i].k, GEOM.half - 0.01);
   }
 
   /** where the right hand takes the cable at the start of loop i: just beyond the left hand's medial edge, where the last strand comes out */
   private gripPoint(i: number, t: number): V3 {
-    return stackPoint(leftGrip(this.leftPoint(t)), this.bs[i].k - 1, -(GEOM.half + GEOM.gap));
+    const f = leftGrip(this.leftPoint(t));
+    const m = this.memo;
+    if (m && m.k === this.bs[i].k && m.gripLocal) return add(f.p, quatRotate(f.q, m.gripLocal));
+    return stackPoint(f, this.bs[i].k - 1, -(GEOM.half + GEOM.gap));
   }
 
   /** the medial edge of the left hand where strand k comes out */
@@ -290,7 +299,7 @@ export class CoilController {
     const sh = normalize([g.S[0], 0, g.S[2]]);
     const slack = lerpV(g.hip, exit, 0.06);
     const spread = madd(madd(madd(exit, sh, -0.24), UP, 0.0), g.N, 0.05);
-    const above = madd(madd(meet, UP, 0.06), g.N, 0.015);
+    const above = madd(madd(meet, UP, 0.08), g.N, 0.015);
     const tBack = Math.max(b.tTurned, b.tHeld);
     const tAbove = b.tSpread + 0.6 * (b.tMeet - b.tSpread);
     let p: V3;
@@ -306,7 +315,7 @@ export class CoilController {
     const open = t < b.tOut ? 0.4 * ramp(t, b.tGrip, b.tSlide) * (1 - ramp(t, b.tOut - 0.15, b.tOut)) : 0;
     // the roll on the way back: over +, under −
     const sign = b.kind === 'over' ? 1 : -1;
-    const roll = t < tBack ? this.prevRoll(i) * (1 - ramp(t, b.tGrip, b.tSlide + 0.3)) : sign * g.roll * ramp(t, tBack, b.tSpread);
+    const roll = t < tBack ? this.prevRoll(i) * (1 - ramp(t, b.tGrip, b.tSlide + 0.3)) : (m.rollTo ?? sign * g.roll) * ramp(t, tBack, b.tSpread);
     // the cable's direction: along the span, then turning down the lateral side for the hand-over
     const w = ramp(t, b.tSpread, b.tMeet);
     const d3 = normalize(lerpV(spanDir(p), laying, w));
@@ -324,7 +333,7 @@ export class CoilController {
 
   /** the roll the last loop left on the cable (0 before the first) */
   private prevRoll(i: number): number {
-    return i > 0 ? (this.bs[i - 1].kind === 'over' ? 1 : -1) * GEOM.roll : 0;
+    return i > 0 ? (this.rolls[i - 1] ?? 0) : 0;
   }
 
   /** an under loop's turn still to undo at the start of the next loop (for the arrow and the rig) */
@@ -386,11 +395,12 @@ export class CoilController {
   /** the shot's build(): rod, script, vectors, tracks */
   build(): ShotBuild {
     const length = this.o.length ?? 5.0;
-    const built = buildCable(XLR, this.initialPoints(length), { plugs: 'both' });
+    // a used cable: it has been coiled over and under in loops of this size before (BuildCableOptions.memory)
+    const s0 = 0.1 + (Math.PI / 2) * 0.02 + 0.02;
+    const built = buildCable(XLR, this.initialPoints(length), { plugs: 'both', memory: { loop: this.plan.loopLength, start: s0 + 2 * GEOM.half, overUnder: true } });
     const rod = (this.rod = built.rod);
     const g = GEOM;
     // the plug strand: its lateral end is ~0.17 m from the plug tip (plug, 4 cm down, the bend, 2 cm); the medial edge 9 cm further
-    const s0 = 0.1 + (Math.PI / 2) * 0.02 + 0.02;
     this.plugStrand = [s0, s0 + 2 * g.half];
     this.sEdge.push(s0 + 2 * g.half);
 
@@ -405,7 +415,7 @@ export class CoilController {
       { a: J[18], b: J[17], r: 0.13 },
     ];
 
-    // settle with the hands holding (the IK too), then the cable remembers how it lies
+    // settle with the hands holding (the IK too)
     const pre = this.o.preroll ?? 1.5;
     rod.time = -pre;
     this.solve(-pre, true);
@@ -419,7 +429,6 @@ export class CoilController {
       rod.step(DT, XLR.substeps);
     }
     rod.time = 0;
-    rod.rememberShape();
     this.solve(0, true);
     this.started = false;
 
@@ -525,7 +534,14 @@ export class CoilController {
     const arms = this.pose.body.arms!;
     if (!this.memo || this.memo.k !== b.k) {
       // a new loop: the hand lets go at the hand-over (the first loop: it already holds next to the left hand)
-      this.memo = { k: b.k, p0: arms[1].grip!.p, q0: arms[1].pads!.q, outPose: null, outQ: null, homeQ: null, qMeet: null, gripped: false, held: false, added: false };
+      this.memo = { k: b.k, p0: arms[1].grip!.p, q0: arms[1].pads!.q, outPose: null, outQ: null, homeQ: null, qMeet: null, gripLocal: null, rollTo: null, gripped: false, held: false, added: false };
+      if (i > 0) {
+        // the hand goes where the cable really comes out of the left hand
+        const lf = arms[0].grip!;
+        const pt = rod.pointAt(this.sEdge[b.k - 1] + GEOM.gap);
+        const inv: Quat = [-lf.q[0], -lf.q[1], -lf.q[2], lf.q[3]];
+        this.memo.gripLocal = quatRotate(inv, sub(pt, lf.p));
+      }
       if (i > 0) pin.release(0.12);
     }
     const m = this.memo;
@@ -536,7 +552,7 @@ export class CoilController {
       m.gripped = true;
     }
     // hold as soon as a loop's worth has passed through the pads (or at the hip at the latest)
-    const sHold = edge + this.plan.loopLength - 2 * GEOM.half - 0.015;
+    const sHold = edge + this.plan.loopLength - 2 * GEOM.half + 0.01;
     if (m.gripped && !m.held && tn >= b.tSlide && (pin.s >= sHold || tn >= b.tOut)) {
       pin.set('held', 0.25);
       m.held = true;
@@ -549,16 +565,25 @@ export class CoilController {
       const home = rigPose(this.spec, { ...coilStance(this.spec), look: this.lookAt, hands: [this.leftRig(b.tMeet), this.pinchRig(this.meetPoint(i, b.tMeet), laying, {})] });
       m.homeQ = home.body.arms![1].pads!.q;
     }
+    if (m.held && m.rollTo === null && tn >= Math.max(b.tTurned, b.tHeld)) {
+      // roll the cable so that its remembered bend curls down into the hanging loop (a used cable)
+      const d = pin.rollToCurl([0, -1, 0]);
+      const now = this.right.rig.roll ?? 0;
+      m.rollTo = d === null ? (b.kind === 'over' ? 1 : -1) * GEOM.roll : Math.max(-1.3, Math.min(1.3, now + d));
+    }
     if (!m.added && tn >= b.tMeet - 0.02) {
       // the cable behind the pads lies across the open left hand: the coil takes it where it lies
       const s0 = pin.s;
-      this.coil.add(s0 + 0.005, s0 + 2 * GEOM.half + 0.025, 0.2);
-      const s1 = s0 + 2 * GEOM.half + 0.015;
+      this.coil.add(s0 + 0.005, s0 + 2 * GEOM.half, 0.2);
+      const s1 = s0 + 2 * GEOM.half - 0.01;
       this.sEdge.push(s1);
       m.added = true;
       this.results.push({ k: b.k, kind: b.kind, length: s1 - edge, sEdge: s1, aspectLaid: 0, aspectEnd: 0, width: 0, height: 0, crossDepth: [], lk: 0, floorTwist: 0 });
     }
-    if (m.added && !m.qMeet && tn >= b.t1 - DT) m.qMeet = arms[1].pads!.q;
+    if (m.added && !m.qMeet && tn >= b.t1 - DT) {
+      m.qMeet = arms[1].pads!.q;
+      this.rolls[i] = this.right.rig.roll ?? 0;
+    }
     if (i === this.bs.length - 1 && m.added && tn >= b.t1 && pin.state !== 'free') pin.release(0.15);
   }
 
