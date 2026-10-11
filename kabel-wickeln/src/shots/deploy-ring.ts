@@ -1,61 +1,85 @@
-// The rings of stage 1, items 3 and 4 (laying the cable out again): a short charging cable and a
-// 15 m XLR, both coiled over-under, hanging in a fist.
+// The rings of stage 1, items 3 and 4 (laying a cable out again): a short black charging cable
+// (Ilse) and a long XLR (Kofi), both coiled over-under, with the calibrated cable presets
+// (src/sim/cables.ts) and their plugs.
 //
-// The coil factory (wind.ts) winds a ring with a simulated hand. For the 9 cm loops of the
-// charging cable its winding motion is chaotic: the frozen loops trap ±0.5…1.5 turns of twist
-// each and the later "unter" crossings do not always take (pulled apart, six over-under loops
-// left 4 turns). So these rings are laid out from the factory's own target layout instead (the
-// same loop circles, stacked toward the coiler, and the same weave: after an unter loop the next
-// loop runs down behind it and comes to the front at the bottom), with zero twist along the cable,
-// and then pressed together in the simulation into a compact bundle, as a hand and a velcro
-// strap press a real coil. pullCheck() then pulls a ring apart by its ends in the air: an
-// over-under ring must leave |Tw| < 0.3 turns, a same-way ring about one turn per loop.
+// Where the rings come from. The coil factory (wind.ts) winds a ring with a pin for a hand and
+// soft guides. With the calibrated presets (strand friction, Kelvin-Voigt damping, the 8 m/s
+// speed cap) its winding is not stable: for the 9 cm loops of the charging cable the joints open
+// by 20-55 mm and 10⁴-10⁶ substeps hit the speed cap, and the crossings it makes do not
+// alternate (cumulative writhe +0.4, +2.3, +1.3, +2.2, +1.5, +2.1 per loop for 'ououou', all one
+// way). So the rings are laid out along the factory's own target layout instead: the same loop
+// circles, stacked like loops hung on a rod, and the same weave (after an "unter" loop the next
+// loop runs down behind it and comes to the front at the bottom, because the cable to the floor
+// hung behind it), with no twist along the cable. The layout is then pressed together in the
+// simulation into a bundle, as a hand and a velcro strap press a real coil, and the strands
+// remember that shape (strand friction): a cable that was stored coiled.
 //
-// Factory coordinates (as wind.ts with lay: false): the fist at FACTORY_FIST, the loops hang in
-// the x-y plane and stack toward +z, counter-clockwise seen from +z (down the left side, up the
-// right side); the start tail sticks out of the fist along +x, the end tail hangs down.
+// The checks (tools/simtest/deploy-check.mjs): every ring is pulled apart by its ends in the air;
+// over-under must leave |Tw| < 0.3 turns, the same ring wound the same way every time (control)
+// about one turn per loop. The crossings: the writhe each loop adds (with the cable to the floor
+// that crosses it) must alternate in sign for over-under and keep one sign for the control.
+//
+// Factory coordinates (as wind.ts with lay: false): the fist at FIST, the loops hang in the x-y
+// plane and stack toward +z (the first loop at the holder, every new loop in front of it), round
+// counter-clockwise seen from +z (down the left side, up the right side); the start end sticks
+// out of the fist along +x, the end tail hangs down through the eye. A shot places the ring with
+// placeRing() and must grip it at once (it is returned at rest, nothing held).
 
-import { Capsule, Frame, Quat, Rod, RodBuildOptions, RodState, V3, add, lerp3, normalize, quatFromTo, quatRotate, quatSlerp, scale, smooth, sub } from '../sim';
-import { Coil, FACTORY_FIST } from './wind';
+import { Bundle, BuildCableOptions, CableSpec, Capsule, Frame, Quat, Rod, RodState, V3, add, buildCable, cross, dot, length, lerp3, normalize, quatFromTo, quatMul, quatRotate, quatSlerp, scale, smooth, sub } from '../sim';
+
+/** where the hand holds the ring in the factory */
+export const FIST: V3 = [0, 1.6, 0];
 
 export interface RingSpec {
-  cable: RodBuildOptions;
-  /** segment length (m) */
-  seg: number;
-  /** cable per loop (m) */
+  cable: CableSpec;
+  /** which ends carry plugs (default both) */
+  plugs?: 'both' | 'start' | 'end' | 'none';
+  /** segment length (default the preset's) */
+  segment?: number;
+  /** extra rod options (e.g. maxSpeed for a thrown ring) */
+  rod?: BuildCableOptions;
+  /** cable per loop [m] */
   loop: number;
   /** 'o' über, 'u' unter, one letter per loop */
   pattern: string;
-  /** start tail out of the fist, end tail hanging down (m) */
+  /** from the start plug's tip into the fist, from the last loop's top to the end plug's tip [m] */
   lead: number;
   tail: number;
-  /** loop spacing while laid out (≥ 2 contact diameters: the woven layer lies half way) */
+  /** layer distance of the loops while laid out (≥ 2 cable diameters: the woven layer lies half way) */
   spacing: number;
-  /** pressed bundle: how far the loops are pulled toward the stack's middle (0 none … 1 all) */
+  /** pressing: how far the loops are pulled toward the middle of the stack (0 none … 1 all) */
   press?: number;
-  /** seconds of pressing and settling (default 1.2) */
+  /** seconds of pressing (default 3) */
   pressTime?: number;
-  /**
-   * shape memory 0..1: the rest shape moves this far toward the coiled shape (a cable that was
-   * stored coiled keeps some of its bends; a straight rest shape would make 9 cm loops spring open
-   * violently when let go)
-   */
-  memory?: number;
+}
+
+export interface Ring {
+  /** the ring at rest in factory coordinates, nothing held */
+  state: RodState;
+  /** node ranges [first, last] and material ranges [s0, s1] of the loops, in winding order */
+  loops: [number, number][];
+  sLoops: [number, number][];
+  /** loop radius [m] */
+  R: number;
+  /** the cable proper (between the plugs): nodes and material coordinates */
+  cable: [number, number];
+  sCable: [number, number];
+  /** total length [m] */
+  length: number;
+  /** contact radius [m] */
+  rc: number;
+  /** the bundle at the top, where a hand holds it: centre, radius, its extent along the stack (z) */
+  top: { c: V3; r: number; z0: number; z1: number };
 }
 
 /** a small deterministic irregularity per loop, -1 … 1 */
 const wobble = (k: number, salt: number) => Math.sin(12.9898 * (k + 1) + 78.233 * salt) * 0.5 + Math.sin(4.1 * (k + 1) * (salt + 1.7)) * 0.5;
 
-/**
- * Lays out an over-under (or same-way) ring hanging in a fist, presses it together and returns
- * it at rest, its joints healed, nothing held (a shot must grip it at once). Deterministic.
- */
-export function ringCoil(spec: RingSpec): Coil {
-  const { seg, loop, pattern, lead, tail, spacing: DZ } = spec;
+/** The over-under (or same-way) layout as a dense path in fist coordinates, and where each loop starts on it (arc length). */
+function layout(spec: RingSpec, rc: number) {
+  const { loop, pattern, lead, tail, spacing: DZ } = spec;
   const N = pattern.length;
   const R = (0.97 * loop) / (2 * Math.PI);
-  const rc = spec.cable.collisionRadius ?? spec.cable.radius ?? 0.0035;
-  // a dense path (1 mm), resampled to seg below; fist coordinates (fist at the origin)
   const dense: V3[] = [];
   const step = 0.001;
   for (let s = 0; s < lead; s += step) dense.push([lead - s, 0, 0]);
@@ -66,24 +90,22 @@ export function ringCoil(spec: RingSpec): Coil {
     const z = (k + 1) * DZ;
     const woven = k > 0 && pattern[k - 1] === 'u';
     const Rk = R * (1 + 0.035 * wobble(k, 1));
-    // a woven loop is the cable to the floor of an unter loop: it hung behind that loop, down
-    // through the middle of its eye and out over its bottom; so it runs inside the previous
-    // loop's circle (seen from the front), crosses its arc behind it on the way down, comes round
-    // outside it at the bottom and only then to the front
+    // a woven loop is the cable to the floor of an unter loop: it hung behind that loop, down through
+    // the middle of its eye and out over its bottom; so it runs inside the previous loop's circle
+    // (seen from the front), behind it on the way down, round its bottom outside it, and only then
+    // comes to the front into its own layer
     const din = woven ? Math.max(0, Rk - Rprev) + 2 * rc : 0;
     const dout = woven ? Math.max(0, Rprev - Rk) + 3 * rc : 0;
     const m = Math.round((2 * Math.PI * Rk) / step);
     for (let j = 0; j < m; j++) {
       const u = j / m;
       const phi = Math.PI / 2 + 2 * Math.PI * u;
-      // a woven loop runs behind the previous one down to its bottom, then to its own layer
       let zt = woven ? z - 1.5 * DZ * (1 - smooth((u - 0.42) / 0.16)) : z;
       // the first stretch out of the fist blends from where the cable came from
       zt = zPrev + (zt - zPrev) * smooth(u / 0.1);
       // the loop leaves the fist and comes back into it at the top: a slight teardrop there
       const tear = 1 - 0.12 * Math.exp(-((Math.cos(phi) / 0.35) ** 2)) * (Math.sin(phi) > 0 ? 1 : 0);
       const r = Rk - din * smooth(u / 0.06) * smooth((0.31 - u) / 0.04) + dout * smooth((u - 0.31) / 0.06) * smooth((0.72 - u) / 0.1);
-      // centred below the fist: a wider circle hangs lower, its top stays in the fist
       dense.push([r * Math.cos(phi) * tear, -r + r * Math.sin(phi), zt]);
     }
     zPrev = z;
@@ -99,37 +121,37 @@ export function ringCoil(spec: RingSpec): Coil {
   }
   const t0 = dense[dense.length - 1];
   for (let s = step; s < tail; s += step) dense.push([t0[0], t0[1] - s, zt]);
+  // arc length of every dense point
+  const arc = new Float64Array(dense.length);
+  for (let i = 1; i < dense.length; i++) arc[i] = arc[i - 1] + length(sub(dense[i], dense[i - 1]));
+  return { dense, sStart: starts.map((i) => arc[i]), total: arc[dense.length - 1], R };
+}
 
-  // resample at seg (arc length), into world coordinates
-  const pts: V3[] = [];
-  const loopStart = new Map<number, number>();
-  starts.forEach((d, k) => loopStart.set(d, k));
-  const loopNode: number[] = [];
-  let acc = 0;
-  pts.push(add3(dense[0], FACTORY_FIST));
-  for (let i = 1; i < dense.length; i++) {
-    acc += Math.hypot(dense[i][0] - dense[i - 1][0], dense[i][1] - dense[i - 1][1], dense[i][2] - dense[i - 1][2]);
-    if (loopStart.has(i)) loopNode[loopStart.get(i) as number] = pts.length;
-    if (acc >= seg) {
-      acc -= seg;
-      pts.push(add3(dense[i], FACTORY_FIST));
-    }
-  }
-  const loops: [number, number][] = loopNode.map((a, k) => [a, k + 1 < N ? loopNode[k + 1] - 1 : a + Math.round(loop / seg) - 1]);
-  const rod = Rod.fromPolyline(pts, { damping: 2, angularDamping: 3, ...spec.cable, groundY: null });
+/**
+ * Lays out an over-under (or same-way) ring hanging in a fist, presses it into a bundle (no
+ * gravity, slowly, with extra iterations, so no strand passes through another) and returns it at
+ * rest with the strands remembering the coiled shape. Deterministic.
+ */
+export function windRing(spec: RingSpec, onFrame?: (rod: Rod, t: number) => void): Ring {
+  const rc = spec.cable.od / 2;
+  const L = layout(spec, rc);
+  const pts = L.dense.map((p) => add(p, FIST));
+  const built = buildCable(spec.cable, pts, { plugs: spec.plugs ?? 'both', segment: spec.segment, groundY: null, ...spec.rod });
+  const { rod } = built;
+  const N = spec.pattern.length;
+  const sLoops: [number, number][] = L.sStart.map((s, k) => [s, k + 1 < N ? L.sStart[k + 1] : s + spec.loop]);
+  const loops: [number, number][] = sLoops.map(([a, b]) => [rod.segmentAt(a), rod.segmentAt(b) - 1]);
 
-  // press: the start tail held in the fist, every other node held where it was laid by soft
-  // guides whose targets move toward the middle of the stack (contacts sort the loops into a
-  // bundle, as a hand and a strap press a coil). No gravity, so the held shape is the laid one;
-  // slowly, softly and with extra iterations, so no strand is pushed through another.
-  const zMid = FACTORY_FIST[2] + ((N + 1) / 2) * DZ;
+  // press: the start end held in the fist, every other node held where it was laid by soft guides
+  // whose targets move toward the middle of the stack; contacts sort the loops into a bundle
+  const zMid = FIST[2] + ((N + 1) / 2) * spec.spacing;
   const press = spec.press ?? 0;
-  const T = spec.pressTime ?? 4;
+  const T = spec.pressTime ?? 3;
   const g = rod.opts.gravity;
   rod.opts.gravity = [0, 0, 0];
   const x0 = rod.x.slice();
-  const still = (): Frame => ({ p: [...FACTORY_FIST] as V3, q: [0, 0, 0, 1] });
-  rod.addGrip({ nodes: [0, loops[0][0]], keepShape: true, frame: still });
+  const fist = rod.bundle({ frame: { p: [...FIST] as V3, q: [0, 0, 0, 1] }, blend: 0.001 });
+  fist.add(0, sLoops[0][0]);
   rod.addGuide({
     nodes: [loops[0][0], rod.n - 1],
     compliance: 3e-3,
@@ -137,20 +159,97 @@ export function ringCoil(spec: RingSpec): Coil {
   });
   const it = rod.opts.iterations;
   rod.opts.iterations = Math.max(it, 6);
-  for (let f = 0; f < Math.round(T * 60); f++) rod.step(1 / 60, 60);
+  for (let f = 0; f < Math.round(T * 60); f++) {
+    rod.step(1 / 60, 60);
+    onFrame?.(rod, rod.time);
+  }
   rod.opts.iterations = it;
   rod.releaseAll();
-  if (spec.memory) rod.setRestFromCurrent(0, rod.nj - 1, spec.memory);
+  fist.remove();
+  // relax for a moment without the guides, still without gravity, then remember this shape
+  for (let f = 0; f < 20; f++) rod.step(1 / 60, 30);
+  rod.rememberShape();
   rod.opts.gravity = g;
   rod.v.fill(0);
   rod.om.fill(0);
   rod.time = 0;
-  return { state: rod.saveState(), loops, R };
+
+  // the bundle at the top: loop nodes within 2.5 cm below the fist
+  let c: V3 = [0, 0, 0], m = 0, z0 = Infinity, z1 = -Infinity;
+  for (let i = loops[0][0]; i <= loops[N - 1][1]; i++) {
+    const p: V3 = [rod.x[3 * i], rod.x[3 * i + 1], rod.x[3 * i + 2]];
+    if (p[1] > FIST[1] - 0.025 && Math.abs(p[0] - FIST[0]) < 0.03) {
+      c = add(c, p);
+      m++;
+      z0 = Math.min(z0, p[2]);
+      z1 = Math.max(z1, p[2]);
+    }
+  }
+  c = scale(c, 1 / Math.max(1, m));
+  let r2 = 0;
+  for (let i = loops[0][0]; i <= loops[N - 1][1]; i++) {
+    const p: V3 = [rod.x[3 * i], rod.x[3 * i + 1], rod.x[3 * i + 2]];
+    if (p[1] > FIST[1] - 0.025 && Math.abs(p[0] - FIST[0]) < 0.03) r2 = Math.max(r2, Math.hypot(p[0] - c[0], p[1] - c[1]));
+  }
+  return { state: rod.saveState(), loops, sLoops, R: L.R, cable: built.cable, sCable: built.sCable, length: rod.totalLength, rc, top: { c, r: r2 + rc, z0, z1 } };
 }
 
-const add3 = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+/** A rod from a ring's state with its plug masses back (they are not part of a saved state). */
+export function ringRod(ring: Ring, state: RodState, spec: RingSpec): Rod {
+  const rod = Rod.fromState(state);
+  const plug = spec.cable.plug;
+  const plugs = spec.plugs ?? 'both';
+  if (plug) {
+    const S = rod.sNode;
+    const spread = (j0: number, j1: number) => {
+      const len = S[j1] - S[j0];
+      for (let j = j0; j < j1; j++) rod.addMass(j, plug.mass * (rod.L[j] / len) - rod.m[j]);
+    };
+    if (plugs === 'both' || plugs === 'start') spread(0, ring.cable[0]);
+    if (plugs === 'both' || plugs === 'end') spread(ring.cable[1], rod.ns);
+  }
+  return rod;
+}
 
-/** frame of a grip that keeps the held part's pose and moves it from p0 to p1 (turning q0 → q1) from t0 to t1 */
+/**
+ * A saved state moved by d after turning it by q about FIST (to place a ring in a shot); the
+ * floor (groundY) is set to `ground`.
+ */
+export function placeRing(s: RodState, d: V3, q: Quat, ground: number | null): RodState {
+  const out: RodState = { ...s, opts: { ...s.opts, groundY: ground }, c: s.c.slice(), q: s.q.slice(), v: s.v.slice(), om: s.om.slice() };
+  for (let j = 0; j < s.L.length; j++) {
+    const c = quatRotate(q, [s.c[3 * j] - FIST[0], s.c[3 * j + 1] - FIST[1], s.c[3 * j + 2] - FIST[2]]);
+    out.c.set([c[0] + FIST[0] + d[0], c[1] + FIST[1] + d[1], c[2] + FIST[2] + d[2]], 3 * j);
+    out.v.set(quatRotate(q, [s.v[3 * j], s.v[3 * j + 1], s.v[3 * j + 2]]), 3 * j);
+    out.om.set(quatRotate(q, [s.om[3 * j], s.om[3 * j + 1], s.om[3 * j + 2]]), 3 * j);
+    out.q.set(quatMul(q, [s.q[4 * j], s.q[4 * j + 1], s.q[4 * j + 2], s.q[4 * j + 3]]), 4 * j);
+  }
+  return out;
+}
+
+/** a point of the factory turned by q about FIST and moved by d (the same as placeRing) */
+export const placePoint = (p: V3, d: V3, q: Quat): V3 => add(add(quatRotate(q, sub(p, FIST)), FIST), d);
+
+// ------------------------------------------------------------------ checks
+
+/**
+ * The writhe each loop adds, with half of the next loop (the cable to the floor that crosses it):
+ * an over-under ring alternates in sign, a same-way ring keeps one sign.
+ */
+export function loopWrithes(rod: Rod, ring: Ring): number[] {
+  const out: number[] = [];
+  let prev = 0;
+  const per = ring.loops[0][1] - ring.loops[0][0];
+  for (let k = 0; k < ring.loops.length; k++) {
+    const to = Math.min(rod.n - 1, ring.loops[k][1] + Math.round(per / 2));
+    const w = rod.writhe(0, to);
+    out.push(w - prev);
+    prev = w;
+  }
+  return out;
+}
+
+/** frame of a hand that keeps the held end's pose and moves it from p0 to p1, turning q0 → q1, from t0 to t1 */
 const moving = (p0: V3, p1: V3, q1: Quat, t0: number, t1: number) => (t: number): Frame => {
   const u = smooth((t - t0) / (t1 - t0));
   return { p: lerp3(p0, p1, u), q: quatSlerp([0, 0, 0, 1], q1, u) };
@@ -158,120 +257,53 @@ const moving = (p0: V3, p1: V3, q1: Quat, t0: number, t1: number) => (t: number)
 
 /**
  * The check: the ring is let go gently (guides that fade out, as a hand opens), both ends are
- * gripped and pulled apart in the air in a straight line along x to `chord` of the cable's length
- * (from 1 s to `T`, after the end tail has been taken out to the side), then held for a second. Fists and forearms beyond the ends keep loops from
- * slipping off over an end. Returns the twist and writhe left (turns): over-under must leave
+ * held (by the plugs and a few cm of cable, as hands hold them, so the ends cannot turn) and pulled
+ * apart in the air along x to `chord` of the cable's length (from 1 s to T, after the end tail has
+ * been taken out to the side), then held for a second. Fists and forearms beyond the ends keep loops
+ * from slipping off over an end. Returns the twist and writhe left (turns): over-under must leave
  * |Tw| < 0.3, same-way about one turn per loop.
  */
-export function pullCheck(state: RodState, o: { chord?: number; T?: number; substeps?: number; onFrame?: (rod: Rod, t: number) => void } = {}) {
-  const chord = o.chord ?? 0.92, T = o.T ?? 4.6;
-  const rod = Rod.fromState(state);
+export function pullApart(ring: Ring, spec: RingSpec, o: { chord?: number; T?: number; substeps?: number; onFrame?: (rod: Rod, t: number) => void } = {}) {
+  const chord = o.chord ?? 0.9, T = o.T ?? 4.6;
+  const rod = ringRod(ring, ring.state, spec);
   rod.opts.groundY = null;
-  const n = rod.n, L = rod.totalLength * chord;
+  const n = rod.n, Ltot = rod.totalLength * chord;
   const P = (i: number): V3 => [rod.x[3 * i], rod.x[3 * i + 1], rod.x[3 * i + 2]];
-  const mid: V3 = [FACTORY_FIST[0], FACTORY_FIST[1] - 0.2, FACTORY_FIST[2]];
-  // the start end already points along -x (into the ring); the end tail is turned the short way
-  const dA = normalize(sub(P(3), P(0)));
-  const dB = normalize(sub(P(n - 1), P(n - 4)));
-  // the end tail is first taken out to the side (-x), then both ends are pulled apart
-  const pB1: V3 = [mid[0] - 0.2, P(n - 2)[1] + 0.05, P(n - 2)[2]];
+  const mid: V3 = [FIST[0], FIST[1] - 0.2, FIST[2]];
+  const hold = 0.03;
+  const iA = rod.segmentAt(ring.sCable[0] + hold), iB = rod.segmentAt(ring.sCable[1] - hold) + 1;
+  const dA = normalize(sub(P(iA + 2), P(0)));
+  const dB = normalize(sub(P(n - 1), P(iB - 2)));
+  const pA = P(iA), pB = P(iB);
+  const pB1: V3 = [mid[0] - 0.2, pB[1] + 0.05, pB[2]];
   const qB = quatFromTo(dB, [-1, 0, 0]);
-  const fa = moving(P(1), [mid[0] + L / 2, mid[1], mid[2]], quatFromTo(dA, [-1, 0, 0]), 1.0, T);
-  const fb0 = moving(P(n - 2), pB1, qB, 0, 0.6), fb1 = moving(pB1, [mid[0] - L / 2, mid[1], mid[2]], [0, 0, 0, 1], 1.0, T);
+  const fa = moving(pA, [mid[0] + Ltot / 2, mid[1], mid[2]], quatFromTo(dA, [-1, 0, 0]), 1.0, T);
+  const fb0 = moving(pB, pB1, qB, 0, 0.6), fb1 = moving(pB1, [mid[0] - Ltot / 2, mid[1], mid[2]], [0, 0, 0, 1], 1.0, T);
   const fb = (t: number): Frame => {
     const a = fb0(t), b = fb1(t);
     return { p: t < 0.6 ? a.p : b.p, q: a.q };
   };
-  rod.addGrip({ nodes: [0, 3], keepShape: true, frame: fa });
-  rod.addGrip({ nodes: [n - 4, n - 1], keepShape: true, frame: fb });
-  // fists and forearms beyond the ends (pointing away along the pull), so no loop slips off an end
-  const tipA = P(0), tipB = P(n - 1);
+  // the ends are held rigidly in their pose, turning about the grip point
+  const ha: Bundle = rod.bundle({ frame: fa, hand: 0, blend: 0.001 });
+  ha.add(0, ring.sCable[0] + hold);
+  const hb: Bundle = rod.bundle({ frame: fb, hand: 1, blend: 0.001 });
+  hb.add(ring.sCable[1] - hold, rod.totalLength);
   const arm = (f: (t: number) => Frame, p0: V3, tip: V3, out: V3) => (t: number): Capsule => {
     const fr = f(t), e = add(fr.p, quatRotate(fr.q, sub(tip, p0)));
     return { a: add(e, scale(out, 0.03)), b: add(e, scale(out, 0.4)), r: 0.02 };
   };
-  const armA = arm(fa, P(1), tipA, [1, 0, 0]), armB = arm(fb, P(n - 2), tipB, [-1, 0, 0]);
+  const armA = arm(fa, pA, P(0), [1, 0, 0]), armB = arm(fb, pB, P(n - 1), [-1, 0, 0]);
   rod.setCapsules((t) => [armA(t), armB(t)]);
   const x0 = rod.x.slice();
-  rod.addGuide({ nodes: [4, n - 30], compliance: 1e-4, weight: (t) => 1 - smooth((t - 0.6) / 0.8), target: (i) => [x0[3 * i], x0[3 * i + 1], x0[3 * i + 2]] });
+  rod.addGuide({ nodes: [iA + 2, iB - 2], compliance: 1e-4, weight: (t) => 1 - smooth((t - 0.6) / 0.8), target: (i) => [x0[3 * i], x0[3 * i + 1], x0[3 * i + 2]] });
   const frames = Math.round((T + 1) * 60);
   for (let f = 0; f < frames; f++) {
     rod.step(1 / 60, o.substeps ?? 30);
     o.onFrame?.(rod, rod.time);
   }
-  return { Tw: rod.twistTurns(), Wr: rod.writhe(), crossings: rod.stats.crossings };
+  return { Tw: rod.twistTurns(), Wr: rod.writhe(), gap: rod.maxJointGap(), capped: rod.stats.speedCapped, warnings: rod.stats.warnings, rod };
 }
 
-// ---------------------------------------------------------------- the velcro tie
-
-export interface TieSpec {
-  /** centre of the bundle where the tie sits, the bundle's direction there, and its radius */
-  center: V3;
-  axis: V3;
-  /** from the bundle's axis to the tie's eyelet */
-  start: V3;
-  radius: number;
-  /** the band (m) */
-  length: number;
-  thickness: number;
-  /** shot times: pinched, its end out of the eyelet, unwound off the bundle, put away */
-  times: [number, number, number, number];
-  /** where the straight band ends up: its middle at p, turned by q */
-  away: { p: V3; q: Quat };
-}
-
-export interface TieState {
-  /** StrapMesh.pose parameters while the tie is round the bundle */
-  wrap: number;
-  fold: number;
-  /** once off: a rigid move of the straight band, turning about `pivot` (its middle) */
-  move: Frame;
-  pivot: V3;
-  /** the band's end (a hand pinches it there) and the direction it points */
-  tip: V3;
-  dir: V3;
-}
-
-/**
- * A velcro tie opened by a hand (rendered with StrapMesh.pose and, once off, a rigid move of the
- * straight band): pinched at its end, the end pulled back out of the eyelet (fold 1 → 0), the band
- * unwound off the bundle (wrap 1 → 0, the end circles the bundle once), then carried away.
- */
-export function tieMotion(s: TieSpec) {
-  const [tPinch, tUnfold, tUnwrap, tAway] = s.times;
-  const u = normalize(sub(s.start, scale(s.axis, s.start[0] * s.axis[0] + s.start[1] * s.axis[1] + s.start[2] * s.axis[2])));
-  const a = normalize(s.axis);
-  const v: V3 = [a[1] * u[2] - a[2] * u[1], a[2] * u[0] - a[0] * u[2], a[0] * u[1] - a[1] * u[0]];
-  const r1 = s.radius + s.thickness / 2, r2 = r1 + s.thickness * 1.6;
-  const tailLen = s.length - 2 * Math.PI * (0.8 * r1 + 0.2 * (r1 + r2) / 2);
-  const pivot = add(s.center, add(scale(u, r1), scale(v, s.length / 2)));
-  const ease = (t: number, t0: number, t1: number) => smooth((t - t0) / (t1 - t0));
-  return (t: number): TieState => {
-    const fold = 1 - ease(t, tPinch, tUnfold);
-    const wrap = 1 - ease(t, tUnfold, tUnwrap);
-    const th = wrap * 2 * Math.PI;
-    // the end of the band: round the bundle by th, then straight on
-    const rr = th > 1.6 * Math.PI ? r2 : r1;
-    const p = add(s.center, add(scale(u, rr * Math.cos(th)), scale(v, rr * Math.sin(th))));
-    const h = add(scale(u, -Math.sin(th)), scale(v, Math.cos(th)));
-    const rest = s.length - (th > 0 ? 2 * Math.PI * r1 * wrap : 0);
-    let tip = add(p, scale(h, wrap > 0.999 ? tailLen : rest));
-    let dir = h;
-    // folded back through the eyelet, the end lies round the bundle: the hand pinches it there
-    if (fold > 0) {
-      const back = add(s.center, add(scale(u, r2 + 0.004), scale(v, -0.012)));
-      tip = lerp3(tip, back, fold);
-      dir = normalize(lerp3(h, scale(v, -1), fold));
-    }
-    // carried away (lifted a little on the way) and turned
-    const c = ease(t, tUnwrap, tAway);
-    const target = lerp3(pivot, s.away.p, c);
-    const q = quatSlerp([0, 0, 0, 1], s.away.q, c);
-    const move: Frame = { p: [target[0] - pivot[0], target[1] - pivot[1] + 0.06 * Math.sin(Math.PI * c), target[2] - pivot[2]], q };
-    if (c > 0) {
-      tip = add(add(pivot, quatRotate(q, sub(tip, pivot))), move.p);
-      dir = quatRotate(q, dir);
-    }
-    return { wrap, fold, move, pivot, tip, dir };
-  };
-}
+/** unit vector perpendicular to a, as close to b as possible */
+export const across = (b: V3, a: V3): V3 => normalize(sub(b, scale(a, dot(a, b))));
+export const crossN = (a: V3, b: V3): V3 => normalize(cross(a, b));

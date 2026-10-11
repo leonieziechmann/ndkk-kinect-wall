@@ -53,33 +53,37 @@ export default makeScene2D(function* (view) {
   yield fontsReady();
   const t = createSignal(0);
   const model = () => (t() < 1 ? 0 : 1);
-  const left: HandRig = { grip: gripFrame(L0, ROD, norm([-0.87, -0.25, 0.5])), hold: 'coil', radius: 0.012, free: 0.5 };
-  const rig: Rig = { ...stand(NOOR, [0, 0], 0, { width: 0.3 }), lean: 0.05, look: [-0.05, 0.75, -0.4], hands: [left, null] };
-  const pose = rigPose(NOOR, rig);
+  // the coil's axis (where new loops go: away from the body) and the strands' direction at the top
+  const N = norm([-0.5, 0.05, -0.87]);
+  const A = norm(cross(N, [0, 1, 0]));
+  const hook: HandRig = { grip: gripFrame(L0, A, norm([0.5, 0.2, 0.87])), hold: 'coil', radius: 0.013, free: 0.3, thumbAlong: -1 };
+  const rod: HandRig = { grip: gripFrame(L0, ROD, norm([-0.87, -0.25, 0.5])), hold: 'coil', radius: 0.012, free: 0.5 };
+  const rigOf = (h: HandRig): Rig => ({ ...stand(NOOR, [0, 0], 0, { width: 0.3 }), lean: 0.05, look: [-0.05, 0.75, -0.4], hands: [h, null] });
+  const poses = [rigPose(NOOR, rigOf(hook)), rigPose(NOOR, rigOf(rod))];
+  for (const p of poses) console.log('coil-pose left arm', JSON.stringify(p.body.arms![0].report), JSON.stringify(p.body.arms![0].angles));
+  const rig = rigOf(hook);
   const world = new World3D('test-coil-pose', update);
   const scene = world.scene;
   new Studio(scene, { focus: [0, 0.7, -0.2], focusRadius: 1.2 });
-  const noor = splitPerson(NOOR, pose);
+  const noor = splitPerson(NOOR, poses[0]);
   scene.add(noor.person.group);
   const loops = [0, 1, 2, 3, 4, 5].map(() => new Curve(90));
   for (const l of loops) scene.add(l.mesh.group);
 
-  const g = pose.body.arms![0].grip!;
-  const [, , d3] = quatCols(g.q);
-  const hz = norm([d3[0], 0, d3[2]]);
-  const a = norm(cross(hz, [0, 1, 0]));
   function ringsOnRod(k: number): V3[] {
-    const top = madd(g.p, d3, -0.012 + 0.007 * k);
+    const g = poses[0].body.arms![0].grip!;
+    const top = madd(g.p, N, -0.016 + 0.0065 * k);
     const w = 0.105, h = 0.15;
     const pts: V3[] = [];
     for (let i = 0; i < 40; i++) {
       const th = (i / 40) * Math.PI * 2;
-      pts.push(madd(madd(top, a, Math.sin(th) * w), [0, 1, 0], -(1 - Math.cos(th)) * h));
+      pts.push(madd(madd(top, A, Math.sin(th) * w), [0, 1, 0], -(1 - Math.cos(th)) * h));
     }
     return pts;
   }
   function alongBundle(k: number): V3[] {
-    const [d1, d2] = quatCols(g.q);
+    const g = poses[1].body.arms![0].grip!;
+    const [d1, d2, d3] = quatCols(g.q);
     const off = madd(madd(g.p, d1, ((k % 2) - 0.5) * 0.007), d2, (k / 5 - 0.5) * 0.014);
     const pts: V3[] = [];
     for (let i = 0; i < 40; i++) {
@@ -96,21 +100,22 @@ export default makeScene2D(function* (view) {
   const look: V3 = [-0.1, 0.78, -0.3];
   lookFrom(cams[0], [eyes[0], eyes[1] + 0.04, eyes[2] + 0.02], look, 54);
   lookFrom(cams[1], [0.75, 1.25, 0.25], [-0.05, 0.8, -0.25], 36);
-  lookFrom(cams[2], [0.0, 0.78, -1.5], [-0.05, 0.75, -0.2], 40);
-  lookFrom(cams[3], [0.0, 1.95, -0.75], [-0.05, 0.85, -0.2], 50);
+  lookFrom(cams[2], [0.12, 1.0, -0.62], L0, 34);
+  lookFrom(cams[3], [-0.5, 0.95, -0.55], L0, 34);
 
   function update() {
+    noor.update(poses[model()]);
     loops.forEach((l, k) => l.set(model() === 0 ? ringsOnRod(k) : alongBundle(k)));
     scene.updateMatrixWorld();
   }
 
-  const titles = ['Ich-Ansicht', 'Rechts, leicht hinten', 'Vorn, Hüfthöhe (B)', 'Vorn oben (A)'];
+  const titles = ['Ich-Ansicht', 'Rechts, leicht hinten', 'Hand von vorn innen', 'Hand von außen'];
   cams.forEach((c, i) => {
     const w = 940, h = 520, x = (i % 2 - 0.5) * (w + 16), y = (Math.floor(i / 2) - 0.5) * (h + 16);
     view.add(<ThreeView world={world} camera={c} x={x} y={y} width={w} height={h} radius={16} />);
     view.add(
       <Rect x={x - w / 2 + 12} y={y - h / 2 + 12} offset={[-1, -1]} layout padding={[4, 12]} radius={20} fill={'#ffffffe0'}>
-        <Txt text={() => `${titles[i]} · ${model() === 0 ? 'Ringe auf der Stange' : 'längs im Bündel'}`} fontFamily={FONT} fontWeight={700} fontSize={22} fill={C.text} />
+        <Txt text={() => `${titles[i]} · ${model() === 0 ? 'Ringe hängen am Haken' : 'längs im Bündel'}`} fontFamily={FONT} fontWeight={700} fontSize={22} fill={C.text} />
       </Rect>,
     );
   });
