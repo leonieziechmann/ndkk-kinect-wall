@@ -262,6 +262,8 @@ const B_CUT = THROW_T.split + 0.1;
 
 function* longCable(layer: Node) {
   const bake = (yield loadBake('throw')) as BakedRod;
+  // (a bake from before this shot existed has no plan: then nothing to show yet)
+  if (!bake.vectorNames.includes('plan')) return;
   const plan = planFromK((name, t) => bake.vector(name, t));
   const track = throwTrack(plan);
   const T = THROW_T;
