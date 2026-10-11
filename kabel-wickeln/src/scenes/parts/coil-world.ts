@@ -82,7 +82,7 @@ export class CoilWorld {
 
     this.cable = new CableMesh({ maxNodes: n, radius: bake.radius, plugStart: 'xlr-male', plugEnd: 'xlr-female', haloPx: 7, haloMax: 1.2 });
     const tie = new StrapMesh({ color: TIE_COLOR, inner: '#666a71', length: 0.25 });
-    const arrow = new ArcArrow({ color: UNDER, thickness: 0.0035 });
+    const arrow = new ArcArrow({ color: UNDER, thickness: 0.005 });
     this.noor = splitPerson(spec, this.replay.pose(0));
 
     this.povCam = makeCamera(60);
@@ -92,8 +92,8 @@ export class CoilWorld {
 
     const look = state.look ?? ((t: number) => {
       const g = bake.frame('gripL', t).p;
-      // (ahead and below the hands: both hands, the coil hanging from the left one, the right hip)
-      return [g[0] + 0.12, g[1] - 0.28, g[2] - 0.22] as V3;
+      // (between and below the hands: both hands, the coil hanging from the left one, the right hip)
+      return [g[0] + 0.2, g[1] - 0.26, g[2] - 0.1] as V3;
     });
 
     this.world = new World3D(key, () => {
@@ -112,7 +112,7 @@ export class CoilWorld {
         const w = pose.joints[J.rightWrist], e = pose.joints[J.rightElbow];
         const mid: V3 = [w[0] + (e[0] - w[0]) * 0.35, w[1] + (e[1] - w[1]) * 0.35, w[2] + (e[2] - w[2]) * 0.35];
         // (supination turns the right forearm clockwise seen from the hand: negative about elbow → wrist)
-        arrow.update({ center: mid, axis: sub(w, e), from: [0, 1, 0], radius: 0.058, angle: -GEOM.underTurn, progress: pr });
+        arrow.update({ center: mid, axis: sub(w, e), from: [0, 1, 0], radius: 0.07, angle: -GEOM.underTurn, progress: pr });
       }
 
       // the tie round the coil just outside the index finger (lateral end of the strands in the hand)
@@ -125,7 +125,7 @@ export class CoilWorld {
         tie.pose({ center: c, axis: s, start: [0, 1, 0], radius: 0.026, wrap: tv.wrap, fold: tv.fold, droop: 1 - tv.wrap });
       }
 
-      povFollow(this.povCam, (x) => eyesOfRig(spec, this.replay.at(x).rig), look, t, { back: 0.05, up: 0.03, fov: 62, smooth: 0.25 });
+      povFollow(this.povCam, (x) => eyesOfRig(spec, this.replay.at(x).rig), look, t, { back: 0.05, up: 0.03, fov: 66, smooth: 0.25 });
       orbit(this.extCam, state.ext());
     });
     const scene = this.world.scene;
@@ -199,6 +199,42 @@ export class CoilWorld {
       if (p[1] < y) { y = p[1]; lo = i; }
     }
     return this.at(lo, t);
+  }
+
+  /**
+   * Does the finished ring lie round and flat at shot time t? Every loop (its free part) round in its
+   * own plane (width / height ≥ 0.6), flat (rms distance from its best-fit plane < 1.5 cm) and
+   * parallel to the others (plane within 25° of the coil's axis N). Measured on the baked cable.
+   */
+  ringCheck(t: number): { ok: boolean; loops: { aspect: number; thickness: number; angle: number }[] } {
+    const loops = this.bs.map((b) => {
+      const [a, e] = this.loopNodes(b.k);
+      const P: V3[] = [];
+      for (let i = a; i <= e; i++) P.push(this.at(i, t));
+      const m: V3 = [0, 0, 0];
+      for (const p of P) for (let c = 0; c < 3; c++) m[c] += p[c] / P.length;
+      const C = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+      for (const p of P) for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) C[r][c] += ((p[r] - m[r]) * (p[c] - m[c])) / P.length;
+      // the plane's normal: the smallest principal axis (power iteration on trace·I − C)
+      const tr = C[0][0] + C[1][1] + C[2][2];
+      let v: V3 = [GEOM.N[0], GEOM.N[1], GEOM.N[2]];
+      for (let it = 0; it < 100; it++) {
+        const w: V3 = [0, 1, 2].map((r) => (tr - C[r][r]) * v[r] - C[r].reduce((s, x, c) => s + (c === r ? 0 : x * v[c]), 0)) as V3;
+        const l = Math.hypot(w[0], w[1], w[2]) || 1;
+        v = [w[0] / l, w[1] / l, w[2] / l];
+      }
+      const lam = [0, 1, 2].reduce((s, r) => s + v[r] * (C[r][0] * v[0] + C[r][1] * v[1] + C[r][2] * v[2]), 0);
+      // width (across, horizontal in the plane) and height (vertical in the plane)
+      const across = [v[2], 0, -v[0]] as V3, al = Math.hypot(across[0], across[2]) || 1;
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const p of P) {
+        const x = (p[0] * across[0] + p[2] * across[2]) / al;
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, p[1]); y1 = Math.max(y1, p[1]);
+      }
+      const top = Math.max(y1, this.bake.frame('gripL', t).p[1]);
+      return { aspect: (x1 - x0) / Math.max(1e-6, top - y0), thickness: Math.sqrt(Math.max(0, lam)), angle: Math.acos(Math.min(1, Math.abs(dot(v, GEOM.N)))) };
+    });
+    return { ok: loops.every((l) => l.aspect >= 0.6 && l.thickness < 0.015 && l.angle < (25 * Math.PI) / 180), loops };
   }
 
   /** writes the halos of the current highlight; false when there is none */

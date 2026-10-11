@@ -36,7 +36,7 @@ const B = beats(COIL1);
 const LAST = B[B.length - 1];
 
 /** seconds of the wide opening shot (time stands still), and of the change to the split screen */
-const INTRO = 3.0, SPLIT = 1.2;
+const INTRO = 3.4, SPLIT = 1.2;
 /** a freeze after each teaching loop: swing out, hold, swing back */
 const FREEZE = { out: 1.4, hold: 3.6, back: 1.2 };
 const FREEZE_LEN = FREEZE.out + FREEZE.hold + FREEZE.back;
@@ -47,7 +47,7 @@ const SLOW_AT = B[1].tHeld - 0.1, SLOW_LEN = B[1].tTurned - B[1].tHeld + 0.25, S
 /** the tie (shot times, after the last loop) */
 const TIE = { wrap0: LAST.t1 + 0.9, wrap1: LAST.t1 + 1.9, fold1: LAST.t1 + 2.5 };
 /** the end: time stands still while the camera moves round to the front of the ring */
-const END_HOLD = 4.2;
+const END_HOLD = 5.5;
 
 export function* part(layer: Node) {
   const bake = (yield loadBake('s1-coil')) as BakedRod;
@@ -71,9 +71,9 @@ export function* part(layer: Node) {
   const gl = bake.frame('gripL', freezeAt(1)).p;
   const coilAt: [number, number, number] = [gl[0] + 0.02, gl[1] - 0.16, gl[2]];
   /** wide: Noor standing with the cable, the rest of it on the floor to her right front */
-  const WIDE: Orbit = { target: [0.12, 0.8, -0.45], yaw: 2.5, pitch: 0.22, dist: 2.6, fov: 34 };
+  const WIDE: Orbit = { target: [0.1, 0.92, -0.45], yaw: 2.5, pitch: 0.2, dist: 2.9, fov: 34 };
   /** the outside camera: her right front, the coil and both hands */
-  const EXT: Orbit = { target: [0.08, 0.8, -0.26], yaw: 2.35, pitch: 0.42, dist: 1.45, fov: 40 };
+  const EXT: Orbit = { target: [0.04, 0.8, -0.28], yaw: 2.35, pitch: 0.4, dist: 1.55, fov: 40 };
   /** the freeze: ~45° further round the left hand, to her right side: front and back of the loops become left and right */
   const FREEZE_CAM: Orbit = { target: coilAt, yaw: 2.35 - 0.8, pitch: 0.22, dist: 1.05, fov: 40 };
   /** the finished ring from the front at hip height */
@@ -117,7 +117,10 @@ export function* part(layer: Node) {
   // the crossings the labels point at, and whether the labels are true there
   const cross = [1, 2].map((k) => cw.crossing(k, freezeAt(k)));
   const truth = cross.map((c, i) => c !== null && (i === 0 ? c.depth < 0 : c.depth > 0));
-  const roundOk = bake.track('round', bake.duration) > 0.5;
+  // (the ✓ only if the baked ring really lies round and flat: coil-world.ts ringCheck)
+  const ring = cw.ringCheck(SHOT_END);
+  const roundOk = ring.ok;
+  console.log('p1-coil ring check', JSON.stringify(ring));
 
   // ------------------------------------------------------------------------- the picture
   const wL = Math.round((1920 - 3 * GAP) * 0.55);
