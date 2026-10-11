@@ -1099,7 +1099,7 @@ impl OutputState {
                     Some(r) => {
                         // the old build's pipelines are not needed again (its instance keeps its own)
                         if let Some(gpu) = &self.gpu {
-                            gpu.forget(&wall::scene::cache_namespace(*r));
+                            gpu.forget(&wall::scene::cache_namespace(r));
                         }
                         *r = d;
                     }
