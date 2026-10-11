@@ -205,10 +205,10 @@ export function thumbClearance(tip: V3, dir: V3 | undefined, a: V3, d: V3, r: nu
 
 /**
  * The point a fraction u of the way from p to q around the line (a, d): along the line and in
- * distance from it linearly, round it on the shorter arc. A thumb tip moving this way goes round a
- * held cable instead of through it.
+ * distance from it linearly, round it on the arc that passes the side of `via` (default: the shorter
+ * arc). A thumb tip moving this way (via its base) goes round a held cable instead of through it.
  */
-export function aroundAxis(p: V3, q: V3, u: number, a: V3, d: V3): V3 {
+export function aroundAxis(p: V3, q: V3, u: number, a: V3, d: V3, via?: V3): V3 {
   const e1 = across([1, 0, 0], d);
   const e2 = cross(d, e1);
   const cyl = (x: V3) => {
@@ -218,8 +218,14 @@ export function aroundAxis(p: V3, q: V3, u: number, a: V3, d: V3): V3 {
     return { s, rho: len(w), phi: Math.atan2(dot(w, e2), dot(w, e1)) };
   };
   const A = cyl(p), B = cyl(q);
-  let dphi = B.phi - A.phi;
-  dphi -= 2 * Math.PI * Math.round(dphi / (2 * Math.PI));
+  const wrap = (x: number) => x - 2 * Math.PI * Math.round(x / (2 * Math.PI));
+  let dphi = wrap(B.phi - A.phi);
+  if (via) {
+    // the arc from A that sweeps over via's angle
+    const v = wrap(cyl(via).phi - A.phi);
+    const inside = dphi >= 0 ? v >= 0 && v <= dphi : v <= 0 && v >= dphi;
+    if (!inside) dphi -= Math.sign(dphi || 1) * 2 * Math.PI;
+  }
   const s = lerp(A.s, B.s, u), rho = lerp(A.rho, B.rho, u), phi = A.phi + dphi * u;
   return madd(madd(madd(a, d, s), e1, rho * Math.cos(phi)), e2, rho * Math.sin(phi));
 }
@@ -262,7 +268,8 @@ export function clearThumb(tip: V3, a: V3, d: V3, r: number, margin = 0.0003): V
 export function fistThumb(fist: Fist, r: number, wrap: number, pinch: number): V3 {
   const tt = thumbTargets(fist, r);
   const ax = fistAxis(fist);
-  const tip = aroundAxis(aroundAxis(tt.along, tt.wrap, clamp(wrap), ax.p, ax.d), tt.pinch, clamp(pinch), ax.p, ax.d);
+  // round the cable on the side of the thumb's base (the other way the thumb would cross it)
+  const tip = aroundAxis(aroundAxis(tt.along, tt.wrap, clamp(wrap), ax.p, ax.d, THUMB.base), tt.pinch, clamp(pinch), ax.p, ax.d, THUMB.base);
   return clearThumb(tip, ax.p, ax.d, r);
 }
 
