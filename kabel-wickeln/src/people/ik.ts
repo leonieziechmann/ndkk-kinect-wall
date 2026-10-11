@@ -66,7 +66,7 @@ export interface Range {
  * through their four limits.
  */
 export const ARM_LIMITS: Record<'clavElev' | 'clavProt' | 'rot' | 'elbow' | 'pron' | 'wflex' | 'wdev', Range> = {
-  clavElev: { min: -3 * DEG, max: 12 * DEG },
+  clavElev: { min: -5 * DEG, max: 12 * DEG },
   clavProt: { min: -6 * DEG, max: 12 * DEG },
   /** internal rotation 70°, external 90° */
   rot: { min: -70 * DEG, max: 90 * DEG },
@@ -379,9 +379,12 @@ function softMax(x: number, a: number, m: number) {
   return x <= a ? x : a + (m - a) * Math.tanh((x - a) / (m - a));
 }
 
-/** the inverse of softMax (for an angle at or past m: a large, finite raw value) */
+/**
+ * The inverse of softMax. An angle at or past m maps to a raw value only a little past the soft
+ * zone, where the slope is still about a fifth: a start at a limit can still move back.
+ */
 function softMaxInv(y: number, a: number, m: number) {
-  return y <= a ? y : a + (m - a) * Math.atanh(Math.min(0.995, (y - a) / (m - a)));
+  return y <= a ? y : a + (m - a) * Math.atanh(Math.min(0.9, (y - a) / (m - a)));
 }
 
 /** raw parameters → angles (always inside the limits) */
@@ -469,7 +472,7 @@ const W = {
   /** per rad of change against the previous frame */
   prev: 0.25,
   /** per rad that a raw parameter is past its squashed angle */
-  drift: 0.05,
+  drift: 0.15,
 };
 
 interface Problem {

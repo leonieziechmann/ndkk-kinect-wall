@@ -305,7 +305,7 @@ const ARM_PUSHED: ArmPt[] = [
 ];
 
 /** where the first-person view's arm starts (along the arm: 0 shoulder, 1 elbow) */
-const POV_CUT = 0.6;
+const POV_CUT = 0.15;
 
 /** more rings along the forearm (at most 0.12 apart), so its twist spreads evenly */
 function densify(pts: ArmPt[]): ArmPt[] {
@@ -608,8 +608,8 @@ function clothed(m: Mesh, p: Pose) {
   m.curLayer = 0;
 
   // ---- arms: from the shoulder joint (its dome is the round top of the shoulder) down to the wrist.
-  // The first-person view sees them from 0.6 of the upper arm down (layer 0, a hidden cap closes the
-  // cut); the upper arm keeps the elbow's axis, the forearm twists from it to the wrist's radio-ulnar
+  // The first-person view sees them from just below the shoulder (layer 0, a hidden cap closes the
+  // cut, at the edge of or outside its picture); the upper arm keeps the elbow's axis, the forearm twists from it to the wrist's radio-ulnar
   // axis along its length (pronation) and flattens towards the wrist.
   const sleeve = densify(top === 'tee' ? ARM_TEE : spec.pushed ? ARM_PUSHED : banded ? ARM_CUFF : ARM_LONG);
   const ak = k * B.limbs;

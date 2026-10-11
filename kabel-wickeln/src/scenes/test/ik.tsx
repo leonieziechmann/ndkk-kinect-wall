@@ -33,7 +33,7 @@ import { Studio } from '../../three/studio';
 import { ThreeView, World3D } from '../../three/view';
 import { SWEEP_PERIOD, sweepRig } from './ik-sweep';
 
-const SHEET_GAP = 1.0;
+const SHEET_GAP = 0.85;
 const XLR = 0.0032;
 
 interface Case {
@@ -186,11 +186,16 @@ export default makeScene2D(function* (view) {
   const world = new World3D('test-ik', update);
   const scene = world.scene;
   const studio = new Studio(scene, { shadowMapSize: 2048 });
+  // the studio's haze, pushed back for the far camera of the pose sheets
+  const fog = scene.fog as THREE.Fog;
+  const fogNear = fog.near;
+  const fogFar = fog.far;
 
   /** a figure at x on the sheet (origin, facing -z, moved along x) */
   const atX = (x: number, hands: [HandRig | null, HandRig | null]): [HandRig | null, HandRig | null] =>
     hands.map((h) => (h ? { ...h, grip: h.grip ? { p: add(h.grip.p, [x, 0, 0]), q: h.grip.q } : undefined, wrist: h.wrist ? add(h.wrist, [x, 0, 0]) : undefined } : null)) as [HandRig | null, HandRig | null];
-  const sheetX = (i: number) => (i - 2.5) * SHEET_GAP;
+  // figure 0 on the left of the picture (the camera looks at their fronts)
+  const sheetX = (i: number) => (2.5 - i) * SHEET_GAP;
   const sheetRig = (c: Case, i: number): Rig => ({ ...stand(NOOR, [sheetX(i), 0], 0, { width: 0.3 }), lean: c.lean ?? 0.03, look: [sheetX(i), 1.0, -0.5], reach: c.reach, hands: atX(sheetX(i), c.hands) });
   const closeX = (i: number) => (i - 2.5) * 1.2;
   const closeRig = (i: number): Rig => {
@@ -254,6 +259,8 @@ export default makeScene2D(function* (view) {
     for (const m of [...markers.flat(), ...targets]) m.visible = sheet;
     for (const c of [...closeCables, ...closeLoops.flat()]) c.mesh.group.visible = b === 2;
     capGroup.visible = b === 2;
+    fog.near = sheet ? fogNear + 6 : fogNear;
+    fog.far = sheet ? fogFar + 8 : fogFar;
     for (const c of [sweepCable, ...sweepLoops]) c.mesh.group.visible = b === 3;
 
     if (sheet && b !== shownBoard) {
@@ -275,7 +282,7 @@ export default makeScene2D(function* (view) {
         const tp = h?.grip ? h.grip.p : (h?.wrist ?? [0, 0, 0]);
         targets[i].position.set(tp[0] + sheetX(i), tp[1], tp[2]);
       });
-      orbit(extCam, { target: [0, 1.0, -0.1], yaw: Math.PI - 0.32, pitch: 0.16, dist: 9.6, fov: 30 });
+      orbit(extCam, { target: [0, 0.95, -0.1], yaw: Math.PI + 0.3, pitch: 0.14, dist: 7.6, fov: 31 });
       studio.focus([0, 0.9, 0], 3.4);
     }
     if (b === 2 && b !== shownBoard) {
@@ -318,8 +325,9 @@ export default makeScene2D(function* (view) {
       if (right.grip && left.grip) {
         const [, , d3] = quatCols(right.grip.q);
         const p = right.grip.p;
-        const floor: V3 = [p[0] + 0.25, 0.006, p[2] - 0.35];
-        const low = bezier(floor, [floor[0] - 0.05, 0.25, floor[2] + 0.1], madd(p, d3, -0.25), p, 14);
+        const back = madd(p, d3, -0.07);
+        const floor: V3 = [back[0] + 0.05, 0.004, back[2] - 0.05];
+        const low = [[floor[0] + 0.3, 0.004, floor[2] - 0.4] as V3, ...bezier(floor, [floor[0], 0.25, floor[2]], madd(back, [0, -1, 0], 0.12), back, 14), p];
         const sag = Math.max(0.06, 0.32 - 0.3 * Math.hypot(p[0] - left.grip.p[0], p[2] - left.grip.p[2]));
         const high = bezier(p, madd(madd(p, d3, 0.12), [0, -1, 0], sag), madd(left.grip.p, [0.1, -0.05, 0], -sag), left.grip.p, 14);
         sweepCable.set([...low, ...high.slice(1)]);
@@ -357,9 +365,9 @@ export default makeScene2D(function* (view) {
     const pos = () => {
       board();
       const pr = project(sheetView, [sheetX(i), -0.05, 0.1]);
-      return [pr.x, pr.y + 70] as [number, number];
+      return [pr.x, pr.y + (i % 2 ? 150 : 62)] as [number, number];
     };
-    view.add(<Txt position={pos} text={label} textAlign={'center'} fontFamily={FONT} fontWeight={600} fontSize={22} lineHeight={28} fill={C.text} opacity={() => (board() <= 1 ? 1 : 0)} />);
+    view.add(<Txt position={pos} text={label} textAlign={'center'} fontFamily={FONT} fontWeight={600} fontSize={21} lineHeight={26} fill={C.text} opacity={() => (board() <= 1 ? 1 : 0)} />);
   }
 
   // close-ups: 3 × 2 panels

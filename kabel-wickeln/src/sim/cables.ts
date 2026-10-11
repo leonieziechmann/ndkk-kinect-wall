@@ -29,6 +29,12 @@ export interface CableSpec {
   /** velocity damping [1/s] (air drag and the calming of the hands, see the file header) */
   damping: number;
   plastic: Plasticity | null;
+  /**
+   * Coil memory [1/m]: the natural curvature a used cable keeps from being coiled (its rest shape
+   * curls in the plane of d2 and d3 with this curvature), so loops fall round by themselves.
+   * 0 = a straight new cable.
+   */
+  coilMemory: number;
   /** Coulomb friction: floor, cable on cable, cable on skin */
   friction: number;
   selfFriction: number;
@@ -61,6 +67,7 @@ export const XLR: CableSpec = {
   twistDamping: 0.08,
   damping: 1.5,
   plastic: { yieldCurvature: 2, rate: 3, creep: 0.05, maxCurvature: 25, twistYield: null },
+  coilMemory: 0,
   friction: 0.5,
   selfFriction: 0.35,
   capsuleFriction: 0.8,
@@ -86,6 +93,7 @@ export const CHARGING: CableSpec = {
   twistDamping: 0.04,
   damping: 1.2,
   plastic: { yieldCurvature: 5, rate: 2, maxCurvature: 30, twistYield: null },
+  coilMemory: 0,
   friction: 0.5,
   selfFriction: 0.3,
   capsuleFriction: 0.7,
@@ -111,6 +119,7 @@ export const POWER_5G2_5: CableSpec = {
   twistDamping: 0.06,
   damping: 1.2,
   plastic: { yieldCurvature: 1.5, rate: 1.5, creep: 0.03, maxCurvature: 8, twistYield: null },
+  coilMemory: 0,
   friction: 0.6,
   selfFriction: 0.5,
   capsuleFriction: 0.8,
@@ -136,6 +145,7 @@ export const POWER_5G16: CableSpec = {
   twistDamping: 0.06,
   damping: 1.0,
   plastic: { yieldCurvature: 1, rate: 1, creep: 0.02, maxCurvature: 4, twistYield: null },
+  coilMemory: 0,
   friction: 0.6,
   selfFriction: 0.5,
   capsuleFriction: 0.8,
@@ -201,6 +211,8 @@ export interface BuildCableOptions extends RodBuildOptions {
   plugs?: 'both' | 'start' | 'end' | 'none';
   /** segment length (default the preset's) */
   segment?: number;
+  /** coil memory [1/m] (default the preset's) */
+  coilMemory?: number;
 }
 
 /**
@@ -210,7 +222,7 @@ export interface BuildCableOptions extends RodBuildOptions {
  * and put the plug meshes on the end pieces.
  */
 export function buildCable(spec: CableSpec, points: V3[], o: BuildCableOptions = {}): BuiltCable {
-  const { plugs = 'both', segment = spec.segment, ...ro } = o;
+  const { plugs = 'both', segment = spec.segment, coilMemory = spec.coilMemory, ...ro } = o;
   const pts = resample(points, segment);
   const rod = Rod.fromPolyline(pts, { ...rodOptions(spec), ...ro });
   const EI = typeof ro.EI === 'number' ? ro.EI : spec.EI, GJ = typeof ro.GJ === 'number' ? ro.GJ : spec.GJ;
@@ -232,5 +244,7 @@ export function buildCable(spec: CableSpec, points: V3[], o: BuildCableOptions =
     if (atStart) spread(0, iStart);
     if (atEnd) spread(iEnd, rod.ns);
   }
+  // the coil memory curls the cable proper (not the plugs) about d1
+  if (coilMemory) rod.setRestCurvature((k) => (k >= iStart && k < iEnd - 1 ? [coilMemory, 0, 0] : [0, 0, 0]));
   return { rod, spec, cable: [iStart, iEnd], sCable: [S[iStart], S[iEnd]] };
 }
