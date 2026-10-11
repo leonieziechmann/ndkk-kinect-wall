@@ -133,6 +133,13 @@ export function roomFrame(floor, xSign = -1, fallbackHeight = 1) {
 
 const EMPTY_IMAGE = Object.freeze([0, 0, 0, 0]);
 
+// The functions a view keeps are made out here. A closure made inside personView() would keep that
+// call's whole scope, with `previous` in it: every view held the one before, and a page kept every
+// view since it started (megabytes a minute with people in front of the wall, and ever longer
+// garbage collections).
+const NONE = () => null;
+const finder = (all, key) => (value) => all.find((p) => p[key] === value) ?? null;
+
 /**
  * The persons of a tracking result (ctx.kinect.persons) as scenes like them: Person objects with
  * named points in three spaces (see PERSONS.md). The runtime keeps one up to date as ctx.persons:
@@ -174,14 +181,14 @@ export function personView(result, { xSign = -1, previous = null, smooth = SMOOT
     seq: result?.seq ?? null,
     captureTimeUs: result?.captureTimeUs ?? 0,
     delayMs: result?.lag ?? 0,
-    byId: (id) => all.find((p) => p.id === id) ?? null,
-    bySlot: (slot) => all.find((p) => p.slot === slot) ?? null,
+    byId: finder(all, 'id'),
+    bySlot: finder(all, 'slot'),
     // live and exact (set by KinectData each animation frame, see PERSONS.md)
     mode: 'exact',
     exact: null,
     exactUpdates: [],
-    exactAt: () => null,
-    liveAt: () => null,
+    exactAt: NONE,
+    liveAt: NONE,
   });
 }
 
