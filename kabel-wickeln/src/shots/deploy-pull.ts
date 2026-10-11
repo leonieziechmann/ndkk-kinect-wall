@@ -35,7 +35,7 @@
 //
 // Coordinates: Ilse sits at the origin facing +z (her left is +x); the desk's top at DESK.height.
 
-import { Bundle, CHARGING, Frame, Pinch, Quat, Rod, V3, add, normalize, quatRotate, scale, smooth, sub } from '../sim';
+import { Bundle, CHARGING, Frame, Pinch, Quat, Rod, V3, add, length as len, normalize, quatRotate, scale, smooth, sub } from '../sim';
 import { ILSE } from '../people/cast';
 import { Grip, HandRig, Rig, RigTrack, gripFrame, seated } from '../people/rig';
 import { handColliders } from '../people/colliders';
@@ -53,47 +53,46 @@ export const YAW = Math.PI;
 
 /**
  * The ring: 4 loops over-under, Ø 9 cm, the start end 7 cm out of the hand's middle (plug
- * included), the end tail 22 cm (it hangs below the ring), 1.45 m in all: a common phone cable.
- * (Seated, Ilse's hands reach about 1.1 m apart: a 1.8 m cable would keep its last loop lying on
- * the desk, a curl; this one opens completely.)
+ * included), the end tail 21 cm (it hangs out of the ring below, its plug just above the desk),
+ * 1.44 m in all: a common phone cable. (Seated, Ilse's hands get about 0.95 m apart at chest
+ * height: a 1.8 m cable would stay a heap between them.)
  */
-export const SHORT_RING: RingSpec = { cable: CHARGING, loop: 0.29, pattern: 'ouou', lead: 0.07, tail: 0.22, spacing: 0.01, press: 0.75, pressTime: 3 };
+export const SHORT_RING: RingSpec = { cable: CHARGING, loop: 0.26, pattern: 'ouou', lead: 0.05, tail: 0.17, spacing: 0.01, press: 0.75, pressTime: 3 };
 /** the velcro tie: band length, width, thickness; where it lives on the start end (m from the plug's tip) */
 export const TIE = { length: 0.17, width: 0.012, thickness: 0.0015, s: 0.094 };
 
 /** the ring as the factory made it: its face looks at Ilse, the start end sticks out to her left */
 const QRING: Quat = [0, 0, 0, 1];
-/** where the top of the ring (the middle of the bunch at the top) is */
-const HOLD: V3 = [0.02, 1.13, 0.42];
+/** where the top of the ring (the middle of the bunch at the top) is: chest height, in front of her, over the desk's front edge */
+const HOLD: V3 = [0.0, 0.96, 0.34];
 
 /** shot times (s) */
 export const PULL_T = {
   /** right hand from above to the tie's end, pinches it, pulls it up out of the eyelet, lets go */
-  reach: 0.25, pinch: 0.85, unfold: 1.35, letTie: 1.5,
+  reach: 0.3, pinch: 0.9, unfold: 1.35, letTie: 1.5,
   /** the right hand goes round the ring (well clear of it, on her right) down to the other end, following it, and closes on it */
   side: 1.85, under: 2.3, takeB: 3.0,
-  /** the left hand opens but keeps the start end: the ring falls and hangs between the hands */
-  drop: 3.4,
-  /** then the right hand draws its end out to the side, clear of the falling loops (not before: the ring's top is still in the left hand, the end's tail runs through its eye) */
-  out: 4.1,
   /** both hands hold still with their ends (they are pointed out) */
-  pull0: 5.2,
-  /** hands apart: the loops open; then the hands sink a little, the cable lies calm */
-  pull1: 8.2, lay1: 9.2,
-  end: 10.5,
+  pull0: 5.0,
+  /** hands apart: the loops leave the left hand one after the other and open; then the hands sink, the cable's middle lies on the desk */
+  pull1: 8.0, lay0: 8.4, lay1: 9.4,
+  end: 10.6,
 };
 const T = PULL_T;
 
 // ---------------------------------------------------------------- the plan (recorded in the bake)
 
-/** slots of the plan vector: the ring's geometry, measured when the shot is built */
+/** slots of the plan vector: the ring's geometry, measured when the shot is built, and the loops' schedule */
 const SLOTS = {
   /** the left hand's pinch on the ring's top */
   left: 0,
   /** the tie: centre of the ellipse round the bunch, its axes (e, v: v up, the eyelet's side), the strands' direction (w), half axes */
   tieC: 3, tieE: 6, tieV: 9, tieW: 12, tieA: 15, tieB: 16,
-  size: 17,
+  /** when each loop leaves the left hand (0 = not yet planned), loop 0 (at the hand) … loop 3 (the front one, it goes first) */
+  rel: 17,
+  size: 21,
 } as const;
+const NLOOPS = SHORT_RING.pattern.length;
 export type Plan = Float64Array;
 const v3 = (p: Plan, k: number): V3 => [p[k], p[k + 1], p[k + 2]];
 const put = (p: Plan, k: number, v: V3) => {
@@ -101,6 +100,8 @@ const put = (p: Plan, k: number, v: V3) => {
   p[k + 1] = Math.fround(v[1]);
   p[k + 2] = Math.fround(v[2]);
 };
+/** when loop k leaves the left hand (Infinity until planned) */
+export const releaseAt = (p: Plan, k: number) => (p[SLOTS.rel + k] > 0 ? p[SLOTS.rel + k] : Infinity);
 /**
  * Where the two ends are (grip frames of the cable 2.5 cm from each plug: the start end, 0, for the
  * right hand, the other, 1, for the left), recorded every frame. A hand going to an end follows it
@@ -129,13 +130,13 @@ export { TIE_POINTS };
 
 /**
  * The tie at shot time t (deploy-tie.ts): round the bunch at the ring's top, the right hand pulls its
- * tab up out of the eyelet and lets go; when the ring is let go (T.drop) its loops slip out of the
- * loose band, which then hangs from the cable it lives on: `root` is that cable point and its
- * direction (from the simulation; without it the eyelet stays put).
+ * tab up out of the eyelet and lets go; when the last loop has left the left hand its band hangs from
+ * the cable it lives on: `root` is that cable point and its direction (from the simulation; without
+ * it the eyelet stays put).
  */
 export function tieShape(p: Plan, t: number, root?: { p: V3; d: V3 }): TieShape {
   const g = { c: v3(p, SLOTS.tieC), e: v3(p, SLOTS.tieE), v: v3(p, SLOTS.tieV), w: v3(p, SLOTS.tieW), a: p[SLOTS.tieA], b: p[SLOTS.tieB] };
-  return tieAt(g, TIE, T, t, { root, cableR: CHARGING.od / 2, floorY: DESK.height });
+  return tieAt(g, TIE, { ...T, drop: releaseAt(p, 0) }, t, { root, cableR: CHARGING.od / 2, floorY: DESK.height });
 }
 
 const lerpV = (a: V3, b: V3, u: number): V3 => [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
@@ -146,18 +147,23 @@ const ease = (t: number, a: number, b: number) => smooth((t - a) / (b - a));
 /** palm down and towards her (the comfortable pinch for these grips, IK probes) */
 const PALM: V3 = normalize([0, -0.7, 0.7]);
 /** the right hand at rest: open, on the desk's front edge (an open pinch, so every move is between grip frames) */
-const REST_R = gripFrame([-0.19, DESK.height + 0.05, 0.36], normalize([1, 0, 0.3]), normalize([0, -0.7, -0.7]));
-/** where the hands end: wide apart (the cable hangs free, all loops open), the cable leaving the pads forward; then lower: its middle lies on the desk */
-const PULL_L = gripFrame([0.52, 1.2, 0.38], normalize([-0.3, -0.2, 1]), PALM), PULL_R = gripFrame([-0.52, 1.2, 0.38], normalize([0.3, -0.2, 1]), PALM);
-const LAY_L: Grip = { p: [0.48, 1.03, 0.4], q: PULL_L.q }, LAY_R: Grip = { p: [-0.48, 1.03, 0.4], q: PULL_R.q };
+const REST_R = gripFrame([-0.19, DESK.height + 0.05, 0.33], normalize([1, 0, 0.3]), normalize([0, -0.7, -0.7]));
+/**
+ * Where the hands end the pull: at chest height, wide apart in front of her (elbows still bent), the
+ * cable leaving the pads towards the other hand and a little down (it hangs between them); then
+ * lower: the cable's middle lies on the desk.
+ */
+const PULL_L = gripFrame([0.48, 0.95, 0.36], normalize([-0.7, -0.3, 0.8]), [0, -1, 0]);
+const PULL_R = gripFrame([-0.5, 0.95, 0.36], normalize([0.7, -0.3, 0.8]), [0, -1, 0]);
+const LAY_L = gripFrame([0.47, 0.9, 0.39], normalize([-1, -0.35, 0.3]), [0, -1, 0]), LAY_R = gripFrame([-0.49, 0.9, 0.39], normalize([1, -0.35, 0.3]), [0, -1, 0]);
 
 /** a grip frame between two (p eased linearly by u, q slerped) */
 const mixGrip = (a: Grip, b: Grip, u: number): Grip => ({ p: lerpV(a.p, b.p, u), q: slerpQ(a.q, b.q, u) });
 
 /**
- * Ilse's rig at shot time t for the ring's geometry (plan) and the ends' recorded frames. Pure:
- * the bake and the scene call it with the same data and get the same arms (RigTrack). Every hand
- * moves between grip frames (open or closed), so its target never jumps.
+ * Ilse's rig at shot time t for the ring's geometry and schedule (plan) and the ends' recorded
+ * frames. Pure: the bake and the scene call it with the same data and get the same arms (RigTrack).
+ * Every hand moves between grip frames (open or closed), so its target never jumps.
  */
 export function pullRig(p: Plan, ends: Ends) {
   /** left hand: a pinch on the ring's top, the cable leaving past the thumb towards her right (the ring) */
@@ -181,6 +187,14 @@ export function pullRig(p: Plan, ends: Ends) {
   };
   const PINCH = { hold: 'pinch' as const, radius: CHARGING.od / 2 };
 
+  /** the right hand's path from the end it took to the pull's end (out and up a little first, clear of the ring) */
+  const pullR = (t: number): Grip => {
+    const held = end(T.takeB);
+    const u = ease(t, T.pull0, T.pull1);
+    const g = mixGrip(held, PULL_R, u);
+    // bow outwards a little at first: the hand moves away from the ring before it rises
+    return { p: add(g.p, [-0.05 * Math.sin(Math.PI * u), 0, 0]), q: g.q };
+  };
   const right = (t: number): HandRig => {
     if (t < T.reach) return { grip: REST_R, ...PINCH, open: 1, free: 0.6 };
     // up past the ring on her right, then from above to the tie's end, closing on it; up out of the
@@ -197,22 +211,28 @@ export function pullRig(p: Plan, ends: Ends) {
       const u = ease(t, T.under, T.takeB - 0.1);
       return { grip: mixGrip(under(), end(t), u), ...PINCH, open: 1 - ease(t, T.takeB - 0.25, T.takeB), free: 0.6 };
     }
-    const held = end(T.takeB), out: Grip = { p: add(held.p, [-0.07, 0.02, 0]), q: held.q };
-    const g = mixGrip(mixGrip(mixGrip(held, out, ease(t, T.drop + 0.15, T.out)), PULL_R, ease(t, T.pull0, T.pull1)), LAY_R, ease(t, T.pull1, T.lay1));
+    const g = mixGrip(pullR(t), LAY_R, ease(t, T.lay0, T.lay1));
     return { grip: g, ...PINCH, open: 0, free: 0.5 };
   };
 
   const left = (t: number): HandRig => {
-    // the ring's top in the pads (8 mm thick); then only the start end (it closes a little on it)
-    // (the pads open a little and the loops slip out; only then do they close on the start end)
-    const radius = 0.008 + (PINCH.radius - 0.008) * ease(t, T.drop + 0.45, T.drop + 0.85);
-    const g = mixGrip(mixGrip(leftGrip(), PULL_L, ease(t, T.pull0, T.pull1)), LAY_L, ease(t, T.pull1, T.lay1));
-    return { grip: g, ...PINCH, radius, open: 0.5 * Math.sin(Math.PI * ease(t, T.drop, T.drop + 0.8)), free: 0.5 };
+    // the ring's top in the pads (8 mm thick); every loop that goes loosens them a little (the pads
+    // open, the bunch gets thinner), until only the start end is left between them
+    let radius = 0.008, open = 0;
+    for (let k = 0; k < NLOOPS; k++) {
+      const r = releaseAt(p, k);
+      if (t <= r) continue;
+      radius -= ((0.008 - PINCH.radius) / NLOOPS) * ease(t, r, r + 0.4);
+      // (the last one wider and longer: nothing is left to keep it between the pads but the start end)
+      open += (k === 0 ? 0.8 : 0.45) * Math.sin(Math.PI * Math.min(1, (t - r) / (k === 0 ? 0.7 : 0.45)));
+    }
+    const g = mixGrip(mixGrip(leftGrip(), PULL_L, ease(t, T.pull0, T.pull1)), LAY_L, ease(t, T.lay0, T.lay1));
+    return { grip: g, ...PINCH, radius, open: Math.min(0.8, open), free: 0.5 };
   };
 
   const rig = (t: number): Rig => {
     const ring = v3(p, SLOTS.tieC);
-    const look = t < T.pull0 ? lerpV(ring, [0.0, 1.0, 0.45], 0.6 * ease(t, T.letTie, T.drop)) : ([0, 1.0, 0.48] as V3);
+    const look = t < T.pull0 ? lerpV(ring, [0.0, 0.88, 0.45], 0.5 * ease(t, T.takeB, T.pull0)) : lerpV([0.0, 0.88, 0.45], [0, 0.78, 0.48], ease(t, T.pull1, T.lay1));
     return { ...seated(ILSE, SEAT, YAW, 0.5), look, hands: [left(t), right(t)] };
   };
   return { rig, left, right };
@@ -237,6 +257,28 @@ export const pullTrack = (p: Plan, ends: Ends) => new RigTrack(ILSE, pullRig(p, 
 /** the plan and the ends from a bake (the scene) */
 export const planFrom = (vector: (name: string, t: number) => ArrayLike<number>): Plan => Float64Array.from(vector('plan', T.end));
 export const endsFrom = (frame: (name: string, t: number) => Frame): Ends => (_which, t) => frame('endB', t);
+
+/**
+ * The loops' schedule: loop k (the front one first) leaves the left hand when the cable already
+ * out (from the top of the loop behind it to the right hand) would not reach between the PLANNED
+ * hand positions with a little slack any more; at least 0.4 s apart, so they open one after the
+ * other. `free(k)`: that cable's length.
+ */
+function schedule(rig: ReturnType<typeof pullRig>, free: (k: number) => number): number[] {
+  const out = new Array<number>(NLOOPS).fill(T.pull1);
+  let tPrev = T.pull0 - 0.4;
+  for (let k = NLOOPS - 1; k >= 0; k--) {
+    let t = Math.max(T.pull0, tPrev + 0.4);
+    for (; t < T.pull1; t += 1 / 120) {
+      const span = len(sub(rig.right(t).grip?.p ?? [0, 0, 0], rig.left(t).grip?.p ?? [0, 0, 0]));
+      // (the last loop a little earlier: the hands still have some way to go and pull it open)
+      if (free(k) < 1.04 * span + (k === 0 ? 0.15 : 0.05)) break;
+    }
+    out[k] = Math.min(t, T.pull1);
+    tPrev = out[k];
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------- the shot
 
@@ -297,11 +339,12 @@ export const deployPull: ShotDef = {
 
     // the other end: the cable 2.5 cm from its plug, leaving past the thumb up, towards the ring;
     // the palm out to her right
-    const sB = ring.sCable[1] - 0.025;
+    const sB = ring.sCable[1] - 0.018;
     const endFrame = (r: Rod): Frame => gripFrame(r.pointAt(sB), scale(r.tangentAt(sB), -1), [1, 0, 0]);
     const { push, ends } = endHistory();
 
     const track = pullTrack(plan, ends);
+    const rigF = pullRig(plan, ends);
     const poseCache = new Map<number, Pose>();
     const poseAt = (t: number): Pose => {
       let q = poseCache.get(t);
@@ -352,16 +395,30 @@ export const deployPull: ShotDef = {
     // the ends are held in pinches that let the cable turn in the pads (rolls: false): the hands
     // turn as they pull, but a pinch does not wring the cable
     let pinB: Pinch | null = null, pinA: Pinch | null = null;
-    let dropped = false;
+    let planned = false;
+    const gone = new Array<boolean>(NLOOPS).fill(false);
     const script = (r: Rod, t: number) => {
       if (!pinB && t >= T.takeB) pinB = r.pinch({ frame: (tt) => reached(tt, 1), s: sB, mode: 'held', hand: RIGHT, blend: 0.12, rolls: false });
-      if (!dropped && t >= T.drop) {
-        // the loops go; the start end stays between the pads (from now on as a pinch)
-        const g = reached(t, 0);
-        // (the pads held the whole bunch: the start end lies in it up to 2.5 cm from their middle)
-        pinA = r.pinch({ frame: (tt) => reached(tt, 0), s: r.closestPoint(g.p, 0, ring.sLoops[0][0]).s, mode: 'held', hand: LEFT, blend: 0.3, rolls: false, maxGripDistance: 0.03 });
-        pads.release(-Infinity, Infinity, 0.08);
-        dropped = true;
+      // the schedule, once the right hand has the end (its path from there is known): the cable
+      // already out when loop k goes is from the top of loop k (its end, in the pads) to the right hand
+      if (!planned && t >= T.takeB + 2 / 60) {
+        const rel = schedule(rigF, (k) => sB - ring.sLoops[k][1] + 0.012);
+        rel.forEach((x, k) => (plan[SLOTS.rel + k] = Math.fround(x)));
+        planned = true;
+      }
+      if (!planned) return;
+      for (let k = NLOOPS - 1; k >= 0; k--) {
+        if (gone[k] || t < releaseAt(plan, k)) continue;
+        // the loop slips out of the loosened pads (quickly: pieces a bundle still holds do not
+        // collide with each other); the last one leaves only the start end, from now on a pinch
+        const s0 = k === 0 ? ring.sCable[0] + 0.005 : ring.sLoops[k][0];
+        if (k === 0) {
+          const g = reached(t, 0);
+          pinA = r.pinch({ frame: (tt) => reached(tt, 0), s: r.closestPoint(g.p, 0, ring.sLoops[0][0]).s, mode: 'held', hand: LEFT, blend: 0.3, rolls: false, maxGripDistance: 0.03 });
+        }
+        pads.release(s0, ring.sLoops[k][1] + (k === NLOOPS - 1 ? 1 : 0), 0.06);
+        if (k === 0) pads.release(-Infinity, Infinity, 0.06);
+        gone[k] = true;
       }
     };
     const lowest = (r: Rod) => {
@@ -380,6 +437,8 @@ export const deployPull: ShotDef = {
         twist: (r) => r.twistTurns(),
         writhe: (r) => r.writhe(ring.cable[0], ring.cable[1]),
         low: lowest,
+        /** loops still in the left hand */
+        inHand: () => gone.filter((g) => !g).length,
         // the arms: how far each hand is from its target (mm) and its cable direction off (°)
         ikL: (_, t) => (arm(t, 0)?.posError ?? 0) * 1000,
         ikR: (_, t) => (arm(t, 1)?.posError ?? 0) * 1000,

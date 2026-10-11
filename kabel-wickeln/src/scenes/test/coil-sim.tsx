@@ -18,7 +18,7 @@ import { lookFrom, makeCamera } from '../../three/camera';
 import { Studio } from '../../three/studio';
 import { ThreeView, World3D } from '../../three/view';
 
-const BAKE = 'coil-dev';
+const BAKE = 'coil-dev-u';
 /** the fourth view close on the right hand instead of both hands */
 const CLOSE = true;
 

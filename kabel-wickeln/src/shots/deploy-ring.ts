@@ -51,6 +51,16 @@ export interface RingSpec {
   press?: number;
   /** seconds of pressing (default 3) */
   pressTime?: number;
+  /** half width of the fist along the strands (m, default 0.022): a wider hold keeps the loops' tops apart, they hang rounder */
+  fist?: number;
+  /** how much the loops narrow where they leave and enter the fist (default 0.12) */
+  tear?: number;
+  /**
+   * the strands remember the pressed ring while it is still round (before gravity), not the shape it
+   * sags into in the fist (default false): a ring stored lying flat; it then hangs as round as its
+   * memory and the fist let it
+   */
+  memoryRound?: boolean;
 }
 
 export interface Ring {
@@ -109,7 +119,7 @@ function layout(spec: RingSpec, rc: number) {
       // the first stretch out of the fist blends from where the cable came from
       zt = zPrev + (zt - zPrev) * smooth(u / 0.1);
       // the loop leaves the fist and comes back into it at the top: a slight teardrop there
-      const tear = 1 - 0.12 * Math.exp(-((Math.cos(phi) / 0.35) ** 2)) * (Math.sin(phi) > 0 ? 1 : 0);
+      const tear = 1 - (spec.tear ?? 0.12) * Math.exp(-((Math.cos(phi) / 0.35) ** 2)) * (Math.sin(phi) > 0 ? 1 : 0);
       const r = Rk - din * smooth(u / 0.06) * smooth((0.31 - u) / 0.04) + dout * smooth((u - 0.31) / 0.06) * smooth((0.72 - u) / 0.1);
       dense.push([r * Math.cos(phi) * tear, -r + r * Math.sin(phi), zt]);
     }
@@ -211,12 +221,13 @@ function layRing(spec: RingSpec, onFrame?: (rod: Rod, t: number) => void): Ring 
   }
   rod.removeGuide(guide);
   rod.opts.iterations = it;
+  if (spec.memoryRound) rod.rememberShape();
   // the fist takes the top of every loop (where a hand holds a coil), gravity comes back and the
   // loops hang and settle; then the strands remember this shape (it was stored like this)
   const held: [number, number][] = [];
   for (let j = 0; j < rod.ns; j++) {
     const c = [rod.c[3 * j], rod.c[3 * j + 1], rod.c[3 * j + 2]];
-    const inFist = c[1] > FIST[1] - 0.02 && Math.abs(c[0] - FIST[0]) < 0.022;
+    const inFist = c[1] > FIST[1] - 0.02 && Math.abs(c[0] - FIST[0]) < (spec.fist ?? 0.022);
     if (!inFist && rod.sNode[j] > sLoops[0][0]) continue;
     const last = held[held.length - 1];
     if (last && Math.abs(last[1] - rod.sNode[j]) < 1e-9) last[1] = rod.sNode[j + 1];
@@ -228,7 +239,7 @@ function layRing(spec: RingSpec, onFrame?: (rod: Rod, t: number) => void): Ring 
     rod.step(1 / 60, 30);
     onFrame?.(rod, rod.time);
   }
-  rod.rememberShape();
+  if (!spec.memoryRound) rod.rememberShape();
   rod.v.fill(0);
   rod.om.fill(0);
   rod.time = 0;

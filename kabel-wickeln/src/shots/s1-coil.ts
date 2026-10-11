@@ -72,4 +72,7 @@ export const coilDevSame = coilShotOf('coil-dev-oo', { ...COIL1, kinds: ['over',
 /** one over loop, for quick experiments */
 export const coilDev1 = coilShotOf('coil-dev1', { ...COIL1, kinds: ['over'], paces: [TEACH] }, 1.0);
 
-export const COIL_SHOTS: ShotDef[] = [coilShot, coilDev, coilDevSame, coilDev1];
+/** one under loop, for quick experiments */
+export const coilDevU = coilShotOf('coil-dev-u', { ...COIL1, kinds: ['under'], paces: [TEACH] }, 1.0);
+
+export const COIL_SHOTS: ShotDef[] = [coilShot, coilDev, coilDevSame, coilDev1, coilDevU];

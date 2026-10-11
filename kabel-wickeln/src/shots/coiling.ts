@@ -163,8 +163,8 @@ export const GEOM = (() => {
      * front of it (the wrist came through the loop: the cable to the floor hangs outside it)
      */
     padsDepth: { over: -0.02, under: 0.02 },
-    /** how far the forearm turns over for "under" [rad] (the IK reaches ~136° with the elbow low) */
-    underTurn: 135 * D,
+    /** how far the hand turns over for "under" [rad] (the arm hangs nearly straight at the hip: forearm and upper arm turn together; the video shows 150–180°) */
+    underTurn: 150 * D,
     /** the roll of the cable between thumb and index on the way back [rad]: over +, under − */
     roll: 0.5,
   };
