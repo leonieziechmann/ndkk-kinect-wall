@@ -140,7 +140,7 @@ Es darf keine andere Ausgabe laufen, und während der Messung sollte niemand den
 `--scenes` spielen beide die Show, wie sie ist; mit `--scenes` wird jede Szene allein gemessen (die
 Show wird dafür kurz ersetzt und danach zurückgeschrieben). Die Ausgabe geht auf den Bildschirm aus dem
 Wand-Setup (oder `--screen x,y,b,h`). Ergebnisse: Tabelle im Terminal, alle Zahlen in
-`web/.cache/bench/`.
+`web/.cache/bench/`. Eine erste Messung (ohne GPU, auf einer VM) steht in [`BENCHMARK.md`](BENCHMARK.md).
 
 ## Aufbau
 
