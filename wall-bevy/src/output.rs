@@ -152,6 +152,9 @@ struct Leaving {
 }
 
 /// A scene being set up in a worker thread.
+/// A warm-up setup: the scene, its params, the instance parts (or the error), the ms it took.
+type WarmResult = (&'static SceneDef, Params, Result<(Box<dyn Scene>, WallMap, wgpu::Buffer, wgpu::Texture), String>, f64);
+
 struct Pending {
     name: &'static str,
     rx: Receiver<Result<(Box<dyn Scene>, SetupBits), String>>,
@@ -342,6 +345,9 @@ pub struct OutputState {
     frame_log: Vec<f64>,
     started: f64,
     warm: Option<Vec<Instance>>,
+    /// warm-up setups still running (collected without waiting: the window keeps answering)
+    warm_jobs: Vec<std::thread::JoinHandle<WarmResult>>,
+    warm_since: f64,
     warm_frames: u32,
     warmed: bool,
     windowed: bool,
@@ -434,6 +440,8 @@ fn new_state(cfg: Config) -> OutputState {
         frame_log: Vec::new(),
         started: now,
         warm: None,
+        warm_jobs: Vec::new(),
+        warm_since: 0.0,
         warm_frames: 0,
         warmed: false,
         windowed: cfg.windowed,
@@ -1142,7 +1150,7 @@ impl OutputState {
                 Some(n) if self.cfg.shots.is_some() => self.registry.iter().copied().filter(|d| d.name == n).collect(),
                 _ => self.registry.clone(),
             };
-            let mut handles = Vec::new();
+            let mut handles: Vec<std::thread::JoinHandle<WarmResult>> = Vec::new();
             for def in defs {
                 let (gpu, kgpu) = (gpu.clone(), kgpu.clone());
                 let mut wall = WallMap::new(self.setup.clone(), Some(self.projection_of(def)));
@@ -1166,14 +1174,27 @@ impl OutputState {
                     (def, params, r.unwrap_or_else(|p| Err(panic_text(&p))), ms)
                 }));
             }
-            let mut warm = Vec::new();
-            for h in handles {
-                let Ok((def, params, r, ms)) = h.join() else { continue };
+            self.warm_jobs = handles;
+            self.warm_since = now;
+            self.warm = Some(Vec::new());
+            self.warm_frames = 0;
+            return;
+        }
+        // the setups that are done (never waits for one)
+        let mut i = 0;
+        while i < self.warm_jobs.len() {
+            if !self.warm_jobs[i].is_finished() {
+                i += 1;
+                continue;
+            }
+            let h = self.warm_jobs.swap_remove(i);
+            let Ok((def, params, r, ms)) = h.join() else { continue };
+            {
                 match r {
                     Ok((scene, wall, wall_buf, target)) => {
                         info!("bereit: {} ({ms:.0} ms)", def.name);
                         let view = target.create_view(&Default::default());
-                        warm.push(Instance {
+                        self.warm.get_or_insert_with(Vec::new).push(Instance {
                             def,
                             scene,
                             params,
@@ -1197,9 +1218,14 @@ impl OutputState {
                     Err(e) => self.push_error(&format!("Szene {}", def.name), &e),
                 }
             }
-            self.warm = Some(warm);
-            self.warm_frames = 0;
-            return;
+        }
+        if !self.warm_jobs.is_empty() {
+            if now - self.warm_since < 20_000.0 {
+                return;
+            }
+            // a setup that hangs must not keep the show from starting (its scene sets up again when played)
+            self.push_error("Aufwärmen", &format!("{} Szene(n) brauchen über 20 s zum Einrichten: die Show beginnt ohne sie", self.warm_jobs.len()));
+            self.warm_jobs.clear();
         }
         // a few frames of each, offscreen (drivers compile some things on first use)
         let mut warm = self.warm.take().unwrap_or_default();

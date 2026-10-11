@@ -21,6 +21,18 @@ Das Programm liegt dann in `wall-bevy\target\release\wall-bevy.exe` (`target/` i
 
 ## Starten
 
+Für die Ausstellung mit dem Launcher, der Rest bleibt wie gewohnt (Hub, Dev-Server, Steuerzentrale,
+Wächter, Optimierungen):
+
+```
+start-wand.cmd -Bevy
+```
+
+`start-wand` startet dann statt des Chrome-Kiosk-Fensters `wall-bevy.exe` auf dem Wand-Bildschirm,
+öffnet es wieder, wenn es zugeht, und schließt es, falls es auf dem Notebook-Bildschirm landet. Ist
+`wall-bevy` nicht gebaut, nimmt es wie bisher das Browser-Fenster. Die Ausgaben von `wall-bevy`
+stehen in den Logs (`L` im Launcher). Allein, ohne Launcher:
+
 ```
 wall-bevy\target\release\wall-bevy.exe
 ```

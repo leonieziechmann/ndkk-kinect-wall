@@ -56,6 +56,10 @@ debug = "line-tables-only"
 opt-level = 3
 debug = false
 
+# release: line tables only for this crate (readable panics); the dependencies without (the exe stays small)
 [profile.release]
 debug = "line-tables-only"
 codegen-units = 16
+
+[profile.release.package."*"]
+debug = false

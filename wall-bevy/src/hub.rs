@@ -133,7 +133,20 @@ impl HubClient {
     pub fn start(ws_url: String) -> Self {
         let (ev_tx, ev_rx) = crossbeam_channel::bounded(1024);
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
-        let _ = std::thread::Builder::new().name("kinect-hub".into()).spawn(move || run(ws_url, ev_tx, cmd_rx));
+        let _ = std::thread::Builder::new().name("kinect-hub".into()).spawn(move || {
+            let mut streams: Vec<String> = vec!["lut".into(), "meta".into(), "status".into()];
+            // a panic in the decoding must not end the data: the thread starts over (same streams)
+            loop {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&ws_url, &ev_tx, &cmd_rx, &mut streams))) {
+                    Ok(()) => return, // the output ended
+                    Err(_) => {
+                        bevy::log::error!("kinect-hub: Absturz im Empfang, starte neu");
+                        let _ = ev_tx.try_send(HubEvent::Closed);
+                        std::thread::sleep(Duration::from_millis(500));
+                    }
+                }
+            }
+        });
         Self { events: ev_rx, commands: cmd_tx }
     }
 
@@ -210,9 +223,9 @@ struct PersonsMsg {
     pose_runs: Option<u64>,
 }
 
-fn run(url: String, ev: Sender<HubEvent>, cmd: Receiver<HubCommand>) {
+fn run(url: &str, ev: &Sender<HubEvent>, cmd: &Receiver<HubCommand>, streams: &mut Vec<String>) {
     let mut st = State {
-        ev,
+        ev: ev.clone(),
         depth_ring: VecDeque::new(),
         pending: [None, None],
         best_rtt: f64::INFINITY,
@@ -223,7 +236,6 @@ fn run(url: String, ev: Sender<HubEvent>, cmd: Receiver<HubCommand>) {
         pm_pool: Pool::new(N),
         idx_pool: Pool::new(N),
     };
-    let mut streams: Vec<String> = vec!["lut".into(), "meta".into(), "status".into()];
     let mut retry = Duration::from_millis(250);
     loop {
         match connect(&url) {
@@ -242,7 +254,7 @@ fn run(url: String, ev: Sender<HubEvent>, cmd: Receiver<HubCommand>) {
                     loop {
                         match cmd.try_recv() {
                             Ok(HubCommand::Subscribe(s)) => {
-                                streams = s;
+                                *streams = s;
                                 if let Err(e) = send_json(&mut ws, &serde_json::json!({ "type": "subscribe", "streams": streams })) {
                                     stop = Some(e);
                                 }

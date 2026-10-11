@@ -39,10 +39,7 @@ pub fn preload_fonts() {
 fn with_fonts<T>(f: impl FnOnce(&mut FontState) -> T) -> T {
     let arc = fonts();
     let mut g = arc.lock();
-    if g.is_none() {
-        *g = Some(FontState { sys: FontSystem::new(), cache: SwashCache::new(), families: Default::default() });
-    }
-    let Some(st) = g.as_mut() else { unreachable!() };
+    let st = g.get_or_insert_with(|| FontState { sys: FontSystem::new(), cache: SwashCache::new(), families: Default::default() });
     f(st)
 }
 
