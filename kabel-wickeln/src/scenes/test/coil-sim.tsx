@@ -1,4 +1,4 @@
-// Test scene for a coiling bake (coil-dev, coil-dev1 or s1-coil): Noor's recorded arms (CoilReplay)
+// Test scene for a coiling bake (s1-coil or one of the coil-dev* shots): Noor's recorded arms (CoilReplay)
 // and the simulated cable, seen from her eyes (arms only, the body's shadow), from the front at hip
 // height (like the user's camera B), from her right front (the outside camera) and close up on the
 // hands from above in front (like the user's camera A). The bake's id is BAKE below.
@@ -18,7 +18,7 @@ import { lookFrom, makeCamera } from '../../three/camera';
 import { Studio } from '../../three/studio';
 import { ThreeView, World3D } from '../../three/view';
 
-const BAKE = 'coil-dev4';
+const BAKE = 's1-coil';
 /** the fourth view: close on the right hand, close on the left fist, or both hands from above in front */
 const CLOSE: 'right' | 'left' | 'both' = 'left';
 

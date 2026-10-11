@@ -240,7 +240,7 @@ function* shortCable(layer: Node) {
 const B_INTRO = 1.4;
 /** the real-time run ends a little after the landing (shot time); the slow-motion replay from the backswing (shot times); the rest */
 const B_RUN_END = THROW_T.land + 0.8;
-const B_SLOW0 = THROW_T.pre + 0.25, B_SLOW1 = THROW_T.land + 0.3, B_SLOW = 0.25;
+const B_SLOW0 = THROW_T.pre, B_SLOW1 = THROW_T.land + 0.3, B_SLOW = 0.25;
 const B_HOLD = 1.6;
 /** the scene's phases */
 const B_S_SLOW = B_INTRO + B_RUN_END, B_S_REST = B_S_SLOW + (B_SLOW1 - B_SLOW0) / B_SLOW;

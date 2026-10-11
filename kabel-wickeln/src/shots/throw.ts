@@ -269,8 +269,12 @@ export function swingGrip(p: Plan, t: number): Grip {
   const take = v3(p, SLOTS.take);
   if (t < T.take) return { p: take, q: rightQ(0) };
   if (t < T.split) {
-    const u = ease(t, T.take + 0.05, T.split);
-    return { p: lerpV(take, onArc(t, PHI.side), u), q: slerpQ(rightQ(0), rightQ(PHI.side), u) };
+    // out to his right first (clear of the loops the left hand keeps, which hang behind the front
+    // loops), then back and down to his side: a quadratic curve through a point out to the right
+    const u = ease(t, T.take + 0.05, T.split), side = onArc(t, PHI.side);
+    const ctrl: V3 = [take[0] + 0.02, take[1], side[2] + 0.07];
+    const pt = add(add(scale(take, (1 - u) * (1 - u)), scale(ctrl, 2 * u * (1 - u))), scale(side, u * u));
+    return { p: pt, q: slerpQ(rightQ(0), rightQ(PHI.side), u) };
   }
   const phi = swingPhi(t);
   return { p: onArc(t, phi), q: rightQ(phi) };
@@ -495,9 +499,10 @@ export const throwShot: ShotDef = {
     rod.setCapsules((t) => {
       const pose = poseAt(t);
       const body = capsulesOf(pose).filter((c) => c.part === 'torso' || c.part === 'legL' || c.part === 'legR');
-      // (the right hand's capsules are off while it goes into the coil and closes on the front loops:
-      // it must not plough through them; from then on the strands in its fist are held by it)
-      const off = t > T.letTie + 0.1 && t < T.take + 0.12;
+      // (the right hand's capsules are off while it goes into the coil, closes on the front loops and
+      // draws them out (they slide in its fist): it must not plough through them; from then on the
+      // strands in its fist are held by it)
+      const off = t > T.letTie + 0.1 && t < T.split + 0.05;
       return [...body, ...handColliders(pose, 0, { group: LEFT, soft: SOFT }), ...handColliders(pose, 1, { group: RIGHT, soft: SOFT, disable: off ? () => true : undefined })];
     });
     for (let f = 0; f < 90; f++) rod.step(1 / 60, 40);
@@ -521,7 +526,7 @@ export const throwShot: ShotDef = {
     // everything: nothing passes through them, nothing of them through anything.
     const ringFrame = (t: number) => ({ p: ringPoint(plan, t), q: ringQ(t) });
     const sRing0 = sLoop[RING_FIRST][0], sRing1 = sLoop[N - 1][1];
-    const nRing0 = rod.segmentAt(sRing0), nEnd = rod.n - 1;
+    const nRing0 = rod.segmentAt(sRing0), nRingEnd = rod.segmentAt(sRing1), nEnd = rod.n - 1;
     /** each guided node's place in the ring's frame: as taken (A), as stored (B) */
     let A: Float64Array | null = null, B: Float64Array | null = null;
     /** the free cable reaches from the end of the left hand's loops */
@@ -570,6 +575,25 @@ export const throwShot: ShotDef = {
           mx += B[3 * (i - nRing0)] / m;
         }
         for (let k = 0; k < m; k++) B[3 * k] = mx + (B[3 * k] - mx) * 1.15;
+        // taken off-centre (at the loops' right shoulder), the ring slides in the fist as the hand
+        // lifts it until it hangs centred below the hand: its top's middle at the grip point
+        const centre = (X: Float64Array): V3 => {
+          let z0 = Infinity, z1 = -Infinity, y1 = -Infinity;
+          for (let i = nRing0; i <= nRingEnd; i++) {
+            const o = 3 * (i - nRing0);
+            z0 = Math.min(z0, X[o + 2]);
+            z1 = Math.max(z1, X[o + 2]);
+            y1 = Math.max(y1, X[o + 1]);
+          }
+          return [0, y1, (z0 + z1) / 2];
+        };
+        const cA = centre(A), cB = centre(B);
+        const AS = new Float64Array(3 * m);
+        for (let k = 0; k < m; k++) {
+          AS.set([A[3 * k], A[3 * k + 1] - cA[1], A[3 * k + 2] - cA[2]], 3 * k);
+          B[3 * k + 1] -= cB[1];
+          B[3 * k + 2] -= cB[2];
+        }
         const AA = A, BB = B;
         guide = r.addGuide({
           nodes: [nRing0, nEnd],
@@ -577,20 +601,22 @@ export const throwShot: ShotDef = {
           weight: (tt) => smooth((tt - T.take) / 0.2),
           target: (i, tt) => {
             if (isFree(sN[i], tt)) return null;
-            const F2 = ringFrame(tt), u = smooth((tt - T.release) / 0.15), o = 3 * (i - nRing0);
-            const l: V3 = [AA[o] + (BB[o] - AA[o]) * u, AA[o + 1] + (BB[o + 1] - AA[o + 1]) * u, AA[o + 2] + (BB[o + 2] - AA[o + 2]) * u];
+            const F2 = ringFrame(tt), o = 3 * (i - nRing0);
+            // as taken → hanging centred (during the split) → as stored (in flight)
+            const c = smooth((tt - T.take - 0.05) / (T.split - T.take - 0.05)), u = smooth((tt - T.release) / 0.15);
+            const h: V3 = [AA[o] + (AS[o] - AA[o]) * c, AA[o + 1] + (AS[o + 1] - AA[o + 1]) * c, AA[o + 2] + (AS[o + 2] - AA[o + 2]) * c];
+            const l: V3 = [h[0] + (BB[o] - h[0]) * u, h[1] + (BB[o + 1] - h[1]) * u, h[2] + (BB[o + 2] - h[2]) * u];
             return add(F2.p, quatRotate(F2.q, l));
           },
         });
-        // the strands in the fist (within 5 cm of the grip point) are held by the hand
-        // (in the ring's frame, as the guides: the strands in the fist and the rest of the ring move as one)
+        taken = true;
+      }
+      if (taken && !fist && t >= T.split && t < T.release) {
+        // the ring hangs centred in the fist now: the strands in it (within 5 cm of the grip point)
+        // are held by the hand (in the ring's frame, as the guides: they and the rest move as one)
         fist = r.bundle({ frame: ringFrame, hand: RIGHT, blend: 0.1 });
         const g0 = ringFrame(t).p;
-        for (let j = nRing0; j < r.ns; j++) {
-          const c = C(j);
-          if (len(sub(c, g0)) < 0.05) fist.add(r.sNode[j], r.sNode[j + 1], 0.1);
-        }
-        taken = true;
+        for (let j = nRing0; j < r.ns; j++) if (len(sub(C(j), g0)) < 0.05) fist.add(r.sNode[j], r.sNode[j + 1], 0.1);
       }
       if (fist && t >= T.release) {
         // the hand opens: the guides alone hold the ring now
