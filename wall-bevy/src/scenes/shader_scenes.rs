@@ -4,27 +4,105 @@
 
 use serde_json::json;
 
+use crate::canvas::Font;
 use crate::params::{ParamSpec, Params, boolean, color, num, select};
-use crate::persons::PersonOptions;
+use crate::persons::{PersonOptions, j};
 use crate::scene::{FrameCtx, Scene, SceneDef, SetupCtx, exact, live, no_cap, no_projection, no_streams};
+use crate::scenes::common::overlay::{LabelStyle, TextOverlay, ease_out};
 use crate::shader_pass::ShaderPass;
+
+/// The HTML a scene puts over its canvas in the browser.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Labels {
+    None,
+    /// person-mask: id and height above everybody
+    Tags,
+    /// person-skeleton: "Hallo #id" for everyone who comes in
+    Greetings,
+}
+
+struct Greeting {
+    text: String,
+    color: [f32; 3],
+    x: f32,
+    y: f32,
+    start: f64,
+}
 
 struct ShadeScene {
     pass: ShaderPass,
     status: fn(&FrameCtx) -> String,
+    labels: Labels,
+    overlay: Option<TextOverlay>,
+    style: Option<LabelStyle>,
+    greetings: Vec<Greeting>,
 }
 
 impl Scene for ShadeScene {
     fn frame(&mut self, ctx: &mut FrameCtx) -> Result<(), String> {
         self.pass.render(ctx);
+        match self.labels {
+            Labels::Tags => self.tags(ctx),
+            Labels::Greetings => self.greet(ctx),
+            Labels::None => {}
+        }
         *ctx.status = (self.status)(ctx);
         Ok(())
     }
 }
 
-fn make(ctx: &SetupCtx, shade: &str, feedback: bool, status: fn(&FrameCtx) -> String) -> Result<Box<dyn Scene>, String> {
+impl ShadeScene {
+    /// person-mask: `#id · height m` above each person's box
+    fn tags(&mut self, ctx: &mut FrameCtx) {
+        let (Some(o), Some(style)) = (self.overlay.as_mut(), self.style.as_ref()) else { return };
+        if ctx.params.b("labels") {
+            let view = ctx.kinect.view.clone();
+            for p in &*view {
+                let b = p.image.bbox;
+                let Some([x, y]) = ctx.kinect_to_screen((b[0] + b[2]) / 2.0, b[1]) else { continue };
+                o.label(&format!("#{} · {:.2} m", p.id, p.height), style, p.color, x, y - 10.0, 1.0);
+            }
+        }
+        o.draw(ctx);
+    }
+
+    /// person-skeleton: a greeting rising and fading over 2.4 s (CSS animation sk-hello)
+    fn greet(&mut self, ctx: &mut FrameCtx) {
+        let (Some(o), Some(style)) = (self.overlay.as_mut(), self.style.as_ref()) else { return };
+        let now = ctx.now_ms;
+        if ctx.params.b("greet") {
+            let view = ctx.kinect.view.clone();
+            for p in view.entered_persons() {
+                let Some(at) = p.image.joints[j::HEAD].or(p.image.center) else { continue };
+                let Some([x, y]) = ctx.kinect_to_screen(at.x, at.y) else { continue };
+                self.greetings.push(Greeting { text: format!("Hallo #{}", p.id), color: p.color, x, y, start: now });
+            }
+        }
+        self.greetings.retain(|g| now - g.start < 2400.0);
+        for g in &self.greetings {
+            let t = ((now - g.start) / 2400.0) as f32;
+            // keyframes: 0 % opacity 0, margin 12 px; 15 % opacity 1, margin 0; 70 % opacity 1;
+            // 100 % opacity 0, margin -18 px; each step ease-out
+            let opacity = if t < 0.15 { ease_out(t / 0.15) } else if t < 0.7 { 1.0 } else { 1.0 - ease_out((t - 0.7) / 0.3) };
+            let margin = if t < 0.15 { 12.0 - 12.0 * ease_out(t / 0.15) } else { -18.0 * ease_out((t - 0.15) / 0.85) };
+            o.label(&g.text, style, g.color, g.x, g.y - 40.0 + margin, opacity);
+        }
+        o.draw(ctx);
+    }
+}
+
+fn make(ctx: &SetupCtx, shade: &str, feedback: bool, status: fn(&FrameCtx) -> String, labels: Labels) -> Result<Box<dyn Scene>, String> {
     let pass = ShaderPass::new(&ctx.gpu, &ctx.kgpu, &ctx.wall_buf, [ctx.width, ctx.height], ctx.name, &ctx.params.specs, shade, feedback)?;
-    Ok(Box::new(ShadeScene { pass, status }))
+    let mono = "ui-monospace, Consolas, monospace";
+    let style = match labels {
+        // .pm-tag: 600 14px/1.3, letter-spacing 0.04em, padding 2px 8px, radius 4px, rgba(0,0,0,0.45), text-shadow 0 0 8px
+        Labels::Tags => Some(LabelStyle { font: Font::new(mono, 14.0, 600), spacing: 0.04, line_height: 1.3, pad: [8.0, 2.0], radius: 4.0, background: Some([0.0, 0.0, 0.0, 0.45]), glow: 8.0 }),
+        // .sk-hello: 700 22px/1, letter-spacing 0.06em, text-shadow 0 0 12px
+        Labels::Greetings => Some(LabelStyle { font: Font::new(mono, 22.0, 700), spacing: 0.06, line_height: 1.0, pad: [0.0, 0.0], radius: 0.0, background: None, glow: 12.0 }),
+        Labels::None => None,
+    };
+    let overlay = if style.is_some() { Some(TextOverlay::new(&ctx.gpu, ctx.width, ctx.height)?) } else { None };
+    Ok(Box::new(ShadeScene { pass, status, labels, overlay, style, greetings: Vec::new() }))
 }
 
 fn on_wall(ctx: &FrameCtx) -> String {
@@ -128,7 +206,7 @@ pub static DEFS: [SceneDef; 4] = [
         persons: live,
         streams: no_streams,
         max_fps: no_cap,
-        make: |ctx| make(ctx, include_str!("../../../web/scenes/wand-spiegel/shade.wgsl"), true, on_wall),
+        make: |ctx| make(ctx, include_str!("../../../web/scenes/wand-spiegel/shade.wgsl"), true, on_wall, Labels::None),
     },
     SceneDef {
         name: "person-mask",
@@ -138,7 +216,7 @@ pub static DEFS: [SceneDef; 4] = [
         persons: exact,
         streams: ir_stream,
         max_fps: no_cap,
-        make: |ctx| make(ctx, include_str!("../../../web/scenes/person-mask/shade.wgsl"), false, person_mask_status),
+        make: |ctx| make(ctx, include_str!("../../../web/scenes/person-mask/shade.wgsl"), false, person_mask_status, Labels::Tags),
     },
     SceneDef {
         name: "person-skeleton",
@@ -148,7 +226,7 @@ pub static DEFS: [SceneDef; 4] = [
         persons: skeleton_persons,
         streams: no_streams,
         max_fps: no_cap,
-        make: |ctx| make(ctx, include_str!("../../../web/scenes/person-skeleton/shade.wgsl"), true, person_skeleton_status),
+        make: |ctx| make(ctx, include_str!("../../../web/scenes/person-skeleton/shade.wgsl"), true, person_skeleton_status, Labels::Greetings),
     },
     SceneDef {
         name: "depth-shader",
@@ -158,6 +236,6 @@ pub static DEFS: [SceneDef; 4] = [
         persons: no_persons,
         streams: depth_streams,
         max_fps: no_cap,
-        make: |ctx| make(ctx, include_str!("../../../web/scenes/depth-shader/shade.wgsl"), true, empty),
+        make: |ctx| make(ctx, include_str!("../../../web/scenes/depth-shader/shade.wgsl"), true, empty, Labels::None),
     },
 ];
