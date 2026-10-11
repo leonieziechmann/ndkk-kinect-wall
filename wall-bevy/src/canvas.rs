@@ -309,6 +309,10 @@ impl Canvas {
     }
 
     pub fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, c: Rgba) {
+        // nothing to stroke (Canvas 2D draws nothing either; tiny-skia would complain)
+        if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) || (x0 == x1 && y0 == y1) {
+            return;
+        }
         let mut pb = PathBuilder::new();
         pb.move_to(x0, y0);
         pb.line_to(x1, y1);

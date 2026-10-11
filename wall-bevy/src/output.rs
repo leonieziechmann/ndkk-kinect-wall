@@ -343,6 +343,8 @@ pub struct OutputState {
     shots_next: f64,
     shot_no: u32,
     frame_log: Vec<f64>,
+    /// test mode: frames over 50 ms (s since the start, ms, what played)
+    slow_log: Vec<(f64, f64, String)>,
     started: f64,
     warm: Option<Vec<Instance>>,
     /// warm-up setups still running (collected without waiting: the window keeps answering)
@@ -438,6 +440,7 @@ fn new_state(cfg: Config) -> OutputState {
         shots_next: 0.0,
         shot_no: 0,
         frame_log: Vec::new(),
+        slow_log: Vec::new(),
         started: now,
         warm: None,
         warm_jobs: Vec::new(),
@@ -821,6 +824,15 @@ fn output_frame(
             st.intervals.pop_front();
         }
         st.frame_log.push(dt_ms);
+        if st.cfg.shots.is_some() && st.warmed && dt_ms > 50.0 && st.slow_log.len() < 5000 {
+            let what = format!(
+                "{}{}{}",
+                st.current.as_ref().map_or("-", |c| c.def.name),
+                if st.pending.is_some() { " +setup" } else { "" },
+                if st.leaving.is_empty() { "" } else { " +fade" }
+            );
+            st.slow_log.push(((now - st.started) / 1000.0, dt_ms, what));
+        }
     }
     let refresh = refresh_interval(&st.intervals);
     if st.frame_no > 30 && dt_ms > refresh * 1.5 {
@@ -1283,6 +1295,7 @@ impl OutputState {
                 self.started = now;
                 self.shots_next = 0.0;
                 self.frame_log.clear();
+                self.slow_log.clear();
                 self.late = 0;
             }
             self.black = Fade { from: 0.0, to: 0.0, start: now, ms: 0.0, curve: ease };
@@ -1727,11 +1740,17 @@ impl OutputState {
         v.sort_by(f64::total_cmp);
         let q = |p: f64| if v.is_empty() { 0.0 } else { v[((p * (v.len() - 1) as f64).round()) as usize] };
         let errors: Vec<String> = self.errors.iter().map(|e| format!("{}: {}", e.where_, e.message)).collect();
+        // the 25 longest frames, when and during what
+        let mut slow = self.slow_log.clone();
+        slow.sort_by(|a, b| b.1.total_cmp(&a.1));
+        slow.truncate(25);
+        let slow: Vec<Value> = slow.iter().map(|(t, ms, what)| json!({ "t": (t * 10.0).round() / 10.0, "ms": ms.round(), "scene": what })).collect();
         let report = json!({
             "frames": v.len(), "fps": if v.is_empty() { 0.0 } else { 1000.0 * v.len() as f64 / v.iter().sum::<f64>() },
             "p50": q(0.5), "p95": q(0.95), "p99": q(0.99), "max": q(1.0), "late": self.late,
             "kinectFps": self.kinect.fps, "persons": self.kinect.view.len(), "results": self.kinect.results, "playDelay": self.kinect.play_delay(),
             "errors": errors,
+            "slow": slow,
         });
         let _ = std::fs::create_dir_all(dir);
         let _ = std::fs::write(dir.join("frames.json"), serde_json::to_string_pretty(&report).unwrap_or_default());

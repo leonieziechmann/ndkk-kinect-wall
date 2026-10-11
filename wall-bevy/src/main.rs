@@ -99,6 +99,8 @@ fn main() {
                     ..default()
                 })
                 .set(RenderPlugin { render_creation: RenderCreation::Automatic(Box::new(wgpu_settings)), ..default() })
+                // a degenerate path in a scene's 2D drawing is not news worth a log line per frame
+                .set(bevy::log::LogPlugin { filter: "wgpu=error,naga=warn,tiny_skia=error".into(), ..default() })
                 // update and render one after the other: the scenes submit their GPU work before the
                 // frame that shows it, in the same order every frame (no frame shown twice or skipped)
                 .disable::<PipelinedRenderingPlugin>(),
