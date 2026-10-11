@@ -58,6 +58,7 @@ Es darf nur **eine** Ausgabe laufen: entweder das Browser-Fenster `/wall/` oder 
 | `--web DIR`, `--dev URL` | `web/`-Ordner bzw. Dev-Server von Hand |
 | `--mute`, `--no-bus` | ohne Ton, ohne Steuerzentrale |
 | `--shots DIR --seconds S [--shot-every T]` | Test: S Sekunden spielen, Bilder und Bildzeiten nach DIR |
+| `--list-scenes` | alle Szenen-Deklarationen als JSON ausgeben und beenden |
 
 ## Was es gegen Ruckler tut
 
@@ -82,14 +83,19 @@ Es darf nur **eine** Ausgabe laufen: entweder das Browser-Fenster `/wall/` oder 
 
 ## Szenen
 
-Die Szenen aus `web/scenes/` haben hier ein Gegenstück in `src/scenes/` (gleicher Name, gleiche
+Alle 19 Szenen aus `web/scenes/` haben hier ein Gegenstück in `src/scenes/` (gleicher Name, gleiche
 Parameter, gleiche Projektionswünsche): blasen-platzen, cyberspiegel, depth-shader,
-fluid-simulation, fruit-ninja, leonie-ziechmann, live-exakt, llg-sakura, modern-events, neon-room,
-person-mask, person-skeleton, pixel-jump-run, pixel-spiegel, pointcloud, three-points,
-wand-spiegel (space-invaders und invaders-tracking sind in Arbeit). Die WGSL-Dateien der Browser-Szenen werden, wo es geht,
+fluid-simulation, fruit-ninja, invaders-tracking, leonie-ziechmann, live-exakt, llg-sakura,
+modern-events, neon-room, person-mask, person-skeleton, pixel-jump-run, pixel-spiegel, pointcloud,
+space-invaders, three-points, wand-spiegel. Die WGSL-Dateien der Browser-Szenen werden, wo es geht,
 unverändert eingebunden (`include_str!`), die Logik ist Zeile für Zeile nachgebaut, auch die
 Zufallsgeneratoren mit ihren Startwerten (Kulissen und Wälder sind pixelgleich). Was sich nur mit
-der Maus auf der Szenenseite bedienen ließ, fehlt (die Wand hat keine Maus).
+der Maus auf der Szenenseite bedienen ließ, fehlt (die Wand hat keine Maus). Der Ton ist mono (im
+Browser stellenweise links/rechts verteilt).
+
+`wall-bevy --list-scenes` gibt die Deklarationen aller Szenen als JSON aus (Name, Titel, Parameter,
+Projektionswünsche, Personen-Optionen, Bildraten-Grenze); so lässt sich prüfen, ob sie noch zu den
+Browser-Szenen passen.
 
 Eine Szene, die es nur im Browser gibt (eine neue), überspringt die Show mit einer Fehlermeldung in
 der Steuerzentrale. Ändert sich eine Browser-Szene, folgt ihr Port nicht von selbst: wie eine Szene
@@ -106,7 +112,8 @@ cargo build
 
 `fake_hub` spricht das Hub-Protokoll mit Tiefe, IR, Personen-Masken und Skeletten; `--freeze 4.2`
 zeigt immer denselben Augenblick (für Bildvergleiche). Echte Aufnahmen spielt der Replay-Hub ab
-(siehe `CLAUDE.md`). `--shots` schreibt PNGs und `frames.json` (Bildzeiten, Fehler).
+(siehe `CLAUDE.md`). `--shots` schreibt PNGs und `frames.json`: Bildrate, Bildzeiten (p50, p95, p99,
+längstes Bild), verspätete Bilder, die längsten Bilder über 50 ms mit Zeitpunkt und Szene, Fehler.
 
 ## Aufbau
 
