@@ -23,22 +23,22 @@ export interface FingerDef {
 
 /** index, middle, ring, little */
 export const FINGERS: FingerDef[] = [
-  { kx: 0.092, kz: 0.025, len: [0.043, 0.025, 0.02], r0: 0.0092, r1: 0.0072, fan: 0.1 },
-  { kx: 0.095, kz: 0.006, len: [0.047, 0.029, 0.021], r0: 0.0096, r1: 0.0075, fan: 0.02 },
-  { kx: 0.09, kz: -0.013, len: [0.044, 0.027, 0.021], r0: 0.009, r1: 0.007, fan: -0.07 },
-  { kx: 0.081, kz: -0.029, len: [0.034, 0.02, 0.019], r0: 0.0081, r1: 0.0063, fan: -0.17 },
+  { kx: 0.092, kz: 0.025, len: [0.043, 0.025, 0.02], r0: 0.0104, r1: 0.0084, fan: 0.1 },
+  { kx: 0.095, kz: 0.006, len: [0.047, 0.029, 0.021], r0: 0.0108, r1: 0.0087, fan: 0.02 },
+  { kx: 0.09, kz: -0.013, len: [0.044, 0.027, 0.021], r0: 0.0101, r1: 0.0082, fan: -0.07 },
+  { kx: 0.081, kz: -0.029, len: [0.034, 0.02, 0.019], r0: 0.0091, r1: 0.0073, fan: -0.17 },
 ];
 
 export const THUMB = {
   /** the base (CMC joint), inside the ball of the thumb */
-  base: [0.024, 0.006, 0.022] as V3,
+  base: [0.026, 0.008, 0.022] as V3,
   /** metacarpal, proximal, distal */
-  len: [0.044, 0.033, 0.027],
-  r: [0.0135, 0.011, 0.0098, 0.0085],
+  len: [0.046, 0.035, 0.029],
+  r: [0.015, 0.0125, 0.011, 0.0094],
 };
 
 /** half thickness of the palm at the knuckles (the cable rests on the palm at this height) */
-export const PALM_T = 0.0135;
+export const PALM_T = 0.015;
 /** across-centre of the fist (between middle and ring finger) */
 export const FIST_Z = -0.003;
 /** joint angles of a full fist: knuckle, middle joint, end joint */
@@ -138,17 +138,20 @@ export function thumbTargets(fist: Fist, r: number): { along: V3; wrap: V3; pinc
   return {
     along: [gxAt(fist, 0.08) + 0.006, fist.gy - r - THUMB.r[3] * 0.85, 0.08],
     wrap: [mx + (ox / ol) * out, my + (oy / ol) * out, idx.kz - 0.004],
-    pinch: [(c[4] + c[6]) / 2, (c[5] + c[7]) / 2, idx.kz + idx.r1 + THUMB.r[3] * 0.9],
+    pinch: [(c[2] + c[4]) / 2, (c[3] + c[5]) / 2, idx.kz + (idx.r0 + idx.r1) / 2 + THUMB.r[3] * 0.9],
   };
 }
 
-/** the thumb tip of a relaxed open hand, and of a pinch on the index finger at curl c */
-export function freeThumb(curl: number, pinch: number): V3 {
+/**
+ * The thumb tip of a free hand: relaxed beside the fingers, or pressing on the side of the index
+ * finger's middle bone (a pinch, with the index finger curled at `indexCurl`)
+ */
+export function freeThumb(curl: number, pinch: number, indexCurl: number): V3 {
   const idx = FINGERS[0];
   const c = new Array<number>(8).fill(0);
-  chain2(idx, curl, c);
+  chain2(idx, indexCurl, c);
   const rest: V3 = [0.088 + 0.012 * (1 - curl), 0.03 + 0.025 * curl, 0.07 - 0.03 * curl];
-  const tip: V3 = [(c[4] + c[6]) / 2, (c[5] + c[7]) / 2, idx.kz + idx.r1 + THUMB.r[3] * 0.9];
+  const tip: V3 = [(c[2] + c[4]) / 2, (c[3] + c[5]) / 2, idx.kz + (idx.r0 + idx.r1) / 2 + THUMB.r[3] * 0.9];
   return [rest[0] + (tip[0] - rest[0]) * pinch, rest[1] + (tip[1] - rest[1]) * pinch, rest[2] + (tip[2] - rest[2]) * pinch];
 }
 

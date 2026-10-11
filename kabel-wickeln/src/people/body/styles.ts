@@ -123,10 +123,10 @@ const bump = (h: number, a: number, b: number) => Math.sin(Math.PI * clamp((h - 
 type Row = [number, number, number, number];
 const TORSO: Row[] = [
   [-0.045, 0.12, 0.07, 0.09],
-  [-0.04, 0.162, 0.084, 0.106],
-  [-0.026, 0.184, 0.104, 0.115],
-  [-0.012, 0.186, 0.105, 0.115],
-  [0.03, 0.186, 0.105, 0.11],
+  [-0.04, 0.188, 0.1, 0.113],
+  [-0.026, 0.193, 0.106, 0.117],
+  [-0.012, 0.193, 0.107, 0.117],
+  [0.03, 0.19, 0.106, 0.112],
   [0.1, 0.174, 0.103, 0.1],
   [0.17, 0.154, 0.102, 0.09],
   [0.26, 0.158, 0.108, 0.091],
@@ -169,17 +169,17 @@ const HAIR_BUZZ: HeadSec[] = [
   [0.02, -0.012, 0.079, 0.07, 0.1],
   [0.06, -0.016, 0.077, 0.078, 0.106],
   [0.092, -0.021, 0.064, 0.072, 0.094],
-  [0.113, -0.025, 0.04, 0.046, 0.058],
-  [0.122, -0.026, 0.016, 0.018, 0.022],
+  [0.113, -0.025, 0.044, 0.05, 0.062],
+  [0.127, -0.026, 0.022, 0.024, 0.03],
 ];
 // the longer top of an undercut, swept up and back
 const HAIR_TOP: HeadSec[] = [
-  [0.035, -0.02, 0.07, 0.06, 0.09],
-  [0.06, -0.012, 0.084, 0.092, 0.108],
-  [0.095, -0.012, 0.08, 0.1, 0.106],
-  [0.125, -0.016, 0.066, 0.092, 0.092],
-  [0.148, -0.02, 0.04, 0.062, 0.058],
-  [0.158, -0.022, 0.012, 0.02, 0.018],
+  [0.045, -0.02, 0.074, 0.07, 0.092],
+  [0.075, -0.014, 0.082, 0.09, 0.104],
+  [0.105, -0.012, 0.075, 0.088, 0.098],
+  [0.132, -0.014, 0.058, 0.078, 0.082],
+  [0.151, -0.016, 0.032, 0.05, 0.05],
+  [0.16, -0.018, 0.01, 0.016, 0.016],
 ];
 // pulled back tight (ponytail, bun)
 const HAIR_PULLED: HeadSec[] = [
@@ -220,18 +220,20 @@ const CAP: HeadSec[] = [
   [0.143, -0.025, 0.035, 0.047, 0.055],
 ];
 // a short full beard along the jaw (at the back it stays inside the head)
+// (the cheeks stay free: up there the front is inside the face, only the sides come out)
 const BEARD: HeadSec[] = [
-  [0.012, -0.008, 0.079, 0.06, 0.04],
-  [-0.025, 0.004, 0.074, 0.084, 0.04],
-  [-0.058, 0.02, 0.064, 0.072, 0.034],
-  [-0.088, 0.038, 0.05, 0.05, 0.034],
-  [-0.108, 0.046, 0.032, 0.03, 0.03],
+  [0.008, -0.008, 0.078, 0.05, 0.04],
+  [-0.028, 0.0, 0.072, 0.07, 0.04],
+  [-0.05, 0.016, 0.066, 0.078, 0.036],
+  [-0.074, 0.03, 0.058, 0.064, 0.034],
+  [-0.094, 0.044, 0.045, 0.045, 0.032],
+  [-0.111, 0.05, 0.026, 0.026, 0.028],
 ];
 // a hijab around the head: the front stays behind the face from the forehead to the chin, so the
 // face looks out; under the chin it wraps the neck, then (in the chest frame) it drapes the shoulders
 const HIJAB: HeadSec[] = [
-  [0.145, -0.027, 0.032, 0.036, 0.05],
-  [0.13, -0.024, 0.066, 0.074, 0.094],
+  [0.14, -0.026, 0.04, 0.044, 0.058],
+  [0.128, -0.024, 0.066, 0.074, 0.094],
   [0.1, -0.02, 0.087, 0.094, 0.113],
   [0.07, -0.016, 0.094, 0.1, 0.122],
   [0.045, -0.02, 0.096, 0.086, 0.125],
@@ -407,10 +409,10 @@ function clothed(m: Mesh, p: Pose) {
   }
   if (headwear !== 'hijab') {
     if (hair === 'short') loft(m, headRings(HAIR_SHORT), D.head, MAT.hair, 2.1, 0.3);
-    else if (hair === 'buzz') loft(m, headRings(HAIR_BUZZ), D.head, MAT.hair, 2.1, 0.3);
+    else if (hair === 'buzz') loft(m, headRings(HAIR_BUZZ), D.head, MAT.hair, 2.1, 0.45);
     else if (hair === 'undercut') {
-      loft(m, headRings(HAIR_BUZZ), D.head, MAT.hair2, 2.1, 0.3);
-      loft(m, headRings(HAIR_TOP), D.head, MAT.hair, 2.3, 0.3);
+      loft(m, headRings(HAIR_BUZZ), D.head, MAT.hair2, 2.1, 0.45);
+      loft(m, headRings(HAIR_TOP, 1, 0.003), D.head, MAT.hair, 2.3, 0.3);
     } else if (hair === 'curly') loft(m, headRings(HAIR_CURLY, 1, 0.006), D.head, MAT.hair, 2.1, 0.3);
     else if (hair === 'afro') loft(m, headRings(HAIR_CURLY, 1.25, 0.008), D.head, MAT.hair, 2, 0.3);
     else if (hair === 'bob') loft(m, headRings(HAIR_BOB), D.head, MAT.hair, 2.1, 0.15);
@@ -439,7 +441,7 @@ function clothed(m: Mesh, p: Pose) {
       loft(m, tubeRings(pts, [r0, r0 + 0.002, r0 + 0.006, r0 + 0.004, r0, r0 - 0.006, r0 - 0.013].map((r) => r * k), b.head.r, 0.8), D.limb, MAT.hair, 2, 0.6);
     }
     if (spec.beard) {
-      loft(m, headRings(BEARD), D.head, MAT.hair, 2.1, 0.3);
+      loft(m, headRings(BEARD, 1, 0.0025), D.head, MAT.hair, 2.1, 0.3);
     }
     if (headwear === 'cap') {
       loft(m, headRings(CAP), D.head, MAT.cap, 2.3, 0.3);
@@ -457,7 +459,7 @@ function clothed(m: Mesh, p: Pose) {
     for (const [h, w, front, back, sag] of DRAPE) {
       rings.push({ ...ringIn(s.spineAt(h * k), s.frameAt(h * k), w * k * B.shoulders, w * k * B.shoulders, front * k, back * k), sag: sag * k });
     }
-    loft(m, rings, D.torso, MAT.hijab, 2.1, 0.3);
+    loft(m, rings, D.torso, MAT.hijab, 2.1, 0.55);
   }
   if (spec.glasses) {
     // two rims in front of the eyes, a bridge, temples back to the ears
@@ -490,11 +492,13 @@ function clothed(m: Mesh, p: Pose) {
     const fa = sub(a.wr, a.el);
     const at = (t: number) => (t <= 1 ? madd(a.sh, up, t) : madd(a.el, fa, t - 1));
     const sleeveLoose = (t: number, mat: number) => (mat === MAT.top ? 1 + 0.07 * loose * (t < 1.7 ? 1 : 0.4) : 1);
+    const gloved = (spec.gloves ?? 'none') !== 'none';
     loft(
       m,
       tubeRings(sleeve.map(([t]) => at(t)), sleeve.map(([t, r, mat]) => r * ak * sleeveLoose(t, mat)), b.chest.f),
       D.limb,
-      sleeve.map(([, , mat]) => mat),
+      // a glove's cuff covers the wrist
+      sleeve.map(([t, , mat]) => (gloved && t >= 1.85 && mat === MAT.skin ? MAT.glove : mat)),
       2,
       0.5,
       (j) => (sleeve[j][0] < 0.6 ? SELF : 0),
@@ -511,10 +515,10 @@ function clothed(m: Mesh, p: Pose) {
     const sh = sub(l.ankle, l.knee);
     const pts: V3[] = [madd(l.hip, b.spine, 0.06 * k), l.hip, madd(l.hip, th, 0.3), madd(l.hip, th, 0.65), l.knee, madd(l.knee, sh, 0.3), madd(l.knee, sh, 0.72), madd(l.knee, sh, wide ? 1.07 : 0.97)];
     const radii = wide
-      ? [0.078, 0.096, 0.091, 0.086, 0.083, 0.086, 0.093, 0.1]
+      ? [0.074, 0.09, 0.091, 0.086, 0.083, 0.086, 0.093, 0.1]
       : work
-        ? [0.064, 0.088, 0.087, 0.073, 0.062, 0.062, 0.054, 0.052]
-        : [0.06, 0.084, 0.082, 0.067, 0.056, 0.056, 0.047, 0.045];
+        ? [0.062, 0.083, 0.086, 0.073, 0.062, 0.062, 0.054, 0.052]
+        : [0.058, 0.079, 0.081, 0.067, 0.056, 0.056, 0.047, 0.045];
     const hipK = k * (1 + (B.hips - 1) * 0.8);
     loft(
       m,
@@ -547,8 +551,9 @@ function clothed(m: Mesh, p: Pose) {
 function hand(m: Mesh, h: HandPose, side: number, fa: V3, wristR: number, spec: PersonSpec) {
   const gl = spec.gloves ?? 'none';
   const gloved = gl !== 'none';
-  const thick = gloved ? 1.1 : 1;
+  const thick = gloved ? 1.08 : 1;
   const hj = handJoints(h, side);
+  m.curSmooth = 1;
   const { fd, palm, q } = h;
   const w = hj.w;
   const at = (x: number, y: number, z: number): V3 => [
@@ -566,11 +571,11 @@ function hand(m: Mesh, h: HandPose, side: number, fa: V3, wristR: number, spec: 
   const R = (x: number, wide: number, palmT: number, backT: number, z = -0.002): Ring => ({ c: at(x, (palmT - backT) / 2 - 0.001, z), x: w, y: palm, rx: wide * q * thick, ry: ((palmT + backT) / 2) * q * thick, p: 2.4 });
   const rings: Ring[] = [
     { c: madd(h.wrist, fa, -0.014 * q), x: fx, y: fy, rx: wristR, ry: wristR * 0.8 },
-    R(0, 0.027, 0.018, 0.015),
-    R(0.03, 0.035, 0.019, 0.013, 0.0),
-    R(0.06, 0.039, 0.016, 0.012),
-    R(0.08, 0.04, 0.0135, 0.0115),
-    R(0.092, 0.035, 0.011, 0.0095),
+    R(0, 0.027, 0.02, 0.016),
+    R(0.03, 0.036, 0.021, 0.015, 0.0),
+    R(0.06, 0.04, 0.019, 0.014),
+    R(0.08, 0.041, 0.016, 0.0135),
+    R(0.093, 0.036, 0.013, 0.011),
   ];
   loft(m, rings, D.palm, (j, i) => (j === 0 ? skinOr : palmSide(facing(i, D.palm, 0, 1))), 2.4, 0.4);
   if (gloved) {
@@ -578,9 +583,9 @@ function hand(m: Mesh, h: HandPose, side: number, fa: V3, wristR: number, spec: 
     loft(
       m,
       [
-        { c: madd(h.wrist, fa, -0.055 * q), x: fx, y: fy, rx: wristR * 1.3, ry: wristR * 1.2 },
-        { c: madd(h.wrist, fa, -0.012 * q), x: fx, y: fy, rx: wristR * 1.32, ry: wristR * 1.18 },
-        { c: at(0.012, 0.001, -0.002), x: w, y: palm, rx: 0.031 * q, ry: 0.022 * q },
+        { c: madd(h.wrist, fa, -0.06 * q), x: fx, y: fy, rx: wristR * 1.3, ry: wristR * 1.2 },
+        { c: madd(h.wrist, fa, -0.012 * q), x: fx, y: fy, rx: wristR * 1.32, ry: wristR * 1.2 },
+        { c: at(0.014, 0.002, -0.002), x: w, y: palm, rx: 0.033 * q, ry: 0.024 * q },
       ],
       D.palm,
       MAT.glove,
@@ -638,6 +643,7 @@ function hand(m: Mesh, h: HandPose, side: number, fa: V3, wristR: number, spec: 
     if (!gloved || (gl === 'rigger' && j >= 4)) return j >= 4 && fy2 > 0.5 ? MAT.nails : MAT.skin;
     return MAT.glove;
   }, 2, 0.75);
+  m.curSmooth = 0;
 }
 
 // ---------------------------------------------------------------------------------- shoes

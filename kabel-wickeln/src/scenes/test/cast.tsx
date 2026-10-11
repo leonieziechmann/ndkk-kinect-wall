@@ -5,6 +5,8 @@
 //   7-8  Noor coiling from outside (3/4 view) and from her own eyes (first-person view)
 //   9    stances: squatting, kneeling, sitting, walking, carrying
 //   10   Jonas' hands: painted nails, open hand and a pinch
+//   11   heads (3/4 view)
+//   12   variants not in the cast: short hair, afro, bun; rigger gloves (open fingertips) worn
 // Stills: npm run stills -- --project test <scene start + 0.5, 1.5, …>
 
 import { Rect, Txt, makeScene2D } from '@motion-canvas/2d';
@@ -13,7 +15,7 @@ import * as THREE from 'three';
 import { fontsReady } from '../../lib/fonts';
 import { C, FONT } from '../../lib/theme';
 import { ThreeView, World3D } from '../../three/view';
-import { CAST, ILSE, JONAS, KOFI, MAI, NOOR, ROBIN } from '../../people/cast';
+import { ADA, CAST, ILSE, JONAS, KOFI, MAI, NOOR, ROBIN, TEO } from '../../people/cast';
 import { Person3D, SELF, eyesOf } from '../../people/body3d';
 import { Grip, HandRig, gripFrame, kneel, rigPose, seated, squat, stand, walk } from '../../people/rig';
 import { V3, local, madd, quatCols } from '../../people/math';
@@ -31,6 +33,8 @@ const BOARDS = [
   'Noor wickelt (eigene Sicht)',
   'Hocke, Knien, Sitzen, Gehen, Tragen',
   'Lackierte Nägel, offene Hand, Pinzettengriff',
+  'Köpfe',
+  'Varianten: kurz, Afro, Dutt; Rigger-Handschuhe',
 ];
 
 const SPACING = 0.78;
@@ -50,11 +54,11 @@ function cableThrough(g: Grip, before: number, after: number, droop: number, r: 
   const down: V3 = [0, -1, 0];
   const pts = [
     madd(madd(g.p, d3, -before), down, droop),
-    madd(madd(g.p, d3, -before * 0.55), down, droop * 0.25),
-    madd(g.p, d3, -0.06),
+    madd(madd(g.p, d3, -before * 0.6), down, droop * 0.2),
+    madd(g.p, d3, -0.1),
     g.p,
-    madd(g.p, d3, 0.06),
-    madd(madd(g.p, d3, after * 0.55), down, droop * 0.25),
+    madd(g.p, d3, 0.1),
+    madd(madd(g.p, d3, after * 0.6), down, droop * 0.2),
     madd(madd(g.p, d3, after), down, droop),
   ].map((p) => new THREE.Vector3(...p));
   const mesh = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 160, r, 14), mat);
@@ -122,7 +126,13 @@ export default makeScene2D(function* (view) {
 
   // ---------------------------------------------------------------- people and props
   const standing = (spec: PersonSpec, x: number, yaw: number): Pose => rigPose(spec, { ...stand(spec, [x, 0], yaw), hands: [null, null] });
-  const people = CAST.map((spec) => new Person3D(spec, standing(spec, 0, 0)));
+  const VARIANTS: PersonSpec[] = [
+    { ...TEO, name: 'Teo kurz', hair: 'short', glasses: false },
+    { ...ADA, name: 'Ada Afro', hair: 'afro' },
+    { ...JONAS, name: 'Jonas Dutt', hair: 'bun' },
+    { ...NOOR, name: 'Noor Handschuhe', gloves: 'rigger', beltGloves: false },
+  ];
+  const people = [...CAST, ...VARIANTS].map((spec) => new Person3D(spec, standing(spec, 0, 0)));
   const byName = new Map(people.map((p) => [p.spec.name, p]));
   const person = (spec: PersonSpec) => byName.get(spec.name) as Person3D;
   for (const p of people) scene.add(p.group);
@@ -217,15 +227,15 @@ export default makeScene2D(function* (view) {
         (b === 3 ? props.rightDown : props.rightUp).visible = true;
       }
       const g = b === 5 ? LEFT_LOOPS.p : RIGHT_DOWN.p;
-      const from: V3 = b === 5 ? [g[0] - 0.2, g[1] + 0.08, g[2] - 0.62] : [g[0] + 0.3, g[1] + 0.16, g[2] - 0.34];
-      look(from, b === 5 ? [g[0], g[1] - 0.1, g[2]] : g, b === 5 ? 34 : 26);
+      const from: V3 = b === 5 ? [g[0] - 0.22, g[1] + 0.12, g[2] - 0.6] : b === 4 ? [g[0] + 0.2, g[1] + 0.3, g[2] - 0.38] : [g[0] + 0.12, g[1] + 0.34, g[2] - 0.36];
+      look(from, b === 5 ? [g[0], g[1] - 0.1, g[2]] : g, b === 5 ? 34 : 24);
       key.target.position.set(g[0], 0, g[2]);
     } else if (b <= 8) {
       const pose = coiling(NOOR, [0, 0]);
       show(NOOR, pose);
       props.loops.visible = true;
       props.rightDown.visible = true;
-      if (b === 7) look([1.25, 1.55, 1.25], [-0.02, 0.98, -0.25], 30);
+      if (b === 7) look([1.2, 1.7, -1.75], [-0.04, 1.12, -0.22], 32);
       else {
         // first person: the own head and torso stay out of the picture
         const e = eyesOf(pose);
@@ -238,13 +248,31 @@ export default makeScene2D(function* (view) {
       show(KOFI, rigPose(KOFI, { ...kneel(KOFI, [-1.0, 0], -0.25, 'R'), look: [-1.1, 0, -0.9], hands: [{ wrist: [-1.12, 0.52, -0.42], curl: 0.3 }, { wrist: [-0.85, 0.2, -0.5], dir: [0, -0.6, -0.8], curl: 0.5 }] }));
       sit([0.15, 0.06], -0.3, [0.6, 1.2, -1.5]);
       show(ROBIN, rigPose(ROBIN, walk(ROBIN, [{ t: 0, x: 0.6, z: 0.6 }, { t: 2, x: 1.6, z: -0.4 }], 0.9)));
-      show(JONAS, rigPose(JONAS, { ...stand(JONAS, [2.5, 0], -0.5, { stagger: 0.2 }), lean: 0.04, look: [1.9, 0.9, -0.8], hands: [{ grip: gripFrame([2.33, 0.95, -0.45], [0.9, 0, 0.45], [0.5, 0.2, -1]), radius: 0.06, wrap: 1 }, { grip: gripFrame([2.68, 0.95, -0.3], [0.9, 0, 0.45], [-0.5, 0.2, -1]), radius: 0.06, thumbAlong: -1, wrap: 1 }] }));
+      // carrying a heavy coil in front, both hands under it
+      const jf = yawFrame(-0.5);
+      const carry = (s: number) => gripFrame(local([2.5, 0.88, 0], jf.r, [0, 1, 0], jf.f, s * 0.17, 0, 0.3), madd(jf.f, jf.r, 0.3 * s), [0, -1, 0]);
+      show(JONAS, rigPose(JONAS, { ...stand(JONAS, [2.5, 0], -0.5, { stagger: 0.2 }), lean: 0.05, look: local([2.5, 0.9, 0], jf.r, [0, 1, 0], jf.f, 0, 0, 1.2), hands: [{ grip: carry(-1), radius: 0.015, thumbAlong: -1 }, { grip: carry(1), radius: 0.015 }] }));
       look([0.15, 1.9, -6.4], [0.15, 0.7, 0], 34);
+      key.target.position.set(0, 0, 0);
+    } else if (b === 11) {
+      CAST.forEach((spec, i) => {
+        const x = (i - (CAST.length - 1) / 2) * 0.4;
+        const lookAt: V3 = [x + 2, 1.5, 6];
+        if (spec === ILSE) sit([x, 0], Math.PI - 0.5, lookAt);
+        else show(spec, rigPose(spec, { ...stand(spec, [x, 0], Math.PI - 0.5), look: lookAt, hands: [null, null] }));
+      });
+      look([0.9, 1.62, 6.2], [0.05, 1.42, 0], 15.5);
+      key.target.position.set(0, 0, 0);
+    } else if (b === 12) {
+      VARIANTS.slice(0, 3).forEach((spec, i) => show(spec, rigPose(spec, { ...stand(spec, [-0.55 + i * 0.42, 0], Math.PI - 0.6), look: [2, 1.5, 6], hands: [null, null] })));
+      const gl = VARIANTS[3];
+      show(gl, rigPose(gl, { ...stand(gl, [0.75, 0.2], Math.PI - 0.9), look: [1.2, 1.0, 1.4], hands: [{ wrist: local([0.75, 1.05, 0.2], yawFrame(Math.PI - 0.9).r, [0, 1, 0], yawFrame(Math.PI - 0.9).f, -0.12, 0, 0.32), dir: [0.3, 0.6, 1], palm: [0.6, 0.2, -0.7], curl: 0.2 }, { grip: gripFrame(local([0.75, 1.0, 0.2], yawFrame(Math.PI - 0.9).r, [0, 1, 0], yawFrame(Math.PI - 0.9).f, 0.12, 0, 0.34), [-0.7, 0, -0.7], [0, 1, 0]), radius: XLR }] }));
+      look([0.5, 1.6, 2.6], [0.1, 1.3, 0], 34);
       key.target.position.set(0, 0, 0);
     } else {
       // Jonas' hands in front of him: the left open, the right in a pinch
-      show(JONAS, rigPose(JONAS, { ...stand(JONAS, [0, 0], 0), look: [0, 1.0, -0.5], hands: [{ wrist: [-0.12, 1.08, -0.36], dir: [0.25, 0.3, -1], palm: [0.2, 0.9, 0.1], curl: 0.05 }, { wrist: [0.1, 1.1, -0.38], dir: [-0.3, 0.4, -1], palm: [-0.8, 0.2, -0.3], curl: 0.45, pinch: 1 }] }));
-      look([0.05, 1.42, 0.25], [-0.01, 1.1, -0.42], 34);
+      show(JONAS, rigPose(JONAS, { ...stand(JONAS, [0, 0], 0), look: [0, 1.0, -0.5], hands: [{ wrist: [-0.16, 1.06, -0.36], dir: [0.7, 0.15, -0.7], palm: [0, 1, 0], curl: 0.12 }, { wrist: [0.12, 1.1, -0.36], dir: [-0.3, 0.5, -1], palm: [-0.7, 0.3, -0.6], curl: 0.4, pinch: 1 }] }));
+      look([0.12, 1.32, -0.9], [-0.01, 1.1, -0.4], 30);
       key.target.position.set(0, 0, 0);
     }
     key.target.updateMatrixWorld();

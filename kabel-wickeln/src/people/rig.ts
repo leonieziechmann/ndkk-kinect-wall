@@ -8,7 +8,7 @@
 // columns of q: d1 from the cable axis towards the palm, d2 = d3 × d1, d3 along the cable.
 
 import {
-  V3, Quat, add, across, clamp, cross, dot, easeInOut, len, lerp, local, madd, mix3, norm, quatCols, quatFromCols, scale, slerp, smooth, sub, turn,
+  V3, Quat, add, across, clamp, cross, dot, easeInOut, len, lerp, local, madd, mix3, norm, quatAxisAngle, quatCols, quatFromCols, quatMul, scale, slerp, smooth, sub, turn,
 } from './math';
 import { Body, Frame, HandPose, Pose, PersonSpec, UP, withUp, yawFrame } from './people';
 import { FIST_SLOPE, FIST_Z, fistAround, freeThumb, thumbTargets } from './body/hand';
@@ -24,6 +24,11 @@ export function gripFrame(p: V3, along: V3, toPalm: V3): Grip {
   const d3 = norm(along);
   const d1 = across(toPalm, d3);
   return { p, q: quatFromCols(d1, cross(d3, d1), d3) };
+}
+
+/** the grip frame turned about its cable direction d3 (rolling the cable in the fist), rad */
+export function rollGrip(g: Grip, angle: number): Grip {
+  return { p: g.p, q: quatMul(g.q, quatAxisAngle([0, 0, 1], angle)) };
 }
 
 /** a hand: closed around a cable (grip) or free (wrist, finger direction, palm normal) */
@@ -124,7 +129,10 @@ export function handFromGrip(spec: PersonSpec, side: number, h: HandRig & { grip
 /** a relaxed or curled free hand; fd and palm are made orthonormal */
 function freeHand(q: number, wrist: V3, fd: V3, palm: V3, curl: number, pinch: number): HandPose {
   const c = clamp(curl);
-  return { wrist, fd, palm: across(palm, fd), curl: [c * 0.92, c, c * 1.04, c * 1.1].map((x) => clamp(x)) as HandPose['curl'], spread: 0.6, thumb: freeThumb(c, pinch), q };
+  const p = clamp(pinch);
+  // a pinch curls the index finger towards the thumb
+  const index = lerp(c * 0.92, Math.max(c, 0.6), p);
+  return { wrist, fd, palm: across(palm, fd), curl: [index, c, c * 1.04, c * 1.1].map((x) => clamp(x)) as HandPose['curl'], spread: 0.15 * (1 - p), thumb: freeThumb(c, p, index), q };
 }
 
 /** the palm of a hand on a forearm when nobody says otherwise: hanging it faces the thigh, raised the front */
@@ -206,7 +214,7 @@ export function rigPose(spec: PersonSpec, g: Rig): Pose {
       const fdA = norm(local([0, 0, 0], chest.r, chest.u, chest.f, (out + 0.05) * s, -Math.cos(sw + bendE), Math.sin(sw + bendE)));
       const elbow = madd(sh0, ud, 0.29 * k);
       const wrist = madd(elbow, fdA, 0.255 * k);
-      return { sh: sh0, elbow, wrist, hand: freeHand(q, wrist, fdA, naturalPalm(fdA, chest, s), 0.3, 0) };
+      return { sh: sh0, elbow, wrist, hand: freeHand(q, wrist, fdA, naturalPalm(fdA, chest, s), 0.25, 0) };
     }
     const target = h.grip ? handFromGrip(spec, s, { ...h, grip: h.grip }) : null;
     const wristT = target ? target.wrist : (h.wrist ?? madd(sh0, chest.u, -0.5 * k));
@@ -400,9 +408,9 @@ export function walk(spec: PersonSpec, path: Waypoint[], T: number, seed = 0): R
   const legs = [phase, phase + Math.PI].map((ph, i) => {
     const s = i === 0 ? -1 : 1;
     const hip = 0.4 * amp * Math.sin(ph);
-    const swing = Math.max(0, Math.cos(ph + 0.35));
+    const swing = Math.max(0, Math.cos(ph - 0.15));
     const idle = (1 - walking) * (0.03 + 0.19 * smooth(0.3, -0.3, weight * s));
-    const knee = amp * (0.07 + 0.95 * swing * swing) + idle;
+    const knee = amp * (0.07 + 0.85 * swing * swing) + idle;
     const foot = amp * 0.35 * Math.sin(ph - 0.5) - idle * 0.4;
     const ky = -Math.cos(hip) * thigh;
     const kz = Math.sin(hip) * thigh;

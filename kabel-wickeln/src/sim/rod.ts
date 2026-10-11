@@ -252,7 +252,7 @@ export class Rod {
   private readonly rhs = new Float64Array(6);
   private readonly st = new Float64Array(2);
   private readonly pm = new Float64Array(6);
-  // self-contact candidates (pairs) with remembered normals, double-buffered
+  // self-contact candidate pairs and the contact normals remembered from the previous build
   private cand = new Int32Array(1024);
   private ncand = 0;
   private candN = new Float64Array(0);

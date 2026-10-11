@@ -11,6 +11,9 @@
 // Pixel size: the node asks the 2D context for its current transform (resolution scale, parent
 // scales, cache offsets included) and renders exactly as many device pixels as it covers, times
 // `supersample`. 1080p stays sharp, a 0.5-scale preview stays cheap.
+//
+// Preview mode (setPreview(true), or `preview=1` in the page URL) renders every view at half its
+// pixel size, without MSAA and without shadows: for quick review renders, about 3× faster.
 
 import { Rect, RectProps, initial, signal } from '@motion-canvas/2d';
 import { SignalValue, SimpleSignal, createComputed } from '@motion-canvas/core';
@@ -26,6 +29,16 @@ const TONE: Record<ToneMap, THREE.ToneMapping> = {
   none: THREE.NoToneMapping,
 };
 
+let preview = typeof location !== 'undefined' && new URLSearchParams(location.search).get('preview') === '1';
+
+/** review renders: half resolution, no MSAA, no shadows in every ThreeView */
+export function setPreview(on: boolean) {
+  preview = on;
+}
+
+export function isPreview() {
+  return preview;
+}
 
 // ---------------------------------------------------------------- shared renderers
 
@@ -138,7 +151,7 @@ export class World3D {
 export interface ThreeViewProps extends RectProps {
   world: World3D;
   camera: THREE.Camera;
-  /** render this many times the device pixels and let drawImage filter down (1 = off) */
+  /** render this many times the device pixels and let drawImage filter (1 = exact, 2 = supersampled, 0.5 = cheap) */
   supersample?: SignalValue<number>;
   /** hardware multisampling of the WebGL context (4× in SwiftShader) */
   msaa?: SignalValue<boolean>;
@@ -176,11 +189,11 @@ export class ThreeView extends Rect {
     const m = ctx.getTransform();
     const sx = Math.hypot(m.a, m.b);
     const sy = Math.hypot(m.c, m.d);
-    const ss = Math.max(1, this.supersample());
+    const ss = Math.max(0.25, this.supersample()) * (preview ? 0.5 : 1);
     const pw = Math.min(8192, Math.max(1, Math.round(w * sx * ss)));
     const ph = Math.min(8192, Math.max(1, Math.round(h * sy * ss)));
 
-    const s = getRenderer(this.msaa());
+    const s = getRenderer(this.msaa() && !preview);
     const r = s.renderer;
     ensureSize(s, pw, ph);
 
@@ -193,7 +206,7 @@ export class ThreeView extends Rect {
     const tm = TONE[this.toneMapping()];
     if (r.toneMapping !== tm) r.toneMapping = tm;
     r.toneMappingExposure = this.exposure();
-    const wantShadows = this.shadows();
+    const wantShadows = this.shadows() && !preview;
     if (r.shadowMap.enabled !== wantShadows) r.shadowMap.enabled = wantShadows; // recompiles programs
     // The shadow map depends on the world, not on the camera: render it once per world version,
     // in a 1-pixel pass with a camera that sees every layer. three filters shadow casters by the
@@ -226,11 +239,11 @@ export class ThreeView extends Rect {
     ctx.save();
     ctx.clip(this.getPath());
     ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
+    // high quality filters a supersampled image down; a preview's upscale only needs to be fast
+    ctx.imageSmoothingQuality = preview ? 'low' : 'high';
     // GL's origin is bottom-left: the view sits in the canvas' bottom rows
     ctx.drawImage(s.canvas, 0, s.canvas.height - ph, pw, ph, -w / 2, -h / 2, w, h);
     ctx.restore();
-
 
     if (this.lineWidth() > 0) {
       ctx.save();

@@ -168,7 +168,7 @@ function hash(a: number, b: number) {
 
 const unitCache = new Map<number, [number, number][]>();
 /** points of a unit superellipse; point i is at angle 2πi/sides from +x towards +y */
-export function unitShape(sides: number, p: number) {
+function unitShape(sides: number, p: number) {
   const key = sides * 100000 + Math.round(p * 1000);
   let pts = unitCache.get(key);
   if (pts) return pts;

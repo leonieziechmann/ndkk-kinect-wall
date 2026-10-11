@@ -59,7 +59,7 @@ export const ROBIN: PersonSpec = {
   colors: {
     skin: '#f0cdb8',
     hair: '#2fb3a6',
-    hair2: '#7a6556',
+    hair2: '#4b3d34',
     top: '#e2a72e',
     pants: '#3b4357',
     shoes: '#f0eee8',
