@@ -5,9 +5,9 @@
 //
 // The coil hangs like rings on a rod ("von der Halterung Richtung Ende"). The left fist holds the
 // tops of the loops in front of the left hip: the strands run through the fist along S (out to her
-// left and forward, the lateral end a little higher), the thumb lies on top along them and points
+// left and forward), the palm behind and a little below them, the thumb on top along them pointing
 // to the plug, which sticks out of the fist at the lateral end. The loops hang below the fist in
-// planes that face forward and to her right (their axis N, 45° right of straight ahead); every new
+// planes that face forward and to her right (their axis N, 55° right of straight ahead); every new
 // loop is laid IN FRONT of the others, further along N (7 mm per loop), never over everything.
 // The cable comes out of the fist at its medial end and runs to the right hand.
 //
@@ -55,7 +55,7 @@ export const TEACH: Pace = { slide: 1.0, hold: 0.2, turn: 0.5, back: 1.0, lay: 0
 export const NATURAL: Pace = { slide: 0.9, hold: 0.05, turn: 0.3, back: 0.62, lay: 0.48, give: 0.27 };
 
 /** time for the pinch to loosen before the hand moves */
-export const LOOSEN = 0.1;
+export const LOOSEN = 0.15;
 
 export interface CoilPlan {
   kinds: LoopKind[];
@@ -124,12 +124,12 @@ const norm = (v: V3): V3 => {
 
 /** where the coil is (Noor stands at the origin facing -z, her right is +x) */
 export const GEOM = (() => {
-  /** the coil's axis: forward, turned 45° to her right (the loops face forward and to her right) */
-  const N = norm([Math.sin(45 * D), 0, -Math.cos(45 * D)]);
+  /** the coil's axis: forward, turned 55° to her right (the loops face forward and to her right) */
+  const N = norm([Math.sin(55 * D), 0, -Math.cos(55 * D)]);
   /** horizontal across the loops, pointing out (her left and forward): up × N */
   const A = norm([N[2], 0, -N[0]]);
-  /** the strands in the fist: along A, the lateral end 12° higher */
-  const S = norm([A[0], Math.tan(12 * D), A[2]]);
+  /** the strands in the fist: along A (out to her left and forward), level */
+  const S = A;
   return {
     N,
     A,
@@ -141,13 +141,15 @@ export const GEOM = (() => {
     /** towards the midline to meet the right hand */
     leftMeet: [-0.08, 0.91, -0.3] as V3,
     /** the right hand at the hip, slid out */
-    hip: [0.45, 0.805, -0.13] as V3,
+    hip: [0.45, 0.8, -0.05] as V3,
     /** half the length of a strand in the fist, along S [m] */
     half: 0.045,
     /** the stack: strand k (0 = the plug strand) lies this far from the palm, every new one further out (along N, in front) [m] */
-    stack: (k: number) => 0.0038 + 0.005 * k,
+    stack: (k: number) => 0.0038 + 0.006 * k,
     /** the fist's radius round strands 0 … k: from the palm to the outer side of strand k, halved [m] */
-    fist: (k: number) => (0.0038 + 0.005 * k + 0.0032) / 2 + 0.0004,
+    fist: (k: number) => (0.0038 + 0.006 * k + 0.0032) / 2 + 0.0004,
+    /** the right hand lays the cable down into the fist: the pads this much higher than the strand, the cable past them sloping down [rad] */
+    laySlope: 15 * D,
     /** the right hand's pads this far beyond the fist's medial end at the hand-over [m] (a finger's width and room) */
     gap: 0.036,
     /**

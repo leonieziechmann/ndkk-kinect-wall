@@ -253,10 +253,10 @@ const throwTime = (s: number) =>
  * flight, the ring's circle, the landing at the stand. The replay from the side, travelling with the
  * ring: the loops leave its back. Then high behind him: the cable on the floor.
  */
-const B_NEAR: Orbit = { target: [0.42, 0.98, -0.02], yaw: 0.95, pitch: 0.12, dist: 1.75, fov: 34 };
-const B_NEAR2: Orbit = { target: [0.32, 0.95, 0.12], yaw: 1.05, pitch: 0.14, dist: 2.1, fov: 34 };
-const B_BEHIND: Orbit = { target: [5.2, 0.35, 0.3], yaw: -1.36, pitch: 0.3, dist: 8.9, fov: 38 };
-const B_REST: Orbit = { target: [5.6, 0.0, 0.3], yaw: -1.2, pitch: 0.55, dist: 9.6, fov: 38 };
+const B_NEAR: Orbit = { target: [0.4, 1.2, 0.0], yaw: 0.95, pitch: 0.06, dist: 1.95, fov: 34 };
+const B_NEAR2: Orbit = { target: [0.3, 1.18, 0.12], yaw: 1.05, pitch: 0.08, dist: 2.25, fov: 34 };
+const B_BEHIND: Orbit = { target: [6.2, 1.0, 0.3], yaw: -1.42, pitch: 0.16, dist: 9.0, fov: 40 };
+const B_REST: Orbit = { target: [6.1, 0.1, 0.2], yaw: 0.1, pitch: 0.55, dist: 11.8, fov: 40 };
 /** the cut from near to behind: just before the backswing */
 const B_CUT = THROW_T.split + 0.1;
 
@@ -276,9 +276,10 @@ function* longCable(layer: Node) {
   // ---------------------------------------------------------------- the world
   const pos = new Float32Array(3 * bake.n), d1 = new Float32Array(3 * bake.n), halo = new Float32Array(4 * nc);
   const plugs = { plugStart: 'xlr-male' as const, plugEnd: 'xlr-female' as const };
-  const near = new CableMesh({ maxNodes: nc, radius: LONG_RING.cable.od / 2, ...plugs, haloPx: 7, haloMax: 2 });
+  // plain black (the yellow twist stripe belongs to the 5 m cable of the other parts)
+  const near = new CableMesh({ maxNodes: nc, radius: LONG_RING.cable.od / 2, ...plugs, stripe: null, haloPx: 7, haloMax: 2 });
   // far away the real 6.4 mm would be a hair: the wide shots draw it 12 mm thick (KONZEPT)
-  const wide = new CableMesh({ maxNodes: nc, radius: THROW_WIDE_RADIUS, ...plugs, plugScale: 1.6, haloPx: 7, haloMax: 2 });
+  const wide = new CableMesh({ maxNodes: nc, radius: THROW_WIDE_RADIUS, ...plugs, stripe: null, plugScale: 1.6, haloPx: 7, haloMax: 2 });
   const tie = new StrapMesh({ length: TIE_K.length, width: TIE_K.width, thickness: TIE_K.thickness, color: '#7d8188', inner: '#666a71', maxPoints: TIE_POINTS });
   const tiePath = new Float32Array(3 * TIE_POINTS);
   const kofi = splitPerson(KOFI, track.pose(0));
@@ -287,11 +288,12 @@ function* longCable(layer: Node) {
   stand.rotation.y = Math.PI / 2;
   // a calm load-out: cases at the side of the stage
   const cases = [flightCase({ width: 0.8, depth: 0.6, height: 0.7 }), flightCase({ width: 0.6, depth: 0.5, height: 0.5 }), flightCase({ width: 1.0, depth: 0.6, height: 0.6 })];
-  cases[0].position.set(-1.2, 0, -1.6);
+  // (behind him and far to the side: never behind the black ring in a shot)
+  cases[0].position.set(-2.3, 0, -0.5);
   cases[0].rotation.y = 0.2;
-  cases[1].position.set(-1.1, 0.7, -1.55);
+  cases[1].position.set(-2.2, 0.7, -0.45);
   cases[1].rotation.y = 0.3;
-  cases[2].position.set(6.5, 0, -2.4);
+  cases[2].position.set(7.5, 0, -4.2);
   cases[2].rotation.y = -0.15;
 
   const cam = makeCamera(34);
@@ -328,15 +330,20 @@ function* longCable(layer: Node) {
     if (s < B_INTRO + B_CUT) orbit(cam, mixOrbit(B_NEAR, B_NEAR2, easeInOutCubic(ramp(s, 0, B_INTRO + B_CUT)), oa));
     else if (s < B_S_SLOW) orbit(cam, B_BEHIND);
     else if (s < B_S_REST) {
-      // from his right side, travelling with the ring (a little behind it: the cable it pays out is in the picture)
-      const r = ringAt(tt), u = ramp(tt, B_SLOW0, T.release + 0.3);
-      const x = Math.max(0.3, r[0] - 0.9 * u);
-      orbit(cam, { target: [x, 0.75, 0.3], yaw: 0.12, pitch: 0.14, dist: 3.4, fov: 40 });
+      // from behind him on his right, travelling with the ring: its back face, where the loops come
+      // off, turned to the camera, the cable it pays out running back into the picture
+      const r = ringAt(tt), u = ramp(tt, B_SLOW0, T.release + 0.25);
+      const x = Math.max(0.25, r[0] - 0.35 * u), y = 1.0 + (Math.max(1.0, r[1]) - 1.0) * 0.9;
+      orbit(cam, { target: [x, y, 0.3], yaw: -0.62, pitch: 0.12, dist: 2.9 + 0.6 * u, fov: 40 });
     } else orbit(cam, mixOrbit(B_BEHIND, B_REST, easeInOutCubic(ramp(s, B_S_REST, B_S_REST + 1.5)), oa));
   });
   const scene = world.scene;
-  const studio = new Studio(scene, { focus: [5.5, 0.4, 0.3], focusRadius: 7.5, floorRadius: 16 });
-  void studio;
+  new Studio(scene, { focus: [5.5, 0.4, 0.3], focusRadius: 7.5, floorRadius: 18 });
+  // a stage, not a table top: the haze only far beyond the mic stand
+  if (scene.fog instanceof THREE.Fog) {
+    scene.fog.near = 16;
+    scene.fog.far = 40;
+  }
   scene.add(near.group, wide.group, tie.group, kofi.person.group, stand, ...cases);
 
   // ---------------------------------------------------------------- the picture
