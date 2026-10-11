@@ -298,7 +298,9 @@ export function pullApart(ring: Ring, spec: RingSpec, o: { chord?: number; T?: n
   const dA = normalize(sub(P(iA + 2), P(0)));
   const dB = normalize(sub(P(n - 1), P(iB - 2)));
   const pA = P(iA), pB = P(iB);
-  const pB1: V3 = [mid[0] - 0.1, pB[1] + 0.02, pB[2]];
+  // the end tail is first swung out to the side (-x), well within its free length
+  const sTop = ring.sLoops[ring.sLoops.length - 1][1], free = ring.sCable[1] - hold - sTop;
+  const pB1 = add(rod.pointAt(sTop), scale(normalize([-0.6, -0.8, 0]), 0.8 * free));
   const qB = quatFromTo(dB, [-1, 0, 0]);
   const fa = moving(pA, [mid[0] + Ltot / 2, mid[1], mid[2]], quatFromTo(dA, [-1, 0, 0]), 1.0, T);
   const fb0 = moving(pB, pB1, qB, 0, 0.6), fb1 = moving(pB1, [mid[0] - Ltot / 2, mid[1], mid[2]], [0, 0, 0, 1], 1.0, T);
@@ -318,7 +320,8 @@ export function pullApart(ring: Ring, spec: RingSpec, o: { chord?: number; T?: n
   const armA = arm(fa, pA, P(0), [1, 0, 0]), armB = arm(fb, pB, P(n - 1), [-1, 0, 0]);
   rod.setCapsules((t) => [armA(t), armB(t)]);
   const x0 = rod.x.slice();
-  rod.addGuide({ nodes: [iA + 2, iB - 2], compliance: 1e-4, weight: (t) => 1 - smooth((t - 0.6) / 0.8), target: (i) => [x0[3 * i], x0[3 * i + 1], x0[3 * i + 2]] });
+  // the ring (not the end tail, which is taken out to the side) is let go gently
+  rod.addGuide({ nodes: [iA + 2, ring.loops[ring.loops.length - 1][1]], compliance: 1e-4, weight: (t) => 1 - smooth((t - 0.6) / 0.8), target: (i) => [x0[3 * i], x0[3 * i + 1], x0[3 * i + 2]] });
   const frames = Math.round((T + 1) * 60);
   for (let f = 0; f < frames; f++) {
     rod.step(1 / 60, o.substeps ?? 30);
