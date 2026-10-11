@@ -82,9 +82,18 @@ Es darf nur **eine** Ausgabe laufen: entweder das Browser-Fenster `/wall/` oder 
 
 ## Szenen
 
-Jede Szene aus `web/scenes/` hat hier ein Gegenstück in `src/scenes/` (gleicher Name). Szenen, die
-nur der Browser hat, überspringt die Show mit einer Fehlermeldung in der Steuerzentrale.
-Wie eine Szene hierher kommt: [`PORTING.md`](PORTING.md).
+Die Szenen aus `web/scenes/` haben hier ein Gegenstück in `src/scenes/` (gleicher Name, gleiche
+Parameter, gleiche Projektionswünsche): blasen-platzen, cyberspiegel, depth-shader,
+fluid-simulation, fruit-ninja, leonie-ziechmann, live-exakt, llg-sakura, modern-events, neon-room,
+person-mask, person-skeleton, pixel-jump-run, pixel-spiegel, pointcloud, three-points,
+wand-spiegel (space-invaders und invaders-tracking sind in Arbeit). Die WGSL-Dateien der Browser-Szenen werden, wo es geht,
+unverändert eingebunden (`include_str!`), die Logik ist Zeile für Zeile nachgebaut, auch die
+Zufallsgeneratoren mit ihren Startwerten (Kulissen und Wälder sind pixelgleich). Was sich nur mit
+der Maus auf der Szenenseite bedienen ließ, fehlt (die Wand hat keine Maus).
+
+Eine Szene, die es nur im Browser gibt (eine neue), überspringt die Show mit einer Fehlermeldung in
+der Steuerzentrale. Ändert sich eine Browser-Szene, folgt ihr Port nicht von selbst: wie eine Szene
+hierher kommt, steht in [`PORTING.md`](PORTING.md).
 
 ## Testen ohne Kinect
 
