@@ -138,11 +138,17 @@ export interface ArmPose {
   /**
    * The grip frame the hand really holds (grips only): p on the cable or bundle axis, columns
    * d1 (to the palm, or to the index finger in a pinch), d2 = d3 × d1, d3 along the cable (a fist or
-   * coil: where the thumb points; a pinch: where the cable leaves past the thumb tip). Includes a
-   * pinch's roll and the hand's freedom about the cable (HandRig.free): give this frame to the
-   * simulation.
+   * coil: where the thumb points; a pinch: where the cable leaves past the thumb tip). For a pinch
+   * this is the CABLE's frame: the pads' frame turned by the pinch's roll about d3. It includes the
+   * hand's freedom about the cable (HandRig.free). Give the simulation either this frame with
+   * PinchSpec.roll = 0, or `pads` with PinchSpec.roll = HandRig.roll (never both: that rolls twice).
    */
   grip?: { p: V3; q: [number, number, number, number] };
+  /**
+   * The pads' frame (grips only): the same p and d3 as grip, d1 from the cable axis to the index
+   * finger as at roll 0, fixed in the hand (a fist or coil: equal to grip).
+   */
+  pads?: { p: V3; q: [number, number, number, number] };
 }
 
 export interface Body {

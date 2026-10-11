@@ -864,13 +864,13 @@ const PROBE = 15;
 const toArray = (a: ArmAngles) => Float64Array.from(ARM_JOINTS.map((j) => a[j]));
 const fromArray = (q: ArrayLike<number>): ArmAngles => Object.fromEntries(ARM_JOINTS.map((j, i) => [j, q[i]])) as unknown as ArmAngles;
 
-/** the arm reaching for a target (see the file header) */
-export function solveArm(s: ArmSetup, target: HandTarget, o: SolveOptions = {}): ArmSolution {
+/** the problem of reaching a target (arm-local), shared by solving and evaluating */
+function problemOf(s: ArmSetup, target: HandTarget, o: SolveOptions = {}): Problem {
   const rel = sub(target.p, s.sc);
   const axes = (target.axes ?? [])
     .filter((g) => (g.weight ?? 1) > 0 && len(g.world) > 1e-9)
     .map((g) => ({ hand: norm(g.hand), world: norm(toLocal(s, g.world)), w: g.weight ?? 1 }));
-  const pr: Problem = {
+  return {
     s,
     p: toLocal(s, rel),
     at: target.at ?? [0, 0, 0],
@@ -885,6 +885,26 @@ export function solveArm(s: ArmSetup, target: HandTarget, o: SolveOptions = {}):
     q: new Float64Array(NQ),
     cost: 0,
   };
+}
+
+/**
+ * An arm with given angles measured against a target, without solving: where the hand gets, and the
+ * full report (position and orientation errors per goal, limits, cost) as solveArm would give it.
+ * rig.ts uses it for poses whose angles come from elsewhere (RigTrack's interpolated frames).
+ */
+export function evaluateArm(s: ArmSetup, target: HandTarget, angles: ArmAngles): ArmSolution {
+  const pr = problemOf(s, target);
+  const q = toArray(angles);
+  projectToLimits(q);
+  const p = new Float64Array(NQ);
+  toRaw(q, p);
+  pr.cost = costOf(pr, p);
+  return finish(pr, q, 0);
+}
+
+/** the arm reaching for a target (see the file header) */
+export function solveArm(s: ArmSetup, target: HandTarget, o: SolveOptions = {}): ArmSolution {
+  const pr = problemOf(s, target, o);
   const maxIter = o.maxIter ?? 60;
   const p = new Float64Array(NQ);
   let iterations = 0;
@@ -976,55 +996,87 @@ function finish(pr: Problem, q: Float64Array, iterations: number): ArmSolution {
   };
 }
 
+/** the stateful solver's settings: speeds per second and times in seconds, so the result does not depend on the call rate */
+export interface ArmIKOptions {
+  /** the fastest any joint may turn while following the target, rad/s (default 12) */
+  maxSpeed?: number;
+  /** how often to look for a clearly better arm from scratch, s (default 0.1; aligned to multiples of it since the first call) */
+  checkEvery?: number;
+  /** how fast the arm moves over to a better one, rad/s (default 3.6) */
+  migrateSpeed?: number;
+  /** after a move over was given up, wait this long before looking again, s (default 0.5) */
+  pause?: number;
+  /** give up a move over that takes longer than this, s (default 2) */
+  maxMigrate?: number;
+}
+
 /**
- * The stateful solver for frame-by-frame use (a bake computing the choreography frame after frame):
- * every solve starts from the last solution and stays close to it, and no joint changes by more than
- * maxStep (rad) per call (default 0.2: 12 rad/s at 60 frames per second), so the arm never pops.
- * Following one solution can get stuck in an awkward one while a much better one exists (after a
- * turn of the hand, say): every `check` calls it also solves from scratch, and when that arm is
- * clearly better (cost below 3/4) and different, the arm moves over to it at no more than
- * `migrate` rad per call while still reaching the target (if the way over would pull the hand more
- * than 5 mm off, or further off than it was, it stays and looks again later). reset() forgets the
- * last solution.
+ * The stateful solver for frame-by-frame use: every solve starts from the last solution and stays
+ * close to it, and no joint turns faster than maxSpeed (rad/s), so the arm never pops. Following one
+ * solution can get stuck in an awkward one while a much better one exists (after a turn of the hand,
+ * say): every `checkEvery` seconds it also solves from scratch, and when that arm is clearly better
+ * (cost below 3/4) and different, the arm moves over to it at no more than `migrateSpeed` rad/s
+ * while still reaching the target (if the way over would pull the hand more than 5 mm off, or
+ * further off than it was, it stays and looks again after `pause` s).
+ *
+ * Every call passes dt, the time since the last call (s). Speeds and times are per second and the
+ * checks fall on a fixed time grid, so the same target path gives (nearly) the same arm at any call
+ * rate (bake at 120 fps, scene at 60 fps: tools/simtest/ik-continuity.mjs checks it). For bake and
+ * scene to agree exactly, both use the same rig.ts RigTrack (it solves on its own fixed grid).
+ * reset() forgets the last solution.
  */
 export class ArmIK {
   private last: ArmAngles | null = null;
   private goal: ArmAngles | null = null;
-  private calls = 0;
+  /** time since the first call, s */
+  private time = 0;
+  /** the check grid cell of the last check */
+  private cell = 0;
+  /** no checks before this time */
+  private resume = 0;
+  /** seconds spent moving over */
   private moving = 0;
   /** how far off the hand was when moving over began */
   private startErr = 0;
+  public readonly o: Required<ArmIKOptions>;
 
-  public constructor(
-    public maxStep = 0.2,
-    public check = 6,
-    public migrate = 0.06,
-  ) {}
+  public constructor(o: ArmIKOptions = {}) {
+    this.o = { maxSpeed: 12, checkEvery: 0.1, migrateSpeed: 3.6, pause: 0.5, maxMigrate: 2, ...o };
+  }
 
-  public solve(s: ArmSetup, target: HandTarget, maxIter?: number): ArmSolution {
+  /** solves for this call; dt = seconds since the last call (default 1/60) */
+  public solve(s: ArmSetup, target: HandTarget, dt = 1 / 60, maxIter?: number): ArmSolution {
+    const o = this.o;
     if (!this.last) {
       const first = solveArm(s, target, { maxIter });
       this.last = first.angles;
+      this.time = 0;
+      this.cell = 0;
       return first;
     }
+    const h = Math.max(1e-6, dt);
+    this.time += h;
     if (this.goal) {
       // the better arm moves with the target; follow it
       this.goal = solveArm(s, target, { prev: this.goal, maxIter }).angles;
     }
     // the pull towards the better arm grows while moving over, so it gets past awkward poses in between
-    const pull = Math.min(40, 3 + this.moving);
-    const sol = solveArm(s, target, { prev: this.last, maxIter, maxStep: this.goal ? this.migrate : this.maxStep, toward: this.goal, towardWeight: pull });
+    const pull = Math.min(40, 3 + 60 * this.moving);
+    const sol = solveArm(s, target, { prev: this.last, maxIter, maxStep: (this.goal ? o.migrateSpeed : o.maxSpeed) * h, toward: this.goal, towardWeight: pull });
+    const cell = Math.floor(this.time / o.checkEvery + 1e-6);
+    const due = cell !== this.cell;
+    this.cell = cell;
     if (this.goal) {
-      this.moving++;
+      this.moving += h;
       // arrived; or the way over pulls the hand (further) off its target: stay here for a while
       const off = sol.report.posError > Math.max(MIGRATE_OFF, this.startErr + 0.003);
-      if (off || distance(sol.angles, this.goal) < 0.03 || this.moving > 120) {
+      if (off || distance(sol.angles, this.goal) < 0.03 || this.moving > o.maxMigrate) {
         this.goal = null;
         this.moving = 0;
-        if (off) this.calls = -MIGRATE_PAUSE;
+        if (off) this.resume = this.time + o.pause;
       }
-    } else if (++this.calls > 0 && (this.calls % this.check === 0 || sol.report.posError > MIGRATE_OFF)) {
-      // every few calls, and at once when the hand misses its target
+    } else if (this.time >= this.resume - 1e-9 && (due || sol.report.posError > MIGRATE_OFF)) {
+      // on the check grid, and at once when the hand misses its target
       const fresh = solveArm(s, target, { maxIter });
       if (fresh.report.cost < 0.75 * sol.report.cost - 1 && distance(fresh.angles, sol.angles) > 0.25) {
         this.goal = fresh.angles;
@@ -1039,7 +1091,9 @@ export class ArmIK {
   public reset() {
     this.last = null;
     this.goal = null;
-    this.calls = 0;
+    this.time = 0;
+    this.cell = 0;
+    this.resume = 0;
     this.moving = 0;
   }
 
@@ -1048,10 +1102,8 @@ export class ArmIK {
   }
 }
 
-/** moving over to a better arm stops when the hand gets this far off its target (m) … */
+/** moving over to a better arm stops when the hand gets this far off its target (m) */
 const MIGRATE_OFF = 0.005;
-/** … and the next look for a better arm waits this many calls */
-const MIGRATE_PAUSE = 30;
 
 /** the largest difference of any joint angle (rad) */
 function distance(a: ArmAngles, b: ArmAngles) {

@@ -154,6 +154,12 @@ export function fistAround(r: number): Fist {
   return fist;
 }
 
+/**
+ * The thumb's collision radii per bone (metacarpal, first phalanx, last phalanx; size 1): the ones
+ * colliders.ts uses, and what the grips keep clear of the held cable.
+ */
+export const THUMB_CAPS = [THUMB.r[0] * 0.95, THUMB.r[1], THUMB.r[3] * 1.04];
+
 /** thumb tips (hand frame, size 1) for a fist: lying along the cable, wrapped over the fingers, on the index */
 export function thumbTargets(fist: Fist, r: number): { along: V3; wrap: V3; pinch: V3 } {
   const idx = FINGERS[0];
@@ -167,10 +173,97 @@ export function thumbTargets(fist: Fist, r: number): { along: V3; wrap: V3; pinc
   const ol = Math.hypot(ox, oy) || 1;
   const out = idx.r0 + THUMB.r[3] * 0.9;
   return {
-    along: [gxAt(fist, 0.08) + 0.006, fist.gy - r - THUMB.r[3] * 0.85, 0.08],
+    // the pad lies on the cable, beside the index finger
+    along: [gxAt(fist, 0.08) + 0.006, fist.gy - r - THUMB_CAPS[2], 0.08],
     wrap: [mx + (ox / ol) * out, my + (oy / ol) * out, idx.kz - 0.004],
     pinch: [(c[2] + c[4]) / 2, (c[3] + c[5]) / 2, idx.kz + (idx.r0 + idx.r1) / 2 + THUMB.r[3] * 0.9],
   };
+}
+
+/** the held axis of a fist in the hand frame (size 1): a point on it and its unit direction (towards the thumb) */
+export function fistAxis(fist: Fist): { p: V3; d: V3 } {
+  return { p: [gxAt(fist, FIST_Z), fist.gy, FIST_Z], d: norm([FIST_SLOPE, 0, 1]) };
+}
+
+/** distance from the segment p-q to the line through a along the unit direction d (sampled) */
+function segLine(p: V3, q: V3, a: V3, d: V3) {
+  let m = Infinity;
+  for (let i = 0; i <= 12; i++) {
+    const v = sub(mix3(p, q, i / 12), a);
+    m = Math.min(m, len(madd(v, d, -dot(v, d))));
+  }
+  return m;
+}
+
+/** how far the thumb (tip, optional last-bone direction) stays outside a held cable or bundle of radius r on the line (a, d): < 0 cuts in (size 1) */
+export function thumbClearance(tip: V3, dir: V3 | undefined, a: V3, d: V3, r: number): number {
+  const ch = thumbChain(tip, dir);
+  let c = Infinity;
+  for (let i = 0; i < 3; i++) c = Math.min(c, segLine(ch[i], ch[i + 1], a, d) - r - THUMB_CAPS[i]);
+  return c;
+}
+
+/**
+ * The point a fraction u of the way from p to q around the line (a, d): along the line and in
+ * distance from it linearly, round it on the shorter arc. A thumb tip moving this way goes round a
+ * held cable instead of through it.
+ */
+export function aroundAxis(p: V3, q: V3, u: number, a: V3, d: V3): V3 {
+  const e1 = across([1, 0, 0], d);
+  const e2 = cross(d, e1);
+  const cyl = (x: V3) => {
+    const v = sub(x, a);
+    const s = dot(v, d);
+    const w = madd(v, d, -s);
+    return { s, rho: len(w), phi: Math.atan2(dot(w, e2), dot(w, e1)) };
+  };
+  const A = cyl(p), B = cyl(q);
+  let dphi = B.phi - A.phi;
+  dphi -= 2 * Math.PI * Math.round(dphi / (2 * Math.PI));
+  const s = lerp(A.s, B.s, u), rho = lerp(A.rho, B.rho, u), phi = A.phi + dphi * u;
+  return madd(madd(madd(a, d, s), e1, rho * Math.cos(phi)), e2, rho * Math.sin(phi));
+}
+
+/**
+ * Pushes a thumb tip straight away from a held axis (a, d; radius r) until the whole thumb is
+ * outside it (by `margin`), as little as needed: an unchanged tip where the thumb is clear already.
+ */
+export function clearThumb(tip: V3, a: V3, d: V3, r: number, margin = 0.0003): V3 {
+  if (thumbClearance(tip, undefined, a, d, r) >= margin) return tip;
+  const v = sub(tip, a);
+  const out = across(madd(v, d, -dot(v, d)), d);
+  const at = (k: number) => madd(tip, out, k);
+  let lo = 0;
+  let hi = -1;
+  let best = { k: 0, c: -Infinity };
+  for (let k = 0.002; k <= 0.05 + 1e-9; k += 0.002) {
+    const c = thumbClearance(at(k), undefined, a, d, r);
+    if (c > best.c) best = { k, c };
+    if (c >= margin) {
+      hi = k;
+      lo = k - 0.002;
+      break;
+    }
+  }
+  if (hi < 0) return at(best.k);
+  for (let n = 0; n < 10; n++) {
+    const mid = (lo + hi) / 2;
+    if (thumbClearance(at(mid), undefined, a, d, r) >= margin) hi = mid;
+    else lo = mid;
+  }
+  return at(hi);
+}
+
+/**
+ * The thumb tip of a fist around a cable of radius r (size 1): lying along the cable (wrap 0) …
+ * wrapped over the fingers (wrap 1), and from there on to the side of the index finger (pinch 1).
+ * The tip moves round the cable, never through it, and the whole thumb stays outside it.
+ */
+export function fistThumb(fist: Fist, r: number, wrap: number, pinch: number): V3 {
+  const tt = thumbTargets(fist, r);
+  const ax = fistAxis(fist);
+  const tip = aroundAxis(aroundAxis(tt.along, tt.wrap, clamp(wrap), ax.p, ax.d), tt.pinch, clamp(pinch), ax.p, ax.d);
+  return clearThumb(tip, ax.p, ax.d, r);
 }
 
 /**

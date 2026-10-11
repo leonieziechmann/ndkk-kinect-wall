@@ -17,7 +17,7 @@ import {
   V3, Quat, add, across, clamp, cross, dot, easeInOut, len, lerp, local, madd, mix3, norm, quatAxisAngle, quatCols, quatFromCols, quatMul, scale, slerp, smooth, sub, turn,
 } from './math';
 import { ArmPose, Body, Frame, HandPose, Pose, PersonSpec, UP, withUp, yawFrame } from './people';
-import { FIST_SLOPE, FIST_Z, GripShape, coilAround, fistAround, freeThumb, pinchAround, thumbTargets } from './body/hand';
+import { FIST_SLOPE, FIST_Z, GripShape, coilAround, fistAround, fistThumb, freeThumb, pinchAround } from './body/hand';
 import { ARM_JOINTS, ArmAngles, ArmIK, ArmSetup, ArmSolution, AxisGoal, HandTarget, armPose, projectToLimits, solveArm, toLocal } from './ik';
 
 /** a grip frame: position on the cable axis and orientation (d1 to the hand, d3 along the cable) */
@@ -165,8 +165,7 @@ export function gripShape(spec: PersonSpec, side: number, h: HandRig): GripShape
   } else {
     const fist = fistAround(r);
     const b = Math.atan(FIST_SLOPE);
-    const tt = thumbTargets(fist, r);
-    const thumb = mix3(mix3(tt.along, tt.wrap, clamp(h.wrap ?? 0)), tt.pinch, clamp(h.pinch ?? 0));
+    const thumb = fistThumb(fist, r, h.wrap ?? 0, h.pinch ?? 0);
     g = {
       curl: fist.curl.map((c) => c * (1 - 0.75 * open)) as GripShape['curl'],
       spread: 0,
