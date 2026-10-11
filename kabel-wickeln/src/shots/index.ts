@@ -10,8 +10,9 @@ import { knotPull } from './knot';
 import { eightOk, eightRoll, eightSnap, eightSwivel } from './eight';
 import { kinkShot } from './kink';
 import { throwShot } from './throw';
+import { deployPull } from './deploy-pull';
 
-const SHOT_LIST: ShotDef[] = [exampleTwist, coilShot, knotPull, eightSnap, eightOk, eightRoll, eightSwivel, kinkShot, throwShot];
+const SHOT_LIST: ShotDef[] = [exampleTwist, coilShot, knotPull, eightSnap, eightOk, eightRoll, eightSwivel, kinkShot, throwShot, deployPull];
 
 export const SHOTS: Readonly<Record<string, ShotDef>> = (() => {
   const out: Record<string, ShotDef> = {};

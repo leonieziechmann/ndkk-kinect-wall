@@ -3,7 +3,7 @@
 //   0-3    knot-pull (shot time ×5): the coil on a table, knots ringed orange once pulled tight
 //   3-5    eight-snap (×2.5): the loop flips into an eight, is pushed round, flips back
 //   5-6.6  eight-swivel (×2.5): fix 3, the twist runs out at the hanging end
-//   6.6-9  throw (×1.83): Kofi's 15 m XLR, wide
+//   6.6-9  throw (×3.4): Kofi's 15 m XLR, wide (the whole shot, Kofi himself is in stage 1)
 //   9-11   kink (×3.25): curl, kink, kept kink
 // Stills: npm run stills -- --project test <this scene's start + the times above>
 
@@ -13,6 +13,7 @@ import { fontsReady } from '../../lib/fonts';
 import { C, FONT } from '../../lib/theme';
 import { BakedRod, loadBake } from '../../sim/bake';
 import { TABLE_Y } from '../../shots/knot';
+import { MIC_AT, THROW_WIDE_RADIUS } from '../../shots/throw';
 import { CableMesh, rgba } from '../../three/cable';
 import { makeCamera, orbit } from '../../three/camera';
 import { micStand, table } from '../../three/props';
@@ -24,7 +25,7 @@ const PARTS: { id: string; from: number; to: number; speed: number }[] = [
   { id: 'knot-pull', from: 0, to: 3, speed: 5 },
   { id: 'eight-snap', from: 3, to: 5, speed: 2.5 },
   { id: 'eight-swivel', from: 5, to: 6.6, speed: 2.5 },
-  { id: 'throw', from: 6.6, to: 9, speed: 1.83 },
+  { id: 'throw', from: 6.6, to: 9, speed: 3.4 },
   { id: 'kink', from: 9, to: 11, speed: 3.25 },
 ];
 
@@ -39,7 +40,7 @@ export default makeScene2D(function* (view) {
     'knot-pull': new CableMesh({ maxNodes: bakes['knot-pull'].n, radius: 0.0035, plugStart: 'xlr-male', plugEnd: 'xlr-female', ground: TABLE_Y }),
     'eight-snap': new CableMesh({ maxNodes: bakes['eight-snap'].n, radius: 0.0035, plugEnd: 'xlr-female' }),
     'eight-swivel': new CableMesh({ maxNodes: bakes['eight-swivel'].n, radius: 0.0035, plugEnd: 'xlr-female' }),
-    throw: new CableMesh({ maxNodes: bakes.throw.n, radius: 0.012, plugStart: 'xlr-male', plugEnd: 'xlr-female' }),
+    throw: new CableMesh({ maxNodes: bakes.throw.n, radius: THROW_WIDE_RADIUS, plugStart: 'xlr-male', plugEnd: 'xlr-female' }),
     kink: new CableMesh({ maxNodes: bakes.kink.n, radius: 0.003, plugStart: 'xlr-male', plugEnd: 'xlr-female', ground: null }),
   };
   const nMax = Math.max(...Object.values(bakes).map((b) => b.n));
@@ -51,7 +52,7 @@ export default makeScene2D(function* (view) {
   const desk = table({ width: 1.4, depth: 0.9, height: TABLE_Y });
   desk.position.set(0, 0, 0.15);
   const stand = micStand();
-  stand.position.set(7.4, 0, 0.3);
+  stand.position.set(...MIC_AT);
 
   const world = new World3D('test-derisk', () => {
     const tt = t();

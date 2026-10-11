@@ -2,13 +2,15 @@
 // function of the shot time t, shared by the bake (grips, guides, capsules) and the scene (hands,
 // labels, cameras):
 //
-//   - the left fist holds the coil: palm up, thumb on the bundle, in front of the belly, the
-//     forearm pointing forward-left; every placed loop rides rigidly with it
-//   - the right hand takes the cable next to the left fist (palm down, thumb on top pointing back
-//     to the left hand), slides an arm's length out along it through a loose fist, closes and
-//     brings that point back into the left hand, rolling the cable a little with the thumb
-//   - for an "unter" loop it first turns palm up (thumb pointing away from the coil) and turns
-//     back on the way in, rolling the other way; the loop falls over the back of the hand
+//   - the left fist holds the coil: palm up, thumb wrapped over the bundle, in front of the belly,
+//     the elbow out and down; every placed loop rides rigidly with it
+//   - the right hand comes in to just beside the hanging cable (palm down), takes it next to the
+//     left fist (thumb on top pointing back to the left hand), slides an arm's length out along it
+//     through a loose fist, in the plane of the coil, closes and brings that point back into the
+//     left hand, rolling the cable a little with the thumb
+//   - for an "unter" loop it first turns over beside the cable (palm up, thumb pointing away from
+//     the coil), takes, slides and brings the cable back like that (the loop falls over the back of
+//     the hand) and turns back palm down only after letting go; the finger roll is the other way
 //   - the target shape of every loop: round (Ø ~23 cm), going clockwise as the coiler sees it
 //     (from the fist to her right, down, up the left side), each new loop on the coiler's side of
 //     the bundle and fanning out a little toward her at the bottom. Where the cable to the floor
@@ -16,8 +18,11 @@
 //     bulges forward over it, and the loop after it starts hooked behind it
 //   - material coordinates (arc length from the male plug) of every strand in the fist and of the
 //     point the right hand takes, so grips and guides act on the right nodes
-//   - Noor's rig for the outside view and a first-person variant whose shoulders are cheated
-//     forward and in (the hands, and so the cable, are the same in both)
+//   - after the last loop the velcro tie on the plug end closes round the bundle just left of the
+//     fist: the right hand takes its end, wraps it over the top and presses it on (tiePath gives
+//     the band for the scene)
+//   - Noor's rig for the outside view and a first-person variant whose left shoulder is cheated low
+//     and out (the hands, and so the cable, are the same in both)
 //
 // Coil frame: a = the direction the cable runs through the left fist (toward the right hand),
 // up = world up, n = a × up (toward the coiler's side of the coil). Seen from +n, a points right.
@@ -54,15 +59,15 @@ export interface Pace {
 }
 
 /** a slow loop for teaching */
-export const TEACHING: Pace = { take: 0.7, flip: 0.9, slide: 1.4, close: 0.3, ret: 1.5, place: 0.2, open: 0.5, hold: 0.8, letGo: true };
-/** an everyday loop, about 2.5 s */
-export const BRISK: Pace = { take: 0.35, flip: 0.35, slide: 0.7, close: 0.12, ret: 0.8, place: 0.1, open: 0.2, hold: 0.05, letGo: true };
+export const TEACHING: Pace = { take: 0.8, flip: 1.1, slide: 1.4, close: 0.3, ret: 1.5, place: 0.2, open: 0.5, hold: 0.8, letGo: true };
+/** an everyday loop, about 2.1 s (über) or 2.4 s (unter) */
+export const BRISK: Pace = { take: 0.35, flip: 0.35, slide: 0.75, close: 0.12, ret: 0.85, place: 0.1, open: 0.2, hold: 0.05, letGo: true };
 
 export interface CoilingSpec {
   kinds: LoopKind[];
   /** one pace per loop */
   paces: Pace[];
-  /** loop radii [m] (default 0.117, a little smaller after an "unter" loop) */
+  /** loop radii [m] (default 0.112, a little smaller after an "unter" loop) */
   radii?: number[];
   /** length of the plug end hanging below the fist [m] */
   tail?: number;
@@ -74,6 +79,9 @@ export interface LoopBeat {
   k: number;
   kind: LoopKind;
   t0: number;
+  /** the right hand is ready next to the cable, palm down; an "unter" hand then turns over until tTurned */
+  tReady: number;
+  tTurned: number;
   tSlide: number;
   tClose: number;
   tRet: number;
@@ -90,7 +98,7 @@ export interface LoopBeat {
   sGrip: number;
 }
 
-export type RightMode = 'take' | 'slide' | 'close' | 'return' | 'place' | 'open' | 'hold';
+export type RightMode = 'take' | 'slide' | 'close' | 'return' | 'place' | 'open' | 'hold' | 'tie';
 
 export interface RightHand {
   mode: RightMode;
@@ -126,16 +134,23 @@ const FACE = 0.61;
 const L0: V3 = [-0.16, 1.0, -0.34];
 /** the right hand resting at her side */
 const REST: V3 = [0.25, 0.83, -0.06];
-/** where the right fist is when slid out, relative to L0 */
-const OUT: V3 = [0.36, -0.14, -0.03];
-/** the cable direction through the right fist when slid out */
-const D_OUT: V3 = normalize([1, -0.28, -0.12]);
+/**
+ * where the right fist is when slid out, in coil coordinates (along a, up) from the bundle; its
+ * depth (along n) stays that of the cable where the hand took it: in front of the coil after an
+ * "über" loop, between the last two loops after an "unter" one (hooked under it), so the cable
+ * the hand pulls out never has to pass a loop
+ */
+const OUT_X = 0.37, OUT_Y = -0.14;
+/** the cable direction through the right fist when slid out, in coil coordinates */
+const D_OUT: V3 = [1, -0.28, 0];
 /** the plug end bends down out of the fist with this radius [m] */
 const TAIL_BEND = 0.02;
 /** fan of the loops toward the coiler at the bottom: tan of the tilt, first loop and per loop */
 const FAN0 = 0.02, FAN = 0.045;
+/** the strands lie side by side in the fist, this far apart (a little more than the cable is thick) [m] */
+const SLOT = 0.0075;
 /** out of the fist, loop k's strands splay toward the coiler by k times this [m] */
-const SPLAY = 0.008;
+const SPLAY = 0.004;
 /** "unter" loops bulge forward over the cable to the floor by this much [m] */
 const BULGE = 0.016;
 /** loops after an "unter" one: right side out, left side in (fraction of the radius) */
@@ -149,6 +164,26 @@ const FLOOR_BEND = 0.04, FLOOR_SLANT = 0.3, FLOOR_PATH = 0.45;
 const TAKE = 0.07, TAKE_HOOKED = 0.11;
 /** finger roll during the way back [rad] */
 const ROLL = 0.55;
+/** the velcro tie: its eyelet sits round the plug end this far from the plug; its free tail [m] */
+export const TIE_S = 0.16;
+const TIE_TAIL = 0.24;
+/** it is wrapped round the bundle here (coil x: where the left hand held it), band thickness [m] */
+const TIE_X = -0.026, BAND_T = 0.002;
+/** for the tie the left hand slides this far along the bundle toward the right hand [m] */
+const TIE_SLIDE = 0.04;
+/** wrap radius grows by this per turn (the second turn lies on the first) */
+const TIE_GROW = 1.5 * BAND_T;
+/** points along the tail for the mesh */
+export const TIE_POINTS = 48;
+
+/** the left elbow points out and down (so the forearm does not cover the coil from her right) */
+const ELBOW: V3 = [-0.6, -1, 0.3];
+/**
+ * first person: the left shoulder much lower and the elbow below and behind the wrist, so the
+ * forearm comes in diagonally from the lower left of her view and the coil hangs free of it
+ */
+const POV_SHOULDERS: [V3, V3] = [[-0.06, -0.16, 0.0], [0.0, -0.04, -0.03]];
+const POV_ELBOW: V3 = [-0.55, -1, 0.25];
 
 const ease = (u: number) => smooth(u);
 const clamp01 = (u: number) => Math.min(1, Math.max(0, u));
@@ -184,6 +219,23 @@ interface LoopShape {
   cum: number[];
 }
 
+/** where the tie closes round the bundle (see Coiling.tieGeom) */
+export interface TieGeom {
+  /** the eyelet on the plug end */
+  attach: V3;
+  /** bundle centre and direction where the tail wraps round it; e1 toward the coiler, e2 = axis × e1 (up) */
+  centre: V3;
+  axis: V3;
+  e1: V3;
+  e2: V3;
+  /** bundle radius and the angle (in e1, e2) where the tail meets it; the wrap ends at thEnd */
+  r: number;
+  th0: number;
+  thEnd: number;
+  /** straight piece from the eyelet to the bundle */
+  reach: number;
+}
+
 export class Coiling {
   readonly kinds: LoopKind[];
   readonly beats: LoopBeat[];
@@ -198,7 +250,10 @@ export class Coiling {
   readonly sP: number[];
   /** end of the last loop */
   readonly tEnd: number;
+  /** closing the tie after the last loop: reach for its end, lift it, wrap it (held, then by itself), press, away */
+  readonly tie: { t0: number; tPinch: number; tLift: number; tRelease: number; tWrapped: number; tPress: number; tAway: number };
   private readonly shapes: LoopShape[];
+  private tieG: TieGeom | null = null;
 
   constructor(spec: CoilingSpec) {
     const N = spec.kinds.length;
@@ -206,7 +261,7 @@ export class Coiling {
     this.a = [Math.cos(FACE), 0, -Math.sin(FACE)];
     this.n = cross(this.a, UP);
     this.tail = spec.tail ?? 0.2;
-    const radii = spec.radii ?? spec.kinds.map((_, i) => (i > 0 && spec.kinds[i - 1] === 'under' ? 0.112 : 0.117));
+    const radii = spec.radii ?? spec.kinds.map((_, i) => (i > 0 && spec.kinds[i - 1] === 'under' ? 0.108 : 0.112));
 
     // material: the plug end, its bend into the fist, the first strand's centre
     this.sP = [this.tail + (Math.PI / 2) * TAIL_BEND + FIST_HALF];
@@ -221,7 +276,9 @@ export class Coiling {
     this.beats = spec.kinds.map((kind, i) => {
       const p = spec.paces[i];
       const t0 = t;
-      const tSlide = t0 + p.take + (kind === 'under' ? p.flip : 0);
+      const tReady = t0 + 0.75 * p.take;
+      const tTurned = tReady + (kind === 'under' ? p.flip : 0);
+      const tSlide = tTurned + 0.25 * p.take;
       const tClose = tSlide + p.slide;
       const tRet = tClose + p.close;
       const tPlace = tRet + p.ret;
@@ -230,11 +287,13 @@ export class Coiling {
       t = tFree + p.hold;
       const fromHanging = i === 0 || spec.paces[i - 1].letGo;
       return {
-        k: i + 1, kind, t0, tSlide, tClose, tRet, tPlace, tOpen, tFree, t1: t, letGo: p.letGo || i === N - 1, fromHanging,
+        k: i + 1, kind, t0, tReady, tTurned, tSlide, tClose, tRet, tPlace, tOpen, tFree, t1: t, letGo: p.letGo || i === N - 1, fromHanging,
         sStart: this.sP[i] + (fromHanging ? FIST_HALF + (i > 0 && spec.kinds[i - 1] === 'under' ? TAKE_HOOKED : TAKE) : FIST_GAP), sGrip: this.sP[i + 1] + FIST_GAP,
       };
     });
     this.tEnd = t;
+    const t0 = t + 0.3, tPinch = t0 + 0.8, tLift = tPinch + 0.5, tRelease = tLift + 1.0, tWrapped = tRelease + 0.5, tPress = tWrapped + 0.45;
+    this.tie = { t0, tPinch, tLift, tRelease, tWrapped, tPress, tAway: tPress + 0.75 };
   }
 
   // ---------------------------------------------------------------- geometry
@@ -245,15 +304,26 @@ export class Coiling {
     return [L[0] + a[0] * x + n[0] * z, L[1] + y, L[2] + a[2] * x + n[2] * z];
   }
 
+  /** a direction given in coil coordinates (along a, up, n) */
+  cv(x: number, y: number, z: number): V3 {
+    const { a, n } = this;
+    return [a[0] * x + n[0] * z, y, a[2] * x + n[2] * z];
+  }
+
+  /** the cable direction through the right fist when slid out */
+  private get dOut(): V3 {
+    return normalize(this.cv(D_OUT[0], D_OUT[1], D_OUT[2]));
+  }
+
   /** coil coordinates of a world point: along a, up, n relative to the bundle centre */
   local(p: V3): V3 {
     const d = sub(p, this.L);
     return [dot(d, this.a), d[1], dot(d, this.n)];
   }
 
-  /** strand j in the fist, in coil coordinates (y, z): two zig-zag rows, each new one nearer the coiler */
+  /** strand j in the fist, in coil coordinates (y, z): side by side across the palm, each new one nearer the coiler */
   slot(j: number): [number, number] {
-    return [j % 2 ? -0.003 : 0.003, -0.0105 + 0.0035 * j];
+    return [0, SLOT * (j - 3)];
   }
 
   /** centre of strand j in the fist */
@@ -272,7 +342,7 @@ export class Coiling {
     const R = sh.R;
     const phiA = Math.asin(FIST_HALF / R);
     const u = clamp01((phi - phiA) / (2 * Math.PI - 2 * phiA));
-    const [y0, z0] = this.slot(k - 1), [y1, z1] = this.slot(k);
+    const y0 = this.slot(k - 1)[0], y1 = this.slot(k)[0];
     // loops after an "unter" one lean: right side out, left side in (zero near the fist), so the
     // start, hooked behind the "unter" loop, parts from it and can come forward
     const lean = k > 1 && this.kinds[k - 2] === 'under' ? (LEAN * Math.sin(phi) * (1 - Math.cos(phi))) / 2 : 0;
@@ -292,8 +362,9 @@ export class Coiling {
     // out of the fist the strands splay apart (the newer, the nearer the coiler) and fan out below
     const out = smooth(phi / 0.35) * smooth((2 * Math.PI - phi) / 0.35);
     let z = z0 + (z1 - z0) * u + SPLAY * k * out + Math.max(0, drop) * (FAN0 + FAN * (k - 1));
-    // "unter": forward over the cable to the floor, from just outside the fist to past the bottom
-    if (this.kinds[k - 1] === 'under') z += BULGE * smooth(phi / 0.5) * (1 - smooth((phi - 2.6) / 0.8));
+    // "unter": forward over the cable to the floor, from just outside the fist (where its start has
+    // dropped below the new strand running on to the right hand) to past the bottom
+    if (this.kinds[k - 1] === 'under') z += BULGE * smooth((phi - phiA) / 0.4) * (1 - smooth((phi - 2.6) / 0.8));
     return z;
   }
 
@@ -391,6 +462,130 @@ export class Coiling {
     return this.at(FIST_HALF + FLOOR_BEND * Math.sin(turn) - e * Math.sin(FLOOR_SLANT), y0 - FLOOR_BEND * (1 - Math.cos(turn)) - e * Math.cos(FLOOR_SLANT), z);
   }
 
+  // ---------------------------------------------------------------- the velcro tie
+
+  /**
+   * The bundle where the tie closes: where the left hand held it (the strands lie compact and
+   * straight there; the hand has slid a little toward the right hand to make room). The tail comes
+   * up from the eyelet on the plug end below and wraps round it toward the coiler, over the top,
+   * behind and under, about once.
+   */
+  tieGeom(): TieGeom {
+    if (this.tieG) return this.tieG;
+    const N = this.kinds.length;
+    let r = 0;
+    for (let j = 0; j <= N; j++) r = Math.max(r, Math.hypot(...this.slot(j)));
+    r += XLR_R + 0.0015;
+    const centre = this.at(TIE_X, 0, 0);
+    const axis = this.a, e1 = this.n, e2 = UP;
+    const attach = this.tailPoint(TIE_S);
+    const d = sub(attach, centre);
+    let th0 = Math.atan2(dot(d, e2), dot(d, e1));
+    // the wrap runs toward the coiler first (increasing angle from below)
+    if (th0 > 0) th0 -= 2 * Math.PI;
+    const g: TieGeom = { attach, centre, axis, e1, e2, r, th0, thEnd: th0, reach: 0 };
+    g.reach = length(sub(attach, this.tieRing(g, th0)));
+    const c = TIE_GROW / (4 * Math.PI);
+    const rest = TIE_TAIL - g.reach;
+    g.thEnd = th0 + (-r + Math.sqrt(r * r + 4 * c * rest)) / (2 * c);
+    this.tieG = g;
+    return g;
+  }
+
+  /** the point of the wrap at angle th (on the spiral) */
+  private tieRing(g: TieGeom, th: number): V3 {
+    const R = g.r + (TIE_GROW * (th - g.th0)) / (2 * Math.PI);
+    return add(g.centre, add(scale(g.e1, R * Math.cos(th)), scale(g.e2, R * Math.sin(th))));
+  }
+
+  /** arc length of the wrap from th0 to th */
+  private tieArc(g: TieGeom, th: number) {
+    const x = th - g.th0;
+    return g.r * x + (TIE_GROW / (4 * Math.PI)) * x * x;
+  }
+
+  /** the tail at arc length sg (from the eyelet), wrapped up to the angle th; the rest straight on */
+  private tieAt(g: TieGeom, sg: number, th: number): V3 {
+    if (sg <= g.reach) return lerp3(g.attach, this.tieRing(g, g.th0), sg / g.reach);
+    const s2 = sg - g.reach, arc = this.tieArc(g, th);
+    if (s2 <= arc) {
+      const c = TIE_GROW / (4 * Math.PI);
+      return this.tieRing(g, g.th0 + (-g.r + Math.sqrt(g.r * g.r + 4 * c * s2)) / (2 * c));
+    }
+    const tan = add(scale(g.e1, -Math.sin(th)), scale(g.e2, Math.cos(th)));
+    return add(this.tieRing(g, th), scale(tan, s2 - arc));
+  }
+
+  /** the hanging tail at arc length sg: down along the plug end, leaning slowly toward the coiler */
+  private tieHanging(g: TieGeom, sg: number): V3 {
+    const off = XLR_R + 0.002 + 0.03 * (sg / TIE_TAIL) ** 2;
+    return add(add(g.attach, scale(UP, -sg)), scale(this.n, off));
+  }
+
+  /** how far the tie is closed at t: lift 0 (hanging) … 1 (up at the bundle), wrap angle */
+  tieState(t: number): { lift: number; th: number } {
+    const g = this.tieGeom(), T = this.tie;
+    const lift = ease((t - T.tPinch) / (T.tLift - T.tPinch));
+    // held: from the start round the front and over the top to behind; then it wraps on by itself
+    const thHeld = Math.min(g.th0 + Math.PI + 0.9, g.thEnd - 0.8);
+    const th = t < T.tRelease ? g.th0 + (thHeld - g.th0) * ease((t - T.tLift) / (T.tRelease - T.tLift)) : thHeld + (g.thEnd - thHeld) * ease((t - T.tRelease) / (T.tWrapped - T.tRelease));
+    return { lift, th };
+  }
+
+  /** the tail of the tie at t as TIE_POINTS points (xyz) from the eyelet to its end */
+  tiePath(t: number, out: Float32Array) {
+    const g = this.tieGeom();
+    const { lift, th } = this.tieState(t);
+    for (let j = 0; j < TIE_POINTS; j++) {
+      const sg = (TIE_TAIL * j) / (TIE_POINTS - 1);
+      const p = lift < 1 ? lerp3(this.tieHanging(g, sg), this.tieAt(g, sg, th), lift) : this.tieAt(g, sg, th);
+      out[3 * j] = p[0];
+      out[3 * j + 1] = p[1];
+      out[3 * j + 2] = p[2];
+    }
+  }
+
+  /** the end of the tail and its direction at t */
+  private tieEnd(t: number): { p: V3; d: V3 } {
+    const g = this.tieGeom();
+    const { lift, th } = this.tieState(t);
+    const at = (sg: number) => (lift < 1 ? lerp3(this.tieHanging(g, sg), this.tieAt(g, sg, th), lift) : this.tieAt(g, sg, th));
+    const p = at(TIE_TAIL);
+    return { p, d: normalize(sub(p, at(TIE_TAIL - 0.01))) };
+  }
+
+  /** the right hand while it closes the tie: reaches for the end, holds it while wrapping, presses it on */
+  private rightTie(t: number): RightHand {
+    const T = this.tie, g = this.tieGeom();
+    const base = { loop: this.beats.length - 1, s: 0, holds: 'none' as const, sleeve: 0, pinch: 0, flip: 0, mode: 'tie' as const };
+    // the hand holds the band's end in a loose fist, the band running out of it toward the bundle
+    const holding = (tt: number): Frame => {
+      const e = this.tieEnd(tt);
+      return frameOf(e.p, scale(e.d, -1), add(scale(g.axis, -0.6), scale(UP, 0.4)));
+    };
+    const rest = this.awayFrame(this.beats.length);
+    const press = g.thEnd - 0.25;
+    const pressFrame = frameOf(add(this.tieRing(g, press), scale(add(scale(g.e1, Math.cos(press)), scale(g.e2, Math.sin(press))), 0.012)), add(scale(g.e1, -Math.sin(press)), scale(g.e2, Math.cos(press))), add(scale(g.e1, -Math.cos(press)), scale(g.e2, -Math.sin(press))));
+    if (t < T.tPinch) {
+      const u = ease((t - T.t0) / (T.tPinch - T.t0));
+      const to = holding(T.tPinch);
+      const hand = { p: bez(rest.p, add(rest.p, [0, 0.08, -0.05]), add(to.p, [0.05, -0.04, 0.05]), to.p, u), q: quatSlerp(rest.q, to.q, u) };
+      return { ...base, cable: hand, hand, open: 1 - 0.65 * u };
+    }
+    if (t < T.tRelease) return { ...base, cable: holding(t), hand: holding(t), open: 0.35 };
+    if (t < T.tPress) {
+      // lets go behind the bundle and comes over the top to where the end will lie, and presses it on
+      const u = ease((t - T.tRelease) / (T.tWrapped - T.tRelease));
+      const from = holding(T.tRelease);
+      const p = bez(from.p, add(from.p, scale(UP, 0.05)), add(pressFrame.p, add(scale(UP, 0.05), scale(this.n, 0.03))), pressFrame.p, u);
+      const hand = { p, q: quatSlerp(from.q, pressFrame.q, u) };
+      return { ...base, cable: hand, hand, open: 0.35 + 0.4 * Math.sin(Math.PI * Math.min(1, u)) };
+    }
+    const u = ease((t - T.tPress) / (T.tAway - T.tPress));
+    const hand = { p: bez(pressFrame.p, add(pressFrame.p, add(scale(this.n, 0.06), scale(UP, 0.03))), add(rest.p, [0.04, 0.08, -0.04]), rest.p, u), q: quatSlerp(pressFrame.q, rest.q, u) };
+    return { ...base, cable: hand, hand, open: 0.6 };
+  }
+
   // ---------------------------------------------------------------- the left hand
 
   /** the left fist's frame for the simulation: fixed, the coil hangs from it */
@@ -414,8 +609,10 @@ export class Coiling {
     cy /= wsum; cz /= wsum;
     let r = 0;
     w.forEach((x, j) => (r = Math.max(r, x * Math.hypot(this.slot(j)[0] - cy, this.slot(j)[1] - cz))));
-    const f = frameOf(this.at(0, cy, cz), this.a, add(scale(UP, -1), scale(this.n, -0.3)));
-    return { grip: f, radius: XLR_R + r, thumbAlong: -1 };
+    // for the tie the hand slides a little along the bundle, toward the right hand
+    const slide = TIE_SLIDE * ease((t - this.tie.t0) / 0.6);
+    const f = frameOf(this.at(slide, cy, cz), this.a, add(scale(UP, -1), scale(this.n, -0.3)));
+    return { grip: f, radius: XLR_R + r, thumbAlong: -1, wrap: 1 };
   }
 
   // ---------------------------------------------------------------- the right hand
@@ -437,7 +634,6 @@ export class Coiling {
     return add(this.strand(k), scale(this.a, FIST_GAP));
   }
 
-  /** where the open right hand waits after letting go of loop k (k = 0: before the first loop) */
   /**
    * Where the open right hand waits after letting go of loop k (k = 0: before the first loop): at
    * her side after a slow loop (the view on the new loop is free), just next to the coil after an
@@ -452,7 +648,7 @@ export class Coiling {
   private outPos(k: number): V3 {
     // a little variation from loop to loop
     const w = Math.sin(k * 2.39) * 0.012;
-    return add(this.L, [OUT[0] + w, OUT[1] + 0.6 * w, OUT[2]]);
+    return this.at(OUT_X + w, OUT_Y + 0.6 * w, this.local(this.takePos(k))[2]);
   }
 
   /**
@@ -472,6 +668,7 @@ export class Coiling {
   }
 
   right(t: number): RightHand {
+    if (t >= this.tie.t0) return this.rightTie(t);
     const a = this.a;
     const i = this.beatAt(t);
     const b = this.beats[i];
@@ -483,28 +680,40 @@ export class Coiling {
     const flipped = b.kind === 'under' ? 1 : 0;
 
     if (t < b.tSlide) {
-      const u = (t - b.t0) / (b.tSlide - b.t0);
       if (!b.fromHanging) {
         // still holding loosely next to the left fist; "unter": the hand turns over around the cable
         const cable = this.rightFrame(pTake, a);
-        const f = flipped * ease(u);
+        const f = flipped * ease((t - b.t0) / (b.tSlide - b.t0));
         const lift = Math.sin(Math.PI * f);
         const hand = { p: add(pTake, add(scale(this.n, 0.025 * lift), scale(UP, 0.01 * lift))), q: turned(cable.q, 0, Math.PI * f) };
         return { ...base, mode: 'take', cable, hand, s: b.sStart, holds: 'sleeve', sleeve: 1, open: loose + 0.5 * lift, flip: f };
       }
-      // in from where it waited, taking the hanging cable loosely; "unter": turning palm up on the way
-      const e = ease(u);
+      // in from where it waited to just above the hanging cable (palm down); "unter": there the hand
+      // turns over (palm up, thumb pointing away); then it takes the cable loosely
       const from = this.awayFrame(k - 1);
-      const p0 = from.p;
-      const p = bez(p0, add(p0, [0, 0.06, -0.04]), add(pTake, [0.06, -0.03, 0.04]), pTake, e);
       const cable = this.rightFrame(pTake, this.takeDir(k));
-      const f = flipped * ease((u - 0.1) / 0.6);
-      const q = quatSlerp(from.q, cable.q, ease(u / 0.8));
-      return { ...base, mode: 'take', cable: { p, q: cable.q }, hand: { p, q: turned(q, 0, Math.PI * f) }, s: b.sStart, holds: u > 0.8 ? 'sleeve' : 'none', sleeve: smooth((u - 0.75) / 0.25), open: 1 - (1 - loose) * ease((u - 0.5) / 0.5), flip: f };
+      // ready: a little right of the take point, where the hand is seen in both views as it turns
+      const ready = add(pTake, add(add(scale(this.a, 0.085), scale(this.n, 0.03)), [0, 0.02, 0]));
+      if (t < b.tReady) {
+        const e = ease((t - b.t0) / (b.tReady - b.t0));
+        const p0 = from.p;
+        const p = bez(p0, add(p0, [0, 0.06, -0.04]), add(ready, [0.06, -0.02, 0.04]), ready, e);
+        return { ...base, mode: 'take', cable: { p, q: cable.q }, hand: { p, q: quatSlerp(from.q, cable.q, e) }, s: b.sStart, holds: 'none', sleeve: 0, open: 0.6, flip: 0 };
+      }
+      if (t < b.tTurned) {
+        const u = (t - b.tReady) / (b.tTurned - b.tReady);
+        const f = ease(u);
+        const p = add(ready, scale(UP, 0.015 * Math.sin(Math.PI * u)));
+        return { ...base, mode: 'take', cable: { p, q: cable.q }, hand: { p, q: turned(cable.q, 0, Math.PI * f) }, s: b.sStart, holds: 'none', sleeve: 0, open: 0.6 + 0.3 * Math.sin(Math.PI * u), flip: f };
+      }
+      const u = (t - b.tTurned) / (b.tSlide - b.tTurned);
+      const e = ease(u);
+      const p = lerp3(ready, pTake, e);
+      return { ...base, mode: 'take', cable: { p, q: cable.q }, hand: { p, q: turned(cable.q, 0, Math.PI * flipped) }, s: b.sStart, holds: u > 0.35 ? 'sleeve' : 'none', sleeve: smooth((u - 0.35) / 0.65), open: 0.6 - (0.6 - loose) * e, flip: flipped };
     }
     if (t < b.tClose) {
       const u = ease((t - b.tSlide) / (b.tClose - b.tSlide));
-      const c1 = add(pTake, b.fromHanging ? [0.06, -0.06, 0] : [0.12, 0, 0]), c2 = add(pOut, [-0.12, -0.02, 0.0]);
+      const c1 = add(pTake, b.fromHanging ? this.cv(0.06, -0.06, 0) : this.cv(0.12, 0, 0)), c2 = add(pOut, this.cv(-0.12, -0.02, 0));
       const p = bez(pTake, c1, c2, pOut, u);
       // the cable runs through the fist as fast as the hand moves along it; what the U needs on top
       // is fed once the hands are apart, so the cable between them sags instead of buckling
@@ -519,38 +728,38 @@ export class Coiling {
       const hooked = k > 1 && this.kinds[k - 2] === 'under';
       const sNow = b.sStart + along + Math.max(0, b.sGrip - b.sStart - total) * (hooked ? smooth((u - 0.15) / 0.7) : smooth((u - 0.25) / 0.75));
       // from the hanging cable the fist turns level only once it is out to the side
-      const cable = this.rightFrame(p, b.fromHanging ? turnToward(this.takeDir(k), D_OUT, smooth((u - 0.25) / 0.65)) : turnToward(a, D_OUT, u));
+      const cable = this.rightFrame(p, b.fromHanging ? turnToward(this.takeDir(k), this.dOut, smooth((u - 0.25) / 0.65)) : turnToward(a, this.dOut, u));
       return { ...base, mode: 'slide', cable, hand: { p, q: turned(cable.q, 0, Math.PI * flipped) }, s: sNow, holds: 'sleeve', sleeve: 1, open: loose, flip: flipped };
     }
     if (t < b.tRet) {
       const u = (t - b.tClose) / (b.tRet - b.tClose);
-      const cable = this.rightFrame(pOut, D_OUT);
+      const cable = this.rightFrame(pOut, this.dOut);
       return { ...base, mode: 'close', cable, hand: { p: pOut, q: turned(cable.q, 0, Math.PI * flipped) }, s: b.sGrip, holds: 'grip', sleeve: 0, open: loose * (1 - ease(u)), flip: flipped };
     }
     if (t < b.tPlace) {
-      // back up to the left hand, rolling the cable with the thumb; "unter" turns back palm down
+      // back up to the left hand, rolling the cable a little with the thumb. "unter" stays turned
+      // (palm up) while it holds the cable: the loop falls over the back of the hand
       const u = (t - b.tRet) / (b.tPlace - b.tRet);
       const e = ease(u);
-      const p = bez(pOut, add(pOut, [-0.05, 0.1, 0.03]), add(pPlace, [0.1, 0.035, 0.03]), pPlace, e);
-      const cable = this.rightFrame(p, turnToward(D_OUT, a, e));
-      const back = b.kind === 'under' ? ease((u - 0.35) / 0.6) : 0;
-      const turnMid = b.kind === 'under' ? Math.sin(Math.PI * back) : 0;
+      const p = bez(pOut, add(pOut, this.cv(-0.05, 0.1, 0.03)), add(pPlace, this.cv(0.1, 0.035, 0.03)), pPlace, e);
+      const cable = this.rightFrame(p, turnToward(this.dOut, a, e));
       const roll = sgn * ROLL * Math.sin(Math.PI * Math.min(1, u * 1.1));
-      const hand = { p: add(p, add(scale(this.n, 0.02 * turnMid), scale(UP, -0.008 * turnMid))), q: turned(cable.q, roll, Math.PI * (flipped - back)) };
-      return { ...base, mode: 'return', cable, hand, s: b.sGrip, holds: 'grip', sleeve: 0, open: 0.5 * turnMid, pinch: turnMid, flip: flipped - back };
+      return { ...base, mode: 'return', cable, hand: { p, q: turned(cable.q, roll, Math.PI * flipped) }, s: b.sGrip, holds: 'grip', sleeve: 0, open: 0, flip: flipped };
     }
     const cable = this.rightFrame(pPlace, a);
-    if (t < b.tOpen) return { ...base, mode: 'place', cable, hand: cable, s: b.sGrip, holds: 'grip', sleeve: 0, open: 0, flip: 0 };
+    const held = { p: pPlace, q: turned(cable.q, 0, Math.PI * flipped) };
+    if (t < b.tOpen) return { ...base, mode: 'place', cable, hand: held, s: b.sGrip, holds: 'grip', sleeve: 0, open: 0, flip: flipped };
     if (!b.letGo) {
-      // everyday pace: the fingers loosen and the next loop starts from here
+      // everyday pace without letting go: the fingers loosen and the next loop starts from here
       const u = ease((t - b.tOpen) / (b.tFree - b.tOpen));
-      return { ...base, mode: t < b.tFree ? 'open' : 'hold', cable, hand: cable, s: b.sGrip, holds: 'sleeve', sleeve: u, open: loose * u, flip: 0 };
+      return { ...base, mode: t < b.tFree ? 'open' : 'hold', cable, hand: held, s: b.sGrip, holds: 'sleeve', sleeve: u, open: loose * u, flip: flipped };
     }
-    // let go and back off: the cable to the floor drops through the new loop
+    // let go and back off (an "unter" hand turns back palm down on the way): the cable to the floor
+    // drops through the new loop
     const u = ease((t - b.tOpen) / (b.tFree - b.tOpen));
     const to = this.awayFrame(k);
-    const hand = { p: bez(pPlace, add(pPlace, [0.04, -0.02, 0.05]), add(to.p, [0.02, 0.08, -0.04]), to.p, u), q: quatSlerp(cable.q, to.q, u) };
-    return { ...base, mode: t < b.tFree ? 'open' : 'hold', cable: hand, hand, s: b.sGrip, holds: 'none', sleeve: 0, open: Math.min(1, 1.6 * u), flip: 0 };
+    const hand = { p: bez(pPlace, add(pPlace, [0.04, -0.02, 0.05]), add(to.p, [0.02, 0.08, -0.04]), to.p, u), q: quatSlerp(held.q, to.q, u) };
+    return { ...base, mode: t < b.tFree ? 'open' : 'hold', cable: hand, hand, s: b.sGrip, holds: 'none', sleeve: 0, open: Math.min(1, 1.6 * u) - 0.4 * smooth((u - 0.6) / 0.4), flip: flipped * (1 - u) };
   }
 
   // ---------------------------------------------------------------- Noor
@@ -564,15 +773,15 @@ export class Coiling {
    * Noor's rig at t. pov: the first-person variant: the left shoulder lower and further out, so
    * the left forearm hides less of the coil, the right one a little forward; the hands are the same.
    */
-  rig(spec: PersonSpec, t: number, pov = false): Rig {
+  rig(spec: PersonSpec, t: number, pov = false, rightGrip?: Frame): Rig {
     const r = this.right(t);
-    const right: HandRig = { grip: r.hand, radius: XLR_R, thumbAlong: -1, open: r.open, pinch: r.pinch };
+    const right: HandRig = { grip: rightGrip ?? r.hand, radius: XLR_R, thumbAlong: -1, open: r.open, pinch: r.pinch };
     return {
       ...stand(spec, [0, 0], 0, { width: 0.3 }),
       lean: 0.08,
       look: this.lookAt(),
-      hands: [this.leftHand(t), right],
-      shoulders: pov ? [[-0.05, -0.06, -0.02], [-0.03, -0.02, -0.06]] : undefined,
+      hands: [{ ...this.leftHand(t), elbow: pov ? POV_ELBOW : ELBOW }, right],
+      shoulders: pov ? POV_SHOULDERS : undefined,
     };
   }
 }
