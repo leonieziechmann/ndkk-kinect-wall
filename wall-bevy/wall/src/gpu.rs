@@ -58,6 +58,19 @@ impl Gpu {
         Gpu { ns: Arc::from(ns), ..self.clone() }
     }
 
+    /// Drops the cached objects of the namespace `ns` (a scene library replaced by a newer build;
+    /// what its instances still use lives on with them).
+    pub fn forget(&self, ns: &str) {
+        let prefix = format!("{ns}/");
+        let keep = |k: &String| !k.starts_with(&prefix);
+        let mut c = self.cache.lock();
+        c.shaders.retain(|k, _| keep(k));
+        c.render.retain(|k, _| keep(k));
+        c.compute.retain(|k, _| keep(k));
+        c.layouts.retain(|k, _| keep(k));
+        c.samplers.retain(|k, _| keep(k));
+    }
+
     fn key(&self, key: &str) -> String {
         if self.ns.is_empty() { key.to_string() } else { format!("{}/{key}", self.ns) }
     }

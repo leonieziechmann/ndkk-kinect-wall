@@ -54,7 +54,7 @@ static COPIES: AtomicU64 = AtomicU64::new(0);
 /// Loads a scene library (from a copy). Err: why not; nothing of it is used then.
 pub fn load(path: &Path) -> Result<Vec<&'static SceneDef>, String> {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string();
-    let copies = std::env::temp_dir().join("wall-bevy-scenes").join(std::process::id().to_string());
+    let copies = copies_root().join(std::process::id().to_string());
     std::fs::create_dir_all(&copies).map_err(|e| format!("{name}: {e}"))?;
     let n = COPIES.fetch_add(1, Ordering::Relaxed);
     let stem = name.strip_suffix(std::env::consts::DLL_SUFFIX).unwrap_or(&name);
@@ -98,8 +98,24 @@ fn open(path: &Path) -> Result<libloading::Library, libloading::Error> {
     }
 }
 
+/// The folder of the loaded copies (one per process).
+fn copies_root() -> PathBuf {
+    std::env::temp_dir().join("wall-bevy-scenes")
+}
+
+/// Copies left by earlier runs (Windows keeps the ones of a running output locked: they stay).
+fn clean_old_copies() {
+    let me = std::process::id().to_string();
+    for e in std::fs::read_dir(copies_root()).into_iter().flatten().flatten() {
+        if e.file_name().to_str() != Some(me.as_str()) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
+}
+
 /// Every scene library in the output's directory, loaded; the errors of the ones that failed.
 pub fn load_all() -> (Vec<&'static SceneDef>, Vec<String>, HashMap<PathBuf, (SystemTime, u64)>) {
+    clean_old_copies();
     let mut defs: Vec<&'static SceneDef> = Vec::new();
     let mut errors = Vec::new();
     let mut seen = HashMap::new();

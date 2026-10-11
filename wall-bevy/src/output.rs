@@ -1096,7 +1096,13 @@ impl OutputState {
             info!("{} neu geladen aus {file} ({:.0} ms{since})", names.join(", "), u.ms);
             for d in defs {
                 match self.registry.iter_mut().find(|r| r.name == d.name) {
-                    Some(r) => *r = d,
+                    Some(r) => {
+                        // the old build's pipelines are not needed again (its instance keeps its own)
+                        if let Some(gpu) = &self.gpu {
+                            gpu.forget(&wall::scene::cache_namespace(*r));
+                        }
+                        *r = d;
+                    }
                     None => {
                         self.registry.push(d);
                         self.registry.sort_by_key(|d| d.name);
