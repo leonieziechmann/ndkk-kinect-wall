@@ -90,8 +90,15 @@ export interface RodOptions {
   bendDamping: number;
   /** the same for twist [s] */
   twistDamping: number;
-  /** plastic memory of the rest shape (hysteresis), null = elastic */
+  /** friction between the strands (stick-slip hysteresis, plastic memory), null = elastic */
   plastic: Plasticity | null;
+  /**
+   * Safety net [m/s]: segment speeds are capped at this after every substep (and spins to match).
+   * Hands that pull a cable taut against another hand, or press a strand into a full fist, make
+   * the constraints fight; without the cap the release of such a conflict can shoot the cable
+   * away. A cable in a hand never moves faster than a few m/s. Infinity = off.
+   */
+  maxSpeed: number;
 }
 
 /**
@@ -145,6 +152,7 @@ export const ROD_DEFAULTS: RodOptions = {
   bendDamping: 0,
   twistDamping: 0,
   plastic: null,
+  maxSpeed: Infinity,
 };
 
 export interface RodBuildOptions extends Partial<RodOptions> {
@@ -178,6 +186,12 @@ export interface Capsule {
   mu?: number;
   /** a hand id: a pinch or bundle with the same `hand` turns off this capsule's contact with the cable it holds */
   group?: number;
+  /**
+   * 0..1: how much of a penetration is pushed out per iteration (default 1, hard). Fingers are
+   * soft: with ~0.3 a hand that squeezes the cable against something held gives way a little
+   * instead of making the constraints fight.
+   */
+  soft?: number;
 }
 
 export interface GripSpec {
@@ -367,6 +381,10 @@ export class Rod {
   private caps: Capsule[] = [];
   private sub = 0;
   private kinDirty = false;
+  /** limit self-contact pushes (MAX_PUSH): on for damped cables, off keeps the prototype's behaviour */
+  private get capPush() {
+    return this.opts.bendDamping > 0 || this.attachments.length > 0;
+  }
 
   // solver scratch
   private readonly J: Float64Array;
@@ -1018,6 +1036,23 @@ export class Rod {
     for (let s = 0; s < substeps; s++) this.substep(h);
   }
 
+  /** caps segment speeds at vmax, bending spins at 2 vmax / L, rolling at vmax / rc (see RodOptions.maxSpeed) */
+  private capSpeeds(vmax: number) {
+    const { v, om, d3, L, ns, rc } = this;
+    for (let j = 0; j < ns; j++) {
+      const j3 = 3 * j;
+      const s = Math.hypot(v[j3], v[j3 + 1], v[j3 + 2]);
+      if (s > vmax) { const f = vmax / s; v[j3] *= f; v[j3 + 1] *= f; v[j3 + 2] *= f; }
+      const tx = d3[j3], ty = d3[j3 + 1], tz = d3[j3 + 2];
+      const a = om[j3] * tx + om[j3 + 1] * ty + om[j3 + 2] * tz;
+      let px = om[j3] - a * tx, py = om[j3 + 1] - a * ty, pz = om[j3 + 2] - a * tz;
+      const sp = Math.hypot(px, py, pz), mp = (2 * vmax) / L[j], ma = vmax / rc;
+      if (sp > mp) { const f = mp / sp; px *= f; py *= f; pz *= f; }
+      const aa = Math.max(-ma, Math.min(ma, a));
+      om[j3] = px + aa * tx; om[j3 + 1] = py + aa * ty; om[j3 + 2] = pz + aa * tz;
+    }
+  }
+
   /** Per substep: the attachments set the effective inverse masses of what they hold. */
   private prepareAttachments(h: number) {
     for (const j of this.touched) {
@@ -1155,6 +1190,7 @@ export class Rod {
       const sg = rw < 0 ? -2 * ih : 2 * ih;
       om[j3] = rx * sg; om[j3 + 1] = ry * sg; om[j3 + 2] = rz * sg;
     }
+    if (opts.maxSpeed < Infinity) this.capSpeeds(opts.maxSpeed);
     const kd = opts.internalDamping;
     if (kd > 0) {
       const f = 0.5 * (1 - Math.exp(-kd * h));
@@ -1642,6 +1678,7 @@ export class Rod {
         // at most MAX_PUSH per iteration: a segment forced deep into a capsule (by a hand that is
         // also holding the cable, or squeezed against a held part) comes out over a few substeps
         // instead of being shot out (a push of p in one substep is a speed of p / h)
+        if (cap.soft !== undefined) pen *= cap.soft;
         if (pen > MAX_PUSH) pen = MAX_PUSH;
         // the capsule's motion at the contact point during this substep
         const kmx = (A[0] - A0[0]) * (1 - t) + (B[0] - B0[0]) * t, kmy = (A[1] - A0[1]) * (1 - t) + (B[1] - B0[1]) * t, kmz = (A[2] - A0[2]) * (1 - t) + (B[2] - B0[2]) * t;
@@ -1753,6 +1790,9 @@ export class Rod {
       }
       contacts++;
       if (dd < this.stats.minDist2) this.stats.minDist2 = dd;
+      // (at most MAX_PUSH per iteration, as for capsules: a strand squeezed against one a hand
+      // holds rigidly comes out over a few substeps instead of being shot out)
+      if (this.capPush && pen > MAX_PUSH) pen = MAX_PUSH;
       this.contact(j, px - c[j3] - nx * rc, py - c[j3 + 1] - ny * rc, pz - c[j3 + 2] - nz * rc,
         o, qx - c[o3] + nx * rc, qy - c[o3 + 1] + ny * rc, qz - c[o3 + 2] + nz * rc, nx, ny, nz, pen, opts.selfFriction);
     }

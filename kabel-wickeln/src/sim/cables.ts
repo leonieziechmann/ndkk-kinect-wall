@@ -173,6 +173,7 @@ export function rodOptions(spec: CableSpec, over: Partial<RodOptions> = {}): Par
     selfFriction: spec.selfFriction,
     capsuleFriction: spec.capsuleFriction,
     iterations: spec.iterations,
+    maxSpeed: 8,
     ...over,
   };
 }

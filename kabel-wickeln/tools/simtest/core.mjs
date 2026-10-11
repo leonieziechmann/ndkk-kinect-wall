@@ -1,6 +1,11 @@
 // Core checks of src/sim against the prototype (scratchpad rodsim/test_core.js, calib.js):
-// determinism (and bit-identity with the prototype), bake/binary round trip, performance table,
-// cantilever stiffness calibration (also per bending axis), documented grips, swivel grips.
+// determinism, bake/binary round trip (with recorded vectors), performance table, cantilever
+// stiffness calibration (also per bending axis), documented grips, swivel grips.
+//
+// Bit-identity with the prototype held until the "dead cable" work (src/sim/cables.ts): friction
+// now acts on the centre lines and only rolls the segments (rod.ts contact()), which changes the
+// scenario's self-contacts. REFERENCE_HASH is the hash of the current model; a change of it means
+// the simulation's results changed.
 //   node tools/simtest/core.mjs [determinism,binary,perf,calib,grips,swivel]
 
 import { createHash } from 'node:crypto';
@@ -11,6 +16,8 @@ const { Rod, bake, BakedRod, quatFromAxisAngle, gripFrame } = sim;
 const parts = (process.argv[2] ?? 'determinism,binary,perf,calib,grips,swivel').split(',');
 /** SHA-1 of the prototype's 4 s bake of the same scenario (scratchpad rodsim/out/core.summary.json) */
 const PROTOTYPE_HASH = '95d4bc1ad0f7689a9235019ffbf77cabf08ceb65';
+/** SHA-1 of the same bake with the current model (friction on the centre lines) */
+const REFERENCE_HASH = 'a9df02030cf19407ab9607540d23c93c801fcb81';
 const out = {};
 
 /** The prototype's test scenario: 1.5 m XLR, right end twisted 3 turns, then the ends approach. */
@@ -27,15 +34,19 @@ const hashOf = (b) => createHash('sha1').update(Buffer.from(b.pos.buffer)).updat
 if (parts.includes('determinism')) {
   const hashes = [];
   for (let k = 0; k < 2; k++) hashes.push(hashOf(bake(scenario(101), { duration: 4 })));
-  out.determinism = { hashes, identical: hashes[0] === hashes[1], prototype: PROTOTYPE_HASH, identicalToPrototype: hashes[0] === PROTOTYPE_HASH };
+  out.determinism = { hashes, identical: hashes[0] === hashes[1], reference: REFERENCE_HASH, identicalToReference: hashes[0] === REFERENCE_HASH, identicalToPrototype: hashes[0] === PROTOTYPE_HASH };
   console.log('determinism', JSON.stringify(out.determinism));
 }
 
 if (parts.includes('binary')) {
-  const b = bake(scenario(101), { id: 'core', duration: 4, tracks: { twist: (r) => r.twistTurns(), writhe: (r) => r.writhe() } });
+  const hand = (t) => gripFrame([0.1 * t, 1, 0], [1, 0, 0], [0, Math.cos(t), Math.sin(t)]);
+  const b = bake(scenario(101), {
+    id: 'core', duration: 4, tracks: { twist: (r) => r.twistTurns(), writhe: (r) => r.writhe() },
+    vectors: { hand: sim.frameTrack((_, t) => hand(t)), caps: sim.capsuleTrack(2, (_, t) => [{ a: [t, 0, 0], b: [t, 1, 0], r: 0.01 }]) },
+  });
   const bin = b.toBinary();
   const b2 = BakedRod.fromBinary(bin);
-  let maxPosErr = 0, maxD1Err = 0, maxTrackErr = 0;
+  let maxPosErr = 0, maxD1Err = 0, maxTrackErr = 0, maxVecErr = 0;
   const n = b.n;
   const pa = new Float32Array(3 * n), pb = new Float32Array(3 * n), da = new Float32Array(3 * n), db = new Float32Array(3 * n);
   for (const t of [0, 0.51, 1.234, 2.5, 3.999]) {
@@ -46,10 +57,13 @@ if (parts.includes('binary')) {
       maxD1Err = Math.max(maxD1Err, Math.abs(da[i] - db[i]));
     }
     for (const k of ['twist', 'writhe']) maxTrackErr = Math.max(maxTrackErr, Math.abs(b.track(k, t) - b2.track(k, t)));
+    // vectors: the frame comes back (interpolated, quaternion normalised), the capsules too
+    const f = b2.frame('hand', t), want = hand(t), c = b2.capsules('caps', t);
+    maxVecErr = Math.max(maxVecErr, Math.hypot(f.p[0] - want.p[0], f.p[1] - want.p[1], f.p[2] - want.p[2]), Math.abs(Math.abs(sim.dot([f.q[0], f.q[1], f.q[2]], [want.q[0], want.q[1], want.q[2]]) + f.q[3] * want.q[3]) - 1), Math.abs(c[0].a[0] - t), c.length - 1);
   }
   out.binary = {
     frames: b.frames, nodes: n, float32Bytes: b.pos.byteLength + b.quat.byteLength, fileBytes: bin.byteLength,
-    maxPosErr_m: maxPosErr, maxD1Err, maxTrackErr, header: { id: b2.id, fps: b2.fps, tracks: b2.trackNames },
+    maxPosErr_m: maxPosErr, maxD1Err, maxTrackErr, maxVectorErr: maxVecErr, header: { id: b2.id, fps: b2.fps, tracks: b2.trackNames, vectors: b2.vectorNames },
     trackEnd: { twist: r4(b2.track('twist', 4)), writhe: r4(b2.track('writhe', 4)) },
   };
   console.log('binary', JSON.stringify(out.binary));

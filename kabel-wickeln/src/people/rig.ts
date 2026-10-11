@@ -18,7 +18,7 @@ import {
 } from './math';
 import { ArmPose, Body, Frame, HandPose, Pose, PersonSpec, UP, withUp, yawFrame } from './people';
 import { FIST_SLOPE, FIST_Z, GripShape, coilAround, fistAround, freeThumb, pinchAround, thumbTargets } from './body/hand';
-import { ArmAngles, ArmIK, ArmSetup, ArmSolution, AxisGoal, HandTarget, armPose, solveArm, toLocal } from './ik';
+import { ARM_JOINTS, ArmAngles, ArmIK, ArmSetup, ArmSolution, AxisGoal, HandTarget, armPose, projectToLimits, solveArm, toLocal } from './ik';
 
 /** a grip frame: position on the cable axis and orientation (d1 to the hand, d3 along the cable) */
 export interface Grip {
@@ -555,9 +555,10 @@ export class RigTrack {
     const w = u - f;
     const mix = (x: ArmAngles | null, y: ArmAngles | null): ArmAngles | null => {
       if (!x || !y) return w < 0.5 ? x : y;
-      const out = { ...x };
-      for (const key of Object.keys(out) as (keyof ArmAngles)[]) out[key] = lerp(x[key], y[key], w);
-      return out;
+      // in between two frames, still inside the limits (the shoulder's cone is not convex)
+      const q = ARM_JOINTS.map((j) => lerp(x[j], y[j], w));
+      projectToLimits(q);
+      return Object.fromEntries(ARM_JOINTS.map((j, i) => [j, q[i]])) as unknown as ArmAngles;
     };
     return rigPose(this.spec, this.rigAt(t), undefined, [mix(a[0], b[0]), mix(a[1], b[1])]);
   }

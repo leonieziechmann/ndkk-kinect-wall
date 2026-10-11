@@ -33,12 +33,13 @@ const rightP = keys(k<V3>([
 /**
  * The cable's direction where the right hand pinches it (body/hand.ts pinchAround: it crosses the
  * thumb pad and leaves on the palm side towards +d3): towards the coil, a little down and forward
- * next to the left hand, more down at the hip where it sags. Turned over for the under loop, the
- * cable to the coil leaves over the back of the hand: +d3 points away from the coil.
+ * next to the left hand, more down at the hip where it sags. Turned over for the under loop (palm
+ * up), the cable runs up through the pinch and over the back of the hand towards the coil: +d3
+ * points up.
  */
 const towards: V3 = norm([-1, -0.3, -0.35]);
 const sagging: V3 = norm([-1, -0.6, -0.35]);
-const awayD3: V3 = norm([0.9, 0.25, -0.35]);
+const awayD3: V3 = norm([-0.25, 1, -0.2]);
 const rightDir = keys(k<V3>([
   [0, towards],
   [0.35, towards],
@@ -52,9 +53,9 @@ const rightDir = keys(k<V3>([
   [6.2, towards],
 ]));
 
-/** mild wishes for the right hand: the thumb on top while sliding, the palm forward and up when turned over */
+/** mild wishes for the right hand: the thumb on top while sliding, the palm up when turned over */
 const THUMB_UP: V3 = [0, 1, 0];
-const PALM_FWD: V3 = norm([0, 0.5, -1]);
+const PALM_FWD: V3 = norm([0, 1, -0.3]);
 /** 0 = the thumb wish counts, 1 = the palm wish */
 const turned = keys(k<number>([[0, 0], [4.55, 0], [5.05, 1], [5.55, 1], [6.2, 0]]));
 

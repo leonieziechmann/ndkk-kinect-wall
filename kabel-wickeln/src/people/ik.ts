@@ -979,7 +979,8 @@ function finish(pr: Problem, q: Float64Array, iterations: number): ArmSolution {
  * Following one solution can get stuck in an awkward one while a much better one exists (after a
  * turn of the hand, say): every `check` calls it also solves from scratch, and when that arm is
  * clearly better (cost below 3/4) and different, the arm moves over to it at no more than
- * `migrate` rad per call while still reaching the target. reset() forgets the last solution.
+ * `migrate` rad per call while still reaching the target (if the way over would pull the hand more
+ * than 5 mm off, it stays and looks again later). reset() forgets the last solution.
  */
 export class ArmIK {
   private last: ArmAngles | null = null;
@@ -1008,11 +1009,14 @@ export class ArmIK {
     const sol = solveArm(s, target, { prev: this.last, maxIter, maxStep: this.goal ? this.migrate : this.maxStep, toward: this.goal, towardWeight: pull });
     if (this.goal) {
       this.moving++;
-      if (distance(sol.angles, this.goal) < 0.03 || this.moving > 120) {
+      // arrived; or the way over pulls the hand off its target: stay here for a while
+      const off = sol.report.posError > MIGRATE_OFF;
+      if (off || distance(sol.angles, this.goal) < 0.03 || this.moving > 120) {
         this.goal = null;
         this.moving = 0;
+        if (off) this.calls = -MIGRATE_PAUSE;
       }
-    } else if (++this.calls % this.check === 0) {
+    } else if (++this.calls > 0 && this.calls % this.check === 0) {
       const fresh = solveArm(s, target, { maxIter });
       if (fresh.report.cost < 0.75 * sol.report.cost - 1 && distance(fresh.angles, sol.angles) > 0.25) {
         this.goal = fresh.angles;
@@ -1034,6 +1038,11 @@ export class ArmIK {
     return this.last;
   }
 }
+
+/** moving over to a better arm stops when the hand gets this far off its target (m) … */
+const MIGRATE_OFF = 0.005;
+/** … and the next look for a better arm waits this many calls */
+const MIGRATE_PAUSE = 30;
 
 /** the largest difference of any joint angle (rad) */
 function distance(a: ArmAngles, b: ArmAngles) {
