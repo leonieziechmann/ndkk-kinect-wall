@@ -1,19 +1,25 @@
-// Rigs: a pose from targets in world space. Two-bone IK for arms and legs (standing, squatting with a
-// straight back, kneeling on one knee, sitting), the head looking at a point, the spine leaning and
-// twisting, hands that close around a cable at a grip frame (or are placed freely), and walking along
-// waypoints (the erklaervideo gait). Keyframe helpers make choreographies short: every rig is a pure
-// function of the shot time, so scrubbing works.
+// Rigs: a pose from targets in world space. Arms by inverse kinematics with real joints and ranges
+// (ik.ts: clavicle, shoulder, elbow, forearm twist, wrist), legs by two-bone IK (standing, squatting
+// with a straight back, kneeling on one knee, sitting), the head looking at a point, the spine
+// leaning and twisting, hands that hold a cable at a grip frame (a fist, a thumb-index pinch, a coil
+// in the hook of the fingers) or are placed freely, and walking along waypoints (the erklaervideo
+// gait). Keyframe helpers make choreographies short: every rig is a pure function of the shot time,
+// so scrubbing works (pass a RigIK to rigPose to solve frame by frame, staying close to the last
+// frame, e.g. in a bake).
 //
-// Grip frame (shared with the cable simulation): p on the cable axis in the middle of the fist,
-// columns of q: d1 from the cable axis towards the palm, d2 = d3 × d1, d3 along the cable.
+// Grip frame (shared with the cable simulation): p on the cable axis in the middle of the hold,
+// columns of q: d1 from the cable axis towards the hand (the palm in a fist and a coil grip, the
+// index finger in a pinch), d2 = d3 × d1, d3 along the cable (where the thumb points). The frame the
+// hand really reaches is pose.body.arms[i].grip: the one to give the simulation.
 
 import {
   V3, Quat, add, across, clamp, cross, dot, easeInOut, len, lerp, local, madd, mix3, norm, quatAxisAngle, quatCols, quatFromCols, quatMul, scale, slerp, smooth, sub, turn,
 } from './math';
-import { Body, Frame, HandPose, Pose, PersonSpec, UP, withUp, yawFrame } from './people';
-import { FIST_SLOPE, FIST_Z, fistAround, freeThumb, thumbTargets } from './body/hand';
+import { ArmPose, Body, Frame, HandPose, Pose, PersonSpec, UP, withUp, yawFrame } from './people';
+import { FIST_SLOPE, FIST_Z, GripShape, coilAround, fistAround, freeThumb, pinchAround, thumbTargets } from './body/hand';
+import { ArmAngles, ArmIK, ArmSetup, ArmSolution, AxisGoal, HandTarget, armPose, solveArm, toLocal } from './ik';
 
-/** a grip frame: position on the cable axis and orientation (d1 to the palm, d3 along the cable) */
+/** a grip frame: position on the cable axis and orientation (d1 to the hand, d3 along the cable) */
 export interface Grip {
   p: V3;
   q: Quat;
@@ -26,34 +32,61 @@ export function gripFrame(p: V3, along: V3, toPalm: V3): Grip {
   return { p, q: quatFromCols(d1, cross(d3, d1), d3) };
 }
 
-/** the grip frame turned about its cable direction d3 (rolling the cable in the fist), rad */
+/** the grip frame turned about its cable direction d3 (rolling the cable in the hand), rad */
 export function rollGrip(g: Grip, angle: number): Grip {
   return { p: g.p, q: quatMul(g.q, quatAxisAngle([0, 0, 1], angle)) };
 }
 
-/** a hand: closed around a cable (grip) or free (wrist, finger direction, palm normal) */
+/** how a hand holds its grip */
+export type Hold = 'fist' | 'pinch' | 'coil';
+
+/**
+ * A hand: holding a cable (grip) or free (wrist, finger direction, palm normal). The arm follows by
+ * itself (ik.ts); the elbow, the twist of the forearm and the wrist stay inside their ranges. What the
+ * arm really reached is in pose.body.arms[i] (report: residual, limits hit; grip: the frame held).
+ */
 export interface HandRig {
   grip?: Grip;
+  /**
+   * grip: 'fist' (default) closes around the cable; 'pinch' holds it between the thumb pad and the
+   * index finger, the cable crossing the thumb pad and leaving towards +d3 on the side the thumb
+   * points to (body/hand.ts pinchAround); 'coil' holds a bundle of loops (radius = the bundle's) in
+   * the hook of the fingers, the thumb along it
+   */
+  hold?: Hold;
   /** radius of what the hand holds, m (a cable, or a bundle of loops); default 3.5 mm (XLR) */
   radius?: number;
-  /** grip: the thumb points along +d3 (1, default) or -d3 (-1) */
+  /** fist and coil: the thumb points along +d3 (1, default) or -d3 (-1); a pinch's cable always leaves towards +d3 on the thumb's side */
   thumbAlong?: 1 | -1;
-  /** grip: 0 closed around the cable … 1 fingers open (letting it slide or go) */
+  /** grip: 0 closed … 1 open (a fist's fingers open, a pinch's thumb lifts: the cable slides or goes) */
   open?: number;
-  /** grip: thumb lying along the cable (0) … wrapped over the fingers (1) */
+  /** fist: thumb lying along the cable (0) … wrapped over the fingers (1) */
   wrap?: number;
-  /** thumb on the side of the index finger (rolling the cable between them), 0 … 1 */
+  /** fist and free hand: thumb on the side of the index finger, 0 … 1 */
   pinch?: number;
+  /** pinch: the cable rolled between thumb and index finger about +d3 (rad, up to about ±π/2) */
+  roll?: number;
+  /** pinch: the angle between the thumb and the cable (body/hand.ts PINCH_CROSS; 0 = the thumb lies along the cable) */
+  cross?: number;
+  /**
+   * grip: how freely the hand may turn about the cable (0 = exactly the grip frame, default; 1 = only
+   * the cable's direction counts, the hand finds the most comfortable angle about it)
+   */
+  free?: number;
+  /** extra orientation wishes for the hand (world directions of hand axes, with weights; ik.ts AxisGoal) */
+  prefer?: AxisGoal[];
   /** free hand: the wrist */
   wrist?: V3;
-  /** free hand: wrist → knuckles (default: along the forearm) */
+  /** free hand: wrist → knuckles (default: whatever is most comfortable) */
   dir?: V3;
-  /** free hand: out of the palm (default: natural for the forearm) */
+  /** free hand: out of the palm (default: whatever is most comfortable) */
   palm?: V3;
   /** free hand: finger curl 0 … 1 (default 0.25, relaxed) */
   curl?: number;
-  /** the direction the elbow points to (default: natural for the hand) */
+  /** the direction the elbow should point to (default: where it is most comfortable) */
   elbow?: V3;
+  /** how much the elbow wish counts (default 1) */
+  elbowWeight?: number;
 }
 
 /** a standing leg: ankle and foot direction (heel → toes); or a kneeling one: the knee on the floor */
@@ -82,8 +115,13 @@ export interface Rig {
   feet: [LegRig, LegRig];
   /** hanging arms swing forward by this angle (rad), left and right */
   swing?: [number, number];
-  /** moves the shoulders (world, m): the first-person view cheats them forward and in */
+  /** moves the shoulders (world, m) */
   shoulders?: [V3, V3];
+  /**
+   * 0 … 1: the upper body may help a hand that cannot reach its target, by leaning forward (up to
+   * 0.3 rad), bending sideways (0.15) and turning (0.3), times this; default 0 (the hand stops short)
+   */
+  reach?: number;
 }
 
 /** two-bone IK in world space: the middle joint bends towards `pole` (a direction) */
@@ -103,27 +141,81 @@ const rotY = (v: V3, a: number): V3 => turn(v, UP, a);
 
 // ---------------------------------------------------------------- hands
 
-/** the hand that closes around a cable at a grip frame; side -1 left, +1 right */
-export function handFromGrip(spec: PersonSpec, side: number, h: HandRig & { grip: Grip }): HandPose {
-  const q = (spec.height / 1.75) * spec.build.hands;
-  const r = h.radius ?? 0.0035;
-  const [d1, , d3] = quatCols(h.grip.q);
-  const palm = scale(d1, -1);
-  const along = scale(d3, h.thumbAlong ?? 1);
-  // the cable crosses the hand along the slanted line of the knuckles
-  const b = Math.atan(FIST_SLOPE);
-  const fd0 = scale(cross(palm, along), side);
-  const fd = add(scale(fd0, Math.cos(b)), scale(along, Math.sin(b)));
-  const w = add(scale(fd0, -Math.sin(b)), scale(along, Math.cos(b)));
-  const fist = fistAround(r / q);
+/** hand size: height/1.75 · build.hands */
+const handSize = (spec: PersonSpec) => (spec.height / 1.75) * spec.build.hands;
+
+/**
+ * The shape of a holding hand and where the held axis lies in it (hand frame, m): a fist (thumb along,
+ * wrapped or pinching on the index), a thumb-index pinch, or a coil in the hook of the fingers.
+ */
+export function gripShape(spec: PersonSpec, side: number, h: HandRig): GripShape {
+  const q = handSize(spec);
+  const r = (h.radius ?? 0.0035) / q;
   const open = clamp(h.open ?? 0);
-  const curl = fist.curl.map((c) => c * (1 - 0.75 * open)) as HandPose['curl'];
-  const tt = thumbTargets(fist, r / q);
-  const thumb = mix3(mix3(tt.along, tt.wrap, clamp(h.wrap ?? 0)), tt.pinch, clamp(h.pinch ?? 0));
-  // open fingers let go: the thumb lifts off too
-  const lifted = mix3(thumb, add(thumb, [0, -0.012, 0.01]), open);
-  const wrist = madd(madd(madd(h.grip.p, fd, -fist.gx * q), palm, -fist.gy * q), w, -FIST_Z * q);
-  return { wrist, fd, palm, curl, spread: 0, thumb: lifted, q };
+  const hold = h.hold ?? 'fist';
+  let g: GripShape;
+  if (hold === 'pinch') {
+    // the roll is about the world's +d3; the hand frame of a left hand is mirrored
+    g = pinchAround(r, side * (h.roll ?? 0), open, h.cross);
+  } else if (hold === 'coil') {
+    g = coilAround(r);
+    g.curl = g.curl.map((c) => c * (1 - 0.6 * open)) as GripShape['curl'];
+    if (h.thumbAlong === -1) g = { ...g, d3: scale(g.d3, -1), d1: g.d1 };
+  } else {
+    const fist = fistAround(r);
+    const b = Math.atan(FIST_SLOPE);
+    const tt = thumbTargets(fist, r);
+    const thumb = mix3(mix3(tt.along, tt.wrap, clamp(h.wrap ?? 0)), tt.pinch, clamp(h.pinch ?? 0));
+    g = {
+      curl: fist.curl.map((c) => c * (1 - 0.75 * open)) as GripShape['curl'],
+      spread: 0,
+      // open fingers let go: the thumb lifts off too
+      thumb: mix3(thumb, add(thumb, [0, -0.012, 0.01]), open),
+      p: [fist.gx, fist.gy, FIST_Z],
+      // the cable crosses the hand along the slanted line of the knuckles
+      d3: scale([Math.sin(b), 0, Math.cos(b)], h.thumbAlong ?? 1),
+      d1: [0, -1, 0],
+    };
+  }
+  return { ...g, p: scale(g.p, q) };
+}
+
+/** the hand pose of a grip shape on a solved arm */
+function holdingHand(sol: ArmSolution, g: GripShape, q: number): HandPose {
+  return { wrist: sol.wrist, fd: sol.hand.fd, palm: sol.hand.palm, curl: g.curl, spread: g.spread, thumb: g.thumb, thumbDir: g.thumbDir, thumbNail: g.thumbNail, q };
+}
+
+/** a hand-frame direction in the world */
+const handToWorld = (sol: ArmSolution, v: V3): V3 => norm([
+  sol.hand.fd[0] * v[0] + sol.hand.palm[0] * v[1] + sol.hand.thumb[0] * v[2],
+  sol.hand.fd[1] * v[0] + sol.hand.palm[1] * v[1] + sol.hand.thumb[1] * v[2],
+  sol.hand.fd[2] * v[0] + sol.hand.palm[2] * v[1] + sol.hand.thumb[2] * v[2],
+]);
+
+/**
+ * The hand that closes around a cable exactly at a grip frame, without an arm (where the wrist must
+ * be and how the hand is shaped); side -1 left, +1 right. rigPose does this through the arm IK.
+ */
+export function handFromGrip(spec: PersonSpec, side: number, h: HandRig & { grip: Grip }): HandPose {
+  const q = handSize(spec);
+  const g = gripShape(spec, side, h);
+  const [d1, , d3] = quatCols(h.grip.q);
+  // the rotation that maps the shape's axes (hand frame) onto the grip's (world)
+  const hd3 = norm(g.d3);
+  const hd1 = across(g.d1, hd3);
+  const hd2 = cross(hd3, hd1);
+  const wd2 = cross(d3, d1);
+  const toW = (v: V3): V3 => {
+    const a = dot(v, hd1), b = dot(v, hd2), c = dot(v, hd3);
+    return [d1[0] * a + wd2[0] * b + d3[0] * c, d1[1] * a + wd2[1] * b + d3[1] * c, d1[2] * a + wd2[2] * b + d3[2] * c];
+  };
+  // a left hand's frame is mirrored (thumb = -fd × palm): reflect across the plane of d1 and d3 first
+  const refl = (v: V3): V3 => (side < 0 ? madd(v, hd2, -2 * dot(v, hd2)) : v);
+  const fd = toW(refl([1, 0, 0]));
+  const palm = toW(refl([0, 1, 0]));
+  const thumb = toW(refl([0, 0, 1]));
+  const wrist = sub(h.grip.p, add(add(scale(fd, g.p[0]), scale(palm, g.p[1])), scale(thumb, g.p[2])));
+  return { wrist, fd, palm, curl: g.curl, spread: g.spread, thumb: g.thumb, thumbDir: g.thumbDir, thumbNail: g.thumbNail, q };
 }
 
 /** a relaxed or curled free hand; fd and palm are made orthonormal */
@@ -135,21 +227,11 @@ function freeHand(q: number, wrist: V3, fd: V3, palm: V3, curl: number, pinch: n
   return { wrist, fd, palm: across(palm, fd), curl: [index, c, c * 1.04, c * 1.1].map((x) => clamp(x)) as HandPose['curl'], spread: 0.15 * (1 - p), thumb: freeThumb(c, p, index), q };
 }
 
-/** the palm of a hand on a forearm when nobody says otherwise: hanging it faces the thigh, raised the front */
-function naturalPalm(fd: V3, chest: Frame, side: number): V3 {
-  const raise = clamp((dot(fd, chest.u) + 0.35) / 1.1);
-  const medial = scale(chest.r, -side);
-  const w = across(mix3(chest.f, medial, raise), fd);
-  return scale(cross(w, fd), side);
-}
+// ---------------------------------------------------------------- the torso
 
-// ---------------------------------------------------------------- the pose
-
-/** the pose for a rig */
-export function rigPose(spec: PersonSpec, g: Rig): Pose {
-  const B = spec.build;
+/** pelvis, legs, spine, chest and head of a rig: everything but the arms */
+function core(spec: PersonSpec, g: Rig) {
   const k = spec.height / 1.75;
-  const q = k * B.hands;
   const thigh = 0.44 * k;
   const shin = 0.42 * k;
   const base = yawFrame(g.yaw);
@@ -162,7 +244,7 @@ export function rigPose(spec: PersonSpec, g: Rig): Pose {
   ]);
   // the pelvis tilts half as far as the spine: no sheared torso
   const pelvisF = withUp(rotY(base.f, g.hipTurn ?? 0), add(UP, spine));
-  const hipW = 0.095 * k * B.hips;
+  const hipW = 0.095 * k * spec.build.hips;
 
   // pelvis height: standing minus drop, lower where a foot could not be reached, fixed by a kneeling knee
   let py = 0.935 * k - (g.drop ?? 0);
@@ -180,6 +262,198 @@ export function rigPose(spec: PersonSpec, g: Rig): Pose {
   });
   const pelvis: V3 = [g.pos[0], py, g.pos[1]];
   const hips = [at(py, -1), at(py, 1)];
+  const neck = madd(pelvis, spine, 0.5 * k);
+  const chest = withUp(rotY(base.f, g.twist ?? 0), spine);
+  return { k, thigh, shin, base, spine, pelvisF, pelvis, hips, neck, chest };
+}
+type Core = ReturnType<typeof core>;
+
+/** the head turned and nodded towards the look point, within what a neck allows */
+function headOf(c: Core, look: V3 | undefined) {
+  const { k, neck, chest } = c;
+  const pivot = local(neck, chest.r, chest.u, chest.f, 0, 0.1 * k, 0.01 * k);
+  let head: Frame = chest;
+  if (look) {
+    const d = norm(sub(look, madd(pivot, chest.u, 0.065 * k)));
+    const yaw = clamp(Math.atan2(dot(d, chest.r), dot(d, chest.f)), -1.2, 1.2);
+    const pitch = clamp(Math.asin(clamp(dot(d, UP), -1, 1)), -1.0, 0.7);
+    const hf0 = rotY(norm([chest.f[0], 0, chest.f[2]]), yaw);
+    const hr = norm(cross(hf0, UP));
+    const hf = norm(turn(hf0, hr, pitch));
+    head = { r: hr, u: cross(hr, hf), f: hf };
+  }
+  return { head, headC: local(pivot, head.r, head.u, head.f, 0, 0.065 * k, 0.005 * k) };
+}
+
+/**
+ * Where a rig's eyes are and which way they look, without solving the arms (cheap: for a smoothed
+ * first-person camera that samples the rig at several times). Same as body3d eyesOf(rigPose(…)).
+ */
+export function eyesOfRig(spec: PersonSpec, g: Rig): { p: V3; f: V3; u: V3 } {
+  const c = core(spec, g);
+  const { head, headC } = headOf(c, g.look);
+  return { p: madd(madd(headC, head.f, 0.09 * c.k), head.u, 0.035 * c.k), f: head.f, u: head.u };
+}
+
+/**
+ * The fixed part of an arm (ik.ts ArmSetup) for a torso: the sternoclavicular joint at the top of the
+ * sternum, the clavicle out to the shoulder joint (lateral, a little back and up), the bone lengths
+ * and the torso the arm keeps out of.
+ */
+export function armSetup(spec: PersonSpec, c: Pick<Core, 'k' | 'neck' | 'chest' | 'pelvis'>, side: -1 | 1, offset: V3 = [0, 0, 0]): ArmSetup {
+  const B = spec.build;
+  const { k, neck, chest } = c;
+  const shW = 0.19 * k * B.shoulders;
+  const sc = add(local(neck, chest.r, chest.u, chest.f, side * 0.025 * k, -0.05 * k, 0.05 * k), offset);
+  const sh = add(local(neck, chest.r, chest.u, chest.f, side * shW, -0.04 * k, -0.01), offset);
+  const s: ArmSetup = {
+    side,
+    F: chest.f,
+    U: chest.u,
+    L: scale(chest.r, side),
+    sc,
+    clav: [0, 0, 0],
+    upper: 0.29 * k,
+    fore: 0.255 * k,
+    torso: { a: [0, 0, 0], b: [0, 0, 0], halfW: 0.14 * k * B.waist * (1 + 0.3 * B.belly), halfD: 0.105 * k * (1 + 0.6 * B.belly + 0.3 * B.bust) },
+  };
+  s.clav = toLocal(s, sub(sh, sc));
+  s.torso.a = toLocal(s, sub(madd(c.pelvis, chest.u, -0.05 * k), sc));
+  s.torso.b = toLocal(s, sub(neck, sc));
+  return s;
+}
+
+/** the arm angles of a relaxed hanging arm, swinging forward by `swing` (rad) */
+function hangingAngles(B: PersonSpec['build'], swing: number): ArmAngles {
+  const out = 0.14 + 0.02 * (B.hips - B.shoulders) * 5;
+  return { clavElev: 0, clavProt: 0, flex: swing, abd: out, rot: -0.15, elbow: 0.22 + 0.9 * Math.max(0, swing), pron: 0.15, wflex: -0.08, wdev: -0.1 };
+}
+
+/** the IK state of a person for frame-by-frame solving (a bake): each arm starts from its last solution */
+export class RigIK {
+  public readonly arms: [ArmIK, ArmIK] = [new ArmIK(), new ArmIK()];
+
+  public reset() {
+    this.arms[0].reset();
+    this.arms[1].reset();
+  }
+}
+
+/** what a hand rig asks of its arm (ik.ts HandTarget) and the hand's shape */
+function targetOf(spec: PersonSpec, side: -1 | 1, h: HandRig, s: ArmSetup, k: number): { target: HandTarget; shape: GripShape | null } {
+  const elbow = h.elbow;
+  const elbowWeight = h.elbowWeight;
+  if (h.grip) {
+    const shape = gripShape(spec, side, h);
+    const [d1, , d3] = quatCols(h.grip.q);
+    const free = clamp(h.free ?? 0);
+    const axes: AxisGoal[] = [
+      { hand: shape.d3, world: d3, weight: 1 },
+      { hand: shape.d1, world: d1, weight: Math.max(0.02, 1 - free) },
+      ...(h.prefer ?? []),
+    ];
+    return { target: { p: h.grip.p, at: shape.p, axes, elbow, elbowWeight }, shape };
+  }
+  const axes: AxisGoal[] = [...(h.prefer ?? [])];
+  if (h.dir) axes.push({ hand: [1, 0, 0], world: h.dir, weight: 1 });
+  if (h.palm) axes.push({ hand: [0, 1, 0], world: h.palm, weight: h.dir ? 1 : 0.6 });
+  // no wrist: the hand hangs half an arm below the shoulder
+  const p = h.wrist ?? add(s.sc, add(scale(s.U, -0.5 * k), scale(s.L, 0.16 * k)));
+  return { target: { p, axes, elbow, elbowWeight }, shape: null };
+}
+
+/** an arm for a hand rig (null: hanging), solved; the hand pose and what the arm reached */
+function solveSide(spec: PersonSpec, g: Rig, c: Core, i: 0 | 1, ik?: RigIK, fixed?: ArmAngles | null): { hand: HandPose; arm: ArmPose; sol: ArmSolution } {
+  const side = i ? 1 : -1;
+  const q = handSize(spec);
+  const s = armSetup(spec, c, side, g.shoulders?.[i]);
+  const h = g.hands[i];
+  if (!h) {
+    ik?.arms[i].reset();
+    const sol = armPose(s, hangingAngles(spec.build, g.swing?.[i] ?? 0));
+    const hand = freeHand(q, sol.wrist, sol.hand.fd, sol.hand.palm, 0.25, 0);
+    return { hand, sol, arm: { angles: sol.angles, report: sol.report, sc: s.sc, forearm: sol.forearm } };
+  }
+  const { target, shape } = targetOf(spec, side, h, s, c.k);
+  const sol = fixed ? armPose(s, fixed, target.at) : ik ? ik.arms[i].solve(s, target) : solveArm(s, target);
+  const arm: ArmPose = { angles: sol.angles, report: sol.report, sc: s.sc, forearm: sol.forearm };
+  if (shape) {
+    // the grip frame really held: the reached point, the shape's axes in the reached hand
+    const d3 = handToWorld(sol, shape.d3);
+    const d1 = across(handToWorld(sol, shape.d1), d3);
+    arm.grip = { p: sol.point, q: quatFromCols(d1, cross(d3, d1), d3) };
+    return { hand: holdingHand(sol, shape, q), arm, sol };
+  }
+  return { hand: freeHand(q, sol.wrist, sol.hand.fd, sol.hand.palm, h.curl ?? 0.25, h.pinch ?? 0), arm, sol };
+}
+
+/** the furthest a hand target is beyond the arm's reach (m, ≤ 0 = reachable), for the torso's help */
+function overreach(spec: PersonSpec, g: Rig, c: Core): number {
+  let worst = -Infinity;
+  for (const i of [0, 1] as const) {
+    const h = g.hands[i];
+    if (!h) continue;
+    const s = armSetup(spec, c, i ? 1 : -1, g.shoulders?.[i]);
+    const { target } = targetOf(spec, i ? 1 : -1, h, s, c.k);
+    const sh = add(s.sc, add(add(scale(s.F, s.clav[0]), scale(s.U, s.clav[1])), scale(s.L, s.clav[2])));
+    // a straight arm reaches this far; the hand point adds a little
+    const reach = (s.upper + s.fore) * 0.97 + len(target.at ?? [0, 0, 0]) * 0.6;
+    worst = Math.max(worst, len(sub(target.p, sh)) - reach);
+  }
+  return worst;
+}
+
+/** the rig with the upper body helping hands that cannot reach (Rig.reach): lean, bend, twist, bounded */
+function helped(spec: PersonSpec, g: Rig): Rig {
+  const help = clamp(g.reach ?? 0);
+  if (help <= 0 || overreach(spec, g, core(spec, g)) <= -0.01) return g;
+  const lim = [0.3 * help, 0.15 * help, 0.3 * help];
+  const base = [g.lean ?? 0, g.bend ?? 0, g.twist ?? 0];
+  const withD = (d: number[]): Rig => ({ ...g, lean: base[0] + d[0], bend: base[1] + d[1], twist: base[2] + d[2] });
+  // the smallest change of lean (forward only), bend and twist that brings every target in reach
+  const cost = (d: number[]) => {
+    const o = overreach(spec, withD(d), core(spec, withD(d)));
+    return 400 * Math.max(0, o + 0.01) ** 2 + 0.02 * (d[0] * d[0] + 2 * d[1] * d[1] + d[2] * d[2]);
+  };
+  const clampD = (d: number[]) => [clamp(d[0], 0, lim[0]), clamp(d[1], -lim[1], lim[1]), clamp(d[2], -lim[2], lim[2])];
+  // projected gradient descent with numeric derivatives and step halving: deterministic
+  let d = [0, 0, 0];
+  let c0 = cost(d);
+  for (let it = 0; it < 40; it++) {
+    const grad = d.map((_, j) => {
+      const e = d.slice();
+      e[j] += 1e-4;
+      return (cost(e) - c0) / 1e-4;
+    });
+    const gl = Math.hypot(...grad);
+    if (gl < 1e-6) break;
+    let step = 0.05;
+    while (step > 1e-4) {
+      const n = clampD(d.map((v, j) => v - (step * grad[j]) / gl));
+      const cn = cost(n);
+      if (cn < c0) {
+        d = n;
+        c0 = cn;
+        break;
+      }
+      step /= 2;
+    }
+    if (step <= 1e-4) break;
+  }
+  return withD(d);
+}
+
+// ---------------------------------------------------------------- the pose
+
+/**
+ * The pose for a rig. Pass a RigIK to solve frame by frame (each arm starts from its last solution
+ * and stays close to it); without, every call is a deterministic function of the rig alone. `fixed`
+ * gives arms their angles directly (no solving; RigTrack uses it).
+ */
+export function rigPose(spec: PersonSpec, rig: Rig, ik?: RigIK, fixed?: [ArmAngles | null, ArmAngles | null]): Pose {
+  const g = helped(spec, rig);
+  const c = core(spec, g);
+  const { k, thigh, shin, base, spine, pelvisF, pelvis, hips } = c;
 
   const legs = g.feet.map((ft, i) => {
     const s = i ? 1 : -1;
@@ -192,85 +466,27 @@ export function rigPose(spec: PersonSpec, g: Rig): Pose {
       return { knee, ankle, fd: norm(madd(scale(base.f, 0.78), UP, -0.62)) };
     }
     const pole = ft.knee ?? madd(base.f, base.r, 0.15 * s);
-    const ik = twoBone(hips[i], ft.ankle, thigh, shin, pole);
-    return { knee: ik.mid, ankle: ik.end, fd: norm(ft.dir) };
+    const leg = twoBone(hips[i], ft.ankle, thigh, shin, pole);
+    return { knee: leg.mid, ankle: leg.end, fd: norm(ft.dir) };
   });
   const toe = (l: (typeof legs)[number]) => madd(madd(l.ankle, l.fd, 0.15 * k), UP, -0.05 * k);
 
-  // spine, chest, shoulders
-  const neck = madd(pelvis, spine, 0.5 * k);
-  const chest = withUp(rotY(base.f, g.twist ?? 0), spine);
-  const shW = 0.19 * k * B.shoulders;
-
-  const arms = g.hands.map((h, i) => {
-    const s = i ? 1 : -1;
-    const sh0 = add(local(neck, chest.r, chest.u, chest.f, s * shW, -0.04 * k, -0.01), g.shoulders?.[i] ?? [0, 0, 0]);
-    if (!h) {
-      // hanging, a little away from the body, swinging
-      const sw = g.swing?.[i] ?? 0;
-      const bendE = 0.22 + 0.9 * Math.max(0, sw);
-      const out = 0.14 + 0.02 * (B.hips - B.shoulders) * 5;
-      const ud = norm(local([0, 0, 0], chest.r, chest.u, chest.f, out * s, -Math.cos(sw), Math.sin(sw)));
-      const fdA = norm(local([0, 0, 0], chest.r, chest.u, chest.f, (out + 0.05) * s, -Math.cos(sw + bendE), Math.sin(sw + bendE)));
-      const elbow = madd(sh0, ud, 0.29 * k);
-      const wrist = madd(elbow, fdA, 0.255 * k);
-      return { sh: sh0, elbow, wrist, hand: freeHand(q, wrist, fdA, naturalPalm(fdA, chest, s), 0.25, 0) };
-    }
-    const target = h.grip ? handFromGrip(spec, s, { ...h, grip: h.grip }) : null;
-    const wristT = target ? target.wrist : (h.wrist ?? madd(sh0, chest.u, -0.5 * k));
-    const fdT = target ? target.fd : h.dir ? norm(h.dir) : null;
-    const solve = (sh: V3) => {
-      // the elbow goes where the forearm continues the hand, a little down and out
-      let pole = h.elbow;
-      if (!pole) {
-        const ideal = fdT ? madd(wristT, fdT, -0.255 * k) : madd(madd(sh, chest.u, -0.25 * k), chest.r, 0.1 * k * s);
-        pole = add(norm(sub(ideal, sh)), scale(add(scale(chest.u, -1), scale(chest.r, 0.35 * s)), 0.35));
-      }
-      return twoBone(sh, wristT, 0.29 * k, 0.255 * k, pole);
-    };
-    // the shoulder rises and comes forward with the arm, then the arm is solved again
-    const first = solve(sh0);
-    const ud = norm(sub(first.mid, sh0));
-    const sh = madd(madd(sh0, chest.u, 0.035 * k * Math.max(0, dot(ud, chest.u) + 0.2)), chest.f, 0.025 * k * Math.max(0, dot(ud, chest.f)));
-    const ik = solve(sh);
-    const fa = norm(sub(ik.end, ik.mid));
-    let hand: HandPose;
-    if (target) {
-      // out of reach: the hand stays with the wrist
-      hand = { ...target, wrist: ik.end };
-    } else {
-      const fd = fdT ?? fa;
-      hand = freeHand(q, ik.end, fd, h.palm ?? naturalPalm(fd, chest, s), h.curl ?? 0.25, h.pinch ?? 0);
-    }
-    return { sh, elbow: ik.mid, wrist: ik.end, hand };
-  });
+  const arms = [solveSide(spec, g, c, 0, ik, fixed?.[0]), solveSide(spec, g, c, 1, ik, fixed?.[1])];
   const knuckles = (hp: HandPose) => madd(hp.wrist, hp.fd, 0.093 * hp.q);
-
-  // head: turns and nods towards the look point, within what a neck allows
-  const pivot = local(neck, chest.r, chest.u, chest.f, 0, 0.1 * k, 0.01 * k);
-  let head: Frame = chest;
-  if (g.look) {
-    const d = norm(sub(g.look, madd(pivot, chest.u, 0.065 * k)));
-    const yaw = clamp(Math.atan2(dot(d, chest.r), dot(d, chest.f)), -1.2, 1.2);
-    const pitch = clamp(Math.asin(clamp(dot(d, UP), -1, 1)), -1.0, 0.7);
-    const hf0 = rotY(norm([chest.f[0], 0, chest.f[2]]), yaw);
-    const hr = norm(cross(hf0, UP));
-    const hf = norm(turn(hf0, hr, pitch));
-    head = { r: hr, u: cross(hr, hf), f: hf };
-  }
-  const headC = local(pivot, head.r, head.u, head.f, 0, 0.065 * k, 0.005 * k);
+  const { head, headC } = headOf(c, g.look);
   const face = (x: number, y: number, z: number) => local(headC, head.r, head.u, head.f, x * k, y * k, z * k);
+  const P = (i: 0 | 1, j: 'shoulder' | 'elbow' | 'wrist') => arms[i].sol[j];
 
   const joints: V3[] = [
     face(0, -0.02, 0.1), face(-0.033, 0.025, 0.085), face(0.033, 0.025, 0.085), face(-0.075, 0, 0), face(0.075, 0, 0),
-    arms[0].sh, arms[1].sh, arms[0].elbow, arms[1].elbow, arms[0].wrist, arms[1].wrist,
+    P(0, 'shoulder'), P(1, 'shoulder'), P(0, 'elbow'), P(1, 'elbow'), arms[0].hand.wrist, arms[1].hand.wrist,
     hips[0], hips[1], legs[0].knee, legs[1].knee, legs[0].ankle, legs[1].ankle,
-    neck, pelvis, headC, knuckles(arms[0].hand), knuckles(arms[1].hand),
+    c.neck, pelvis, headC, knuckles(arms[0].hand), knuckles(arms[1].hand),
   ];
   const body: Body = {
     k,
     pelvis: pelvisF,
-    chest,
+    chest: c.chest,
     head,
     spine,
     toeL: toe(legs[0]),
@@ -278,8 +494,58 @@ export function rigPose(spec: PersonSpec, g: Rig): Pose {
     footL: legs[0].fd,
     footR: legs[1].fd,
     hands: [arms[0].hand, arms[1].hand],
+    arms: [arms[0].arm, arms[1].arm],
   };
   return { spec, joints, body, F: base.f, R: base.r };
+}
+
+/**
+ * A choreography solved once, frame by frame, with the stateful IK (RigIK: continuous, no pops),
+ * then sampled at any time: the arm angles are interpolated between the frames, everything else
+ * (torso, legs, hand shapes) comes from the rig at that time. Deterministic and scrubbable: frames are
+ * solved in order up to the latest one asked for and kept. Use it wherever a scene shows a
+ * choreography (the bake can use the same track, so cable and arms agree).
+ */
+export class RigTrack {
+  private readonly frames: [ArmAngles | null, ArmAngles | null][] = [];
+  private readonly ik = new RigIK();
+
+  public constructor(
+    public readonly spec: PersonSpec,
+    public readonly rigAt: (t: number) => Rig,
+    /** the first frame's time, s */
+    public readonly t0 = 0,
+    /** frames per second of the solve */
+    public readonly fps = 60,
+  ) {}
+
+  /** the arm angles of frame f (solving the frames before it first, once) */
+  public angles(f: number): [ArmAngles | null, ArmAngles | null] {
+    while (this.frames.length <= f) {
+      const t = this.t0 + this.frames.length / this.fps;
+      const g = this.rigAt(t);
+      const p = rigPose(this.spec, g, this.ik);
+      const arms = p.body.arms;
+      this.frames.push([g.hands[0] && arms ? arms[0].angles : null, g.hands[1] && arms ? arms[1].angles : null]);
+    }
+    return this.frames[f];
+  }
+
+  /** the pose at time t */
+  public pose(t: number): Pose {
+    const u = Math.max(0, (t - this.t0) * this.fps);
+    const f = Math.floor(u);
+    const a = this.angles(f);
+    const b = this.angles(f + 1);
+    const w = u - f;
+    const mix = (x: ArmAngles | null, y: ArmAngles | null): ArmAngles | null => {
+      if (!x || !y) return w < 0.5 ? x : y;
+      const out = { ...x };
+      for (const key of Object.keys(out) as (keyof ArmAngles)[]) out[key] = lerp(x[key], y[key], w);
+      return out;
+    };
+    return rigPose(this.spec, this.rigAt(t), undefined, [mix(a[0], b[0]), mix(a[1], b[1])]);
+  }
 }
 
 // ---------------------------------------------------------------- stances

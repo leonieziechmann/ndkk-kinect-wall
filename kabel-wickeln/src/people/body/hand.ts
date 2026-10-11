@@ -1,11 +1,18 @@
 // The skeleton of a hand: palm, four fingers with three bones each, and a thumb. A HandPose (wrist,
 // finger direction, palm normal, curls, thumb tip) becomes joint positions here; the rig uses the
-// same geometry to close a fist around a cable (fistAround), so the mesh and the grip always agree.
+// same geometry for its grips, so the mesh and the grip always agree:
+//   fistAround   a fist around a cable (or a hook around a thick bundle): curls that just touch it
+//   pinchAround  a cable pinched between the thumb pad and the thumb side of the curled index
+//                finger, the thumb lying along the cable; roll (the thumb slides along the index
+//                finger and rolls the cable) and open (loosened, the cable slides through)
+//   coilAround   the coil-holding hand: the bundle of loops in the hook of the fingers, the thumb
+//                lying along the bundle on top of it; adapts to the bundle radius
 //
 // Hand frame: x along the fingers (fd), y out of the palm (palm), z towards the thumb side
-// (w = side · fd × palm, side = +1 right, -1 left). Measurements in m for a hand of size 1.
+// (w = side · fd × palm, side = +1 right, -1 left). Measurements in m for a hand of size 1
+// (HandPose.q scales them).
 
-import { V3, clamp, cross, norm } from '../math';
+import { V3, across, add, clamp, cross, dot, len, lerp, madd, mix3, norm, scale, sub, turn } from '../math';
 import type { HandPose } from '../people';
 
 export interface FingerDef {
@@ -155,6 +162,192 @@ export function freeThumb(curl: number, pinch: number, indexCurl: number): V3 {
   return [rest[0] + (tip[0] - rest[0]) * pinch, rest[1] + (tip[1] - rest[1]) * pinch, rest[2] + (tip[2] - rest[2]) * pinch];
 }
 
+/** a finger in the hand frame (size 1): knuckle, middle joint, end joint, tip; the dorsal normal per bone */
+export function fingerPoints(f: FingerDef, c: number, spread: number): { p: V3[]; n: V3[] } {
+  const a = angles(c);
+  // the open hand fans out; a fist closes the fingers together
+  const fan = f.fan * (spread * (1 - c) - 0.25 * c);
+  const cf = Math.cos(fan);
+  const sf = Math.sin(fan);
+  const p: V3[] = [[f.kx, 0, f.kz]];
+  const n: V3[] = [];
+  let x = f.kx;
+  let y = 0;
+  let z = f.kz;
+  for (let s = 0; s < 3; s++) {
+    const ca = Math.cos(a[s]);
+    const sa = Math.sin(a[s]);
+    x += ca * cf * f.len[s];
+    z += ca * sf * f.len[s];
+    y += sa * f.len[s];
+    p.push([x, y, z]);
+    // dorsal side of this bone: the bone turned back by 90° in the finger's plane
+    n.push(norm([sa * cf, -ca, sa * sf]));
+  }
+  return { p, n };
+}
+
+/** where the thumb's middle joint (MCP) bulges: away from the palm and out to the thumb side */
+const THUMB_POLE: V3 = [0.15, -0.45, 1];
+
+/** two-bone chain from a to b (lengths l1, l2) bending towards pole; b is pulled in when out of reach */
+function bend2(a: V3, b: V3, l1: number, l2: number, pole: V3): { mid: V3; end: V3 } {
+  const d0 = sub(b, a);
+  const dl = len(d0) || 1;
+  const dir = scale(d0, 1 / dl);
+  const d = clamp(dl, Math.abs(l1 - l2) + 1e-4, l1 + l2 - 1e-4);
+  const cos = (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d);
+  const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
+  const sd = across(pole, dir);
+  return { mid: add(a, add(scale(dir, cos * l1), scale(sd, sin * l1))), end: madd(a, dir, d) };
+}
+
+/**
+ * The thumb (hand frame, size 1): base (CMC, in the ball of the thumb), knuckle (MCP), joint (IP),
+ * tip. With only a tip, the metacarpal leans towards it and the two phalanges reach it. With the
+ * direction of the last bone too (a thumb lying along a cable or a bundle), the joint sits behind the
+ * tip along that direction and metacarpal and first phalanx reach the joint. Out of reach the tip
+ * stops short (never stretched).
+ */
+export function thumbChain(T: V3, dir?: V3): [V3, V3, V3, V3] {
+  const B = THUMB.base;
+  const [l0, l1, l2] = THUMB.len;
+  if (dir) {
+    const d = norm(dir);
+    const ip = bend2(B, madd(T, d, -l2), l0, l1, THUMB_POLE);
+    return [B, ip.mid, ip.end, madd(ip.end, d, l2)];
+  }
+  const dt = norm(sub(T, B));
+  const md = norm([dt[0] * 0.5 + 0.36, dt[1] * 0.5 + 0.12, dt[2] * 0.5 + 0.33]);
+  const M = madd(B, md, l0);
+  const k = bend2(M, T, l1, l2, THUMB_POLE);
+  return [B, M, k.mid, k.end];
+}
+
+// ---------------------------------------------------------------- the pinch
+
+/** what a grip shape gives the rig: the hand's shape, and the held thing's axis in the hand frame */
+export interface GripShape {
+  curl: [number, number, number, number];
+  spread: number;
+  /** thumb tip, and the direction of its last bone (when it must lie along something) */
+  thumb: V3;
+  thumbDir?: V3;
+  /** where the thumb nail faces (hand frame): away from what the pad presses on */
+  thumbNail?: V3;
+  /** a point on the axis of the held cable or bundle (size 1) */
+  p: V3;
+  /** the axis direction (the grip frame's d3, towards where the thumb points) */
+  d3: V3;
+  /** from the axis towards the hand (the grip frame's d1: to the palm in a fist, to the index finger in a pinch) */
+  d1: V3;
+}
+
+/** index finger curl of the pinch; the other fingers curl loosely, more towards the little finger */
+const PINCH_CURL = [0.6, 0.58, 0.66, 0.74];
+/** where along its middle bone the index finger meets the cable (0 middle joint … 1 end joint) */
+const PINCH_AT = 0.3;
+/** the most the thumb can roll the cable (rad, from roll 0 in either direction) */
+export const PINCH_ROLL_MAX = Math.PI / 2;
+/** how far an open pinch lifts the thumb off the cable (size 1, m) */
+const PINCH_LIFT = 0.012;
+
+/** default angle between the thumb and the pinched cable: the cable crosses the thumb pad and leaves out of the palm side */
+export const PINCH_CROSS = 1.0;
+
+/**
+ * A cable of radius r (size-1 units) pinched between the thumb pad and the thumb side of the index
+ * finger's middle bone (a lateral pinch). The other fingers curl loosely below and guide. The cable
+ * lies across the thumb pad: `crossing` is its angle from the thumb's direction, turning towards the
+ * palm side (0 = along the thumb, π/2 = straight out of the palm; default PINCH_CROSS, as in the
+ * reference videos, where the cable leaves the pinch sideways and the fingers hang). roll (rad, up to
+ * ±PINCH_ROLL_MAX): the thumb slides along its own length over the index finger and rolls the cable
+ * about d3 (without slipping on the index finger: the thumb travels 2·r·roll, the cable axis
+ * r·roll); d1 turns with it. open 0 … 1 lifts the thumb and loosens the index finger, so the cable can slide through; the
+ * axis stays on the index finger.
+ */
+export function pinchAround(r: number, roll = 0, open = 0, crossing = PINCH_CROSS): GripShape {
+  const o = clamp(open);
+  const curl = PINCH_CURL.map((c, i) => c * (1 - (i ? 0.3 : 0.15) * o)) as GripShape['curl'];
+  const idx = fingerPoints(FINGERS[0], curl[0], 0);
+  const [, pip, dip] = idx.p;
+  const m = norm(sub(dip, pip));
+  // the thumb side of the finger, across the bone
+  const side = across([0, 0, 1], m);
+  const rf = lerp(FINGERS[0].r0, FINGERS[0].r1, 0.5) + 0.0005;
+  const contact = mix3(pip, dip, PINCH_AT);
+  const axis0 = madd(contact, side, rf + r);
+  // the thumb pad presses from the thumb side, its last bone in the plane of the pinch (two passes:
+  // the tip lies a little beyond the pad along the thumb)
+  const pad = r + THUMB.r[3] * 0.92 + 0.0015;
+  let td: V3 = [1, 0, 0];
+  for (let pass = 0; pass < 2; pass++) {
+    const ch = thumbChain(madd(madd(axis0, side, pad), td, 0.008));
+    td = across(sub(ch[3], ch[2]), side);
+  }
+  // the cable crosses the pad, turned from the thumb towards the palm side
+  const d3 = turn(td, side, crossing);
+  // rolling: the cable turns about d3, its axis moves r·roll and the thumb 2·r·roll along n; at
+  // roll = PINCH_ROLL_MAX the thumb is as far out as it reaches, so roll 0 has it bent back a little
+  const n = norm(cross(d3, side));
+  const slide = roll - PINCH_ROLL_MAX;
+  const p = madd(axis0, n, r * slide);
+  const thumb = madd(madd(madd(madd(axis0, side, pad + PINCH_LIFT * o), td, 0.008), n, 2 * r * slide), [0, -1, 0], 0.004 * o);
+  return { curl, spread: 0, thumb, thumbNail: side, p, d3, d1: turn(scale(side, -1), d3, roll) };
+}
+
+// ---------------------------------------------------------------- holding a coil
+
+/** distance from the point p to the line through a along the unit direction d */
+function lineDist(p: V3, a: V3, d: V3) {
+  const v = sub(p, a);
+  return len(madd(v, d, -dot(v, d)));
+}
+
+/** the smallest distance between a segment and a line (sampled; the segments are short) */
+function segLineDist(p: V3, q: V3, a: V3, d: V3) {
+  let m = Infinity;
+  for (let i = 0; i <= 8; i++) m = Math.min(m, lineDist(mix3(p, q, i / 8), a, d));
+  return m;
+}
+
+/**
+ * The hand holding a coil: the bundle of loops (radius R, size-1 units) lies across the fingers in
+ * their hook (fistAround: each finger curls until it touches), the thumb lies along the bundle and
+ * holds it. Small bundles get the thumb on top (on the wrist side of the bundle, where it presses the
+ * loops into the hook); as the bundle grows the thumb's line moves round it towards the palm, as far
+ * as needed for the whole thumb to stay outside the bundle. d3 runs along the bundle to the thumb side.
+ */
+export function coilAround(R: number): GripShape {
+  const fist = fistAround(R);
+  const along = norm([FIST_SLOPE, 0, 1]);
+  const B = THUMB.base;
+  const ax: V3 = [gxAt(fist, B[2]), fist.gy, B[2]];
+  const radii = [THUMB.r[0], THUMB.r[1], THUMB.r[2]];
+  // the thumb lies on the bundle along its axis, its joint where metacarpal and first phalanx
+  // reach at a natural bend (≈ 40° at the knuckle)
+  const place = (beta: number) => {
+    const u = across([-Math.cos(beta), Math.sin(beta), 0], along);
+    const line = madd(ax, u, R + THUMB.r[2] * 0.95);
+    const rel = sub(line, B);
+    const k = dot(rel, along);
+    const off = len(madd(rel, along, -k));
+    const ip = madd(line, along, -k + Math.sqrt(Math.max(0, 0.074 * 0.074 - off * off)));
+    const tip = madd(ip, along, THUMB.len[2]);
+    const ch = thumbChain(tip, along);
+    let clear = Infinity;
+    for (let i = 0; i < 3; i++) clear = Math.min(clear, segLineDist(ch[i], ch[i + 1], ax, along) - R - radii[i] * 0.92);
+    return { tip, nail: u, clear: Math.min(clear, 0.002 - len(sub(ch[3], tip))) };
+  };
+  // from the top round towards the palm: the first place where the thumb is clear of the bundle
+  let best = place(0.5);
+  for (let i = 1; i <= 34 && best.clear < 0; i++) {
+    const c = place(0.5 - i * 0.05);
+    if (c.clear > best.clear) best = c;
+  }
+  return { curl: fist.curl, spread: 0, thumb: best.tip, thumbDir: along, thumbNail: best.nail, p: [gxAt(fist, FIST_Z), fist.gy, FIST_Z], d3: along, d1: [0, -1, 0] };
+}
+
 export interface HandJoints {
   /** the thumb side (w) */
   w: V3;
@@ -169,54 +362,15 @@ export function handJoints(h: HandPose, side: number): HandJoints {
   const { fd, palm, q } = h;
   const w = norm(cross(fd, palm));
   if (side < 0) w[0] = -w[0], w[1] = -w[1], w[2] = -w[2];
-  const at = (x: number, y: number, z: number): V3 => [
-    h.wrist[0] + (fd[0] * x + palm[0] * y + w[0] * z) * q,
-    h.wrist[1] + (fd[1] * x + palm[1] * y + w[1] * z) * q,
-    h.wrist[2] + (fd[2] * x + palm[2] * y + w[2] * z) * q,
+  const at = (v: V3): V3 => [
+    h.wrist[0] + (fd[0] * v[0] + palm[0] * v[1] + w[0] * v[2]) * q,
+    h.wrist[1] + (fd[1] * v[0] + palm[1] * v[1] + w[1] * v[2]) * q,
+    h.wrist[2] + (fd[2] * v[0] + palm[2] * v[1] + w[2] * v[2]) * q,
   ];
+  const dirOut = (v: V3): V3 => norm([fd[0] * v[0] + palm[0] * v[1] + w[0] * v[2], fd[1] * v[0] + palm[1] * v[1] + w[1] * v[2], fd[2] * v[0] + palm[2] * v[1] + w[2] * v[2]]);
   const fingers = FINGERS.map((f, i) => {
-    const c = h.curl[i];
-    const a = angles(c);
-    // the open hand fans out; a fist closes the fingers together
-    const fan = f.fan * (h.spread * (1 - c) - 0.25 * c);
-    const cf = Math.cos(fan);
-    const sf = Math.sin(fan);
-    const p: V3[] = [at(f.kx, 0, f.kz)];
-    const n: V3[] = [];
-    let x = f.kx;
-    let y = 0;
-    let z = f.kz;
-    for (let s = 0; s < 3; s++) {
-      const ca = Math.cos(a[s]);
-      const sa = Math.sin(a[s]);
-      x += ca * cf * f.len[s];
-      z += ca * sf * f.len[s];
-      y += sa * f.len[s];
-      p.push(at(x, y, z));
-      // dorsal side of this bone: the bone turned back by 90° in the finger's plane
-      n.push(norm([fd[0] * sa * cf - palm[0] * ca + w[0] * sa * sf, fd[1] * sa * cf - palm[1] * ca + w[1] * sa * sf, fd[2] * sa * cf - palm[2] * ca + w[2] * sa * sf]));
-    }
-    return { p, n, def: f };
+    const fp = fingerPoints(f, h.curl[i], h.spread);
+    return { p: fp.p.map(at), n: fp.n.map(dirOut), def: f };
   });
-
-  // thumb: the metacarpal leans towards the tip, the two phalanges reach it (two-bone IK)
-  const T = h.thumb;
-  const B = THUMB.base;
-  const [l0, l1, l2] = THUMB.len;
-  const dt = norm([T[0] - B[0], T[1] - B[1], T[2] - B[2]]);
-  const md = norm([dt[0] * 0.5 + 0.36, dt[1] * 0.5 + 0.12, dt[2] * 0.5 + 0.33]);
-  const M: V3 = [B[0] + md[0] * l0, B[1] + md[1] * l0, B[2] + md[2] * l0];
-  const d0: V3 = [T[0] - M[0], T[1] - M[1], T[2] - M[2]];
-  const dl = Math.hypot(d0[0], d0[1], d0[2]) || 1;
-  const dir: V3 = [d0[0] / dl, d0[1] / dl, d0[2] / dl];
-  const d = clamp(dl, Math.abs(l1 - l2) + 1e-4, l1 + l2 - 1e-4);
-  const cos = (l1 * l1 + d * d - l2 * l2) / (2 * l1 * d);
-  const sin = Math.sqrt(Math.max(0, 1 - cos * cos));
-  // the joints bulge away from the palm and outwards
-  const pole: V3 = [0.15, -0.45, 1];
-  const pk = pole[0] * dir[0] + pole[1] * dir[1] + pole[2] * dir[2];
-  const sd = norm([pole[0] - dir[0] * pk, pole[1] - dir[1] * pk, pole[2] - dir[2] * pk]);
-  const IP: V3 = [M[0] + (dir[0] * cos + sd[0] * sin) * l1, M[1] + (dir[1] * cos + sd[1] * sin) * l1, M[2] + (dir[2] * cos + sd[2] * sin) * l1];
-  const tip: V3 = [M[0] + dir[0] * d, M[1] + dir[1] * d, M[2] + dir[2] * d];
-  return { w, fingers, thumb: [at(B[0], B[1], B[2]), at(M[0], M[1], M[2]), at(IP[0], IP[1], IP[2]), at(tip[0], tip[1], tip[2])] };
+  return { w, fingers, thumb: thumbChain(h.thumb, h.thumbDir).map(at) };
 }

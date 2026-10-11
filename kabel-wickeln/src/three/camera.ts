@@ -5,14 +5,16 @@
 //                freeze + orbit around a hand
 //   mixOrbit     blends two orbits (yaw the short way round): camera moves between beats
 //   lookFrom     a camera at a position looking at a point (dolly paths)
-//   povCamera    the first-person camera from the eyes, a bit lower and further forward than
-//                anatomy allows so both hands and the coil fit; hides the own head and torso
+//   povCamera    a first-person camera at an eye point looking at a point (hides the own body)
+//   povFollow    the first-person camera that follows a person: the eyes from the head pose, moved
+//                a little back and up for overview, looking at a target, both smoothed over time;
+//                it sees only the own arms (lib/kit.tsx splitPerson), the body's shadow stays
 //   smoothed     a deterministic moving average of a moving point (a calm POV, no wobble)
 
 import * as THREE from 'three';
 import type { V3 } from '../sim/vec';
 
-/** the layer of the own head, hair, neck, torso and upper arms (people/body/mesh.ts SELF) */
+/** the layer of the people's bodies without the arms (people/body/mesh.ts SELF): first-person cameras leave it out */
 export const SELF_LAYER = 1;
 
 export interface Orbit {
@@ -117,6 +119,66 @@ export function smoothed(p: (t: number, out: V3) => V3, t: number, half: number,
 }
 
 const scratch: V3 = [0, 0, 0];
+
+export interface FollowOptions {
+  /** move the eye this far back, against the facing (m; default 0.06): a little more overview */
+  back?: number;
+  /** and this far up (m; default 0.04) */
+  up?: number;
+  /** vertical field of view (deg; default 58) */
+  fov?: number;
+  /** half width of the moving average over time (s; default 0.3; 0 = none) */
+  smooth?: number;
+}
+
+const eyeTmp: V3 = [0, 0, 0];
+const lookTmp: V3 = [0, 0, 0];
+
+/**
+ * The first-person camera of a person: the eyes at time t (eyesAt, e.g. people/rig.ts eyesOfRig of
+ * the rig at t: position p and facing f), moved `back` against the horizontal facing and `up`,
+ * looking at look(t); eye and look point are averaged over ±smooth s (deterministic: a pure function
+ * of t). Sees the world and the own arms, not the own body (SELF_LAYER); use lib/kit.tsx viewLayers
+ * 'pov' instead when a split screen has its own layers.
+ */
+export function povFollow(
+  cam: THREE.PerspectiveCamera,
+  eyesAt: (t: number) => { p: V3; f: V3 },
+  look: (t: number) => V3,
+  t: number,
+  o: FollowOptions = {},
+): THREE.PerspectiveCamera {
+  const back = o.back ?? 0.06, up = o.up ?? 0.04, half = o.smooth ?? 0.3;
+  const eye = (tt: number, out: V3) => {
+    const e = eyesAt(tt);
+    const l = Math.hypot(e.f[0], e.f[2]) || 1;
+    out[0] = e.p[0] - (e.f[0] / l) * back;
+    out[1] = e.p[1] + up;
+    out[2] = e.p[2] - (e.f[2] / l) * back;
+    return out;
+  };
+  const at = (tt: number, out: V3) => {
+    const v = look(tt);
+    out[0] = v[0];
+    out[1] = v[1];
+    out[2] = v[2];
+    return out;
+  };
+  if (half > 0) {
+    smoothed(eye, t, half, eyeTmp);
+    smoothed(at, t, half, lookTmp);
+  } else {
+    eye(t, eyeTmp);
+    at(t, lookTmp);
+  }
+  cam.position.set(eyeTmp[0], eyeTmp[1], eyeTmp[2]);
+  cam.up.set(0, 1, 0);
+  cam.lookAt(lookTmp[0], lookTmp[1], lookTmp[2]);
+  setFov(cam, o.fov ?? 58);
+  cam.layers.enableAll();
+  cam.layers.disable(SELF_LAYER);
+  return cam;
+}
 
 function setFov(cam: THREE.PerspectiveCamera, fov: number | undefined) {
   if (fov !== undefined && cam.fov !== fov) {

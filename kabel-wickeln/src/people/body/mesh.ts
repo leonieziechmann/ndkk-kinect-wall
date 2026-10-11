@@ -36,7 +36,11 @@ export const MAT = {
 export type MatName = keyof typeof MAT;
 export const MAT_COUNT = Object.keys(MAT).length;
 
-/** layer of the own head, hair, neck, torso and upper arms: a first-person camera leaves it out */
+/**
+ * Layer of everything but the arms: head, hair, neck, torso, legs, shoes and the top of the upper
+ * arms. A first-person camera leaves it out and sees only the own arms (from the upper arm down);
+ * it still casts its shadow (view.ts renders shadows with a camera that sees every layer).
+ */
 export const SELF = 1;
 
 /** a material per face: one for all, one per segment, or chosen per segment j and side i */
@@ -304,6 +308,35 @@ export function tubeRings(points: V3[], radii: number[], side: V3, flatten = 1):
     x = norm(nx);
     const y = norm(cross(d, x));
     rings.push({ c: points[i], x, y, rx: radii[i], ry: radii[i] * flatten });
+  }
+  return rings;
+}
+
+/**
+ * Turns the cross-sections of rings to given directions (x towards xs[i], kept across the path),
+ * optionally with other half-widths: a limb that twists along its length (the forearm, whose
+ * radius turns about the ulna) without folding, ring by ring. Entries left null keep their axes.
+ */
+export function orientRings(rings: Ring[], xs: (V3 | null)[], widths?: ([number, number] | null)[]) {
+  for (let i = 0; i < rings.length; i++) {
+    const x0 = xs[i];
+    const r = rings[i];
+    const a = rings[Math.max(0, i - 1)].c;
+    const b = rings[Math.min(rings.length - 1, i + 1)].c;
+    const d = norm([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+    if (x0) {
+      const k = dot(x0, d);
+      const v: V3 = [x0[0] - d[0] * k, x0[1] - d[1] * k, x0[2] - d[2] * k];
+      if (Math.hypot(v[0], v[1], v[2]) > 1e-6) {
+        r.x = norm(v);
+        r.y = norm(cross(d, r.x));
+      }
+    }
+    const w = widths?.[i];
+    if (w) {
+      r.rx = w[0];
+      r.ry = w[1];
+    }
   }
   return rings;
 }

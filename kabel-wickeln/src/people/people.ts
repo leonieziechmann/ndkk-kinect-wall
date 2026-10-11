@@ -7,6 +7,7 @@
 
 import { V3, cross, norm } from './math';
 import type { MatName } from './body/mesh';
+import type { ArmAngles, IkReport } from './ik';
 
 export const JOINTS = [
   'nose', 'leftEye', 'rightEye', 'leftEar', 'rightEar',
@@ -116,8 +117,31 @@ export interface HandPose {
   spread: number;
   /** thumb tip in the hand frame (along fd, along palm, towards the thumb side), m for a hand of size 1 */
   thumb: V3;
+  /** the direction of the thumb's last bone in the hand frame, when it lies along something (a pinched cable, a bundle) */
+  thumbDir?: V3;
+  /** where the thumb nail faces in the hand frame (default: away from the palm, out to the thumb side) */
+  thumbNail?: V3;
   /** hand size: height/1.75 · build.hands (1 = an average adult hand, 19 cm long) */
   q: number;
+}
+
+/** an arm as the IK solved it (rig.ts): its angles, how well it reached, what the hand holds */
+export interface ArmPose {
+  /** the joint angles (ik.ts ArmAngles, rad) */
+  angles: ArmAngles;
+  /** how well the target was reached, limits hit (hanging arms: all zero) */
+  report: IkReport;
+  /** the sternoclavicular joint, where the clavicle starts */
+  sc: V3;
+  /** the forearm for the mesh: direction, elbow axis (lateral), the wrist's radio-ulnar axis (thumb side) and the pronation between them */
+  forearm: { dir: V3; elbowAxis: V3; wristAxis: V3; pron: number };
+  /**
+   * The grip frame the hand really holds (grips only): p on the cable or bundle axis, columns
+   * d1 (to the palm, or to the index finger in a pinch), d2 = d3 × d1, d3 along the cable (where
+   * the thumb points). Includes a pinch's roll and the hand's freedom about the cable (HandRig.free):
+   * give this frame to the simulation.
+   */
+  grip?: { p: V3; q: [number, number, number, number] };
 }
 
 export interface Body {
@@ -135,6 +159,8 @@ export interface Body {
   footR: V3;
   /** left, right */
   hands: [HandPose, HandPose];
+  /** left, right: the solved arms (always set by rig.ts) */
+  arms?: [ArmPose, ArmPose];
 }
 
 export interface Pose {

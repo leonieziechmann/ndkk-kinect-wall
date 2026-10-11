@@ -95,11 +95,11 @@ export const SHOULDER_CONE: readonly [number, number][] = [
 const COMFORT: Record<Exclude<ArmJoint, 'clavElev' | 'clavProt'>, [number, number]> = {
   flex: [8 * DEG, 75 * DEG],
   abd: [10 * DEG, 70 * DEG],
-  rot: [-20 * DEG, 55 * DEG],
-  elbow: [30 * DEG, 95 * DEG],
+  rot: [-20 * DEG, 65 * DEG],
+  elbow: [30 * DEG, 110 * DEG],
   pron: [15 * DEG, 60 * DEG],
-  wflex: [-10 * DEG, 35 * DEG],
-  wdev: [-6 * DEG, 16 * DEG],
+  wflex: [-10 * DEG, 28 * DEG],
+  wdev: [-6 * DEG, 13 * DEG],
 };
 const CLAV_SCALE = [3.5 * DEG, 4.5 * DEG];
 /** the outer part of every range that costs extra */
@@ -197,6 +197,8 @@ export interface IkReport {
   strained: string[];
   /** solver iterations used */
   iterations: number;
+  /** the total cost reached (position, orientation, comfort, strain …; lower is better, for comparing solutions) */
+  cost: number;
 }
 
 export interface ArmSolution {
@@ -355,6 +357,80 @@ export function projectToLimits(q: Float64Array | number[]) {
   }
 }
 
+// The solver works on raw parameters that a smooth map squashes into the limits: inside the
+// comfortable part of a range a raw parameter is the angle itself; towards a limit the angle
+// approaches it ever more slowly (tanh) and never passes it. The cost is smooth everywhere, so the
+// solver needs no projections, converges reliably and stays continuous along a path.
+
+/** the soft part of each range at its low and high end (fractions of the range) */
+const SOFT: Record<'clavElev' | 'clavProt' | 'rot' | 'elbow' | 'pron', [number, number]> = {
+  clavElev: [0.3, 0.3],
+  clavProt: [0.3, 0.3],
+  rot: [0.2, 0.2],
+  // a straight elbow is a common pose: only the last few degrees of hyperextension are soft
+  elbow: [0.05, 0.2],
+  pron: [0.2, 0.2],
+};
+/** where the soft part of the shoulder cone and the wrist ellipse starts (fraction of the limit) */
+const SOFT_RADIAL = 0.8;
+
+/** x squashed below m: itself up to a, then approaching m */
+function softMax(x: number, a: number, m: number) {
+  return x <= a ? x : a + (m - a) * Math.tanh((x - a) / (m - a));
+}
+
+/** the inverse of softMax (for an angle at or past m: a large, finite raw value) */
+function softMaxInv(y: number, a: number, m: number) {
+  return y <= a ? y : a + (m - a) * Math.atanh(Math.min(0.995, (y - a) / (m - a)));
+}
+
+/** raw parameters → angles (always inside the limits) */
+function toAngles(p: ArrayLike<number>, q: Float64Array) {
+  for (const j of BOX) {
+    const { min, max } = ARM_LIMITS[j];
+    const w = max - min;
+    const x = p[I[j]];
+    const lo = min + SOFT[j][0] * w;
+    const hi = max - SOFT[j][1] * w;
+    q[I[j]] = x >= hi ? softMax(x, hi, max) : x <= lo ? -softMax(-x, -lo, -min) : x;
+  }
+  const fr = p[I.flex], ar = p[I.abd];
+  const th = Math.hypot(fr, ar);
+  const m = shoulderLimit(Math.atan2(ar, fr));
+  const k = th > 1e-12 ? softMax(th, SOFT_RADIAL * m, m) / th : 1;
+  q[I.flex] = fr * k;
+  q[I.abd] = ar * k;
+  const [u, v] = wristAxes(p[I.wflex], p[I.wdev]);
+  const e = Math.hypot(u, v);
+  const kw = e > 1e-12 ? softMax(e, SOFT_RADIAL, 1) / e : 1;
+  q[I.wflex] = p[I.wflex] * kw;
+  q[I.wdev] = p[I.wdev] * kw;
+}
+
+/** angles → raw parameters (angles outside the limits are clamped first) */
+function toRaw(q0: ArrayLike<number>, p: Float64Array) {
+  const q = Float64Array.from(q0);
+  projectToLimits(q);
+  for (const j of BOX) {
+    const { min, max } = ARM_LIMITS[j];
+    const w = max - min;
+    const y = q[I[j]];
+    const lo = min + SOFT[j][0] * w;
+    const hi = max - SOFT[j][1] * w;
+    p[I[j]] = y >= hi ? softMaxInv(y, hi, max) : y <= lo ? -softMaxInv(-y, -lo, -min) : y;
+  }
+  const th = Math.hypot(q[I.flex], q[I.abd]);
+  const m = shoulderLimit(Math.atan2(q[I.abd], q[I.flex]));
+  const k = th > 1e-12 ? softMaxInv(th, SOFT_RADIAL * m, m) / th : 1;
+  p[I.flex] = q[I.flex] * k;
+  p[I.abd] = q[I.abd] * k;
+  const [u, v] = wristAxes(q[I.wflex], q[I.wdev]);
+  const e = Math.hypot(u, v);
+  const kw = e > 1e-12 ? softMaxInv(e, SOFT_RADIAL, 1) / e : 1;
+  p[I.wflex] = q[I.wflex] * kw;
+  p[I.wdev] = q[I.wdev] * kw;
+}
+
 /** the clavicle's relaxed angles for a humerus: it lifts with the raised arm and comes forward with a reach */
 function clavicleRhythm(q: ArrayLike<number>): [number, number] {
   const th = Math.hypot(q[I.flex], q[I.abd]);
@@ -392,6 +468,8 @@ const W = {
   elbow: 1.5,
   /** per rad of change against the previous frame */
   prev: 0.25,
+  /** per rad that a raw parameter is past its squashed angle */
+  drift: 0.05,
 };
 
 interface Problem {
@@ -405,6 +483,10 @@ interface Problem {
   prev: Float64Array | null;
   chain: Chain;
   res: Float64Array;
+  /** the angles of the raw parameters being evaluated */
+  q: Float64Array;
+  /** the cost of the last minimisation */
+  cost: number;
 }
 
 const TORSO_MARGIN = 0.035;
@@ -423,12 +505,16 @@ function insideTorso(s: ArmSetup, x: number, y: number, z: number) {
   return e < 1 ? (1 - e) * Math.min(t.halfD, t.halfW) : 0;
 }
 
-/** fills pr.res with the residuals at q; returns their count */
-function residuals(pr: Problem, q: Float64Array): number {
+/** fills pr.res with the residuals at the raw parameters p; returns their count */
+function residuals(pr: Problem, p: Float64Array): number {
+  const q = pr.q;
+  toAngles(p, q);
   const o = pr.chain;
   fk(pr.s, q, pr.at, o);
   const r = pr.res;
   let n = 0;
+  // raw parameters do not drift far past their (squashed) angles
+  for (let j = 0; j < NQ; j++) r[n++] = W.drift * (p[j] - q[j]);
   // position
   for (let k = 0; k < 3; k++) r[n++] = W.pos * (o.eff[k] - pr.p[k]);
   // orientation goals: the hand axis in the local frame against its target direction
@@ -513,31 +599,36 @@ function cholSolve(A: Float64Array, b: Float64Array, x: Float64Array, n: number)
   return true;
 }
 
-/** Levenberg-Marquardt with projection onto the limits; q is improved in place, returns iterations */
-function minimise(pr: Problem, q: Float64Array, maxIter: number): number {
-  projectToLimits(q);
-  let cost = costOf(pr, q);
+/**
+ * Levenberg-Marquardt on the raw parameters (numeric Jacobian); p is improved in place. With a box
+ * (lo, hi), every step is clamped into it (the stateful solver's limit on the change per call).
+ * Returns the iterations used.
+ */
+function minimise(pr: Problem, p: Float64Array, maxIter: number, box?: { lo: Float64Array; hi: Float64Array }): number {
+  const keepIn = (x: Float64Array) => {
+    if (box) for (let a = 0; a < NQ; a++) x[a] = clamp(x[a], box.lo[a], box.hi[a]);
+  };
+  keepIn(p);
+  let cost = costOf(pr, p);
   const m = pr.res.length;
   const r0 = new Float64Array(m);
   const J = new Float64Array(m * NQ);
   const A = new Float64Array(NQ * NQ);
   const g = new Float64Array(NQ);
-  const dq = new Float64Array(NQ);
-  const qn = new Float64Array(NQ);
+  const dp = new Float64Array(NQ);
+  const pn = new Float64Array(NQ);
   const M = new Float64Array(NQ * NQ);
-  const free = new Uint8Array(NQ);
-  const gf = new Float64Array(NQ);
   let lambda = 1e-3;
   let it = 0;
   for (; it < maxIter; it++) {
-    const n = residuals(pr, q);
+    const n = residuals(pr, p);
     r0.set(pr.res.subarray(0, n));
     const h = 1e-6;
     for (let j = 0; j < NQ; j++) {
-      const keep = q[j];
-      q[j] = keep + h;
-      residuals(pr, q);
-      q[j] = keep;
+      const keep = p[j];
+      p[j] = keep + h;
+      residuals(pr, p);
+      p[j] = keep;
       for (let i = 0; i < n; i++) J[i * NQ + j] = (pr.res[i] - r0[i]) / h;
     }
     A.fill(0);
@@ -552,35 +643,21 @@ function minimise(pr: Problem, q: Float64Array, maxIter: number): number {
       }
     }
     for (let a = 0; a < NQ; a++) for (let b = 0; b < a; b++) A[b * NQ + a] = A[a * NQ + b];
-    // active set: a one-axis joint at a limit that the descent pushes further out stays there
-    free.fill(1);
-    for (const j of BOX) {
-      const a = I[j];
-      if ((q[a] <= ARM_LIMITS[j].min + 1e-9 && g[a] > 0) || (q[a] >= ARM_LIMITS[j].max - 1e-9 && g[a] < 0)) free[a] = 0;
-    }
-    for (let a = 0; a < NQ; a++) gf[a] = free[a] ? g[a] : 0;
     let improved = false;
     while (lambda < 1e9) {
       M.set(A);
-      for (let a = 0; a < NQ; a++) {
-        M[a * NQ + a] += lambda * (A[a * NQ + a] + 1e-6) + 1e-9;
-        if (free[a]) continue;
-        for (let b = 0; b < NQ; b++) M[a * NQ + b] = M[b * NQ + a] = 0;
-        M[a * NQ + a] = 1;
-      }
-      const ok = cholSolve(M, gf, dq, NQ);
-      if (ok) {
-        for (let a = 0; a < NQ; a++) qn[a] = q[a] - dq[a];
-        projectToLimits(qn);
-        const cn = costOf(pr, qn);
+      for (let a = 0; a < NQ; a++) M[a * NQ + a] += lambda * (A[a * NQ + a] + 1e-6) + 1e-9;
+      if (cholSolve(M, g, dp, NQ)) {
+        for (let a = 0; a < NQ; a++) pn[a] = p[a] - dp[a];
+        keepIn(pn);
+        const cn = costOf(pr, pn);
         if (cn < cost) {
-          const gain = cost - cn;
-          q.set(qn);
+          let step = 0;
+          for (let a = 0; a < NQ; a++) step = Math.max(step, Math.abs(pn[a] - p[a]));
+          improved = cost - cn > 1e-11 * (1 + cost) && step > 1e-9;
+          p.set(pn);
           cost = cn;
           lambda = Math.max(1e-7, lambda * 0.3);
-          let step = 0;
-          for (let a = 0; a < NQ; a++) step = Math.max(step, Math.abs(dq[a]));
-          improved = gain > 1e-10 * (1 + cost) && step > 1e-8;
           break;
         }
       }
@@ -588,6 +665,7 @@ function minimise(pr: Problem, q: Float64Array, maxIter: number): number {
     }
     if (!improved) break;
   }
+  pr.cost = cost;
   return it;
 }
 
@@ -706,13 +784,19 @@ function relaxedHand(s: ArmSetup, q: Float64Array): [number[], number[]] {
   return [ch.fd.slice(), ch.palm.slice()];
 }
 
-/** the analytic starting point: a deterministic, continuous function of the target */
-function initialGuess(pr: Problem): Float64Array {
+/** where the elbow points in the starting guesses (arm-local): down, out and back; out and up; down and forward */
+const POLES: V3[] = [norm([-0.25, -1, 0.45]), norm([-0.1, -0.35, 1]), norm([0.5, -1, 0.1])];
+
+/**
+ * An analytic starting point (elbow towards one of POLES; relaxed: the hand as relaxed as possible,
+ * ignoring the orientation goals): a deterministic, continuous function of the target
+ */
+function initialGuess(pr: Problem, start = 0, relaxed = false): Float64Array {
   const s = pr.s;
   const q = new Float64Array(NQ);
   const sh = [...s.clav];
-  // natural elbow: down, a little out and back; blended with the target's wish
-  let pole = norm([-0.25, -1, 0.45]);
+  // the elbow towards the pole, blended with the target's wish
+  let pole = POLES[start];
   if (pr.elbow) {
     const k = clamp(pr.elbowW, 0, 1);
     pole = norm([0, 1, 2].map((i) => pole[i] * (1 - k) + pr.elbow![i] * k * 2) as V3);
@@ -722,9 +806,9 @@ function initialGuess(pr: Problem): Float64Array {
   anglesFrom(sh, ik.el, ik.end, null, null, q);
   projectToLimits(q);
   const rel = relaxedHand(s, q);
-  // the hand frame: the goals, filled up with the relaxed frame
+  // the hand frame: the goals (none for the relaxed start), filled up with the relaxed frame
   const goals = [
-    ...pr.axes,
+    ...(relaxed ? [] : pr.axes),
     { hand: [1, 0, 0] as V3, world: rel[0] as V3, w: 0.08 },
     { hand: [0, 1, 0] as V3, world: rel[1] as V3, w: 0.08 },
   ];
@@ -748,7 +832,16 @@ export interface SolveOptions {
   prev?: ArmAngles | null;
   /** iteration cap (default 60) */
   maxIter?: number;
+  /**
+   * with prev: the most any joint may change in this call (rad). The arm then reconfigures over a
+   * few frames instead of popping when the target asks for something far away (the hand lags
+   * meanwhile, see the report); default: no limit
+   */
+  maxStep?: number;
 }
+
+/** iterations per start before the best start is finished */
+const PROBE = 15;
 
 const toArray = (a: ArmAngles) => Float64Array.from(ARM_JOINTS.map((j) => a[j]));
 const fromArray = (q: ArrayLike<number>): ArmAngles => Object.fromEntries(ARM_JOINTS.map((j, i) => [j, q[i]])) as unknown as ArmAngles;
@@ -768,16 +861,44 @@ export function solveArm(s: ArmSetup, target: HandTarget, o: SolveOptions = {}):
     elbowW: target.elbowWeight ?? 1,
     prev: o.prev ? toArray(o.prev) : null,
     chain: newChain(),
-    res: new Float64Array(40 + 3 * axes.length),
+    res: new Float64Array(50 + 3 * axes.length),
+    q: new Float64Array(NQ),
+    cost: 0,
   };
-  const q = pr.prev ? Float64Array.from(pr.prev) : initialGuess(pr);
-  const iterations = minimise(pr, q, o.maxIter ?? 60);
+  const maxIter = o.maxIter ?? 60;
+  const p = new Float64Array(NQ);
+  let iterations = 0;
+  if (pr.prev) {
+    toRaw(pr.prev, p);
+    let box: { lo: Float64Array; hi: Float64Array } | undefined;
+    if (o.maxStep !== undefined && Number.isFinite(o.maxStep)) {
+      const step = o.maxStep;
+      box = { lo: p.map((v) => v - step), hi: p.map((v) => v + step) };
+    }
+    iterations = minimise(pr, p, maxIter, box);
+  } else {
+    // starts with the elbow down, out and forward, and a relaxed hand with the elbow down; a few
+    // iterations each, the best one is finished
+    let best = Infinity;
+    for (let k = 0; k <= POLES.length; k++) {
+      const c = new Float64Array(NQ);
+      toRaw(k < POLES.length ? initialGuess(pr, k) : initialGuess(pr, 0, true), c);
+      iterations += minimise(pr, c, PROBE);
+      if (pr.cost < best - 1e-9) {
+        best = pr.cost;
+        p.set(c);
+      }
+    }
+    iterations += minimise(pr, p, maxIter);
+  }
+  const q = new Float64Array(NQ);
+  toAngles(p, q);
   return finish(pr, q, iterations);
 }
 
 /** forward kinematics only: where an arm with these angles puts its joints and hand */
 export function armPose(s: ArmSetup, angles: ArmAngles, at: V3 = [0, 0, 0]): ArmSolution {
-  const pr: Problem = { s, p: [0, 0, 0], at, axes: [], elbow: null, elbowW: 0, prev: null, chain: newChain(), res: new Float64Array(40) };
+  const pr: Problem = { s, p: [0, 0, 0], at, axes: [], elbow: null, elbowW: 0, prev: null, chain: newChain(), res: new Float64Array(50), q: new Float64Array(NQ), cost: 0 };
   const q = toArray(angles);
   const sol = finish(pr, q, 0);
   sol.report.posError = 0;
@@ -796,7 +917,8 @@ function finish(pr: Problem, q: Float64Array, iterations: number): ArmSolution {
   });
   const atLimit: string[] = [];
   const strained: string[] = [];
-  const eps = 1e-4;
+  // the soft limits approach a limit without reaching it: within 1° (1 % of the cone or ellipse) counts
+  const eps = 1 * DEG;
   for (const j of BOX) {
     const v = q[I[j]];
     const r = ARM_LIMITS[j];
@@ -806,11 +928,11 @@ function finish(pr: Problem, q: Float64Array, iterations: number): ArmSolution {
   }
   const th = Math.hypot(q[I.flex], q[I.abd]);
   const cone = th / shoulderLimit(Math.atan2(q[I.abd], q[I.flex]));
-  if (cone >= 1 - eps) atLimit.push('shoulder:cone');
+  if (cone >= 0.99) atLimit.push('shoulder:cone');
   else if (cone > 1 - STRAIN) strained.push('shoulder');
   const [wu, wv] = wristAxes(q[I.wflex], q[I.wdev]);
   const we = Math.hypot(wu, wv);
-  if (we >= 1 - eps) atLimit.push('wrist:ellipse');
+  if (we >= 0.99) atLimit.push('wrist:ellipse');
   else if (we > 1 - STRAIN) strained.push('wrist');
   // the forearm for the mesh: elbow axis (lateral, = c) and the wrist's radio-ulnar axis (w1)
   const angles = fromArray(q);
@@ -822,19 +944,23 @@ function finish(pr: Problem, q: Float64Array, iterations: number): ArmSolution {
     point: pointToWorld(s, o.eff),
     hand: { fd: norm(toWorld(s, o.fd)), palm: norm(toWorld(s, o.palm)), thumb: norm(toWorld(s, o.w)) },
     forearm: { dir: norm(toWorld(s, o.fa)), elbowAxis: norm(toWorld(s, o.c)), wristAxis: norm(toWorld(s, o.w1)), pron: q[I.pron] },
-    report: { posError, reached: posError < 0.003, axisErrors, atLimit, strained, iterations },
+    report: { posError, reached: posError < 0.003, axisErrors, atLimit, strained, iterations, cost: pr.cost },
   };
 }
 
 /**
  * The stateful solver for frame-by-frame use (a bake computing the choreography frame after frame):
- * every solve starts from the last solution and stays close to it. reset() forgets it.
+ * every solve starts from the last solution and stays close to it, and no joint changes by more than
+ * maxStep (rad) per call (default 0.2: 12 rad/s at 60 frames per second, a fast but real arm), so
+ * the arm never pops. reset() forgets the last solution.
  */
 export class ArmIK {
   private last: ArmAngles | null = null;
 
+  public constructor(public maxStep = 0.2) {}
+
   public solve(s: ArmSetup, target: HandTarget, maxIter?: number): ArmSolution {
-    const sol = solveArm(s, target, { prev: this.last, maxIter });
+    const sol = solveArm(s, target, { prev: this.last, maxIter, maxStep: this.maxStep });
     this.last = sol.angles;
     return sol;
   }

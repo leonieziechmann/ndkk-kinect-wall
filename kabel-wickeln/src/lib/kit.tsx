@@ -4,8 +4,9 @@
 //   - captions: one line at the bottom, du-imperative, shown long enough to read
 //     (characters / 12 + 1 s, KONZEPT "Text")
 //   - Timeline (lib/timeline.ts): scene time ↔ shot time with freezes and slow motion
-//   - twoViews: one person in both views of a split screen (the own view hides head and torso,
-//     its cheated arms cast no shadows)
+//   - splitPerson / viewLayers: one person in both views of a split screen: the own view sees only
+//     the arms (from the upper arm down), the outside view everything; the whole body casts its
+//     shadow in both (an invisible shadow caster, as in games)
 //   - small things: tally (ü u ü …), the "Zeitlupe" badge, the clock signal
 //
 // Pixel layout: the picture is 1920 × 1080 with (0, 0) in the middle.
@@ -112,42 +113,62 @@ export function clock(seconds: number): { tau: SimpleSignal<number>; run: () => 
 
 // ----------------------------------------------------------------------------------- people
 
-/** layers: the outside person (seen only by outside cameras), the own-view person (only by the POV) */
+/**
+ * Layers of the split screen. Layer 0: the world and the people's arms (both views); SELF (people/
+ * body/mesh.ts): the people's bodies without the arms (outside views only); OUTSIDE: anything else
+ * only outside views show; FIRST: anything only the own view shows (e.g. a hint for the viewer).
+ */
 export const LAYER = { OUTSIDE: 2, FIRST: 3 } as const;
 
 /**
- * One person in both views of a split screen. The outside copy is seen by outside cameras and casts
- * the shadows; the own-view copy is seen by the POV camera only, without head, torso and upper
- * arms (layer SELF, which the POV camera does not see) and casts no shadows (its arms are cheated).
+ * One person in both views of a split screen, the same mesh for both: the own view (a camera set up
+ * with viewLayers(cam, 'pov')) sees only the arms, from the upper arm down; the outside view sees the
+ * whole person. Every part casts its shadow in both views (the shadow map is rendered with a camera
+ * that sees every layer), so the own view shows the body's shadow on the floor without the body.
+ * Both views show exactly the same arms and hands.
  */
-export function twoViews(spec: PersonSpec, outPose: Pose, povPose: Pose) {
-  const out = new Person3D(spec, outPose);
-  const pov = new Person3D(spec, povPose);
-  for (const m of out.group.children) m.layers.set(LAYER.OUTSIDE);
-  for (const m of pov.group.children) {
-    if (m.layers.isEnabled(0)) m.layers.set(LAYER.FIRST);
-    m.castShadow = false;
-  }
-  out.material.transparent = true;
+export function splitPerson(spec: PersonSpec, pose: Pose) {
+  const person = new Person3D(spec, pose);
+  person.material.transparent = true;
   return {
-    out,
-    pov,
-    update(o: Pose, p: Pose) {
-      out.update(o);
-      pov.update(p);
+    person,
+    update(p: Pose) {
+      person.update(p);
     },
-    /** fade the outside person (x-ray during freezes); 1 = solid */
+    /** fade the person (x-ray during freezes, in both views); 1 = solid */
     seeThrough(alpha: number) {
-      out.material.opacity = alpha;
-      out.material.depthWrite = alpha > 0.99;
+      person.material.opacity = alpha;
+      person.material.depthWrite = alpha > 0.99;
     },
   };
 }
 
-/** set a camera's layers for the split screen: 'pov' sees the own-view person, 'ext' the outside one */
+/**
+ * The older interface of splitPerson, kept for its callers: one person shown with outPose in both
+ * views (there are no separate first-person arms any more: povPose is ignored; out and pov are the
+ * same Person3D).
+ */
+export function twoViews(spec: PersonSpec, outPose: Pose, _povPose?: Pose) {
+  const sp = splitPerson(spec, outPose);
+  return {
+    out: sp.person,
+    pov: sp.person,
+    update(o: Pose, _p?: Pose) {
+      sp.update(o);
+    },
+    seeThrough: sp.seeThrough,
+  };
+}
+
+/** a camera's layers for the split screen: 'pov' sees the world, the arms and FIRST; 'ext' everything but FIRST */
 export function viewLayers(cam: THREE.Camera, which: 'pov' | 'ext') {
-  cam.layers.set(0);
-  cam.layers.enable(which === 'pov' ? LAYER.FIRST : LAYER.OUTSIDE);
+  if (which === 'pov') {
+    cam.layers.set(0);
+    cam.layers.enable(LAYER.FIRST);
+  } else {
+    cam.layers.enableAll();
+    cam.layers.disable(LAYER.FIRST);
+  }
 }
 
 // ----------------------------------------------------------------------------------- bits

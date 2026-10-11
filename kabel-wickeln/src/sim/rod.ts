@@ -263,6 +263,8 @@ interface Guide {
 }
 
 const EZ: V3 = [0, 0, 1];
+/** largest push out of a kinematic capsule per iteration [m] (see solveCapsules) */
+const MAX_PUSH = 0.0015;
 
 /**
  * Discrete Cosserat rod as a chain of rigid segments linked by joints with two constraints each:
@@ -339,10 +341,14 @@ export class Rod {
   readonly skipGroup: Int32Array;
   /** capsules of the previous substep (same order), for their motion */
   private capsPrev: Capsule[] = [];
+  /** per capsule (by index) and segment: the remembered contact normal while the pair is near */
+  private capMem: Float64Array[] = [];
+  private capOn: Uint8Array[] = [];
   /** Darboux vectors at the start of the substep (3 per joint), for the material damping */
   private readonly Cn: Float64Array;
   /** the dt of the last step() */
   lastDt = 1 / 60;
+
   private readonly guides = new Map<number, Guide>();
   private guideId = 1;
   private capsules: Capsule[] | ((t: number) => Capsule[]) | null = null;
@@ -403,6 +409,7 @@ export class Rod {
     this.skipGroup = new Int32Array(ns).fill(-1);
     this.Cn = new Float64Array(3 * Math.max(0, ns - 1));
     this.dC = new Float64Array(3 * Math.max(0, ns - 1));
+
     this.wc = new Float64Array(ns);
     this.wt = new Float64Array(ns);
     this.wc0 = new Float64Array(ns);
@@ -1376,8 +1383,8 @@ export class Rod {
     const { c, wc, wt } = this;
     const Wj = wc[j], Tj = wt[j], Wk = k >= 0 ? wc[k] : 0, Tk = k >= 0 ? wt[k] : 0;
     // r × n
-    let ax = ry * nz - rz * ny, ay = rz * nx - rx * nz, az = rx * ny - ry * nx;
-    let bx = ky * nz - kz * ny, by = kz * nx - kx * nz, bz = kx * ny - ky * nx;
+    const ax = ry * nz - rz * ny, ay = rz * nx - rx * nz, az = rx * ny - ry * nx;
+    const bx = ky * nz - kz * ny, by = kz * nx - kx * nz, bz = kx * ny - ky * nx;
     const w = Wj + Tj * (ax * ax + ay * ay + az * az) + Wk + Tk * (bx * bx + by * by + bz * bz);
     if (w < 1e-12) return;
     const lamN = pen / w;
@@ -1388,27 +1395,51 @@ export class Rod {
       if (Tk > 0) this.rotate(k, -Tk * lamN * bx, -Tk * lamN * by, -Tk * lamN * bz);
     }
     if (mu <= 0) return;
-    // relative displacement of the contact points over the substep
-    const pm = this.pm;
-    this.pointMotion(j, rx, ry, rz, pm, 0);
-    if (k >= 0) this.pointMotion(k, kx, ky, kz, pm, 3);
-    else { pm[3] = kmx; pm[4] = kmy; pm[5] = kmz; } // a kinematic body's own motion (a moving hand)
+    // Friction acts on the centre lines and turns the segments only about their own axes
+    // (rolling): r = (contact point on the axis) - n rc, and the surface lever only rolls. Turning a
+    // segment's tangent by a friction impulse at its surface would couple friction with bending,
+    // and with the strongly damped bending a cable then creeps over a finger it should hang on.
+    const rc = this.rc, pm = this.pm, d3 = this.d3, j3 = 3 * j, k3 = 3 * k;
+    this.pointMotion(j, rx + nx * rc, ry + ny * rc, rz + nz * rc, pm, 0);
+    const rj = this.rollAngle(j) * rc; // surface motion from rolling: roll·(d3 × (-n rc))
+    pm[0] -= rj * (d3[j3 + 1] * nz - d3[j3 + 2] * ny); pm[1] -= rj * (d3[j3 + 2] * nx - d3[j3] * nz); pm[2] -= rj * (d3[j3] * ny - d3[j3 + 1] * nx);
+    if (k >= 0) {
+      this.pointMotion(k, kx - nx * rc, ky - ny * rc, kz - nz * rc, pm, 3);
+      const rk = this.rollAngle(k) * rc; // roll·(d3 × (+n rc))
+      pm[3] += rk * (d3[k3 + 1] * nz - d3[k3 + 2] * ny); pm[4] += rk * (d3[k3 + 2] * nx - d3[k3] * nz); pm[5] += rk * (d3[k3] * ny - d3[k3 + 1] * nx);
+    } else { pm[3] = kmx; pm[4] = kmy; pm[5] = kmz; } // a kinematic body's own motion (a moving hand)
     let dx = pm[0] - pm[3], dy = pm[1] - pm[4], dz = pm[2] - pm[5];
     const dn = dx * nx + dy * ny + dz * nz;
     dx -= dn * nx; dy -= dn * ny; dz -= dn * nz;
     const dl = Math.sqrt(dx * dx + dy * dy + dz * dz);
     if (dl < 1e-12) return;
     const tx = dx / dl, ty = dy / dl, tz = dz / dl;
-    ax = ry * tz - rz * ty; ay = rz * tx - rx * tz; az = rx * ty - ry * tx;
-    bx = ky * tz - kz * ty; by = kz * tx - kx * tz; bz = kx * ty - ky * tx;
-    const wT = Wj + Tj * (ax * ax + ay * ay + az * az) + Wk + Tk * (bx * bx + by * by + bz * bz);
+    // rolling levers: ((-n rc) × t)·d3 for j, ((n rc) × t)·d3 for k
+    const cx = ny * tz - nz * ty, cy = nz * tx - nx * tz, cz = nx * ty - ny * tx;
+    const lj = -rc * (cx * d3[j3] + cy * d3[j3 + 1] + cz * d3[j3 + 2]);
+    const lk = k >= 0 ? rc * (cx * d3[k3] + cy * d3[k3 + 1] + cz * d3[k3 + 2]) : 0;
+    const wT = Wj + Tj * lj * lj + Wk + Tk * lk * lk;
     const lamT = -Math.min(dl / wT, mu * lamN); // static (cancel slip) or kinetic (Coulomb limit)
-    c[3 * j] += Wj * lamT * tx; c[3 * j + 1] += Wj * lamT * ty; c[3 * j + 2] += Wj * lamT * tz;
-    if (Tj > 0) this.rotate(j, Tj * lamT * ax, Tj * lamT * ay, Tj * lamT * az);
+    c[j3] += Wj * lamT * tx; c[j3 + 1] += Wj * lamT * ty; c[j3 + 2] += Wj * lamT * tz;
+    if (Tj > 0 && lj !== 0) { const a = Tj * lamT * lj; this.rotate(j, a * d3[j3], a * d3[j3 + 1], a * d3[j3 + 2]); }
     if (k >= 0) {
-      c[3 * k] -= Wk * lamT * tx; c[3 * k + 1] -= Wk * lamT * ty; c[3 * k + 2] -= Wk * lamT * tz;
-      if (Tk > 0) this.rotate(k, -Tk * lamT * bx, -Tk * lamT * by, -Tk * lamT * bz);
+      c[k3] -= Wk * lamT * tx; c[k3 + 1] -= Wk * lamT * ty; c[k3 + 2] -= Wk * lamT * tz;
+      if (Tk > 0 && lk !== 0) { const a = -Tk * lamT * lk; this.rotate(k, a * d3[k3], a * d3[k3 + 1], a * d3[k3 + 2]); }
     }
+  }
+
+  /** Rotation of segment j about its own axis during this substep [rad]. */
+  private rollAngle(j: number) {
+    const q = this.q, qp = this.qp, j4 = 4 * j, d3 = this.d3, j3 = 3 * j;
+    const ax = q[j4], ay = q[j4 + 1], az = q[j4 + 2], aw = q[j4 + 3];
+    const bx = -qp[j4], by = -qp[j4 + 1], bz = -qp[j4 + 2], bw = qp[j4 + 3];
+    // q qp⁻¹ (world-frame rotation since the start of the substep)
+    const rx = aw * bx + ax * bw + ay * bz - az * by;
+    const ry = aw * by - ax * bz + ay * bw + az * bx;
+    const rz = aw * bz + ax * by - ay * bx + az * bw;
+    const rw = aw * bw - ax * bx - ay * by - az * bz;
+    const sg = rw < 0 ? -2 : 2;
+    return sg * (rx * d3[j3] + ry * d3[j3 + 1] + rz * d3[j3 + 2]);
   }
 
   /** Displacement during this substep of the body-fixed point now at offset r from c_j, into out[o..o+2]. */
@@ -1471,57 +1502,84 @@ export class Rod {
   }
 
   /**
-   * Kinematic capsules against the segments. The normal is the direction between the closest
-   * points; if the segment has crossed the capsule's axis during this substep (a fast or deep
-   * push), the normal from the start of the substep is used instead, so the cable is pushed back
-   * to the side it came from. Friction acts against the capsule's own motion.
+   * Kinematic capsules against the segments. Each capsule-segment pair that comes near (within
+   * 4 mm of touching) remembers which side of the capsule the segment is on: the contact normal is
+   * the direction between the closest points, but if the segment gets to the other side of the
+   * capsule's axis while the pair is near (a fast hand, or the rod pulling it through), it is
+   * pushed back along the remembered normal. A pair that comes near for the first time takes its
+   * side from the start of the substep (a capsule moving up to ~R per substep). Friction acts
+   * against the capsule's own motion.
    */
   private solveCapsules() {
     const { ns, c, d3, L, wc, rc, opts, cp, qp, skipGroup } = this;
     const st = this.st, caps = this.caps, prev = this.capsPrev;
+    if (this.capMem.length !== caps.length) {
+      this.capMem = caps.map(() => new Float64Array(3 * ns));
+      this.capOn = caps.map(() => new Uint8Array(ns));
+    }
+    const NEAR = 0.004;
     for (let ci = 0; ci < caps.length; ci++) {
-      const cap = caps[ci], pc = prev[ci] ?? cap;
-      const R = cap.r + rc, grp = cap.group ?? -1;
+      const cap = caps[ci], pc = prev[ci] ?? cap, mem = this.capMem[ci], on = this.capOn[ci];
+      const R = cap.r + rc, grp = cap.group ?? -1, RN = R + NEAR;
       const A = cap.a, B = cap.b, A0 = pc.a, B0 = pc.b;
-      const lox = Math.min(A[0], B[0], A0[0], B0[0]) - R, hix = Math.max(A[0], B[0], A0[0], B0[0]) + R;
-      const loy = Math.min(A[1], B[1], A0[1], B0[1]) - R, hiy = Math.max(A[1], B[1], A0[1], B0[1]) + R;
-      const loz = Math.min(A[2], B[2], A0[2], B0[2]) - R, hiz = Math.max(A[2], B[2], A0[2], B0[2]) + R;
+      const lox = Math.min(A[0], B[0], A0[0], B0[0]) - RN, hix = Math.max(A[0], B[0], A0[0], B0[0]) + RN;
+      const loy = Math.min(A[1], B[1], A0[1], B0[1]) - RN, hiy = Math.max(A[1], B[1], A0[1], B0[1]) + RN;
+      const loz = Math.min(A[2], B[2], A0[2], B0[2]) - RN, hiz = Math.max(A[2], B[2], A0[2], B0[2]) + RN;
       const mu = cap.mu ?? opts.capsuleFriction;
       for (let j = 0; j < ns; j++) {
-        if (wc[j] === 0 || (grp >= 0 && skipGroup[j] === grp)) continue;
+        if (wc[j] === 0 || (grp >= 0 && skipGroup[j] === grp)) {
+          on[j] = 0;
+          continue;
+        }
         const h = L[j] / 2, j3 = 3 * j;
         const p0x = c[j3] - d3[j3] * h, p0y = c[j3 + 1] - d3[j3 + 1] * h, p0z = c[j3 + 2] - d3[j3 + 2] * h;
         const p1x = c[j3] + d3[j3] * h, p1y = c[j3 + 1] + d3[j3 + 1] * h, p1z = c[j3 + 2] + d3[j3 + 2] * h;
-        if (Math.max(p0x, p1x) < lox || Math.min(p0x, p1x) > hix) continue;
-        if (Math.max(p0y, p1y) < loy || Math.min(p0y, p1y) > hiy) continue;
-        if (Math.max(p0z, p1z) < loz || Math.min(p0z, p1z) > hiz) continue;
+        if (Math.max(p0x, p1x) < lox || Math.min(p0x, p1x) > hix || Math.max(p0y, p1y) < loy || Math.min(p0y, p1y) > hiy || Math.max(p0z, p1z) < loz || Math.min(p0z, p1z) > hiz) {
+          on[j] = 0;
+          continue;
+        }
         closestSegSeg(p0x, p0y, p0z, p1x, p1y, p1z, A[0], A[1], A[2], B[0], B[1], B[2], st);
         const s = st[0], t = st[1];
         const px = p0x + (p1x - p0x) * s, py = p0y + (p1y - p0y) * s, pz = p0z + (p1z - p0z) * s;
         const qx = A[0] + (B[0] - A[0]) * t, qy = A[1] + (B[1] - A[1]) * t, qz = A[2] + (B[2] - A[2]) * t;
         let nx = px - qx, ny = py - qy, nz = pz - qz;
         const d = Math.hypot(nx, ny, nz);
-        if (d >= R) continue;
-        // the same pair at the start of the substep
-        const j4 = 4 * j, ax = qp[j4], ay = qp[j4 + 1], az = qp[j4 + 2], aw = qp[j4 + 3];
-        const ex = 2 * (ax * az + aw * ay) * h, ey = 2 * (ay * az - aw * ax) * h, ez = (aw * aw - ax * ax - ay * ay + az * az) * h;
-        closestSegSeg(cp[j3] - ex, cp[j3 + 1] - ey, cp[j3 + 2] - ez, cp[j3] + ex, cp[j3 + 1] + ey, cp[j3 + 2] + ez, A0[0], A0[1], A0[2], B0[0], B0[1], B0[2], st);
-        const s0 = st[0], t0 = st[1];
-        let ox = cp[j3] + ex * (2 * s0 - 1) - (A0[0] + (B0[0] - A0[0]) * t0);
-        let oy = cp[j3 + 1] + ey * (2 * s0 - 1) - (A0[1] + (B0[1] - A0[1]) * t0);
-        let oz = cp[j3 + 2] + ez * (2 * s0 - 1) - (A0[2] + (B0[2] - A0[2]) * t0);
-        const od = Math.hypot(ox, oy, oz);
+        if (d >= RN) {
+          on[j] = 0;
+          continue;
+        }
+        if (!on[j]) {
+          // first time near: the side it was on at the start of the substep
+          const j4 = 4 * j, ax = qp[j4], ay = qp[j4 + 1], az = qp[j4 + 2], aw = qp[j4 + 3];
+          const ex = 2 * (ax * az + aw * ay) * h, ey = 2 * (ay * az - aw * ax) * h, ez = (aw * aw - ax * ax - ay * ay + az * az) * h;
+          closestSegSeg(cp[j3] - ex, cp[j3 + 1] - ey, cp[j3 + 2] - ez, cp[j3] + ex, cp[j3 + 1] + ey, cp[j3 + 2] + ez, A0[0], A0[1], A0[2], B0[0], B0[1], B0[2], st);
+          const s0 = st[0], t0 = st[1];
+          const ox = cp[j3] + ex * (2 * s0 - 1) - (A0[0] + (B0[0] - A0[0]) * t0);
+          const oy = cp[j3 + 1] + ey * (2 * s0 - 1) - (A0[1] + (B0[1] - A0[1]) * t0);
+          const oz = cp[j3 + 2] + ez * (2 * s0 - 1) - (A0[2] + (B0[2] - A0[2]) * t0);
+          const od = Math.hypot(ox, oy, oz);
+          if (od > 1e-9) { mem[j3] = ox / od; mem[j3 + 1] = oy / od; mem[j3 + 2] = oz / od; }
+          else if (d > 1e-9) { mem[j3] = nx / d; mem[j3 + 1] = ny / d; mem[j3 + 2] = nz / d; }
+          else continue;
+          on[j] = 1;
+        }
+        const mx = mem[j3], my = mem[j3 + 1], mz = mem[j3 + 2];
+        const side = nx * mx + ny * my + nz * mz;
         let pen: number;
-        if (od > 1e-9 && (d < 1e-9 || ox * nx + oy * ny + oz * nz < 0)) {
-          // crossed the axis (or exactly on it): back along the old normal
-          ox /= od; oy /= od; oz /= od;
-          pen = R - (nx * ox + ny * oy + nz * oz);
-          nx = ox; ny = oy; nz = oz;
+        if (d < 1e-9 || side < 0) {
+          // on the wrong side of the axis: back along the remembered normal
+          pen = R - side;
+          nx = mx; ny = my; nz = mz;
         } else {
-          if (d < 1e-9) continue;
           nx /= d; ny /= d; nz /= d;
+          mem[j3] = nx; mem[j3 + 1] = ny; mem[j3 + 2] = nz;
           pen = R - d;
         }
+        if (pen <= 0) continue;
+        // at most MAX_PUSH per iteration: a segment forced deep into a capsule (by a hand that is
+        // also holding the cable, or squeezed against a held part) comes out over a few substeps
+        // instead of being shot out (a push of p in one substep is a speed of p / h)
+        if (pen > MAX_PUSH) pen = MAX_PUSH;
         // the capsule's motion at the contact point during this substep
         const kmx = (A[0] - A0[0]) * (1 - t) + (B[0] - B0[0]) * t, kmy = (A[1] - A0[1]) * (1 - t) + (B[1] - B0[1]) * t, kmz = (A[2] - A0[2]) * (1 - t) + (B[2] - B0[2]) * t;
         this.contact(j, px - c[j3] - nx * rc, py - c[j3 + 1] - ny * rc, pz - c[j3 + 2] - nz * rc, -1, 0, 0, 0, nx, ny, nz, pen, mu, kmx, kmy, kmz);

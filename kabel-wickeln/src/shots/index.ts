@@ -11,8 +11,9 @@ import { eightOk, eightRoll, eightSnap, eightSwivel } from './eight';
 import { kinkShot } from './kink';
 import { throwShot } from './throw';
 import { deployPull } from './deploy-pull';
+import { PHYS_SHOTS } from './phys-tests';
 
-const SHOT_LIST: ShotDef[] = [exampleTwist, coilShot, knotPull, eightSnap, eightOk, eightRoll, eightSwivel, kinkShot, throwShot, deployPull];
+const SHOT_LIST: ShotDef[] = [exampleTwist, coilShot, knotPull, eightSnap, eightOk, eightRoll, eightSwivel, kinkShot, throwShot, deployPull, ...PHYS_SHOTS];
 
 export const SHOTS: Readonly<Record<string, ShotDef>> = (() => {
   const out: Record<string, ShotDef> = {};

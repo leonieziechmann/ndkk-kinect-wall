@@ -10,10 +10,10 @@
 // A person always gives the same vertices and faces in the same order, whatever the pose, so a mesh
 // is built once and then refilled in place (buildBody(pose, mesh)).
 
-import { RGB, V3, across, add, clamp, cross, dot, hexRgb, lerp, local, madd, mix3, norm, scale, smooth, sub } from '../math';
+import { RGB, V3, across, add, clamp, cross, dot, hexRgb, lerp, local, madd, mix3, norm, scale, smooth, sub, turn } from '../math';
 import type { Frame, HandPose, PersonSpec, Pose } from '../people';
 import { FINGERS, THUMB, handJoints } from './hand';
-import { MAT, MAT_COUNT, MatName, Mesh, Ring, SELF, ellipsoid, facing, loft, tubeRings } from './mesh';
+import { MAT, MAT_COUNT, MatName, Mesh, Ring, SELF, ellipsoid, facing, loft, orientRings, tubeRings } from './mesh';
 
 /** sides per loft */
 const D = { torso: 16, limb: 10, neck: 10, head: 14, palm: 10, finger: 8, foot: 10, small: 6 };
@@ -304,6 +304,25 @@ const ARM_PUSHED: ArmPt[] = [
   [1.2, 0.036, MAT.skin], [1.3, 0.039, MAT.skin], [1.65, 0.032, MAT.skin], [2, 0.026, MAT.skin],
 ];
 
+/** where the first-person view's arm starts (along the arm: 0 shoulder, 1 elbow) */
+const POV_CUT = 0.6;
+
+/** more rings along the forearm (at most 0.12 apart), so its twist spreads evenly */
+function densify(pts: ArmPt[]): ArmPt[] {
+  const out: ArmPt[] = [];
+  pts.forEach((pt, i) => {
+    out.push(pt);
+    const nx = pts[i + 1];
+    if (!nx || pt[0] < 1) return;
+    const n = Math.ceil((nx[0] - pt[0]) / 0.12);
+    for (let j = 1; j < n; j++) {
+      const u = j / n;
+      out.push([lerp(pt[0], nx[0], u), lerp(pt[1], nx[1], u), pt[2]]);
+    }
+  });
+  return out;
+}
+
 // ---------------------------------------------------------------------------------- the people
 
 function clothed(m: Mesh, p: Pose) {
@@ -588,28 +607,56 @@ function clothed(m: Mesh, p: Pose) {
   }
   m.curLayer = 0;
 
-  // ---- arms: from the shoulder joint (its dome is the round top of the shoulder) down to the wrist
-  const sleeve = top === 'tee' ? ARM_TEE : spec.pushed ? ARM_PUSHED : banded ? ARM_CUFF : ARM_LONG;
+  // ---- arms: from the shoulder joint (its dome is the round top of the shoulder) down to the wrist.
+  // The first-person view sees them from 0.6 of the upper arm down (layer 0, a hidden cap closes the
+  // cut); the upper arm keeps the elbow's axis, the forearm twists from it to the wrist's radio-ulnar
+  // axis along its length (pronation) and flattens towards the wrist.
+  const sleeve = densify(top === 'tee' ? ARM_TEE : spec.pushed ? ARM_PUSHED : banded ? ARM_CUFF : ARM_LONG);
   const ak = k * B.limbs;
-  for (const a of s.arms) {
+  s.arms.forEach((a, ai) => {
     const up = sub(a.el, a.sh);
     const fa = sub(a.wr, a.el);
     const at = (t: number) => (t <= 1 ? madd(a.sh, up, t) : madd(a.el, fa, t - 1));
     const sleeveLoose = (t: number, mat: number) => (mat === MAT.top ? 1 + 0.07 * loose * (t < 1.7 ? 1 : 0.4) : 1);
     const gloved = (spec.gloves ?? 'none') !== 'none';
+    const radii = sleeve.map(([t, r, mat]) => r * ak * sleeveLoose(t, mat));
+    const rings = tubeRings(sleeve.map(([t]) => at(t)), radii, b.chest.f);
+    const arm = p.body.arms?.[ai];
+    if (arm) {
+      const fd = norm(fa);
+      const e0 = across(arm.forearm.elbowAxis, fd);
+      const w1 = across(arm.forearm.wristAxis, fd);
+      const twist = Math.atan2(dot(fd, cross(e0, w1)), dot(e0, w1));
+      orientRings(
+        rings,
+        sleeve.map(([t]) => (t <= 1 ? arm.forearm.elbowAxis : turn(e0, fd, twist * (t - 1)))),
+        sleeve.map(([t, , mat], i) => {
+          if (t <= 1) return null;
+          const f = (t - 1) * (mat === MAT.top ? 0.5 : 1);
+          return [radii[i] * (1 + 0.16 * f), radii[i] * (1 - 0.1 * f)];
+        }),
+      );
+    }
     loft(
       m,
-      tubeRings(sleeve.map(([t]) => at(t)), sleeve.map(([t, r, mat]) => r * ak * sleeveLoose(t, mat)), b.chest.f),
+      rings,
       D.limb,
       // a glove's cuff covers the wrist
       sleeve.map(([t, , mat]) => (gloved && t >= 1.85 && mat === MAT.skin ? MAT.glove : mat)),
       2,
       0.5,
-      (j) => (sleeve[j][0] < 0.6 ? SELF : 0),
+      (j) => (sleeve[j][0] < POV_CUT ? SELF : 0),
     );
+    // the cap that closes the first-person view's cut, hidden inside the sleeve for everyone else
+    const cut = rings[sleeve.findIndex(([t]) => t >= POV_CUT)];
+    const cd = norm(up);
+    ellipsoid(m, cut.c, cut.x, cd, cut.y, cut.rx * 0.97, cut.rx * 0.35, cut.ry * 0.97, D.limb, 3, sleeve[sleeve.findIndex(([t]) => t >= POV_CUT)][2]);
     hand(m, a.hand, a.sign, norm(fa), 0.026 * ak, spec);
-  }
+  });
 
+  // ---- legs (only outside views see them: layer SELF): from inside the pelvis to the ankle (wide
+  // trousers down over the shoes), then the shoes
+  m.curLayer = SELF;
   // ---- legs: from inside the pelvis to the ankle (wide trousers down over the shoes), then the shoes
   const wide = spec.pants === 'wide';
   const work = spec.pants === 'work';
@@ -644,6 +691,7 @@ function clothed(m: Mesh, p: Pose) {
     }
     shoe(m, l, spec.shoes, k * B.feet, wide);
   }
+  m.curLayer = 0;
 }
 
 // ---------------------------------------------------------------------------------- hands
@@ -735,7 +783,8 @@ function hand(m: Mesh, h: HandPose, side: number, fa: V3, wristR: number, spec: 
   const tpts: V3[] = [Bs, mix3(Bs, M, 0.5), M, mix3(M, IP, 0.5), IP, mix3(IP, T, 0.5), madd(T, td[2], -THUMB.r[3] * 0.6 * q)];
   const tr = [THUMB.r[0], THUMB.r[0] * 0.95, THUMB.r[1], THUMB.r[1] * 0.95, THUMB.r[2], THUMB.r[3] * 1.04, THUMB.r[3] * 0.85];
   // the nail faces away from the palm and the fingers
-  const back = norm(madd(scale(palm, -0.75), w, 0.65));
+  const tn = h.thumbNail;
+  const back = tn ? norm([fd[0] * tn[0] + palm[0] * tn[1] + w[0] * tn[2], fd[1] * tn[0] + palm[1] * tn[1] + w[1] * tn[2], fd[2] * tn[0] + palm[2] * tn[1] + w[2] * tn[2]]) : norm(madd(scale(palm, -0.75), w, 0.65));
   const tbone = [0, 0, 1, 1, 2, 2, 2];
   const trings: Ring[] = tpts.map((c, i) => {
     const d = i === 2 ? norm(add(td[0], td[1])) : i === 4 ? norm(add(td[1], td[2])) : td[tbone[i]];

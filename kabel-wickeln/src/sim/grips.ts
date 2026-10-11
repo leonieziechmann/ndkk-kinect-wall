@@ -107,6 +107,13 @@ export type PinchMode = 'held' | 'loose' | 'free';
 const LEVEL: Record<PinchMode, number> = { free: 0, loose: 0.5, held: 1 };
 /** axial force [N] a pinch halfway between loose and held resists before it slips */
 const HOLD_FORCE = 5;
+/**
+ * Most a held pinch resists before the cable slips through it [N] (a firm thumb-index pinch
+ * holds about this much). Finite, so two hands pulling a cable taut make it slip, not explode.
+ */
+const MAX_HOLD = 20;
+/** a held pinch keeps this much of the axial inverse mass in the direct solve (room to slip) */
+const AXIAL_GIVE = 0.1;
 
 export interface PinchSpec {
   /** the pads' frame (grip frame): p between the pads on the cable axis, d3 along the cable */
@@ -268,9 +275,14 @@ export class Pinch implements Attachment {
       this.js.length = 0;
       return;
     }
+    // which way the cable runs through the pads (the hand may turn round while it slides)
+    const T = rod.tangentAt(this.s), dt = T[0] * this.ax[0] + T[1] * this.ax[1] + T[2] * this.ax[2];
+    if (dt * this.sigma < -0.3) this.sigma = -this.sigma;
     this.lat = smooth(g / 0.5);
-    this.held = smooth((g - 0.5) / 0.5);
-    this.fmax = g <= 0.5 ? this.friction * this.lat : this.friction + (HOLD_FORCE * this.held) / Math.max(1e-9, 1 - this.held);
+    // closing from free straight to held: the pads press from the first moment (no slipping while
+    // they close); between loose and held the press follows the level
+    this.held = this.to === 1 && this.from < 0.5 ? smooth(g) : smooth((g - 0.5) / 0.5);
+    this.fmax = Math.min(MAX_HOLD, this.friction * this.lat + (HOLD_FORCE * this.held) / Math.max(1e-9, 1 - this.held));
     this.psi = this.phi0 + this.rollFn(t);
     const fade = 1 - smooth((t - this.t0) / Math.max(this.blend, 1e-9));
     const o = this.off0;
@@ -290,7 +302,7 @@ export class Pinch implements Attachment {
     }
     for (let k = 0; k < this.js.length; k++) {
       const j = this.js[k], w = this.ws[k];
-      const fl = this.lat * w, fa = this.held * w, fr = this.rolls ? this.held * w : 0;
+      const fl = this.lat * w, fa = (1 - AXIAL_GIVE) * this.held * w, fr = this.rolls ? this.held * w : 0;
       if (rod.wc[j] === 0) continue;
       rod.holdBody(j, 1 - fl, fl - fa, this.ax, 1, -fr, segAxes(rod, j)[1]);
     }
@@ -378,7 +390,9 @@ export class Pinch implements Attachment {
         cax += ws[k] * (al - this.sigma * (sm - this.s));
         sw += ws[k];
       }
-      if (sw > 0) this.s -= this.sigma * (cax / sw);
+      // (never into what another hand holds rigidly)
+      const next = sw > 0 ? this.s - this.sigma * (cax / sw) : this.s;
+      if (rod.wc[rod.segmentAt(next)] !== 0) this.s = next;
     }
     this.slip = h > 0 ? (this.s - sOld) / h : 0;
     // roll that is not held follows the cable

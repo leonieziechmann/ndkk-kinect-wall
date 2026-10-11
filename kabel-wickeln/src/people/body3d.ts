@@ -1,10 +1,13 @@
 // A person in three.js: the body mesh of body/styles.ts as two BufferGeometries (one draw call each),
 // updated in place every frame from a Pose. Low-poly bodies with one flat colour per face from the
-// person's palette; faces marked smooth (none by default) get vertex normals. The own head, hair,
-// neck, torso and upper arms are a separate mesh on layer SELF (1), so a first-person camera that
-// leaves layer 1 out sees only the own forearms, hands and legs; every other camera must enable it.
+// person's palette; faces marked smooth (the hands) get vertex normals. The arms from the upper arm
+// down are on layer 0, everything else (head, hair, neck, torso, legs, shoes) is a separate mesh on
+// layer SELF (1): a first-person camera that leaves layer 1 out sees only the own arms, and both
+// meshes cast shadows (view.ts renders the shadow map with a camera that sees every layer), so the
+// body still throws its shadow in the first-person view. Every other camera must enable layer 1.
 //
-// capsulesOf(pose) gives the collision bodies for the cable simulation.
+// capsulesOf(pose) gives the collision bodies of the whole person for the cable simulation;
+// colliders.ts the detailed ones of a hand and its forearm.
 
 import * as THREE from 'three';
 import { V3, madd } from './math';

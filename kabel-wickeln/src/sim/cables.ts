@@ -213,6 +213,7 @@ export function buildCable(spec: CableSpec, points: V3[], o: BuildCableOptions =
   const { plugs = 'both', segment = spec.segment, ...ro } = o;
   const pts = resample(points, segment);
   const rod = Rod.fromPolyline(pts, { ...rodOptions(spec), ...ro });
+  const EI = typeof ro.EI === 'number' ? ro.EI : spec.EI, GJ = typeof ro.GJ === 'number' ? ro.GJ : spec.GJ;
   const S = rod.sNode, total = rod.totalLength;
   const atStart = spec.plug && (plugs === 'both' || plugs === 'start');
   const atEnd = spec.plug && (plugs === 'both' || plugs === 'end');
@@ -222,7 +223,7 @@ export function buildCable(spec: CableSpec, points: V3[], o: BuildCableOptions =
   if (atStart || atEnd) {
     const rigid = (k: number) => (atStart && k < iStart - 1) || (atEnd && k >= iEnd);
     // joint k joins segments k and k+1: rigid where both lie in a plug
-    rod.setStiffness({ EI: (k) => (rigid(k) ? spec.EI * 1000 : spec.EI), GJ: (k) => (rigid(k) ? spec.GJ * 1000 : spec.GJ) });
+    rod.setStiffness({ EI: (k) => (rigid(k) ? EI * 1000 : EI), GJ: (k) => (rigid(k) ? GJ * 1000 : GJ) });
     const mass = spec.plug ? spec.plug.mass : 0;
     const spread = (j0: number, j1: number) => {
       const len = S[j1] - S[j0];
