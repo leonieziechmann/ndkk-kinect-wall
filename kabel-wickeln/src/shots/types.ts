@@ -2,7 +2,7 @@
 // Shot modules import only src/sim and src/people (pure TypeScript), never three.js or Motion
 // Canvas, so they load in Node for baking.
 
-import type { Rod } from '../sim';
+import type { Rod, VectorTrack } from '../sim';
 
 /** A per-frame scalar recorded into the bake (e.g. twist turns for a live counter). */
 export type Track = (rod: Rod, t: number) => number;
@@ -12,6 +12,8 @@ export interface ShotBuild {
   /** called before each recorded frame with the shot time: add and release grips, guides, … */
   script?: (rod: Rod, t: number) => void;
   tracks?: Record<string, Track>;
+  /** per-frame vectors recorded with the rod (hand frames, capsules: frameTrack, capsuleTrack) */
+  vectors?: Record<string, VectorTrack>;
 }
 
 export interface ShotDef {

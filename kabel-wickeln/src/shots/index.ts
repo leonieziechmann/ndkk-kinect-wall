@@ -25,7 +25,7 @@ export const SHOTS: Readonly<Record<string, ShotDef>> = (() => {
 
 /** Builds and bakes one shot (tools/bake.mjs and the simulation tests). */
 export function bakeShot(def: ShotDef, onFrame?: (rod: Rod, t: number, frame: number) => void): BakedRod {
-  const { rod, script, tracks } = def.build();
+  const { rod, script, tracks, vectors } = def.build();
   if (def.iterations !== undefined) rod.opts.iterations = def.iterations;
-  return bake(rod, { id: def.id, duration: def.duration, fps: def.fps, substeps: def.substeps, script, tracks, onFrame });
+  return bake(rod, { id: def.id, duration: def.duration, fps: def.fps, substeps: def.substeps, script, tracks, vectors, onFrame });
 }

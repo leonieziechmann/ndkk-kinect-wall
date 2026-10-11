@@ -2,13 +2,36 @@
 // "floppy"): runs the shot with its own settings and measures, per frame, how violently the free
 // cable moves (node accelerations seen at 60 fps), kinks (joint angles), twist rates and joint
 // gaps, and lists them around the grip, release and placing events. Also: where the cable was when
-// a grip took it (how far the grip pulled it into the hand).
+// a grip took it (how far the grip pulled it into the hand), and how hard the guides pull: per
+// substep the force each guide applies to a node at the start of its solve, |x - target| /
+// compliance × weight, against the weight of that node (m g).
 //   node tools/simtest/diag-coil.mjs            (~6 min)
 // Output: output/simtest/diag-coil.summary.json
 
 import { load, writeSummary } from './lib.mjs';
 
-const { mods: [shots, coil], close } = await load('/src/shots/index.ts', '/src/shots/s1-coil.ts');
+const { mods: [shots, coil, sim], close } = await load('/src/shots/index.ts', '/src/shots/s1-coil.ts', '/src/sim/index.ts');
+// every guide's pull: wrap the target functions (called once per node and substep)
+const guideForce = { max: 0, sum: 0, n: 0, maxAt: -1 };
+let liveRod = null;
+const addGuide0 = sim.Rod.prototype.addGuide;
+sim.Rod.prototype.addGuide = function (spec) {
+  liveRod = this;
+  let wt = -1, w = 1;
+  const target = (i, t) => {
+    const p = spec.target(i, t);
+    if (p) {
+      if (t !== wt) { w = spec.weight ? spec.weight(t) : 1; wt = t; }
+      if (w > 1e-6) {
+        const x = this.x, F = Math.hypot(x[3 * i] - p[0], x[3 * i + 1] - p[1], x[3 * i + 2] - p[2]) * w / spec.compliance;
+        guideForce.sum += F; guideForce.n++;
+        if (F > guideForce.max) { guideForce.max = F; guideForce.maxAt = i; }
+      }
+    }
+    return p;
+  };
+  return addGuide0.call(this, { ...spec, target });
+};
 const def = shots.SHOTS['s1-coil'];
 const { COIL1, nodeAt } = coil;
 
@@ -72,7 +95,10 @@ for (let f = 0; f < F; f++) {
     const w = rod.om[3 * j] * rod.d3[3 * j] + rod.om[3 * j + 1] * rod.d3[3 * j + 1] + rod.om[3 * j + 2] * rod.d3[3 * j + 2];
     twistRate = Math.max(twistRate, Math.abs(w));
   }
-  frames.push({
+  const nodeWeight = rod.m[0] * g;
+  const gF = { guideMax_xWeight: guideForce.max / nodeWeight, guideMean_xWeight: guideForce.n ? guideForce.sum / guideForce.n / nodeWeight : 0, guideNode: guideForce.maxAt };
+  guideForce.max = 0; guideForce.sum = 0; guideForce.n = 0; guideForce.maxAt = -1;
+  frames.push({ ...gF,
     t: +rod.time.toFixed(4), aMax_g: aMax / g, aMaxNode, a99_g: (acc[Math.floor(acc.length * 0.99)] ?? 0) / g, a90_g: (acc[Math.floor(acc.length * 0.9)] ?? 0) / g,
     vMax, ke_mJ: ke * 1000, kinkMax_deg: kMax, kinks, twistRate_turnsPerS: twistRate / (2 * Math.PI), gap_mm: rod.maxStrain() * rod.L[0] * 1000,
   });
@@ -88,8 +114,8 @@ for (const b of beats) {
   for (const [name, te] of [['take/slide', b.tSlide], ['right grip closes', b.tClose], ['return', b.tRet], ['loop placed (left regrip, rollOut, guide removals)', b.tPlace], ['right hand opens', b.tOpen]]) {
     const w = window(te - 0.05, te + 0.5);
     if (!w.length) continue;
-    const pa = peak(w, 'aMax_g'), pk = peak(w, 'kinkMax_deg'), pt = peak(w, 'twistRate_turnsPerS');
-    events.push({ loop: b.k, kind: b.kind, event: name, t: +te.toFixed(2), aMax_g: +pa.aMax_g.toFixed(1), at: pa.t, node: pa.aMaxNode, a99_g: +peak(w, 'a99_g').a99_g.toFixed(2), kinkMax_deg: +pk.kinkMax_deg.toFixed(0), twistRateMax_turnsPerS: +pt.twistRate_turnsPerS.toFixed(1), keMax_mJ: +peak(w, 'ke_mJ').ke_mJ.toFixed(1) });
+    const pa = peak(w, 'aMax_g'), pk = peak(w, 'kinkMax_deg'), pt = peak(w, 'twistRate_turnsPerS'), pg = peak(w, 'guideMax_xWeight');
+    events.push({ loop: b.k, kind: b.kind, event: name, t: +te.toFixed(2), aMax_g: +pa.aMax_g.toFixed(1), at: pa.t, node: pa.aMaxNode, a99_g: +peak(w, 'a99_g').a99_g.toFixed(2), kinkMax_deg: +pk.kinkMax_deg.toFixed(0), twistRateMax_turnsPerS: +pt.twistRate_turnsPerS.toFixed(1), keMax_mJ: +peak(w, 'ke_mJ').ke_mJ.toFixed(1), guideMax_xWeight: +pg.guideMax_xWeight.toFixed(0) });
   }
 }
 const out = {
@@ -102,6 +128,9 @@ const out = {
     framesWithKinks: frames.filter((r) => r.kinks > 0).length, frames: frames.length,
     twistRate_turnsPerS: { median: +pct(col('twistRate_turnsPerS'), 0.5).toFixed(2), p90: +pct(col('twistRate_turnsPerS'), 0.9).toFixed(2), max: +Math.max(...col('twistRate_turnsPerS')).toFixed(1) },
     gap_mm: { median: +pct(col('gap_mm'), 0.5).toFixed(2), max: +Math.max(...col('gap_mm')).toFixed(2) },
+    guideMax_xWeight: { median: +pct(col('guideMax_xWeight'), 0.5).toFixed(0), p90: +pct(col('guideMax_xWeight'), 0.9).toFixed(0), max: +Math.max(...col('guideMax_xWeight')).toFixed(0) },
+    guideMean_xWeight: { median: +pct(col('guideMean_xWeight'), 0.5).toFixed(1), p90: +pct(col('guideMean_xWeight'), 0.9).toFixed(1) },
+    framesWithGuidesAbove10xWeight: frames.filter((r) => r.guideMax_xWeight > 10).length,
   },
   teleports, events,
 };

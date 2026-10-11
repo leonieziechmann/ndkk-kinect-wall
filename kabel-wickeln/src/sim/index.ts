@@ -3,4 +3,6 @@
 
 export * from './vec';
 export * from './rod';
+export * from './grips';
 export * from './bake';
+export * from './cables';

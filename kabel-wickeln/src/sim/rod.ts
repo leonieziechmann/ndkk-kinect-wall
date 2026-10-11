@@ -7,6 +7,21 @@
 // scratchpad/rodsim/rodsim.js (same algorithms and arithmetic) plus per-axis bending stiffness,
 // guides, documented grip frames, shape-keeping grips and swivel grips.
 //
+// The "dead" cable (src/sim/cables.ts has calibrated presets):
+//   - bendDamping / twistDamping: Kelvin-Voigt material damping, a viscous moment τ·EI·dκ/dt per
+//     joint, solved implicitly inside the direct solve (XPBD damping, Macklin et al. 2016, eq. 26:
+//     row scaled by 1/(1+γ), γ = τ/h), so it is unconditionally stable and acts on the whole chain
+//   - plastic: hysteresis / plastic memory. Beyond an elastic range (yield curvature) the rest
+//     curvature flows toward the current one, so a bend the hands give the cable stays; capped at
+//     a largest memorised curvature
+// Hands (src/sim/grips.ts): pinches (thumb and index pads: held, loose and sliding, rolling) and
+// bundles (a coil in a hand) are attachments to kinematic hand frames. Each one is projected
+// before the direct solve and makes the bodies it holds heavier in the directions it holds them
+// (an anisotropic inverse mass, the Schur complement of the attachment), so the direct solve
+// keeps them where the hand put them while it closes the joints. Hand capsules move with the
+// hand per substep: friction against the capsule's own motion, and a contact normal remembered
+// from the start of the substep, so a fast hand never pushes the cable through a finger.
+//
 // Units: metres, kilograms, seconds, radians. World: y up, ground plane y = groundY.
 // Quaternions [x, y, z, w].
 //
@@ -26,6 +41,7 @@
 // Determinism: fixed step, fixed order, no randomness; two runs give bit-identical frames.
 
 import { Frame, Quat, TAU, V3, quatConj, quatFromAxisAngle, quatFromFrame, quatFromTo, quatMul, quatRotate, quatSlerp, smooth } from './vec';
+import { Attachment, Bundle, BundleSpec, Pinch, PinchSpec } from './grips';
 
 /** A number per joint k (0..ns-2), or one number for all joints. */
 export type PerJoint = number | ((k: number) => number);
@@ -66,6 +82,40 @@ export interface RodOptions {
   stretchCompliance: number;
   /** damps the relative angular velocity of neighbouring segments [1/s] (material damping) */
   internalDamping: number;
+  /**
+   * Kelvin-Voigt relaxation time of bending [s]: a viscous bending moment τ·EI·dκ/dt, implicit in
+   * the direct solve. A bend relaxes toward equilibrium in about τ instead of ringing; 0 = off.
+   */
+  bendDamping: number;
+  /** the same for twist [s] */
+  twistDamping: number;
+  /** plastic memory of the rest shape (hysteresis), null = elastic */
+  plastic: Plasticity | null;
+}
+
+/**
+ * Plastic memory (viscoplastic, per joint, applied every substep). Let e = κ − κ0 be the elastic
+ * bending (current minus rest curvature, as a vector in the cross-section). While |e| ≤ yield the
+ * bend is elastic and springs back (apart from a slow creep). Beyond it the rest curvature κ0
+ * flows toward κ at `rate` until |e| = yield again:
+ *   dκ0/dt = rate · (|e| − yield)/|e| · e   (|e| > yield)   +   creep · e
+ * |κ0| is capped at maxCurvature, so a tight kink is never memorised in full. Twist works the same
+ * way with twistYield / twistRate / maxTwist (no twist memory when twistYield is null).
+ */
+export interface Plasticity {
+  /** elastic bending range [1/m] */
+  yieldCurvature: number;
+  /** flow rate beyond the yield [1/s] */
+  rate: number;
+  /** creep rate below the yield [1/s] (default 0) */
+  creep?: number;
+  /** largest memorised curvature [1/m] */
+  maxCurvature: number;
+  /** elastic twist range [rad/m], null or left out = twist is elastic */
+  twistYield?: number | null;
+  twistRate?: number;
+  /** largest memorised twist [rad/m] */
+  maxTwist?: number;
 }
 
 export const ROD_DEFAULTS: RodOptions = {
@@ -89,6 +139,9 @@ export const ROD_DEFAULTS: RodOptions = {
   collideEvery: 2,
   stretchCompliance: 1e-9,
   internalDamping: 0,
+  bendDamping: 0,
+  twistDamping: 0,
+  plastic: null,
 };
 
 export interface RodBuildOptions extends Partial<RodOptions> {
@@ -108,13 +161,20 @@ export interface Stiffness {
   GJ?: PerJoint;
 }
 
-/** Kinematic capsule (hand, forearm, leg, prop edge). */
+/**
+ * Kinematic capsule (hand, forearm, leg, prop edge). A capsule list given as a function of time is
+ * evaluated every substep; keep the list's order stable from substep to substep (the capsule at
+ * index k is the same finger), so its motion is known: friction acts against the capsule's own
+ * motion and a fast capsule cannot push the cable through itself.
+ */
 export interface Capsule {
   a: V3;
   b: V3;
   r: number;
   /** friction (default capsuleFriction) */
   mu?: number;
+  /** a hand id: a pinch or bundle with the same `hand` turns off this capsule's contact with the cable it holds */
+  group?: number;
 }
 
 export interface GripSpec {
@@ -227,6 +287,8 @@ export class Rod {
   /** rest lengths and masses of the segments */
   readonly L: Float64Array;
   readonly m: Float64Array;
+  /** material coordinate (rest arc length from node 0) of each node [m] */
+  readonly sNode: Float64Array;
   /** inverse mass and inverse rotational inertia (0 = held), and their free values */
   readonly wc: Float64Array;
   readonly wt: Float64Array;
@@ -251,11 +313,42 @@ export class Rod {
 
   private readonly grips = new Map<number, Grip>();
   private gripId = 1;
+  /** pinches and bundles (src/sim/grips.ts), in creation order */
+  private readonly attachments: Attachment[] = [];
+  /**
+   * Per-body effective inverse mass while attachments hold it (set by the attachments each
+   * substep): translation W·(ws0 I + ws1 a aᵀ), rotation T·(ts0 I + ts1 g gᵀ), with unit axes a
+   * (wax) and g (tax). aniso[j] = 1 marks a body that has them; `touched` lists those bodies.
+   * @internal
+   */
+  readonly ws0: Float64Array;
+  /** @internal */
+  readonly ws1: Float64Array;
+  /** @internal */
+  readonly wax: Float64Array;
+  /** @internal */
+  readonly ts0: Float64Array;
+  /** @internal */
+  readonly ts1: Float64Array;
+  /** @internal */
+  readonly tax: Float64Array;
+  /** @internal */
+  readonly aniso: Uint8Array;
+  private touched: number[] = [];
+  /** per body: capsules of this group do not touch it (a hand holding it), -1 = none @internal */
+  readonly skipGroup: Int32Array;
+  /** capsules of the previous substep (same order), for their motion */
+  private capsPrev: Capsule[] = [];
+  /** Darboux vectors at the start of the substep (3 per joint), for the material damping */
+  private readonly Cn: Float64Array;
+  /** the dt of the last step() */
+  lastDt = 1 / 60;
   private readonly guides = new Map<number, Guide>();
   private guideId = 1;
   private capsules: Capsule[] | ((t: number) => Capsule[]) | null = null;
   private caps: Capsule[] = [];
   private sub = 0;
+  private kinDirty = false;
 
   // solver scratch
   private readonly J: Float64Array;
@@ -270,6 +363,10 @@ export class Rod {
   private readonly rhs = new Float64Array(6);
   private readonly st = new Float64Array(2);
   private readonly pm = new Float64Array(6);
+  /** scratch: [X; Y] g of one or two bodies */
+  private readonly zg = new Float64Array(12);
+  /** change of the bend-twist rows since the start of the substep (3 per joint) */
+  private readonly dC: Float64Array;
   // self-contact candidate pairs and the contact normals remembered from the previous build
   private cand = new Int32Array(1024);
   private ncand = 0;
@@ -295,6 +392,17 @@ export class Rod {
     this.om = new Float64Array(3 * ns);
     this.L = new Float64Array(ns);
     this.m = new Float64Array(ns);
+    this.sNode = new Float64Array(ns + 1);
+    this.ws0 = new Float64Array(ns).fill(1);
+    this.ws1 = new Float64Array(ns);
+    this.wax = new Float64Array(3 * ns);
+    this.ts0 = new Float64Array(ns).fill(1);
+    this.ts1 = new Float64Array(ns);
+    this.tax = new Float64Array(3 * ns);
+    this.aniso = new Uint8Array(ns);
+    this.skipGroup = new Int32Array(ns).fill(-1);
+    this.Cn = new Float64Array(3 * Math.max(0, ns - 1));
+    this.dC = new Float64Array(3 * Math.max(0, ns - 1));
     this.wc = new Float64Array(ns);
     this.wt = new Float64Array(ns);
     this.wc0 = new Float64Array(ns);
@@ -419,8 +527,10 @@ export class Rod {
       this.wc0[j] = 1 / m;
       // isotropic rotational inertia (twist inertia raised to the bending one: better conditioning)
       this.wt0[j] = 1 / (m * (L[j] * L[j] / 12 + r * r / 4) * opts.rotInertiaScale);
+      this.sNode[j] = total;
       total += L[j];
     }
+    this.sNode[ns] = total;
     this.wc.set(this.wc0);
     this.wt.set(this.wt0);
     this.totalLength = total;
@@ -554,11 +664,112 @@ export class Rod {
     this.updateKinematic();
   }
 
-  /** Segments held by grips (for debug pictures). */
+  /** Segments held by grips, pinches and bundles (for debug pictures). */
   heldSegments(): number[] {
     const out: number[] = [];
     for (const g of this.grips.values()) for (let j = g.a; j < g.b; j++) out.push(j);
+    for (const a of this.attachments) a.segments(out);
     return out;
+  }
+
+  // ------------------------------------------------------------ hands (grips.ts)
+
+  /**
+   * The cable between thumb and index pads (see Pinch): takes the material point between the pads
+   * now (spec.s, or the closest one to the frame's p), held, loose (sliding) or free, rolling it
+   * with the hand. Example: a hand that slides out along the cable and then holds it:
+   *   const pin = rod.pinch({ frame: (t) => hand(t), mode: 'loose', hand: 1 });
+   *   ... later, in the script: pin.set('held'); ... pin.setRoll(0.4); ... pin.release();
+   */
+  pinch(spec: PinchSpec): Pinch {
+    const p = new Pinch(this, spec);
+    this.attachments.push(p);
+    return p;
+  }
+
+  /**
+   * Strands held in a hand in their shape (see Bundle), e.g. the coil in the left hand:
+   *   const coil = rod.bundle({ frame: (t) => leftHand(t), hand: 0 });
+   *   coil.add(0, 0.35);            // the plug end and the first strand, where they are now
+   *   ... coil.add(0.35, 1.3);      // the next loop, once it lies in the hand
+   */
+  bundle(spec: BundleSpec): Bundle {
+    const b = new Bundle(this, spec);
+    this.attachments.push(b);
+    this.kinDirty = true;
+    return b;
+  }
+
+  // ----------------------------------------------- where the cable is (for controllers)
+
+  /** Segment holding material coordinate s (clamped to the cable). */
+  segmentAt(s: number): number {
+    const S = this.sNode;
+    if (s <= 0) return 0;
+    if (s >= S[this.ns]) return this.ns - 1;
+    let lo = 0, hi = this.ns;
+    while (hi - lo > 1) {
+      const m = (lo + hi) >> 1;
+      if (S[m] <= s) lo = m;
+      else hi = m;
+    }
+    return lo;
+  }
+
+  /** Point on the cable axis at material coordinate s (clamped). */
+  pointAt(s: number): V3 {
+    const j = this.segmentAt(s), j3 = 3 * j;
+    const u = Math.max(-this.L[j] / 2, Math.min(this.L[j] / 2, s - this.sNode[j] - this.L[j] / 2));
+    return [this.c[j3] + this.d3[j3] * u, this.c[j3 + 1] + this.d3[j3 + 1] * u, this.c[j3 + 2] + this.d3[j3 + 2] * u];
+  }
+
+  /** Cable direction (increasing s) at material coordinate s. */
+  tangentAt(s: number): V3 {
+    const j = this.segmentAt(s), j3 = 3 * j;
+    return [this.d3[j3], this.d3[j3 + 1], this.d3[j3 + 2]];
+  }
+
+  /** Material frame at s (p on the axis; columns d1 = stripe, d2, d3 = tangent), blended between segments. */
+  frameAt(s: number): Frame {
+    const j = this.segmentAt(s), mid = this.sNode[j] + this.L[j] / 2;
+    const k = s > mid ? Math.min(this.ns - 1, j + 1) : Math.max(0, j - 1);
+    const midK = this.sNode[k] + this.L[k] / 2;
+    const u = k === j ? 0 : Math.min(1, Math.abs(s - mid) / Math.abs(midK - mid));
+    return { p: this.pointAt(s), q: quatSlerp(this.segQuat(j), this.segQuat(k), u) };
+  }
+
+  /** Velocity of the material point s during the last substep [m/s]. */
+  velocityAt(s: number): V3 {
+    const j = this.segmentAt(s), j3 = 3 * j;
+    const u = s - this.sNode[j] - this.L[j] / 2;
+    const rx = this.d3[j3] * u, ry = this.d3[j3 + 1] * u, rz = this.d3[j3 + 2] * u;
+    const ox = this.om[j3], oy = this.om[j3 + 1], oz = this.om[j3 + 2];
+    return [this.v[j3] + oy * rz - oz * ry, this.v[j3 + 1] + oz * rx - ox * rz, this.v[j3 + 2] + ox * ry - oy * rx];
+  }
+
+  /**
+   * The material point closest to p (optionally only within s0..s1): its material coordinate,
+   * position, distance from p and the cable direction there. A hand that wants to take the cable
+   * goes to `point` and pinches with s.
+   */
+  closestPoint(p: V3, s0 = 0, s1 = this.totalLength): { s: number; point: V3; dist: number; tangent: V3 } {
+    const { c, d3, L } = this;
+    let best = Infinity, bs = 0, bj = 0;
+    const j0 = this.segmentAt(s0), j1 = this.segmentAt(s1);
+    for (let j = j0; j <= j1; j++) {
+      const j3 = 3 * j, h = L[j] / 2;
+      const ex = p[0] - c[j3], ey = p[1] - c[j3 + 1], ez = p[2] - c[j3 + 2];
+      const u = Math.max(-h, Math.min(h, ex * d3[j3] + ey * d3[j3 + 1] + ez * d3[j3 + 2]));
+      const dx = ex - d3[j3] * u, dy = ey - d3[j3 + 1] * u, dz = ez - d3[j3 + 2] * u;
+      const d2 = dx * dx + dy * dy + dz * dz;
+      if (d2 < best) {
+        best = d2;
+        bj = j;
+        bs = this.sNode[j] + h + u;
+      }
+    }
+    bs = Math.max(s0, Math.min(s1, bs));
+    return { s: bs, point: this.pointAt(bs), dist: Math.sqrt(best), tangent: [d3[3 * bj], d3[3 * bj + 1], d3[3 * bj + 2]] };
   }
 
   private updateKinematic() {
@@ -571,6 +782,22 @@ export class Rod {
         if (g.kind === 'rigid') this.wt[j] = 0;
       }
     }
+    for (const a of this.attachments) a.kinematic(this.wc, this.wt);
+  }
+
+  /** Plain inverse mass and inverse rotational inertia of segment j (not held). @internal */
+  invMass(j: number) {
+    return this.wc0[j];
+  }
+
+  /** @internal */
+  invInertia(j: number) {
+    return this.wt0[j];
+  }
+
+  /** Rotates segment j by the world-frame rotation vector d (small angles). @internal */
+  rotateBody(j: number, dx: number, dy: number, dz: number) {
+    this.rotate(j, dx, dy, dz);
   }
 
   /** 0..1: how far a grip has moved the held part from its captured pose into the frame. */
@@ -700,12 +927,97 @@ export class Rod {
   /** Advance by dt in `substeps` equal substeps. */
   step(dt: number, substeps = 20) {
     const h = dt / substeps;
+    this.lastDt = dt;
     for (let s = 0; s < substeps; s++) this.substep(h);
+  }
+
+  /** Per substep: the attachments set the effective inverse masses of what they hold. */
+  private prepareAttachments(h: number) {
+    for (const j of this.touched) {
+      this.aniso[j] = 0; this.ws0[j] = 1; this.ws1[j] = 0; this.ts0[j] = 1; this.ts1[j] = 0;
+    }
+    this.touched.length = 0;
+    this.skipGroup.fill(-1);
+    let removed = false;
+    for (const a of this.attachments) {
+      a.prepare(this.time, h);
+      if (a.done) removed = true;
+    }
+    if (removed) {
+      for (let i = this.attachments.length - 1; i >= 0; i--) if (this.attachments[i].done) this.attachments.splice(i, 1);
+      this.kinDirty = true;
+    }
+    if (this.kinDirty) {
+      this.kinDirty = false;
+      this.updateKinematic();
+    }
+  }
+
+  /**
+   * An attachment holds body j this substep: its inverse mass becomes W (s0 I + s1 a aᵀ) in
+   * translation and T (t0 I + t1 g gᵀ) in rotation for the direct solve (a and g unit vectors).
+   * A second attachment on the same body scales the first one's isotropic part.
+   * @internal
+   */
+  holdBody(j: number, s0: number, s1: number, a: V3 | null, t0: number, t1: number, g: V3 | null) {
+    const j3 = 3 * j;
+    if (this.aniso[j]) {
+      this.ws0[j] *= s0; this.ws1[j] *= s0; this.ts0[j] *= t0; this.ts1[j] *= t0;
+      return;
+    }
+    this.aniso[j] = 1;
+    this.touched.push(j);
+    this.ws0[j] = s0; this.ts0[j] = t0;
+    this.ws1[j] = a ? s1 : 0; this.ts1[j] = g ? t1 : 0;
+    if (a) { this.wax[j3] = a[0]; this.wax[j3 + 1] = a[1]; this.wax[j3 + 2] = a[2]; }
+    if (g) { this.tax[j3] = g[0]; this.tax[j3 + 1] = g[1]; this.tax[j3 + 2] = g[2]; }
+  }
+
+  /** @internal: the set of rigidly held bodies of an attachment changed */
+  markKinematic() {
+    this.kinDirty = true;
+  }
+
+  /** Plastic memory: the rest shape flows toward the current one beyond the elastic range (see Plasticity). */
+  private plasticFlow(h: number, P: Plasticity) {
+    const { nj, C, rest, L } = this;
+    const fy = 1 - Math.exp(-h * P.rate), fc = P.creep ? 1 - Math.exp(-h * P.creep) : 0;
+    const tw = P.twistYield !== null && P.twistYield !== undefined;
+    const fty = tw ? 1 - Math.exp(-h * (P.twistRate ?? P.rate)) : 0;
+    for (let k = 0; k < nj; k++) {
+      const l = (L[k] + L[k + 1]) / 2, k6 = 6 * k, a4 = 4 * k;
+      // the rows hold Im(ω) - Im(Ω0) ≈ (κ - κ0) l / 2 (half angles)
+      const e1 = C[k6 + 3], e2 = C[k6 + 4];
+      const e = Math.hypot(e1, e2), ey = 0.5 * P.yieldCurvature * l;
+      let rx = rest[a4], ry = rest[a4 + 1], rz = rest[a4 + 2];
+      let f = fc;
+      if (e > ey) f += fy * (1 - ey / e);
+      let changed = false;
+      if (f > 0 && e > 0) {
+        rx += f * e1; ry += f * e2;
+        const m = Math.hypot(rx, ry), mm = 0.5 * P.maxCurvature * l;
+        if (m > mm) { rx *= mm / m; ry *= mm / m; }
+        changed = true;
+      }
+      if (tw) {
+        const et = C[k6 + 5], ety = 0.5 * (P.twistYield as number) * l;
+        if (Math.abs(et) > ety) {
+          rz += fty * (et - Math.sign(et) * ety);
+          const mt = 0.5 * (P.maxTwist ?? Infinity) * l;
+          if (Math.abs(rz) > mt) rz = Math.sign(rz) * mt;
+          changed = true;
+        }
+      }
+      if (!changed) continue;
+      const w2 = 1 - rx * rx - ry * ry - rz * rz;
+      rest[a4] = rx; rest[a4 + 1] = ry; rest[a4 + 2] = rz; rest[a4 + 3] = Math.sqrt(Math.max(0, w2));
+    }
   }
 
   /** Apply the grips at the current time and derive the nodes (state for frame 0 of a bake). */
   sync() {
     this.applyGrips(this.time);
+    if (this.attachments.length) this.prepareAttachments(0);
     this.derive();
   }
 
@@ -734,13 +1046,21 @@ export class Rod {
     }
     this.time += h;
     this.applyGrips(this.time);
+    const att = this.attachments.length > 0;
+    if (att || this.touched.length) this.prepareAttachments(h);
     this.prepareGuides(this.time);
-    if (this.capsules) this.caps = typeof this.capsules === 'function' ? this.capsules(this.time) : this.capsules;
+    if (this.capsules) {
+      const prev = this.caps;
+      this.caps = typeof this.capsules === 'function' ? this.capsules(this.time) : this.capsules;
+      this.capsPrev = prev.length === this.caps.length ? prev : this.caps;
+    }
+    if (opts.bendDamping > 0 || opts.twistDamping > 0) this.startDarboux();
     this.lam.fill(0);
     const doSelf = opts.selfCollision && this.ns > 3;
     if (doSelf && this.sub % opts.collideEvery === 0) this.buildCandidates();
     this.sub++;
     for (let it = 0; it < opts.iterations; it++) {
+      if (att) for (const a of this.attachments) a.project(h, it);
       this.solveRod(h);
       this.solveGripConstraints();
       if (this.guides.size) this.solveGuides(h);
@@ -749,6 +1069,8 @@ export class Rod {
       if (this.caps.length) this.solveCapsules();
       if (opts.groundY !== null && opts.groundY !== undefined) this.solveGround();
     }
+    if (opts.plastic && this.nj > 0) this.plasticFlow(h, opts.plastic);
+    if (att) for (const a of this.attachments) a.finish(h);
     const ih = 1 / h;
     for (let j = 0; j < ns; j++) {
       const j3 = 3 * j, j4 = 4 * j;
@@ -834,11 +1156,33 @@ export class Rod {
 
   // --------------------------------------------------- direct rod solve
 
+  /**
+   * Darboux vectors Im(q̄_k q_{k+1}) (w ≥ 0) of the orientations at the start of the substep, for
+   * the material damping (the rate dC/dt of the bend-twist rows).
+   */
+  private startDarboux() {
+    const { nj, qp, Cn } = this;
+    for (let k = 0; k < nj; k++) {
+      const a4 = 4 * k, b4 = a4 + 4;
+      const ax = qp[a4], ay = qp[a4 + 1], az = qp[a4 + 2], aw = qp[a4 + 3];
+      const bx = qp[b4], by = qp[b4 + 1], bz = qp[b4 + 2], bw = qp[b4 + 3];
+      const ox = aw * bx - ax * bw - ay * bz + az * by;
+      const oy = aw * by + ax * bz - ay * bw - az * bx;
+      const oz = aw * bz - ax * by + ay * bx - az * bw;
+      const ow = aw * bw + ax * bx + ay * by + az * bz;
+      const sg = ow < 0 ? -1 : 1;
+      Cn[3 * k] = sg * ox; Cn[3 * k + 1] = sg * oy; Cn[3 * k + 2] = sg * oz;
+    }
+  }
+
   private solveRod(h: number) {
     const { nj, c, q, L, wc, wt, rest, alpha1, alpha2, alphaT, opts } = this;
     if (nj < 1) return;
-    const { J, C, lam, Cp, dp, Cc, M, D, rhs } = this;
+    const { J, C, lam, Cp, dp, Cc, M, D, rhs, Cn, dC, aniso } = this;
     const ih2 = 1 / (h * h), aS = opts.stretchCompliance * ih2;
+    // material damping: XPBD damping γ = τ / h on the bend-twist rows
+    const gB = opts.bendDamping / h, gT = opts.twistDamping / h, damp = gB > 0 || gT > 0;
+    const anyAniso = this.touched.length > 0;
     // pass 1: constraint values and Jacobian blocks
     for (let k = 0; k < nj; k++) {
       const a4 = 4 * k, b4 = a4 + 4, a3 = 3 * k, b3 = a3 + 3, o = 36 * k, k6 = 6 * k;
@@ -863,6 +1207,11 @@ export class Rod {
       const rx = rest[a4], ry = rest[a4 + 1], rz = rest[a4 + 2], rw = rest[a4 + 3];
       const dm = (ox - rx) ** 2 + (oy - ry) ** 2 + (oz - rz) ** 2 + (ow - rw) ** 2;
       const dpl = (ox + rx) ** 2 + (oy + ry) ** 2 + (oz + rz) ** 2 + (ow + rw) ** 2;
+      if (damp) {
+        // change of the bend-twist rows since the start of the substep, in the rows' sign
+        const sw = ow < 0 ? -1 : 1, sr = dm > dpl ? -1 : 1;
+        dC[a3] = sr * (ox - sw * Cn[a3]); dC[a3 + 1] = sr * (oy - sw * Cn[a3 + 1]); dC[a3 + 2] = sr * (oz - sw * Cn[a3 + 2]);
+      }
       if (dm > dpl) { ox = -ox; oy = -oy; oz = -oz; ow = -ow; }
       C[k6 + 3] = ox - rx; C[k6 + 4] = oy - ry; C[k6 + 5] = oz - rz;
       // G = 1/2 (ow I - [o]x) R_aᵀ
@@ -881,15 +1230,26 @@ export class Rod {
       const o = 36 * k, k6 = 6 * k;
       const a1 = alpha1[k] * ih2, a2 = alpha2[k] * ih2, at = alphaT[k] * ih2;
       D.fill(0);
-      blockAdd(D, J, o, wc[k], wt[k]); // body a of joint k (Xa, Ya)
-      blockAdd(D, J, o + 18, wc[k + 1], wt[k + 1]); // body b
-      D[0] += aS; D[7] += aS; D[14] += aS; D[21] += a1; D[28] += a2; D[35] += at;
+      if (anyAniso && aniso[k]) this.addBody(D, o, k);
+      else blockAdd(D, J, o, wc[k], wt[k]); // body a of joint k (Xa, Ya)
+      if (anyAniso && aniso[k + 1]) this.addBody(D, o + 18, k + 1);
+      else blockAdd(D, J, o + 18, wc[k + 1], wt[k + 1]); // body b
       rhs[0] = -C[k6] - aS * lam[k6];
       rhs[1] = -C[k6 + 1] - aS * lam[k6 + 1];
       rhs[2] = -C[k6 + 2] - aS * lam[k6 + 2];
-      rhs[3] = -C[k6 + 3] - a1 * lam[k6 + 3];
-      rhs[4] = -C[k6 + 4] - a2 * lam[k6 + 4];
-      rhs[5] = -C[k6 + 5] - at * lam[k6 + 5];
+      if (damp) {
+        // rows scaled by 1 / (1 + γ): the matrix stays symmetric
+        const k3 = 3 * k, ib = 1 / (1 + gB), it = 1 / (1 + gT);
+        D[0] += aS; D[7] += aS; D[14] += aS; D[21] += a1 * ib; D[28] += a2 * ib; D[35] += at * it;
+        rhs[3] = (-C[k6 + 3] - a1 * lam[k6 + 3] - gB * dC[k3]) * ib;
+        rhs[4] = (-C[k6 + 4] - a2 * lam[k6 + 4] - gB * dC[k3 + 1]) * ib;
+        rhs[5] = (-C[k6 + 5] - at * lam[k6 + 5] - gT * dC[k3 + 2]) * it;
+      } else {
+        D[0] += aS; D[7] += aS; D[14] += aS; D[21] += a1; D[28] += a2; D[35] += at;
+        rhs[3] = -C[k6 + 3] - a1 * lam[k6 + 3];
+        rhs[4] = -C[k6 + 4] - a2 * lam[k6 + 4];
+        rhs[5] = -C[k6 + 5] - at * lam[k6 + 5];
+      }
       if (k > 0) {
         // D -= A_k Cp_{k-1} (= Ccᵀ S⁻¹ Cc, symmetric), rhs -= A_k dp_{k-1}, with A_k = Cc_{k-1}ᵀ
         const pc = 36 * (k - 1), p6 = 6 * (k - 1);
@@ -910,7 +1270,8 @@ export class Rod {
       const hasNext = k < nj - 1;
       if (hasNext) {
         for (let r = 0; r < 36; r++) Cc[o + r] = 0;
-        crossBlock(Cc, o, J, o + 18, 36 * (k + 1), wc[k + 1], wt[k + 1]);
+        if (anyAniso && aniso[k + 1]) this.crossBody(o, k + 1);
+        else crossBlock(Cc, o, J, o + 18, 36 * (k + 1), wc[k + 1], wt[k + 1]);
       }
       // solve D [Cp_k | dp_k] = [Cc_k | rhs]
       if (!chol6(D, Cc, o, hasNext, rhs, Cp, o, dp, k6)) solve6(D, Cc, o, hasNext, rhs, Cp, o, dp, k6, M);
@@ -948,8 +1309,58 @@ export class Rod {
         dty += J[o + 1] * l0 + J[o + 4] * l1 + J[o + 7] * l2 + J[o + 10] * l3 + J[o + 13] * l4 + J[o + 16] * l5;
         dtz += J[o + 2] * l0 + J[o + 5] * l1 + J[o + 8] * l2 + J[o + 11] * l3 + J[o + 14] * l4 + J[o + 17] * l5;
       }
+      if (anyAniso && aniso[j]) {
+        // W (ws0 I + ws1 a aᵀ) and T (ts0 I + ts1 g gᵀ)
+        const j3 = 3 * j, a0 = this.wax[j3], a1 = this.wax[j3 + 1], a2 = this.wax[j3 + 2];
+        const g0 = this.tax[j3], g1 = this.tax[j3 + 1], g2 = this.tax[j3 + 2];
+        const wa = W * this.ws1[j] * (a0 * dcx + a1 * dcy + a2 * dcz), w0 = W * this.ws0[j];
+        const ta = T * this.ts1[j] * (g0 * dtx + g1 * dty + g2 * dtz), t0 = T * this.ts0[j];
+        c[j3] += w0 * dcx + wa * a0; c[j3 + 1] += w0 * dcy + wa * a1; c[j3 + 2] += w0 * dcz + wa * a2;
+        if (T > 0) this.rotate(j, t0 * dtx + ta * g0, t0 * dty + ta * g1, t0 * dtz + ta * g2);
+        continue;
+      }
       c[3 * j] += W * dcx; c[3 * j + 1] += W * dcy; c[3 * j + 2] += W * dcz;
       if (T > 0) this.rotate(j, T * dtx, T * dty, T * dtz);
+    }
+  }
+
+  /** D += the block of body j (J at ox) with its anisotropic inverse mass. */
+  private addBody(D: Float64Array, ox: number, j: number) {
+    const W = this.wc[j], T = this.wt[j], j3 = 3 * j;
+    blockAdd(D, this.J, ox, W * this.ws0[j], T * this.ts0[j]);
+    const w1 = W * this.ws1[j];
+    if (w1 !== 0) {
+      const a0 = this.wax[j3], a1 = this.wax[j3 + 1], a2 = this.wax[j3 + 2];
+      D[0] += w1 * a0 * a0; D[1] += w1 * a0 * a1; D[2] += w1 * a0 * a2;
+      D[6] += w1 * a1 * a0; D[7] += w1 * a1 * a1; D[8] += w1 * a1 * a2;
+      D[12] += w1 * a2 * a0; D[13] += w1 * a2 * a1; D[14] += w1 * a2 * a2;
+    }
+    const t1 = T * this.ts1[j];
+    if (t1 !== 0) {
+      const u = this.zg;
+      zTimes(this.J, ox, this.tax[j3], this.tax[j3 + 1], this.tax[j3 + 2], u, 0);
+      for (let r = 0; r < 6; r++) for (let s = 0; s < 6; s++) D[6 * r + s] += t1 * u[r] * u[s];
+    }
+  }
+
+  /** Cc[o..] = coupling of joint k (body j as its "b") and joint k+1 (body j as its "a") through body j's anisotropic inverse mass. */
+  private crossBody(o: number, j: number) {
+    const { Cc, J } = this, W = this.wc[j], T = this.wt[j], j3 = 3 * j;
+    const pb = o + 18, pa = 36 * j;
+    crossBlock(Cc, o, J, pb, pa, W * this.ws0[j], T * this.ts0[j]);
+    const w1 = W * this.ws1[j];
+    if (w1 !== 0) {
+      const a0 = this.wax[j3], a1 = this.wax[j3 + 1], a2 = this.wax[j3 + 2];
+      Cc[o] -= w1 * a0 * a0; Cc[o + 1] -= w1 * a0 * a1; Cc[o + 2] -= w1 * a0 * a2;
+      Cc[o + 6] -= w1 * a1 * a0; Cc[o + 7] -= w1 * a1 * a1; Cc[o + 8] -= w1 * a1 * a2;
+      Cc[o + 12] -= w1 * a2 * a0; Cc[o + 13] -= w1 * a2 * a1; Cc[o + 14] -= w1 * a2 * a2;
+    }
+    const t1 = T * this.ts1[j];
+    if (t1 !== 0) {
+      const u = this.zg, g0 = this.tax[j3], g1 = this.tax[j3 + 1], g2 = this.tax[j3 + 2];
+      zTimes(J, pb, g0, g1, g2, u, 0);
+      zTimes(J, pa, g0, g1, g2, u, 6);
+      for (let r = 0; r < 6; r++) for (let s = 0; s < 6; s++) Cc[o + 6 * r + s] += t1 * u[r] * u[6 + s];
     }
   }
 
@@ -957,11 +1368,11 @@ export class Rod {
 
   /**
    * Positional rigid-body contact on segment j at offset r (contact point - c_j) along the unit
-   * normal n with penetration pen > 0, against segment k at offset rk (k < 0: kinematic). Applies
-   * the normal correction and Coulomb friction (mu) from the relative motion of the contact
-   * points during this substep.
+   * normal n with penetration pen > 0, against segment k at offset rk (k < 0: kinematic, moving by
+   * km during this substep). Applies the normal correction and Coulomb friction (mu) from the
+   * relative motion of the contact points during this substep.
    */
-  private contact(j: number, rx: number, ry: number, rz: number, k: number, kx: number, ky: number, kz: number, nx: number, ny: number, nz: number, pen: number, mu: number) {
+  private contact(j: number, rx: number, ry: number, rz: number, k: number, kx: number, ky: number, kz: number, nx: number, ny: number, nz: number, pen: number, mu: number, kmx = 0, kmy = 0, kmz = 0) {
     const { c, wc, wt } = this;
     const Wj = wc[j], Tj = wt[j], Wk = k >= 0 ? wc[k] : 0, Tk = k >= 0 ? wt[k] : 0;
     // r × n
@@ -981,7 +1392,7 @@ export class Rod {
     const pm = this.pm;
     this.pointMotion(j, rx, ry, rz, pm, 0);
     if (k >= 0) this.pointMotion(k, kx, ky, kz, pm, 3);
-    else { pm[3] = 0; pm[4] = 0; pm[5] = 0; }
+    else { pm[3] = kmx; pm[4] = kmy; pm[5] = kmz; } // a kinematic body's own motion (a moving hand)
     let dx = pm[0] - pm[3], dy = pm[1] - pm[4], dz = pm[2] - pm[5];
     const dn = dx * nx + dy * ny + dz * nz;
     dx -= dn * nx; dy -= dn * ny; dz -= dn * nz;
@@ -1059,29 +1470,61 @@ export class Rod {
     }
   }
 
+  /**
+   * Kinematic capsules against the segments. The normal is the direction between the closest
+   * points; if the segment has crossed the capsule's axis during this substep (a fast or deep
+   * push), the normal from the start of the substep is used instead, so the cable is pushed back
+   * to the side it came from. Friction acts against the capsule's own motion.
+   */
   private solveCapsules() {
-    const { ns, c, d3, L, wc, rc, opts } = this;
-    const st = this.st;
-    for (const cap of this.caps) {
-      const R = cap.r + rc;
-      const A = cap.a, B = cap.b;
+    const { ns, c, d3, L, wc, rc, opts, cp, qp, skipGroup } = this;
+    const st = this.st, caps = this.caps, prev = this.capsPrev;
+    for (let ci = 0; ci < caps.length; ci++) {
+      const cap = caps[ci], pc = prev[ci] ?? cap;
+      const R = cap.r + rc, grp = cap.group ?? -1;
+      const A = cap.a, B = cap.b, A0 = pc.a, B0 = pc.b;
+      const lox = Math.min(A[0], B[0], A0[0], B0[0]) - R, hix = Math.max(A[0], B[0], A0[0], B0[0]) + R;
+      const loy = Math.min(A[1], B[1], A0[1], B0[1]) - R, hiy = Math.max(A[1], B[1], A0[1], B0[1]) + R;
+      const loz = Math.min(A[2], B[2], A0[2], B0[2]) - R, hiz = Math.max(A[2], B[2], A0[2], B0[2]) + R;
+      const mu = cap.mu ?? opts.capsuleFriction;
       for (let j = 0; j < ns; j++) {
-        if (wc[j] === 0) continue;
+        if (wc[j] === 0 || (grp >= 0 && skipGroup[j] === grp)) continue;
         const h = L[j] / 2, j3 = 3 * j;
         const p0x = c[j3] - d3[j3] * h, p0y = c[j3 + 1] - d3[j3 + 1] * h, p0z = c[j3 + 2] - d3[j3 + 2] * h;
         const p1x = c[j3] + d3[j3] * h, p1y = c[j3 + 1] + d3[j3 + 1] * h, p1z = c[j3 + 2] + d3[j3 + 2] * h;
-        if (Math.max(p0x, p1x) < Math.min(A[0], B[0]) - R || Math.min(p0x, p1x) > Math.max(A[0], B[0]) + R) continue;
-        if (Math.max(p0y, p1y) < Math.min(A[1], B[1]) - R || Math.min(p0y, p1y) > Math.max(A[1], B[1]) + R) continue;
-        if (Math.max(p0z, p1z) < Math.min(A[2], B[2]) - R || Math.min(p0z, p1z) > Math.max(A[2], B[2]) + R) continue;
+        if (Math.max(p0x, p1x) < lox || Math.min(p0x, p1x) > hix) continue;
+        if (Math.max(p0y, p1y) < loy || Math.min(p0y, p1y) > hiy) continue;
+        if (Math.max(p0z, p1z) < loz || Math.min(p0z, p1z) > hiz) continue;
         closestSegSeg(p0x, p0y, p0z, p1x, p1y, p1z, A[0], A[1], A[2], B[0], B[1], B[2], st);
         const s = st[0], t = st[1];
         const px = p0x + (p1x - p0x) * s, py = p0y + (p1y - p0y) * s, pz = p0z + (p1z - p0z) * s;
         const qx = A[0] + (B[0] - A[0]) * t, qy = A[1] + (B[1] - A[1]) * t, qz = A[2] + (B[2] - A[2]) * t;
         let nx = px - qx, ny = py - qy, nz = pz - qz;
         const d = Math.hypot(nx, ny, nz);
-        if (d >= R || d < 1e-9) continue;
-        nx /= d; ny /= d; nz /= d;
-        this.contact(j, px - c[j3] - nx * rc, py - c[j3 + 1] - ny * rc, pz - c[j3 + 2] - nz * rc, -1, 0, 0, 0, nx, ny, nz, R - d, cap.mu ?? opts.capsuleFriction);
+        if (d >= R) continue;
+        // the same pair at the start of the substep
+        const j4 = 4 * j, ax = qp[j4], ay = qp[j4 + 1], az = qp[j4 + 2], aw = qp[j4 + 3];
+        const ex = 2 * (ax * az + aw * ay) * h, ey = 2 * (ay * az - aw * ax) * h, ez = (aw * aw - ax * ax - ay * ay + az * az) * h;
+        closestSegSeg(cp[j3] - ex, cp[j3 + 1] - ey, cp[j3 + 2] - ez, cp[j3] + ex, cp[j3 + 1] + ey, cp[j3 + 2] + ez, A0[0], A0[1], A0[2], B0[0], B0[1], B0[2], st);
+        const s0 = st[0], t0 = st[1];
+        let ox = cp[j3] + ex * (2 * s0 - 1) - (A0[0] + (B0[0] - A0[0]) * t0);
+        let oy = cp[j3 + 1] + ey * (2 * s0 - 1) - (A0[1] + (B0[1] - A0[1]) * t0);
+        let oz = cp[j3 + 2] + ez * (2 * s0 - 1) - (A0[2] + (B0[2] - A0[2]) * t0);
+        const od = Math.hypot(ox, oy, oz);
+        let pen: number;
+        if (od > 1e-9 && (d < 1e-9 || ox * nx + oy * ny + oz * nz < 0)) {
+          // crossed the axis (or exactly on it): back along the old normal
+          ox /= od; oy /= od; oz /= od;
+          pen = R - (nx * ox + ny * oy + nz * oz);
+          nx = ox; ny = oy; nz = oz;
+        } else {
+          if (d < 1e-9) continue;
+          nx /= d; ny /= d; nz /= d;
+          pen = R - d;
+        }
+        // the capsule's motion at the contact point during this substep
+        const kmx = (A[0] - A0[0]) * (1 - t) + (B[0] - B0[0]) * t, kmy = (A[1] - A0[1]) * (1 - t) + (B[1] - B0[1]) * t, kmz = (A[2] - A0[2]) * (1 - t) + (B[2] - B0[2]) * t;
+        this.contact(j, px - c[j3] - nx * rc, py - c[j3 + 1] - ny * rc, pz - c[j3 + 2] - nz * rc, -1, 0, 0, 0, nx, ny, nz, pen, mu, kmx, kmy, kmz);
       }
     }
   }
@@ -1263,6 +1706,14 @@ function closestSegSeg(p1x: number, p1y: number, p1z: number, q1x: number, q1y: 
   }
   out[0] = s;
   out[1] = t;
+}
+
+/** out[o..o+5] = [X; Y] g for one body's Jacobian blocks (X at J[ox], Y at J[ox + 9], row-major 3×3). */
+function zTimes(J: Float64Array, ox: number, gx: number, gy: number, gz: number, out: Float64Array, o: number) {
+  for (let r = 0; r < 6; r++) {
+    const b = ox + 3 * r;
+    out[o + r] = J[b] * gx + J[b + 1] * gy + J[b + 2] * gz;
+  }
 }
 
 /** D += [[W I + T X Xᵀ, T X Yᵀ], [T Y Xᵀ, T Y Yᵀ]] for one body (X at J[ox], Y at J[ox + 9]). */
