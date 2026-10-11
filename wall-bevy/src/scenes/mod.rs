@@ -5,6 +5,7 @@ use crate::scene::SceneDef;
 
 mod blasen_platzen;
 pub mod common;
+mod cyberspiegel;
 mod fluid_simulation;
 mod llg_sakura;
 mod leonie_ziechmann;
@@ -26,5 +27,6 @@ pub fn registry() -> Vec<&'static SceneDef> {
     v.push(&llg_sakura::DEF);
     v.push(&leonie_ziechmann::DEF);
     v.push(&live_exakt::DEF);
+    v.push(&cyberspiegel::DEF);
     v
 }
