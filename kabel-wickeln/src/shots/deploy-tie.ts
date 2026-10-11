@@ -111,22 +111,28 @@ export function tieAt(g: TieGeom, spec: TieSpec, T: TieTimes, t: number, o: TieO
     const out = add(eye, scale(UP, e));
     pts.push(lerpV(lerpV(out, folded, fold), flop(e), loose));
   }
-  // the loops left it: the band hangs from the cable it lives on (a small loop round the cable, then down)
+  // the loops left it: the band hangs from the cable it lives on (a small loop round the cable, then
+  // down). It is soft: it hangs in a gentle curve that curls more towards its end (a band that was
+  // wrapped round a bunch keeps some of that bend), and it swings a little after it came free.
   let side = W;
   const root = o.root;
   if (hang > 0 && root) {
     const d = normalize(root.d), rr = o.cableR + th;
     const e1 = normalize(sub([0, -1, 0], scale(d, -d[1]))), e2 = cross(d, e1);
     const loop = 2 * Math.PI * rr, shift = scale(sub(root.p, eye), hang);
+    const L1 = Math.max(1e-3, L - loop), since = Math.max(0, t - T.drop - 0.1);
+    const sway = 0.35 * Math.exp(-since / 0.9) * Math.sin(2 * Math.PI * 1.3 * since) * Math.min(1, since / 0.15);
+    let h: V3 = add(root.p, scale(e1, rr));
     for (let k = 0; k < n; k++) {
       const s = k * ds;
-      let h: V3;
       if (s < loop) {
         const ph = s / rr;
         h = add(root.p, add(scale(e1, rr * Math.cos(ph)), add(scale(e2, rr * Math.sin(ph)), scale(d, 0.002 * ph))));
       } else {
-        const e = s - loop, bottom = add(root.p, scale(e1, rr));
-        h = add(bottom, add([0, -e, 0], scale(e2, 0.012 * Math.sin(e * 14) * Math.min(1, e / 0.03))));
+        // direction: down (e1) turning towards e2, more and more towards the end, plus the swing
+        const u = Math.min(1, (s - loop) / L1), ang = sway * u + 1.9 * u * u * u;
+        const dir = add(scale(e1, Math.cos(ang)), scale(e2, Math.sin(ang)));
+        h = add(h, scale(dir, ds));
       }
       pts[k] = lerpV(add(pts[k], shift), h, hang);
       pts[k][1] = Math.max(pts[k][1], o.floorY + th / 2);

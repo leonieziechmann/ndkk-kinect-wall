@@ -3,18 +3,21 @@
 //
 //   - a few seconds from outside, wide: who and where; then the picture splits into her own view
 //     (left, 55 %: her arms only, her body's shadow) and the outside view (right, 45 %)
-//   - the first pair slowly: an "über" loop, then an "unter" loop (the right hand turns over, in slow
-//     motion, an arc round the forearm as far as it really turns). After each, time stops and the
-//     outside camera swings ~45° round the left hand to her right side (Noor see-through): the cable
-//     to the floor glows white, the crossing gets a blue or orange rim, and a label says which strand
-//     lies on top (only if the simulation really has it so)
+//   - the first pair slowly: an "über" loop, then an "unter" loop (the right hand turns over in slow
+//     motion while the outside camera comes close to it, an arc 5 cm round the wrist as far as it
+//     really turns; the loop then hangs over the wrist on the way back). After each, time stops and
+//     the outside camera swings round behind the left hand, to Noor's side of the coil, looking along
+//     the coil's axis the way she sees it (Noor see-through): the cable to the floor glows white, the
+//     crossing gets a blue or orange rim, and a label points at the cable to the floor and says which
+//     lies on top, seen from her side (only if the simulation really has it so)
 //   - four more loops at her natural pace, the tally ü u ü u ü u fills up
-//   - the velcro tie closes round the coil next to her hand; ✓ "Der Ring liegt rund und flach." (only
-//     if the bake's checks found every loop round and untwisted)
+//   - the right hand slides out along the rest of the cable and brings its end up beside the fist,
+//     the velcro tie closes round the coil next to her fist; ✓ "Der Ring liegt rund und flach." (only
+//     if every baked loop really is round and flat at the end: coil-world.ts ringCheck)
 //
-// The outside camera stands at her right front: the loops hang in planes facing forward and a little
-// to her right (shots/coiling.ts GEOM.N), so from there the rings are seen open, and the right hand's
-// way out to the hip and its turn over are in front of the camera, not behind her body.
+// The outside camera stands in front of her, a little to her right: the loops hang in planes facing
+// forward and to her right (shots/coiling.ts GEOM.N), so from there the rings are seen open, and the
+// right hand's way out to the hip and its turn over are in front of the camera, not behind her body.
 //
 // Everything comes from the bake s1-coil (shots/s1-coil.ts, coil-engine.ts): the cable, her arms
 // (recorded angles), the hand shapes; the world is coil-world.ts.
@@ -23,7 +26,9 @@ import { Layout, Node, Txt } from '@motion-canvas/2d';
 import { all, easeInOutCubic, waitFor } from '@motion-canvas/core';
 import { BakedRod, loadBake, smooth } from '../../sim';
 import { COIL1 } from '../../shots/s1-coil';
-import { beats } from '../../shots/coiling';
+import { CoilController } from '../../shots/coil-engine';
+import { GEOM, beats } from '../../shots/coiling';
+import { J } from '../../people/people';
 import { CAPTION_Y, Captions, GAP, PANEL_H, PanelTitle, TOP, Timeline, clock, readTime, slowBadge, swing, tally } from '../../lib/kit';
 import { C, FONT, OVER, UNDER } from '../../lib/theme';
 import { Mark, StageChip } from '../../lib/ui';
@@ -33,7 +38,10 @@ import { ThreeView } from '../../three/view';
 import { CoilWorld } from './coil-world';
 
 const B = beats(COIL1);
-const LAST = B[B.length - 1];
+const norm3 = (v: [number, number, number]): [number, number, number] => {
+  const l = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / l, v[1] / l, v[2] / l];
+};
 
 /** seconds of the wide opening shot (time stands still), and of the change to the split screen */
 const INTRO = 3.4, SPLIT = 1.2;
@@ -42,10 +50,12 @@ const FREEZE = { out: 1.4, hold: 3.6, back: 1.2 };
 const FREEZE_LEN = FREEZE.out + FREEZE.hold + FREEZE.back;
 /** shot time of each freeze: the loop is laid, the cable to the floor hangs from the pads through it */
 const freezeAt = (k: number) => B[k - 1].tMeet + 0.22;
-/** the turn over of the first "unter" loop in slow motion (0.25×) */
+/** the turn over of the first "unter" loop in slow motion (0.25×), the loop falling over the wrist after it at 0.5× */
 const SLOW_AT = B[1].tHeld - 0.1, SLOW_LEN = B[1].tTurned - B[1].tHeld + 0.25, SLOW_F = 0.25;
-/** the tie (shot times, after the last loop) */
-const TIE = { wrap0: LAST.t1 + 0.9, wrap1: LAST.t1 + 1.9, fold1: LAST.t1 + 2.5 };
+/** the end fetched after the last loop (the right hand brings it up beside the fist) */
+const END = new CoilController(COIL1, { fetchEnd: true }).endBeats();
+/** the tie (shot times, once the end is up) */
+const TIE = { wrap0: END.fUp + 0.1, wrap1: END.fUp + 1.1, fold1: END.fUp + 1.7 };
 /** the end: time stands still while the camera moves round to the front of the ring */
 const END_HOLD = 5.5;
 
@@ -69,15 +79,42 @@ export function* part(layer: Node) {
 
   // ------------------------------------------------------------------------- cameras
   const gl = bake.frame('gripL', freezeAt(1)).p;
-  const coilAt: [number, number, number] = [gl[0] + 0.02, gl[1] - 0.16, gl[2]];
+  const coilAt: [number, number, number] = [gl[0] + 0.02, gl[1] - 0.12, gl[2]];
   /** wide: Noor standing with the cable, the rest of it on the floor to her right front */
   const WIDE: Orbit = { target: [0.1, 0.92, -0.45], yaw: 2.5, pitch: 0.2, dist: 2.9, fov: 34 };
-  /** the outside camera: her right front, the coil and both hands */
-  const EXT: Orbit = { target: [0.04, 0.8, -0.28], yaw: 2.35, pitch: 0.4, dist: 1.55, fov: 40 };
-  /** the freeze: ~45° further round the left hand, to her right side: front and back of the loops become left and right */
-  const FREEZE_CAM: Orbit = { target: coilAt, yaw: 2.35 - 0.8, pitch: 0.22, dist: 1.05, fov: 40 };
+  /** the outside camera: in front of her, a little to her right, close: the coil and both hands */
+  const EXT: Orbit = { target: [0.08, 0.8, -0.3], yaw: Math.PI - 0.42, pitch: 0.3, dist: 1.2, fov: 40 };
+  /**
+   * The freeze: from Noor's side of the coil, behind and above her left hand, looking along the
+   * coil's axis N (the way she sees the loops: "on top" is towards the camera)
+   */
+  const FREEZE_CAM = (k: number): Orbit => {
+    const c = cw.crossPoint(k, freezeAt(k));
+    return { target: [0.5 * (c[0] + coilAt[0]), 0.5 * (c[1] + coilAt[1]) + 0.02, 0.5 * (c[2] + coilAt[2])], yaw: Math.atan2(-GEOM.N[0], -GEOM.N[2]), pitch: 0.62, dist: 0.78, fov: 38 };
+  };
+  /**
+   * The slow motion: close on the right hand turning over, looking at the wrist at 45° to the
+   * forearm from outside it, so the arc round the wrist is seen open
+   */
+  let slowOrbit: Orbit | null = null;
+  const slowCam = (): Orbit => (slowOrbit ??= (() => {
+    const pose = cw.replay.pose(B[1].tTurned);
+    const w = pose.joints[J.rightWrist], e = pose.joints[J.rightElbow];
+    const fa = norm3([w[0] - e[0], w[1] - e[1], w[2] - e[2]]);
+    // outside the forearm (away from her body, horizontally) and back along it towards the elbow: the camera
+    const outside = norm3([w[0], 0, w[2] + 0.1]);
+    const o = norm3([-fa[0] + 0.9 * outside[0], -fa[1] + 0.35, -fa[2] + 0.9 * outside[2]]);
+    const target: [number, number, number] = [w[0] + 0.02 * fa[0], w[1] + 0.02 * fa[1] - 0.03, w[2] + 0.02 * fa[2]];
+    return { target, yaw: Math.atan2(o[0], o[2]), pitch: Math.asin(Math.max(-0.2, Math.min(0.9, o[1]))), dist: 0.62, fov: 38 } as Orbit;
+  })());
+  /** 0 … 1 … 0 around the slow motion: the outside camera comes close to the right hand */
+  const slowU = () => {
+    const a = timeline.scene(SLOW_AT) - 0.9, b = timeline.scene(SLOW_AT + SLOW_LEN) + 0.6;
+    const s = tau();
+    return smooth((s - a) / 0.9) * (1 - smooth((s - b) / 1.0));
+  };
   /** the finished ring from the front at hip height */
-  const END_CAM: Orbit = { target: [coilAt[0] - 0.04, coilAt[1] + 0.02, coilAt[2] + 0.04], yaw: Math.PI - 0.3, pitch: 0.12, dist: 1.0, fov: 38 };
+  const END_CAM: Orbit = { target: [coilAt[0] - 0.04, coilAt[1] - 0.02, coilAt[2] + 0.04], yaw: Math.PI - 0.3, pitch: 0.12, dist: 0.95, fov: 38 };
   const o1: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
   const o2: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
   const ext = (): Orbit => {
@@ -87,7 +124,9 @@ export function* part(layer: Node) {
       return mixOrbit(wide, EXT, easeInOutCubic(Math.max(0, (s - INTRO) / SPLIT)), o2);
     }
     if (endU() > 0) return mixOrbit(EXT, END_CAM, easeInOutCubic(endU()), o2);
-    return mixOrbit(EXT, FREEZE_CAM, freeze(), o2);
+    if (slowU() > 0) return mixOrbit(EXT, slowCam(), easeInOutCubic(slowU()), o2);
+    const k = sw(2) > 0 ? 2 : 1;
+    return mixOrbit(EXT, FREEZE_CAM(k), easeInOutCubic(freeze()), o2);
   };
 
   const cw: CoilWorld = new CoilWorld('p1-coil', bake, COIL1, {
@@ -117,6 +156,7 @@ export function* part(layer: Node) {
   // the crossings the labels point at, and whether the labels are true there
   const cross = [1, 2].map((k) => cw.crossing(k, freezeAt(k)));
   const truth = cross.map((c, i) => c !== null && (i === 0 ? c.depth < 0 : c.depth > 0));
+  console.log('p1-coil crossings at the freezes (depth along N: − Noor\'s side)', JSON.stringify(cross), 'labels shown', JSON.stringify(truth));
   // (the ✓ only if the baked ring really lies round and flat: coil-world.ts ringCheck)
   const ring = cw.ringCheck(SHOT_END);
   const roundOk = ring.ok;
@@ -155,7 +195,8 @@ export function* part(layer: Node) {
   for (const k of [1, 2]) {
     if (!truth[k - 1]) continue;
     const color = k === 1 ? OVER : UNDER;
-    layer.add(callout({ view: extView, target: () => cw.crossPoint(k, t()), at: [xR + wR / 2, TOP + PANEL_H - 90], text: LABELS[k - 1], color, size: 34, arrow: true, opacity: () => smooth((sw(k) - 0.5) / 0.4) }));
+    // (the arrow points at the cable to the floor, just past the crossing)
+    layer.add(callout({ view: extView, target: () => cw.floorPoint(k, t()) ?? cw.crossPoint(k, t()), at: [xR + wR / 2, TOP + PANEL_H - 90], text: LABELS[k - 1], color, size: 34, arrow: true, opacity: () => smooth((sw(k) - 0.5) / 0.4) }));
   }
 
   // the end: ✓ the ring lies round and flat

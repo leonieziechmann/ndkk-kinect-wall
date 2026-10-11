@@ -1,7 +1,8 @@
 // Stage 1: Noor coils the 5 m XLR over and under into her left hand (coil-engine.ts drives her arms
 // and the simulated cable together; the technique is described in coiling.ts). The first two loops
-// slowly for teaching (über, unter), then four at her natural pace; afterwards the coil hangs
-// still in her left hand, the cable's end in her right, for the strap.
+// slowly for teaching (über, unter), then four at her natural pace; then the right hand slides out
+// along the rest to the end and brings it up beside the fist (B 36.0), and the coil hangs still in
+// her left hand, the end in her right, for the strap.
 //
 // The bake prints its checks at the end (over/under, roundness, loop lengths, the forearm through
 // the under loops, hands, kinks, speeds, the plug, IK) and fails loudly in the summary: "COIL
@@ -11,7 +12,7 @@
 // comparison), coil-dev1 one über loop: quick experiments (npm run bake -- --jobs 1 coil-dev).
 
 import { XLR } from '../sim';
-import { CoilController } from './coil-engine';
+import { CoilController, CoilOptions } from './coil-engine';
 import { CoilPlan, LoopKind, NATURAL, TEACH } from './coiling';
 import type { ShotDef } from './types';
 
@@ -22,17 +23,17 @@ export const COIL1: CoilPlan = {
   kinds: KINDS,
   paces: KINDS.map((_, i) => (i < 2 ? TEACH : NATURAL)),
   start: 0.6,
-  loopLength: 0.75,
+  loopLength: 0.72,
 };
 
-/** how long the coil hangs still after the last loop (the strap closes in the scene) */
-export const COIL1_TAIL = 3.2;
+/** how long the coil hangs still after the end is fetched (the strap closes in the scene) */
+export const COIL1_TAIL = 2.6;
 
 /** the controller of the last bake of each shot in this process (for test scripts) */
 export const lastController = new Map<string, CoilController>();
 
-function coilShotOf(id: string, plan: CoilPlan, tail: number): ShotDef {
-  const probe = new CoilController(plan);
+function coilShotOf(id: string, plan: CoilPlan, tail: number, o: CoilOptions = {}): ShotDef {
+  const probe = new CoilController(plan, o);
   const duration = probe.tDone + tail;
   return {
     id,
@@ -40,7 +41,7 @@ function coilShotOf(id: string, plan: CoilPlan, tail: number): ShotDef {
     substeps: XLR.substeps,
     iterations: XLR.iterations,
     build() {
-      const ctl = new CoilController(plan);
+      const ctl = new CoilController(plan, o);
       lastController.set(id, ctl);
       const b = ctl.build();
       let printed = false;
@@ -61,7 +62,7 @@ function coilShotOf(id: string, plan: CoilPlan, tail: number): ShotDef {
   };
 }
 
-export const coilShot = coilShotOf('s1-coil', COIL1, COIL1_TAIL);
+export const coilShot = coilShotOf('s1-coil', COIL1, COIL1_TAIL, { fetchEnd: true });
 
 /** the first two loops of stage 1, for experiments */
 export const coilDev = coilShotOf('coil-dev', { ...COIL1, kinds: KINDS.slice(0, 2), paces: [TEACH, TEACH] }, 1.2);
@@ -75,4 +76,10 @@ export const coilDev1 = coilShotOf('coil-dev1', { ...COIL1, kinds: ['over'], pac
 /** one under loop, for quick experiments */
 export const coilDevU = coilShotOf('coil-dev-u', { ...COIL1, kinds: ['under'], paces: [TEACH] }, 1.0);
 
-export const COIL_SHOTS: ShotDef[] = [coilShot, coilDev, coilDevSame, coilDev1, coilDevU];
+/** over and under at the natural pace, for experiments */
+export const coilDevN = coilShotOf('coil-dev-n', { ...COIL1, kinds: ['over', 'under'], paces: [NATURAL, NATURAL] }, 1.0);
+
+/** the first four loops of stage 1 */
+export const coilDev4 = coilShotOf('coil-dev4', { ...COIL1, kinds: KINDS.slice(0, 4), paces: COIL1.paces.slice(0, 4) }, 1.0);
+
+export const COIL_SHOTS: ShotDef[] = [coilShot, coilDev, coilDevSame, coilDev1, coilDevU, coilDevN, coilDev4];

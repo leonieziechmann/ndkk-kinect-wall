@@ -427,6 +427,19 @@ export const deployPull: ShotDef = {
       return m - DESK.height;
     };
     const arm = (t: number, side: 0 | 1) => poseAt(t).body.arms?.[side].report;
+    // twist and writhe once per recorded frame; the largest jump of their sum (the linking number of
+    // the cable with its ends' frames) between two frames: a strand passing through another
+    // changes it by ±2 at once, nothing else by more than a few hundredths
+    let twr = { t: NaN, tw: 0, wr: 0 }, lkPrev: number | null = null, lkMax = 0;
+    const tw_wr = (r: Rod, t: number) => {
+      if (twr.t !== t) {
+        twr = { t, tw: r.twistTurns(), wr: r.writhe(ring.cable[0], ring.cable[1]) };
+        const lk = twr.tw + twr.wr;
+        if (lkPrev !== null) lkMax = Math.max(lkMax, Math.abs(lk - lkPrev));
+        lkPrev = lk;
+      }
+      return twr;
+    };
     return {
       rod,
       script,
@@ -434,8 +447,10 @@ export const deployPull: ShotDef = {
         cable0: () => ring.cable[0],
         cable1: () => ring.cable[1],
         tieNode: (r) => r.segmentAt(TIE.s),
-        twist: (r) => r.twistTurns(),
-        writhe: (r) => r.writhe(ring.cable[0], ring.cable[1]),
+        twist: (r, t) => tw_wr(r, t).tw,
+        writhe: (r, t) => tw_wr(r, t).wr,
+        /** the largest jump of twist + writhe between two frames so far (turns): ≥ 1 is a strand passage */
+        lkJump: (r, t) => (tw_wr(r, t), lkMax),
         low: lowest,
         /** loops still in the left hand */
         inHand: () => gone.filter((g) => !g).length,

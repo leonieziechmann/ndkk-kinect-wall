@@ -5,7 +5,8 @@
 //      hand, takes the other end with the other hand (both ends outside the ring, highlighted) and
 //      pulls her hands apart: the loops open one after the other, the cable hangs calm between her
 //      hands. From outside; while she pulls, split: her own view (arms only, her shadow) | outside.
-//   B  long cable: Kofi throws an XLR ring towards a mic stand (see longCable below).
+//   B  long cable: Kofi throws an XLR ring towards a mic stand, turned so that he sees its circle;
+//      the cable comes off its back face (see longCable below).
 //
 // Both are baked simulations (shots/deploy-pull.ts, shots/throw.ts) of over-under rings
 // (shots/deploy-ring.ts); the people's arms come from the same RigTracks as in the bakes.
@@ -15,7 +16,7 @@ import { all, createSignal, easeInOutCubic, linear, waitFor } from '@motion-canv
 import * as THREE from 'three';
 import { BakedRod, V3, loadBake, smooth } from '../../sim';
 import { DESK, PULL_T, SEAT, SHORT_RING, TIE, TIE_POINTS, YAW, endsFrom, planFrom, pullRig, pullTrack, tieShape } from '../../shots/deploy-pull';
-import { LONG_RING, MIC_AT, THROW_T, THROW_WIDE_RADIUS, TIE_K, flight, planFromK, swingPoint, throwTrack, tieShapeK } from '../../shots/throw';
+import { LONG_RING, MIC_AT, THROW_T, THROW_WIDE_RADIUS, TIE_K, planFromK, ringPoint, throwTrack, tieShapeK } from '../../shots/throw';
 import { ILSE, KOFI } from '../../people/cast';
 import { yawFrame } from '../../people/people';
 import { eyesOfRig } from '../../people/rig';
@@ -57,13 +58,13 @@ const A_LEN = A_INTRO + PULL_T.end + 0.9;
  * not against her dark jacket); a cut back to her front left, closer, for the two ends; wider for
  * the pull.
  */
-const A_WIDE: Orbit = { target: [0.0, 0.95, 0.3], yaw: 0.62, pitch: 0.3, dist: 2.3, fov: 34 };
-const A_WIDE_IN: Orbit = { target: [0.0, 1.0, 0.35], yaw: 0.6, pitch: 0.28, dist: 2.0, fov: 34 };
-const A_OTS: Orbit = { target: [0.0, 1.06, 0.42], yaw: Math.PI + 0.55, pitch: 0.72, dist: 0.85, fov: 34 };
-const A_OTS2: Orbit = { target: [0.0, 1.02, 0.42], yaw: Math.PI + 0.5, pitch: 0.68, dist: 0.95, fov: 34 };
-const A_HOLD: Orbit = { target: [0.0, 1.03, 0.42], yaw: 0.5, pitch: 0.25, dist: 1.35, fov: 34 };
+const A_WIDE: Orbit = { target: [0.0, 0.86, 0.3], yaw: 0.62, pitch: 0.3, dist: 2.3, fov: 34 };
+const A_WIDE_IN: Orbit = { target: [0.0, 0.9, 0.35], yaw: 0.6, pitch: 0.28, dist: 2.0, fov: 34 };
+const A_OTS: Orbit = { target: [0.0, 0.9, 0.38], yaw: Math.PI + 0.55, pitch: 0.7, dist: 0.85, fov: 34 };
+const A_OTS2: Orbit = { target: [0.0, 0.88, 0.38], yaw: Math.PI + 0.5, pitch: 0.66, dist: 0.95, fov: 34 };
+const A_HOLD: Orbit = { target: [0.0, 0.9, 0.4], yaw: 0.5, pitch: 0.24, dist: 1.4, fov: 34 };
 /** while she pulls: wide enough for both hands */
-const A_PULL: Orbit = { target: [0.0, 1.0, 0.42], yaw: 0.45, pitch: 0.28, dist: 2.1, fov: 36 };
+const A_PULL: Orbit = { target: [0.0, 0.87, 0.42], yaw: 0.45, pitch: 0.3, dist: 2.15, fov: 36 };
 /** the cuts (scene seconds from the part's start; shot seconds) */
 const A_CUT_OTS = A_INTRO + 0.35, A_CUT_FRONT = PULL_T.pull0 - 0.7;
 
@@ -122,7 +123,8 @@ function* shortCable(layer: Node) {
 
   // ---------------------------------------------------------------- the world
   const pos = new Float32Array(3 * bake.n), d1 = new Float32Array(3 * bake.n), halo = new Float32Array(4 * nc);
-  const cable = new CableMesh({ maxNodes: nc, radius: SHORT_RING.cable.od / 2, plugStart: 'usb-c', plugEnd: 'usb-c', stripeEdge: '#3a3d44', ground: DESK.height, haloPx: 7, haloMax: 3, sub: 3 });
+  // plain black (KONZEPT: Ladekabel, schwarz; the yellow twist stripe belongs to the XLR of the other parts)
+  const cable = new CableMesh({ maxNodes: nc, radius: SHORT_RING.cable.od / 2, plugStart: 'usb-c', plugEnd: 'usb-c', stripe: null, ground: DESK.height, haloPx: 7, haloMax: 3, sub: 3 });
   const tie = new StrapMesh({ length: TIE.length, width: TIE.width, thickness: TIE.thickness, color: '#7d8188', inner: '#666a71', maxPoints: TIE_POINTS });
   const tiePath = new Float32Array(3 * TIE_POINTS);
   const ilse = splitPerson(ILSE, track.pose(0));
@@ -170,7 +172,7 @@ function* shortCable(layer: Node) {
     if (tau() < A_CUT_OTS) orbit(extCam, mixOrbit(A_WIDE, A_WIDE_IN, easeInOutCubic(ramp(tau(), 0, A_CUT_OTS)), oa));
     else if (tt < A_CUT_FRONT) orbit(extCam, mixOrbit(A_OTS, A_OTS2, easeInOutCubic(ramp(tt, T.letTie, T.takeB)), oa));
     else orbit(extCam, mixOrbit(A_HOLD, A_PULL, easeInOutCubic(ramp(tt, T.pull0 - 0.6, T.pull0 + 1.0)), ob));
-    povFollow(povCam, (x) => eyesOfRig(ILSE, rig(x)), () => [0.0, 1.0, 0.46], tt, { back: 0.08, up: 0.04, fov: 64, smooth: 0.3 });
+    povFollow(povCam, (x) => eyesOfRig(ILSE, rig(x)), () => [0.0, 0.86, 0.42], tt, { back: 0.08, up: 0.04, fov: 64, smooth: 0.3 });
   });
   const scene = world.scene;
   new Studio(scene, { focus: [0, 0.85, 0.35], focusRadius: 1.1 });
@@ -234,31 +236,64 @@ function* shortCable(layer: Node) {
 
 // ===================================================================================== B: long
 
-/** scene seconds: a still moment before the shot runs */
-const B_INTRO = 0.4;
-/** the real-time run ends a little after the landing (shot time); the slow-motion replay (shot times); the rest */
+/** scene seconds: a wide shot of Kofi and the stand before the shot runs */
+const B_INTRO = 1.4;
+/** the real-time run ends a little after the landing (shot time); the slow-motion replay from the backswing (shot times); the rest */
 const B_RUN_END = THROW_T.land + 0.8;
-const B_SLOW0 = THROW_T.release - 0.35, B_SLOW1 = THROW_T.land + 0.3, B_SLOW = 0.25;
+const B_SLOW0 = THROW_T.pre + 0.25, B_SLOW1 = THROW_T.land + 0.3, B_SLOW = 0.25;
 const B_HOLD = 1.6;
 /** the scene's phases */
 const B_S_SLOW = B_INTRO + B_RUN_END, B_S_REST = B_S_SLOW + (B_SLOW1 - B_SLOW0) / B_SLOW;
 const B_LEN = B_S_REST + (THROW_T.end - B_RUN_END) + B_HOLD;
-/** shot time for scene time s: real time, the slow replay (a flashback), then real time again from where it stopped */
+/** shot time for scene time s: still during the wide intro, real time, the slow replay (a flashback), then real time again from where it stopped */
 const throwTime = (s: number) =>
   s < B_S_SLOW ? Math.max(0, s - B_INTRO) : s < B_S_REST ? B_SLOW0 + (s - B_S_SLOW) * B_SLOW : Math.min(THROW_T.end, B_RUN_END + (s - B_S_REST));
 
 /**
- * The cameras. Near, from his front right: the tie, the ring in his hands (its face to the
- * camera, the black cable against his pink shirt). Behind and above him, wide: the throw, the whole
- * flight, the ring's circle, the landing at the stand. The replay from the side, travelling with the
- * ring: the loops leave its back. Then high behind him: the cable on the floor.
+ * The cameras.
+ * - Wide, from his right: Kofi with the ring and the mic stand, the target, 11 m away.
+ * - Near, from his front left, 1.25 m from the ring: the ring's face, the tie his right hand
+ *   opens, the end he keeps hanging out below it (labelled, glowing).
+ * - Behind him on his right, over the shoulder (cut 1.6 s before the swing): the arc of the swing,
+ *   the whole flight, the ring's circle, the landing at the stand.
+ * - The replay from behind and above, 25° off the throw's axis, travelling with the ring: its
+ *   circle and its back face, where the cable comes off.
+ * - Then high from the side: the cable on the floor.
  */
-const B_NEAR: Orbit = { target: [0.4, 1.2, 0.0], yaw: 0.95, pitch: 0.06, dist: 1.95, fov: 34 };
-const B_NEAR2: Orbit = { target: [0.3, 1.18, 0.12], yaw: 1.05, pitch: 0.08, dist: 2.25, fov: 34 };
-const B_BEHIND: Orbit = { target: [6.2, 1.0, 0.3], yaw: -1.42, pitch: 0.16, dist: 9.0, fov: 40 };
-const B_REST: Orbit = { target: [6.1, 0.1, 0.2], yaw: 0.1, pitch: 0.55, dist: 11.8, fov: 40 };
-/** the cut from near to behind: just before the backswing */
-const B_CUT = THROW_T.split + 0.1;
+const B_WIDE: Orbit = { target: [5.3, 0.75, 0.2], yaw: 0.2, pitch: 0.12, dist: 11.5, fov: 38 };
+const B_NEAR: Orbit = { target: [0.33, 0.9, -0.02], yaw: 1.95, pitch: 0.1, dist: 1.3, fov: 36 };
+const B_NEAR2: Orbit = { target: [0.33, 0.95, 0.02], yaw: 1.85, pitch: 0.12, dist: 1.55, fov: 36 };
+const B_BEHIND: Orbit = { target: [5.2, 0.85, 0.2], yaw: -1.2, pitch: 0.2, dist: 8.2, fov: 40 };
+const B_REST: Orbit = { target: [5.4, 0.1, 0.1], yaw: 0.12, pitch: 0.6, dist: 12.5, fov: 40 };
+/** the cut from near to behind (shot time): 1.6 s before the swing starts */
+const B_CUT = THROW_T.swing - 1.6;
+
+/**
+ * A stage floor: a slightly darker deck on the studio floor with black edges and a gaffer-tape X
+ * where the stand goes, so things far away stand on something (y = 0: the cable lies on it).
+ */
+function stageDeck(): THREE.Group {
+  const g = new THREE.Group();
+  const deck = new THREE.Mesh(new THREE.PlaneGeometry(18, 6.5), new THREE.MeshLambertMaterial({ color: '#e1d6c6', polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 }));
+  deck.rotation.x = -Math.PI / 2;
+  deck.position.set(5.2, 0.0005, 0.1);
+  deck.receiveShadow = true;
+  g.add(deck);
+  const tape = new THREE.MeshLambertMaterial({ color: '#232427', polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const strip = (len: number, w: number, x: number, z: number, rot: number) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(len, w), tape);
+    m.rotation.set(-Math.PI / 2, 0, rot);
+    m.position.set(x, 0.0008, z);
+    m.receiveShadow = true;
+    g.add(m);
+  };
+  // the deck's edges
+  for (const z of [0.1 - 3.25, 0.1 + 3.25]) strip(18, 0.05, 5.2, z, 0);
+  // the mark for the stand
+  strip(0.3, 0.05, MIC_AT[0], MIC_AT[2], Math.PI / 4);
+  strip(0.3, 0.05, MIC_AT[0], MIC_AT[2], -Math.PI / 4);
+  return g;
+}
 
 function* longCable(layer: Node) {
   const bake = (yield loadBake('throw')) as BakedRod;
@@ -269,7 +304,6 @@ function* longCable(layer: Node) {
   const T = THROW_T;
   const i0 = Math.round(bake.track('cable0', 0)), i1 = Math.round(bake.track('cable1', 0));
   const nc = i1 - i0 + 1;
-  const tieNode = Math.round(bake.track('tieNode', 0));
   const tau = createSignal(0);
   const t = () => throwTime(tau());
 
@@ -286,25 +320,33 @@ function* longCable(layer: Node) {
   const stand = micStand();
   stand.position.set(...MIC_AT);
   stand.rotation.y = Math.PI / 2;
-  // a calm load-out: cases at the side of the stage
+  // a calm load-out: cases on the stage's far side and behind him, off every camera's line to him,
+  // the ring and the stand (checked in stills of all five cameras)
   const cases = [flightCase({ width: 0.8, depth: 0.6, height: 0.7 }), flightCase({ width: 0.6, depth: 0.5, height: 0.5 }), flightCase({ width: 1.0, depth: 0.6, height: 0.6 })];
-  // (behind him and far to the side: never behind the black ring in a shot)
-  cases[0].position.set(-2.3, 0, -0.5);
+  cases[0].position.set(-1.6, 0, -2.4);
   cases[0].rotation.y = 0.2;
-  cases[1].position.set(-2.2, 0.7, -0.45);
+  cases[1].position.set(-1.5, 0.7, -2.35);
   cases[1].rotation.y = 0.3;
-  cases[2].position.set(7.5, 0, -4.2);
+  cases[2].position.set(3.2, 0, -2.9);
   cases[2].rotation.y = -0.15;
 
   const cam = makeCamera(34);
   viewLayers(cam, 'ext');
   const oa: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
-  const nodeA: V3 = [0, 0, 0], nodeB: V3 = [0, 0, 0];
   const white = rgba('#ffffff', 1);
-  /** the end he keeps glows while it is pointed out */
-  const endOn = () => (tau() < B_S_SLOW ? ramp(t(), 0.5, 0.8) * (1 - ramp(t(), T.split, T.split + 0.3)) : 0);
+  /** the end he keeps glows (its last 27 cm) while it is pointed out */
+  const endOn = () => (tau() < B_S_SLOW ? ramp(t(), 0.3, 0.6) * (1 - ramp(t(), T.take - 0.2, T.take + 0.2)) : 0);
+  const END_GLOW = Math.round(0.27 / 0.0075);
   /** where the ring is (for the travelling replay camera): the planned path, then where it lies */
-  const ringAt = (tt: number): V3 => (tt < T.release ? swingPoint(plan, tt) : flight(Math.min(tt, T.land)));
+  const ringAt = (tt: number): V3 => ringPoint(plan, tt);
+  /** the replay camera's target: the ring's middle (13 cm below its grip point), a little behind it, smoothed by the path itself */
+  const replay = (tt: number): Orbit => {
+    const r = ringAt(Math.min(tt, T.land - 0.05));
+    const u = ramp(tt, B_SLOW0, T.release);
+    // during the swing it frames him and the ring; in flight it travels with the ring
+    const target: V3 = [r[0] - 0.25 * (1 - u), Math.max(0.35, r[1] - 0.13), 0.3 + 0.08 * u];
+    return { target, yaw: -1.15, pitch: 0.36 - 0.06 * u, dist: 3.0 - 0.5 * u, fov: 40 };
+  };
 
   const world = new World3D('p1-deploy-kofi', () => {
     const tt = t(), s = tau();
@@ -313,29 +355,23 @@ function* longCable(layer: Node) {
     const on = endOn();
     if (on > 0) {
       halo.fill(0);
-      paint(halo, 0, 8, white, 0.95 * on);
+      paint(halo, 0, END_GLOW, white, 0.95 * on);
     }
     // the wide shots draw the thick cable
-    const far = s >= B_INTRO + B_CUT && !(s >= B_S_SLOW && s < B_S_REST);
+    const far = s < B_INTRO || (tt >= B_CUT && !(s >= B_S_SLOW && s < B_S_REST));
     near.group.visible = !far;
     wide.group.visible = far;
     (far ? wide : near).update(pos.subarray(3 * i0), d1.subarray(3 * i0), nc, undefined, on > 0 ? halo : undefined);
-    // the tie: kinematic round the ring, then hanging from the cable it lives on
-    const ra = bake.nodeAt(tt, tieNode - 1, nodeA), rb = bake.nodeAt(tt, tieNode + 1, nodeB);
-    const root = { p: [(ra[0] + rb[0]) / 2, (ra[1] + rb[1]) / 2, (ra[2] + rb[2]) / 2] as V3, d: [rb[0] - ra[0], rb[1] - ra[1], rb[2] - ra[2]] as V3 };
-    const sh = tieShapeK(plan, tt, root);
+    // the tie: kinematic, loose round the loops in his left hand once opened
+    const sh = tieShapeK(plan, tt);
     sh.pts.forEach((p, k) => tiePath.set(p, 3 * k));
     tie.update(tiePath, TIE_POINTS, sh.side);
     // cameras
-    if (s < B_INTRO + B_CUT) orbit(cam, mixOrbit(B_NEAR, B_NEAR2, easeInOutCubic(ramp(s, 0, B_INTRO + B_CUT)), oa));
+    if (s < B_INTRO) orbit(cam, B_WIDE);
+    else if (s < B_S_SLOW && tt < B_CUT) orbit(cam, mixOrbit(B_NEAR, B_NEAR2, easeInOutCubic(ramp(tt, T.letTie, B_CUT)), oa));
     else if (s < B_S_SLOW) orbit(cam, B_BEHIND);
-    else if (s < B_S_REST) {
-      // from behind him on his right, travelling with the ring: its back face, where the loops come
-      // off, turned to the camera, the cable it pays out running back into the picture
-      const r = ringAt(tt), u = ramp(tt, B_SLOW0, T.release + 0.25);
-      const x = Math.max(0.25, r[0] - 0.35 * u), y = 1.0 + (Math.max(1.0, r[1]) - 1.0) * 0.9;
-      orbit(cam, { target: [x, y, 0.3], yaw: -0.62, pitch: 0.12, dist: 2.9 + 0.6 * u, fov: 40 });
-    } else orbit(cam, mixOrbit(B_BEHIND, B_REST, easeInOutCubic(ramp(s, B_S_REST, B_S_REST + 1.5)), oa));
+    else if (s < B_S_REST) orbit(cam, replay(tt));
+    else orbit(cam, mixOrbit(B_BEHIND, B_REST, easeInOutCubic(ramp(s, B_S_REST, B_S_REST + 1.5)), oa));
   });
   const scene = world.scene;
   new Studio(scene, { focus: [5.5, 0.4, 0.3], focusRadius: 7.5, floorRadius: 18 });
@@ -344,7 +380,7 @@ function* longCable(layer: Node) {
     scene.fog.near = 16;
     scene.fog.far = 40;
   }
-  scene.add(near.group, wide.group, tie.group, kofi.person.group, stand, ...cases);
+  scene.add(stageDeck(), near.group, wide.group, tie.group, kofi.person.group, stand, ...cases);
 
   // ---------------------------------------------------------------- the picture
   const view = (<ThreeView world={world} camera={cam} x={0} y={midY} width={fullW} height={PANEL_H} radius={28} opacity={0} />) as ThreeView;
@@ -353,14 +389,16 @@ function* longCable(layer: Node) {
   layer.add(chip);
   const badge = slowBadge(layer, () => ramp(tau(), B_S_SLOW, B_S_SLOW + 0.3) * (1 - ramp(tau(), B_S_REST - 0.3, B_S_REST)));
   void badge;
-  // the end he keeps
+  // the end he keeps: its plug, hanging out below the ring (pointed out while his right hand opens the tie)
   const plugA = () => bake.nodeAt(t(), i0 - 3, [0, 0, 0]);
-  const labelOn = () => (tau() < B_S_SLOW ? ramp(t(), 0.5, 0.8) * (1 - ramp(t(), B_CUT - 0.35, B_CUT - 0.1)) : 0);
-  layer.add(callout({ view, target: plugA, at: () => { const p = project(view, plugA()); return [p.x - 200, p.y - 150] as [number, number]; }, text: 'Ende', opacity: labelOn }));
+  const labelOn = () => (tau() < B_S_SLOW && tau() >= B_INTRO ? ramp(t(), 0.4, 0.7) * (1 - ramp(t(), 2.0, 2.3)) : 0);
+  layer.add(callout({ view, target: plugA, at: () => { const p = project(view, plugA()); return [p.x + 230, p.y + 40] as [number, number]; }, text: 'Ende', opacity: labelOn }));
 
-  // the landed cable: the tick only if it really lies without curls (the bake's check)
-  const curls = bake.track('curls', T.end), bend = bake.track('minBend', T.end);
-  const clean = curls === 0 && bend > 0.03;
+  // the landed cable: the tick only if it really lies without curls, kinks or twisted zones and no
+  // strand passed through another (the bake's own checks)
+  const tr = (name: string, bad: number) => (bake.trackNames.includes(name) ? bake.track(name, T.end) : bad);
+  const curls = tr('curls', 1), bend = tr('minBend', 0), twisted = tr('twistMax', 9), jump = tr('lkJump', 9);
+  const clean = curls === 0 && bend >= 10 * LONG_RING.cable.od && twisted < 0.5 && jump < 1;
   const done = (<Layout layout direction={'row'} alignItems={'center'} x={0} y={TOP + PANEL_H - 70} opacity={0}><Mark good={clean} size={58} /></Layout>) as Layout;
   layer.add(done);
 
@@ -373,8 +411,8 @@ function* longCable(layer: Node) {
     view.opacity(1, 0.4),
     chip.opacity(1, 0.4),
     (function* () {
-      // the caption well before the swing; it stays through the replay
-      yield* waitFor(B_INTRO + 0.5);
+      // the caption in the wide shot, well before the swing; it stays through the replay
+      yield* waitFor(0.5);
       yield* cap.show(CAP);
       yield* waitFor(Math.max(readTime(CAP), B_S_REST - tau()));
       yield* cap.hide();

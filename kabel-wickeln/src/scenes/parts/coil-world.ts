@@ -1,10 +1,11 @@
 // The coiling world of stages 1 and 3: Noor coils the XLR cable over and under into her left hand
 // (a coiling bake: shots/coil-engine.ts). One World3D holds the studio, the baked cable (halos,
-// plugs), Noor (one mesh for both views: lib/kit splitPerson, her arms exactly as the bake recorded
-// them: CoilReplay), the arc arrow round the right forearm while it turns over for "unter", and the
-// velcro tie that closes round the coil at the end. The part drives everything through `state`
-// (shot time, cameras, x-ray, highlights), so a freeze or a slow motion is only a different
-// shot-time function.
+// plugs), Noor (one mesh for both views: lib/kit splitPerson, her arms and hands exactly as the bake
+// recorded them: CoilReplay, the fist's radius included), the arc arrow round the right wrist while
+// it turns over for "unter" (5 cm round it, as far as the hand really turned), and the velcro tie
+// that closes round the coil next to her fist (the medial side: her thumb lies along the lateral
+// one). The part drives everything through `state` (shot time, cameras, x-ray, highlights), so a
+// freeze or a slow motion is only a different shot-time function.
 
 import * as THREE from 'three';
 import { BakedRod, V3, quatRotate } from '../../sim';
@@ -30,8 +31,10 @@ export interface CoilState {
   t: () => number;
   /** the outside camera */
   ext: () => Orbit;
-  /** the first-person camera looks here (default: below the left hand, the coil) */
+  /** the first-person camera looks here (default: between the hands and below them: both hands, the coil, the right hip) */
   look?: (t: number) => V3;
+  /** the first-person camera's field of view (default 70°) */
+  povFov?: number;
   /** 0 solid … 1 Noor at 30 % (x-ray during freezes) */
   xray: () => number;
   /** loop k's highlight: the cable to the floor glows white, the crossing gets a blue/orange rim */
@@ -91,9 +94,10 @@ export class CoilWorld {
     viewLayers(this.extCam, 'ext');
 
     const look = state.look ?? ((t: number) => {
-      const g = bake.frame('gripL', t).p;
-      // (between and below the hands: both hands, the coil hanging from the left one, the right hip)
-      return [g[0] + 0.2, g[1] - 0.26, g[2] - 0.1] as V3;
+      const g = bake.frame('gripL', t).p, r = bake.frame('gripR', t).p;
+      // (between and below the hands, nearer the left one: the coil hanging from it, and the right
+      // hand also out at the hip)
+      return [g[0] + 0.4 * (r[0] - g[0]) + 0.04, Math.min(g[1], r[1]) - 0.24, g[2] + 0.4 * (r[2] - g[2]) - 0.06] as V3;
     });
 
     this.world = new World3D(key, () => {
@@ -105,27 +109,30 @@ export class CoilWorld {
       bake.frameSample(t, this.pos, this.d1);
       this.cable.update(this.pos, this.d1, n, undefined, this.writeHalo() ? this.halo : undefined);
 
-      // the arc round the right forearm, as far as the hand really turned (the recorded turn)
+      // the arc round the right wrist (5 cm round it, just behind the joint), as far as the hand really
+      // turned (the recorded turn)
       const pr = state.arrow();
       arrow.group.visible = pr !== null && pr > 0.01;
       if (pr !== null) {
         const w = pose.joints[J.rightWrist], e = pose.joints[J.rightElbow];
-        const mid: V3 = [w[0] + (e[0] - w[0]) * 0.35, w[1] + (e[1] - w[1]) * 0.35, w[2] + (e[2] - w[2]) * 0.35];
+        const fa = sub(w, e), l = Math.hypot(fa[0], fa[1], fa[2]) || 1;
+        const mid: V3 = [w[0] - (fa[0] / l) * 0.03, w[1] - (fa[1] / l) * 0.03, w[2] - (fa[2] / l) * 0.03];
         // (supination turns the right forearm clockwise seen from the hand: negative about elbow → wrist)
-        arrow.update({ center: mid, axis: sub(w, e), from: [0, 1, 0], radius: 0.07, angle: -GEOM.underTurn, progress: pr });
+        arrow.update({ center: mid, axis: fa, from: [0, 1, 0], radius: 0.055, angle: -GEOM.underTurn, progress: pr });
       }
 
-      // the tie round the coil just outside the index finger (lateral end of the strands in the hand)
+      // the tie round the coil next to the fist, on its medial side (the thumb lies along the lateral one)
       const tv = state.tie();
       tie.group.visible = tv !== null;
       if (tv) {
         const f = bake.frame('gripL', t);
         const s = quatRotate(f.q, [0, 0, 1]);
-        const c: V3 = [f.p[0] + s[0] * (GEOM.half + 0.016), f.p[1] + s[1] * (GEOM.half + 0.016), f.p[2] + s[2] * (GEOM.half + 0.016)];
-        tie.pose({ center: c, axis: s, start: [0, 1, 0], radius: 0.026, wrap: tv.wrap, fold: tv.fold, droop: 1 - tv.wrap });
+        const off = -(GEOM.half - 0.004);
+        const c: V3 = [f.p[0] + s[0] * off, f.p[1] + s[1] * off, f.p[2] + s[2] * off];
+        tie.pose({ center: c, axis: s, start: [0, 1, 0], radius: (this.replay.at(t).rig.hands[0]?.radius ?? 0.022) + 0.005, wrap: tv.wrap, fold: tv.fold, droop: 1 - tv.wrap });
       }
 
-      povFollow(this.povCam, (x) => eyesOfRig(spec, this.replay.at(x).rig), look, t, { back: 0.05, up: 0.03, fov: 66, smooth: 0.25 });
+      povFollow(this.povCam, (x) => eyesOfRig(spec, this.replay.at(x).rig), look, t, { back: 0.05, up: 0.03, fov: state.povFov ?? 70, smooth: 0.3 });
       orbit(this.extCam, state.ext());
     });
     const scene = this.world.scene;
@@ -186,6 +193,12 @@ export class CoilWorld {
     }
     if (best) this.cross.set(k, best);
     return best;
+  }
+
+  /** a point on the cable to the floor just past where it crosses loop k (where the labels point), or null */
+  floorPoint(k: number, t: number): V3 | null {
+    const c = this.cross.get(k);
+    return c ? this.at(c.floor + 3, t) : null;
   }
 
   /** the crossing point of loop k (its loop node), or the loop's lowest point when none was found */

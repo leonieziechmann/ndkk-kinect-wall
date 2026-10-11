@@ -143,7 +143,7 @@ export const GEOM = (() => {
     /** the right hand at the hip, slid out */
     hip: [0.45, 0.8, -0.05] as V3,
     /** half the length of a strand in the fist, along S [m] */
-    half: 0.045,
+    half: 0.05,
     /** the stack: strand k (0 = the plug strand) lies this far from the palm, every new one further out (along N, in front) [m] */
     stack: (k: number) => 0.0038 + 0.006 * k,
     /** the fist's radius round strands 0 … k: from the palm to the outer side of strand k, halved [m] */
@@ -162,7 +162,7 @@ export const GEOM = (() => {
      * Noor's side of the new loop (the cable to the floor hangs between her and the loop); under, in
      * front of it (the wrist came through the loop: the cable to the floor hangs outside it)
      */
-    padsDepth: { over: -0.02, under: 0.02 },
+    padsDepth: { over: -0.035, under: 0.02 },
     /** how far the hand turns over for "under" [rad] (the arm hangs nearly straight at the hip: forearm and upper arm turn together; the video shows 150–180°) */
     underTurn: 150 * D,
     /** the roll of the cable between thumb and index on the way back [rad]: over +, under − */

@@ -268,6 +268,21 @@ export interface CoilOptions {
   length?: number;
   /** seconds of settling before shot time 0 */
   preroll?: number;
+  /**
+   * after the last loop the right hand slides out along the rest of the cable to its end and brings
+   * the end up beside the fist (the user's finished coil, B 36.0: both ends at the top, in the hands)
+   */
+  fetchEnd?: boolean;
+}
+
+/** the end fetched after the last loop: the hand's frame when it started, the hold */
+interface EndMemo {
+  p0: V3;
+  q0: Quat;
+  held: boolean;
+  holdP: V3 | null;
+  stopT: number | null;
+  stopP: V3 | null;
 }
 
 /** the stance (Noor stands at the origin facing -z) */
@@ -286,24 +301,21 @@ function layDir(s: V3): V3 {
 /** the length of the strand past the pads at the hand-over: the gap to the fist and the fist [m] */
 const STRAND = GEOM.gap + 2 * GEOM.half;
 /** how strongly the crossing is helped (0 = not at all; 1 = compliance 0.4 m/N) */
-const CROSS_HELP = { over: 1, under: 1 };
+const CROSS_HELP = { over: 2, under: 1 };
 /** the fist starts taking the new strand this long before the hand-over [s] */
 const TAKE = 0.25;
 /**
  * The right forearm's pronation the IK is asked for (rad, + pronation): resting a little pronated
- * (the back of the hand up); before an under loop's turn it pronates further at the hip (the back of
- * the hand forward and out, B 2.3), so the turn-over is the forearm's own supination down to near its
- * limit (−85°) and the shoulder and elbow stay where they are
+ * (the back of the hand up); turned over for an under loop, supinated to near its limit (−85°): the
+ * forearm turns as far as it can, the straight arm's shoulder does the rest
  */
-const PRON = { rest: 0.45, hip: 1.0, turned: -1.4 };
+const PRON = { rest: 0.45, turned: -1.4 };
 /** the under loop: the hand turns over at the hip, the arm hanging nearly straight (B 6.4), moving in a little [m, from the hold point] */
 const UNDER_IN: V3 = [-0.03, 0.02, -0.04];
 /** and comes back still turned, low, to here: right of and below the hand-over point, the wrist above the pads, the loop over it (B 6.8) [m, from the pads' hand-over point] */
 const UNDER_BACK: V3 = [0.1, -0.05, 0.0];
 /** the azimuth of a point round Noor (0 straight ahead, + to her right) */
 const azimuth = (p: V3) => Math.atan2(p[0], -p[2]);
-/** how much of the turn is left at the hand-over (the wrist still in the loop); the rest unwinds while the fist closes */
-const UNDER_LEFT = 0.15;
 
 interface LoopMemo {
   k: number;
@@ -387,10 +399,21 @@ export class CoilController {
     this.bs = beats(plan);
   }
 
-  /** shot time when the last loop is done */
+  /** shot time when the last loop is done (and the end fetched, with fetchEnd) */
   get tDone() {
-    return this.bs[this.bs.length - 1].t1;
+    return this.o.fetchEnd ? this.endBeats().fUp : this.bs[this.bs.length - 1].t1;
   }
+
+  /** the end fetch after the last loop: loosen, slide out along the rest, up beside the fist */
+  endBeats() {
+    const f0 = this.bs[this.bs.length - 1].t1 + 0.15;
+    const fSlide = f0 + LOOSEN, fOut = fSlide + 1.0, fUp = fOut + 0.1 + 1.0;
+    return { f0, fSlide, fOut, fUp };
+  }
+
+  private endMemo: EndMemo | null = null;
+  /** the cable's material at the end of the fetch: where the right hand holds it */
+  endHeldAt: number | null = null;
 
   // ---------------------------------------------------------------- the rig
 
@@ -506,6 +529,7 @@ export class CoilController {
     }
     const b = this.bs[i];
     const m = this.memo;
+    if (this.o.fetchEnd && i === this.bs.length - 1 && this.endMemo && t >= this.endBeats().f0) return this.endAt(t);
     const meet = this.padsMeet(b.k, t);
     const hold = m.holdP ?? g.hip;
     // under: from the hold at the hip to just after the fist closed, the turn-over and back
@@ -535,8 +559,7 @@ export class CoilController {
       const open = 0.3 * (1 - ramp(t, b.tOut - 0.2, b.tOut));
       const roll = this.prevRoll(i) * (1 - ramp(t, b.tSlide, b.tSlide + 0.4));
       // (before an under loop the forearm pronates on the way out: it has room to turn over)
-      const pron = b.kind === 'under' ? PRON.rest + (PRON.hip - PRON.rest) * out : PRON.rest;
-      return { rig: this.pinchRig(p, d3, { open, cross: 0.3 + 0.9 * out, out, roll, pron, pronWeight: b.kind === 'under' ? 2 + 3 * out : 2 }), turn: 0 };
+      return { rig: this.pinchRig(p, d3, { open, cross: 0.3 + 0.9 * out, out, roll }), turn: 0 };
     }
     // ---- over: back to the left hand, above its medial end (the loop hangs open), then down into it
     const above = this.padsAbove(b.k, t);
@@ -572,11 +595,9 @@ export class CoilController {
     if (t < b.tTurned) p = lerpV(hold, turnP, ramp(t, b.tHeld, b.tTurned));
     else if (t < b.tAbove) p = bez(turnP, madd(madd(lerpV(turnP, backP, 0.5), UP, -0.03), g.N, 0.03), backP, ramp(t, b.tTurned, b.tAbove));
     else p = lerpV(backP, meet, ramp(t, b.tAbove, b.tMeet));
-    let turn: number;
-    if (t < b.tTurned) turn = ramp(t, b.tHeld, b.tTurned);
-    else if (t < b.tAbove) turn = 1;
-    else if (t < b.tMeet) turn = 1 - (1 - UNDER_LEFT) * ramp(t, b.tAbove, b.tMeet);
-    else turn = UNDER_LEFT * (1 - ramp(t, b.tMeet, b.t1));
+    // (turned back before the fist takes the strand: the fingers do not sweep through it)
+    const tBackTurn = this.unturnAt(b);
+    const turn = t < b.tTurned ? ramp(t, b.tHeld, b.tTurned) : 1 - ramp(t, tBackTurn, b.tMeet - 0.3);
     // the frame without the turn: the hip's (as reached), carried round her body with the hand (the
     // fingers stay down, the palm keeps facing away from her), then into the hand-over's (a natural
     // pinch there, solved once); turned about the forearm as the arm holds it now
@@ -589,8 +610,7 @@ export class CoilController {
     const q = turnWithForearm(m.outPose ?? this.pose, 1, base, g.underTurn * turn).q;
     // the whole frame is held while turned; free about the cable again once the fist has it
     const free = 1 - ramp(t, b.tHeld, b.tHeld + 0.12) + ramp(t, b.tMeet + 0.05, b.t1 + 0.2);
-    const pronBase = PRON.hip + (PRON.rest - PRON.hip) * homeU;
-    const pron = pronBase + (PRON.turned - pronBase) * turn;
+    const pron = PRON.rest + (PRON.turned - PRON.rest) * turn;
     const roll = -g.roll * ramp(t, b.tTurned, b.tTurned + 0.6 * (b.tAbove - b.tTurned));
     const cross = 1.2 - 0.9 * ramp(t, b.tAbove, b.tMeet);
     const d3 = quatRotate(base.q, [0, 0, 1]);
@@ -598,6 +618,44 @@ export class CoilController {
     rig.thumbTo = undefined;
     rig.prefer = (rig.prefer ?? []).map((w) => ({ ...w, weight: (w.weight ?? 1) * free }));
     return { rig, turn };
+  }
+
+  /**
+   * The end fetched after the last loop: the pinch loosens beside the fist and slides out along the
+   * rest of the cable towards the hip (as for a loop) until it is near the plug, holds, and the hand
+   * brings the end up beside the fist's medial end; the rest hangs below as a last open bight.
+   */
+  private endAt(t: number): RightState {
+    const g = GEOM, e = this.endMemo!, eb = this.endBeats();
+    const last = this.bs[this.bs.length - 1];
+    const dL = quatRotate(e.q0, [0, 0, 1]);
+    if (t < eb.fSlide) return { rig: this.pinchRig(e.p0, dL, { q: e.q0, open: 0.3 * ramp(t, eb.f0, eb.fSlide) }), turn: 0 };
+    if (t < eb.fOut || !e.held) {
+      const slideAt = (x: number) => lerpV(e.p0, g.hip, ramp(x, eb.fSlide, eb.fOut));
+      let p = slideAt(t);
+      if (e.stopT !== null && e.stopP && t > e.stopT) p = lerpV(slideAt(e.stopT), e.stopP, minJerk((t - e.stopT) / 0.16));
+      p = add(p, this.padsErr);
+      const out = ramp(t, eb.fSlide, eb.fOut);
+      const along = this.tanDir && this.spanDir ? normalize(lerpV(this.spanDir, this.tanDir, 0.85)) : dL;
+      const d3 = normalize(lerpV(dL, along, ramp(t, eb.fSlide, eb.fSlide + 0.25)));
+      const open = 0.3 * (1 - ramp(t, eb.fOut - 0.2, eb.fOut));
+      return { rig: this.pinchRig(p, d3, { open, cross: 0.3 + 0.9 * out, out }), turn: 0 };
+    }
+    // up beside the fist: the end held there, the thumb towards the coil
+    const hold = e.holdP ?? g.hip;
+    const up = madd(this.padsAbove(last.k, t), UP, 0.01);
+    const u = ramp(t, eb.fOut + 0.1, eb.fUp);
+    const ctl = madd(madd(lerpV(hold, up, 0.5), UP, -0.05), g.N, 0.04);
+    const p = bez(hold, ctl, up, u);
+    const hd = this.spanDir ?? normalize(sub(this.strandEnds(last.k, t).m, p));
+    const d3 = normalize(lerpV(hd, normalize(sub(this.strandEnds(last.k, t).m, p)), u));
+    const out = 1 - ramp(t, eb.fOut + 0.1, eb.fOut + 0.5);
+    return { rig: this.pinchRig(p, d3, { cross: 0.3 + 0.9 * out, out }), turn: 0 };
+  }
+
+  /** under: when the hand starts turning back (the cable slides off the wrist) */
+  private unturnAt(b: LoopBeat) {
+    return b.tAbove - 0.25 * (b.tAbove - b.tTurned);
   }
 
   /** the pads' frame at loop b's hand-over as an over loop would reach it (solved once, statelessly): where the under loop's turn unwinds to */
@@ -646,7 +704,8 @@ export class CoilController {
       const g = padsNow(), path = this.strandPath(b.k, t, g.p, padsDir(g));
       for (let n = a; n <= e; n++) out[n - a] = path.at(sP - rod.sNode[n]);
     }, 0.4);
-    const tIn = b.tTurned + 0.35 * (b.tAbove - b.tTurned);
+    // (under: once the hand turns back and the cable slides off the wrist; before, the loop hangs over it as it falls)
+    const tIn = b.kind === 'under' ? this.unturnAt(b) : b.tTurned + 0.35 * (b.tAbove - b.tTurned);
     const tOff = b.t1 + 0.15;
     // (the strand only once the pads come down to the fist: on the way back it hangs from them as it wants)
     const tLay = b.tAbove - 0.15;
@@ -658,8 +717,7 @@ export class CoilController {
     const A = GEOM.A, N = GEOM.N;
     const P2 = (p: V3): [number, number] => [dot(p, A), p[1]];
     const loop = new Follow(rod, la, le, (t, out) => {
-      // (under: to where the cable really comes off the wrist or the hand, the strand's start)
-      const g = padsNow(), E = b.kind === 'under' ? nodeOf(rod, a) : this.strandPath(b.k, t, g.p, padsDir(g)).e;
+      const g = padsNow(), E = this.strandPath(b.k, t, g.p, padsDir(g)).e;
       const arc = hangingArc(P2(nodeOf(rod, la)), P2(E), len);
       for (let n = la; n <= le; n++) {
         const [x, y] = arc((rod.sNode[n] - rod.sNode[la]) / len);
@@ -712,9 +770,9 @@ export class CoilController {
       }
     };
     const drape = new Follow(rod, a, e, want, 0.3, () => this.pose.joints[J.rightWrist]);
-    const t0 = b.tHeld, t1 = Math.max(b.tTurned + 0.2, b.tHeld + 0.65);
+    const t0 = b.tHeld, t1 = Math.max(b.tTurned + 0.2, b.tHeld + 0.6);
     // (off while the hand turns back and lays the strand: the cable slides off the wrist into the fist)
-    const off = b.tAbove - 0.1;
+    const off = this.unturnAt(b) - 0.1;
     rod.addGuide({ nodes: [a, e], target: drape.target, compliance: 0.08, weight: (t) => ramp(t, t0, t1) * (1 - ramp(t, off, off + 0.6)) });
     this.log.push(`t ${t0.toFixed(2)} loop ${b.k}: the cable is led over the wrist (s ${rod.sNode[a].toFixed(3)} … ${rod.sNode[e].toFixed(3)})`);
   }
@@ -735,7 +793,7 @@ export class CoilController {
     const cross = new Follow(rod, a, e, (_t, out) => {
       let depth = 0;
       for (let j = m0; j <= m1; j++) depth += dot(nodeOf(rod, j), N) / (m1 - m0 + 1);
-      const want = depth + side * 0.035;
+      const want = depth + side * (b.kind === 'over' ? 0.05 : 0.035);
       for (let n = a; n <= e; n++) {
         const p = nodeOf(rod, n), off = want - dot(p, N);
         // (only towards the right side: a cable already there is left alone)
@@ -1013,6 +1071,30 @@ export class CoilController {
       this.results.push({ k: b.k, kind: b.kind, length: s1 - edge, sEdge: s1, aspectLaid: 0, aspectEnd: 0, width: 0, height: 0, crossDepth: [], floorTwist: 0, hangTwist: 0, loopTwist: 0, coilLk: 0, wristIn: 0 });
     }
     if (m.added && this.rolls[i] === undefined && tn >= b.t1 - DT) this.rolls[i] = this.right.rig.roll ?? 0;
+    // the end fetched after the last loop
+    if (this.o.fetchEnd && i === this.bs.length - 1) {
+      const eb = this.endBeats();
+      if (!this.endMemo && tn >= eb.f0) {
+        this.endMemo = { p0: arms[1].grip!.p, q0: arms[1].pads!.q, held: false, holdP: null, stopT: null, stopP: null };
+        pin.set('loose', LOOSEN);
+        this.log.push(`t ${tn.toFixed(2)} the end: the pinch loosens at s ${pin.s.toFixed(3)} and slides out to the end`);
+      }
+      const e = this.endMemo;
+      const sEnd = rod.totalLength - 0.1;
+      if (e && !e.held && tn >= eb.fSlide && (pin.s + 0.1 * Math.min(1.2, Math.max(0, pin.slip)) >= sEnd || tn >= eb.fOut)) {
+        pin.set('held', 0.2);
+        e.held = true;
+        if (tn < eb.fOut - 0.1) {
+          const slideAt = (x: number) => lerpV(e.p0, GEOM.hip, ramp(x, eb.fSlide, eb.fOut));
+          const a = slideAt(tn), v = mul(sub(slideAt(tn + DT), a), 1 / DT);
+          e.stopT = tn;
+          e.stopP = madd(a, v, 0.16 * 0.5);
+          e.holdP = add(e.stopP, this.padsErr);
+        } else e.holdP = arms[1].grip!.p;
+        this.endHeldAt = pin.s;
+        this.log.push(`t ${tn.toFixed(2)} the end: holds at s ${pin.s.toFixed(3)} (${((rod.totalLength - pin.s) * 100).toFixed(0)} cm from the end)`);
+      }
+    }
   }
 
   // ---------------------------------------------------------------- measuring
@@ -1239,6 +1321,10 @@ export class CoilController {
     check('the fist stays closed (open ≤ 0.2 away from the hand-overs)', this.openMax.v <= 0.2, `${this.openMax.v.toFixed(2)} ${this.openMax.where}`);
     const plug = this.plugCheck();
     check('the plug stays outside the coil', plug.ok, plug.text);
+    if (this.o.fetchEnd) {
+      const left = this.endHeldAt === null ? NaN : rod.totalLength - this.endHeldAt;
+      check('the end is fetched: the right hand holds it within 20 cm of the plug, beside the fist', left <= 0.2 && !this.pin.lost, `${(left * 100).toFixed(0)} cm from the end`);
+    }
     check('IK: no hard limits, every grip reached', this.ikGroups.size === 0, [...this.ikGroups].map(([k, g]) => `${k}: ${g.n} frames, t ${g.t0.toFixed(2)}–${g.t1.toFixed(2)}${g.worst ? `, worst ${g.worst.toFixed(1)} mm` : ''}`).join('; ') || 'none');
     check('pinch never lost', !this.pin.lost, this.pin.lost);
     check('no simulation warnings (cable got away, grips off the cable, ...)', rod.warnings.length === 0, rod.warnings.slice(0, 4).join(' | ') || 'none');
