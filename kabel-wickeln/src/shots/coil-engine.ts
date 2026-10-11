@@ -109,6 +109,10 @@ export interface LoopResult {
   height: number;
   /** where the cable to the floor crosses the new loop (seen along N): + in front of it (away from Noor), − behind */
   crossDepth: number[];
+  /** the loop's own Lk (Tw + Wr, its ends drawn out sideways): ±1 over and under, opposite signs */
+  lk: number;
+  /** twist in the cable beyond the right hand (to the floor) right after the hand-over [turns] */
+  floorTwist: number;
 }
 
 export interface CoilOptions {
@@ -259,13 +263,21 @@ export class CoilController {
       const d = sub(exit, p);
       return normalize(madd(d, [0, -1, 0], 0.25 * lenV(d)));
     };
-    // where the hand is: slide out, hold, back to the open loop, along the knuckles to the left hand
-    const spread = madd(madd(madd(meet, g.S, -0.18), UP, -0.05), g.N, 0.03);
+    // where the hand is: slide out, give a little slack at the hip, back to where the loop hangs open
+    // between the hands (wide, so it falls round), over the left hand and down onto it, the new
+    // strand in front of the others
+    const sh = normalize([g.S[0], 0, g.S[2]]);
+    const slack = lerpV(g.hip, exit, 0.06);
+    const spread = madd(madd(madd(meet, sh, -0.26), UP, 0.03), g.N, 0.04);
+    const above = madd(madd(meet, UP, 0.035), g.N, 0.012);
+    const tBack = Math.max(b.tTurned, b.tHeld);
+    const tAbove = b.tSpread + 0.6 * (b.tMeet - b.tSpread);
     let p: V3;
     if (t < b.tOut) p = lerpV(m.p0, g.hip, ramp(t, b.tSlide, b.tOut));
-    else if (t < b.tTurned) p = g.hip;
-    else if (t < b.tSpread) p = lerpV(g.hip, spread, ramp(t, b.tTurned, b.tSpread));
-    else p = lerpV(spread, meet, ramp(t, b.tSpread, b.tMeet));
+    else if (t < tBack) p = lerpV(g.hip, slack, ramp(t, b.tOut, tBack));
+    else if (t < b.tSpread) p = lerpV(slack, spread, ramp(t, tBack, b.tSpread));
+    else if (t < tAbove) p = lerpV(spread, above, ramp(t, b.tSpread, tAbove));
+    else p = lerpV(above, madd(meet, g.N, 0.004), ramp(t, tAbove, b.tMeet));
     // how far out (0 next to the coil … 1 at the hip): shapes the pinch (cross, palm wish)
     const out = t < b.tOut ? ramp(t, b.tSlide, b.tOut) : t < b.tTurned ? 1 : 1 - ramp(t, b.tTurned, b.tSpread + 0.5 * (b.tMeet - b.tSpread));
     const cross = 0.3 + 0.9 * out;
@@ -320,11 +332,16 @@ export class CoilController {
     const g = GEOM;
     const f = leftGrip(g.leftRest);
     const pts: V3[] = [];
-    // the plug end: the plug and 9 cm of cable outside the hand on the lateral side, then across the hand
-    const plugOut = 0.06 + 0.09;
+    // the plug end hangs out of the hand on the lateral side (2 cm on, a bend, 4 cm down, the plug
+    // pointing down), then the strand runs across the hand to its medial edge and on to the pads
     const lat = stackPoint(f, 0, g.half);
     const sDir = quatRotate(f.q, [0, 0, 1]);
-    for (let s = 0; s <= plugOut + 2 * g.half + g.gap; s += 0.002) pts.push(madd(lat, sDir, plugOut - s));
+    const rb = 0.02;
+    const c0 = madd(madd(lat, sDir, 0.02), UP, -rb);
+    const tip = madd(madd(c0, sDir, rb), UP, -(0.04 + 0.06));
+    for (let y = 0; y <= 0.1; y += 0.002) pts.push(madd(tip, UP, y));
+    for (let a = 0; a <= Math.PI / 2; a += 0.04) pts.push(add(c0, add(mul(sDir, rb * Math.cos(a)), mul(UP, rb * Math.sin(a)))));
+    for (let s = 0.02; s >= -(2 * g.half + g.gap); s -= 0.002) pts.push(madd(lat, sDir, s));
     // from the pads down: a quarter circle into a hanging line, a bend onto the floor, then bends
     const pads = pts[pts.length - 1];
     const R1 = 0.12;
@@ -358,8 +375,8 @@ export class CoilController {
     const built = buildCable(XLR, this.initialPoints(length), { plugs: 'both' });
     const rod = (this.rod = built.rod);
     const g = GEOM;
-    // the plug strand: the lateral end is 0.15 m from the plug tip; the medial edge 9 cm further
-    const s0 = 0.06 + 0.09;
+    // the plug strand: its lateral end is ~0.17 m from the plug tip (plug, 4 cm down, the bend, 2 cm); the medial edge 9 cm further
+    const s0 = 0.1 + (Math.PI / 2) * 0.02 + 0.02;
     this.plugStrand = [s0, s0 + 2 * g.half];
     this.sEdge.push(s0 + 2 * g.half);
 
@@ -500,7 +517,7 @@ export class CoilController {
     const edge = this.sEdge[b.k - 1];
     // hold as soon as a loop length has passed through the pads (or at the hip at the latest)
     if (!m.held && t >= b.tSlide && (pin.s - edge >= this.plan.loopLength + GEOM.gap || t + DT >= b.tOut)) {
-      pin.set('held', 0.1);
+      pin.set('held', 0.25);
       m.held = true;
     }
     if (b.kind === 'under' && !m.outPose && t + DT >= b.tHeld) {
@@ -517,7 +534,7 @@ export class CoilController {
       this.sEdge.push(s1);
       m.added = true;
       m.laidAt = t;
-      this.results.push({ k: b.k, kind: b.kind, length: s1 - edge, sEdge: s1, aspectLaid: 0, aspectEnd: 0, width: 0, height: 0, crossDepth: [] });
+      this.results.push({ k: b.k, kind: b.kind, length: s1 - edge, sEdge: s1, aspectLaid: 0, aspectEnd: 0, width: 0, height: 0, crossDepth: [], lk: 0, floorTwist: 0 });
     }
     if (t + DT >= b.t1 - DT && m.added) this.lastHandover = { p: this.pose.body.arms![1].grip!.p, q: this.pose.body.arms![1].pads!.q };
   }
@@ -594,6 +611,9 @@ export class CoilController {
         const s = this.shape(res.k);
         res.aspectLaid = +(s.width / s.height).toFixed(3);
         res.crossDepth = this.crossings(res.k);
+        const j0 = rod.segmentAt(this.sEdge[res.k - 1]), j1 = rod.segmentAt(this.sEdge[res.k]);
+        res.lk = +linkOf(rod.x, rod.q, j0, j1, GEOM.A, mul(GEOM.A, -1)).toFixed(2);
+        res.floorTwist = +twistTurns(rod.q, rod.segmentAt(this.sEdge[res.k] + GEOM.gap + 0.02), rod.ns - 1).toFixed(2);
       }
     }
   }
@@ -614,11 +634,12 @@ export class CoilController {
       res.height = +s.height.toFixed(3);
     }
     const lk = pullApartTwist(rod);
-    for (const r of this.results) lines.push(`loop ${r.k} ${r.kind}: length ${r.length.toFixed(3)} m, laid ${r.aspectLaid}, end ${r.aspectEnd} (${(r.width * 100).toFixed(1)} × ${(r.height * 100).toFixed(1)} cm), floor-cable crossings (depth along N, + = in front) ${JSON.stringify(r.crossDepth)}`);
+    for (const r of this.results) lines.push(`loop ${r.k} ${r.kind}: length ${r.length.toFixed(3)} m, w/h laid ${r.aspectLaid}, end ${r.aspectEnd} (${(r.width * 100).toFixed(1)} × ${(r.height * 100).toFixed(1)} cm), Lk ${r.lk}, twist to the floor ${r.floorTwist}, floor-cable crossings (depth along N, + = in front) ${JSON.stringify(r.crossDepth)}`);
     check('all loops laid', this.results.length === this.plan.kinds.length, this.results.length);
     check('loops round (width/height ≥ 0.6 at the end)', this.results.every((r) => r.aspectEnd >= 0.6), this.results.map((r) => r.aspectEnd));
     check('loop lengths within 5 cm of the plan', this.results.every((r) => Math.abs(r.length - this.plan.loopLength) < 0.05), this.results.map((r) => +r.length.toFixed(3)));
-    check('pull-apart twist |Tw + Wr| < 0.3 turns', Math.abs(lk.along) < 0.3, lk);
+    check('pull-apart twist |Tw + Wr| < 0.3 turns', Math.abs(lk.lk) < 0.3, lk);
+    check('over and under alternate (each loop\'s Lk: over and under opposite, |Lk| > 0.5)', this.results.every((r, i) => Math.abs(r.lk) > 0.5 && (i === 0 || Math.sign(r.lk) !== Math.sign(this.results[i - 1].lk))), this.results.map((r) => r.lk));
     check('no free cable deeper than 1.5 mm in a hand or leg', this.maxPen < 0.0015, `${(this.maxPen * 1000).toFixed(2)} mm (${this.maxPenWhere})`);
     check('IK: no hard limits, every grip reached', this.ikIssues.length === 0, this.ikIssues.slice(0, 12).join('; ') || 'none');
     check('pinch never lost', !this.pin.lost, this.pin.lost);
@@ -652,24 +673,30 @@ export class CoilController {
 // ------------------------------------------------------------------ the pull-apart twist
 
 /**
- * What pulling the coil apart by its two plugs would leave in the cable: Lk = Tw + Wr of the cable
- * with its ends extended far away (Călugăreanu: with the ends' rotation fixed, pulling it straight
- * turns the writhe into twist). Extended along the coil's axis N (the plug end backwards, the free
- * end forwards) and, as a second opinion, across it.
+ * Lk = Tw + Wr of a piece of cable (segments j0 … j1) with its two ends drawn out far along
+ * dirStart and dirEnd (Călugăreanu: with the ends' rotation fixed, pulling the piece straight that
+ * way turns its writhe into twist). Positions x (3 per node) and segment quaternions q.
  */
-export function pullApartTwist(rod: Rod): { along: number; across: number; tw: number } {
-  const n = rod.n;
-  const tw = twistTurns(rod.q, 0, rod.ns - 1);
-  const ext = (dir: V3) => {
-    const x = new Float64Array(3 * (n + 2));
-    const far = 50;
-    x.set([rod.x[0] - dir[0] * far, rod.x[1] - dir[1] * far, rod.x[2] - dir[2] * far], 0);
-    x.set(rod.x, 3);
-    const e = 3 * (n - 1);
-    x.set([rod.x[e] + dir[0] * far, rod.x[e + 1] + dir[1] * far, rod.x[e + 2] + dir[2] * far], 3 * (n + 1));
-    return tw + writhe(x, 0, n + 1);
-  };
-  return { along: +ext(GEOM.N).toFixed(3), across: +ext(GEOM.A).toFixed(3), tw: +tw.toFixed(3) };
+export function linkOf(x: ArrayLike<number>, q: ArrayLike<number>, j0: number, j1: number, dirStart: V3, dirEnd: V3): number {
+  const m = j1 - j0 + 2;
+  const p = new Float64Array(3 * (m + 2));
+  const far = 50;
+  for (let k = 0; k < m; k++) for (let c = 0; c < 3; c++) p[3 * (k + 1) + c] = x[3 * (j0 + k) + c];
+  for (let c = 0; c < 3; c++) {
+    p[c] = p[3 + c] + dirStart[c] * far;
+    p[3 * (m + 1) + c] = p[3 * m + c] + dirEnd[c] * far;
+  }
+  return twistTurns(q, j0, j1) + writhe(p, 0, m + 1);
+}
+
+/**
+ * What pulling the coil apart by its two plugs would leave in the cable: Lk of the whole cable with
+ * the plug end drawn out to her left (+A, away from the coil on the side where it hangs) and the
+ * other end to her right (−A).
+ */
+export function pullApartTwist(rod: Rod): { lk: number; tw: number } {
+  const lk = linkOf(rod.x, rod.q, 0, rod.ns - 1, GEOM.A, mul(GEOM.A, -1));
+  return { lk: +lk.toFixed(3), tw: +twistTurns(rod.q, 0, rod.ns - 1).toFixed(3) };
 }
 
 // ------------------------------------------------------------------ playback in the scene

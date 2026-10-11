@@ -126,20 +126,20 @@ export const GEOM = (() => {
   const N = norm([Math.sin(15 * D), 0, -Math.cos(15 * D)]);
   /** horizontal across the loops, pointing out (her left): up × N */
   const A = norm([N[2], 0, -N[0]]);
-  /** the strands across the left hand: along the knuckles, the lateral (index) end 35° higher */
-  const S = norm([A[0], Math.tan(35 * D), A[2]]);
+  /** the strands across the left hand: along the knuckles, the lateral (index) end 20° higher */
+  const S = norm([A[0], Math.tan(20 * D), A[2]]);
   return {
     N,
     A,
     S,
     /** the left hand's grip point (the middle of the strands in the hand): resting in front of the left hip */
-    leftRest: [-0.16, 0.94, -0.28] as V3,
+    leftRest: [-0.17, 0.88, -0.27] as V3,
     /** out to the left while the right hand slides out */
-    leftOut: [-0.21, 0.925, -0.25] as V3,
+    leftOut: [-0.25, 0.87, -0.24] as V3,
     /** towards the midline to meet the right hand */
-    leftMeet: [-0.1, 0.955, -0.315] as V3,
+    leftMeet: [-0.06, 0.89, -0.32] as V3,
     /** the right hand at the hip, slid out */
-    hip: [0.27, 0.86, -0.17] as V3,
+    hip: [0.4, 0.83, -0.12] as V3,
     /** half the length of the strand in the left hand, along S [m] */
     half: 0.045,
     /** the stack: strand k (0 = the plug end, 1… the loops) lies this far along N from the hand's middle [m] */
@@ -147,7 +147,7 @@ export const GEOM = (() => {
     /** the bundle's radius for the hand shape [m] */
     bundle: 0.02,
     /** the right hand's pads this far beyond the left hand's medial edge at the hand-over [m] */
-    gap: 0.025,
+    gap: 0.03,
     /** how far the forearm turns over for "under" [rad] (the IK reaches ~136°: rig.ts turnWithForearm) */
     underTurn: 140 * D,
     /** the roll of the cable between thumb and index on the way back [rad]: over +, under − */
