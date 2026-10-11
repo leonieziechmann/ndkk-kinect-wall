@@ -16,6 +16,7 @@ mod pixel_jump_run;
 mod pixel_spiegel;
 mod pointcloud;
 mod shader_scenes;
+mod three_points;
 
 /// Every scene this output can play.
 pub fn registry() -> Vec<&'static SceneDef> {
@@ -32,5 +33,6 @@ pub fn registry() -> Vec<&'static SceneDef> {
     v.push(&cyberspiegel::DEF);
     v.push(&neon_room::DEF);
     v.push(&pointcloud::DEF);
+    v.push(&three_points::DEF);
     v
 }
