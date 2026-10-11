@@ -12,7 +12,7 @@
 // under loop's turn-over and the thumb's roll go into the cable). Two soft guides help the loop
 // into the fist: the strand past the thumb tip is laid along the fist, and the free part of the
 // loop is led towards a round arc below its two ends, both fading in over more than half a second
-// with targets that move at most 0.4 m/s, so nothing snaps. The crossing of the cable to the floor
+// with targets that move at most 0.3 m/s, so nothing snaps. The crossing of the cable to the floor
 // (over / under) is left to the hands.
 //
 // Reusable: a CoilPlan (kinds, paces) makes any coiling shot (stage 1: s1-coil.ts; stage 3 later
@@ -707,7 +707,7 @@ export class CoilController {
     const strand = new Follow(rod, a, e, (t, out) => {
       const g = padsNow(), path = this.strandPath(b.k, t, g.p, padsDir(g));
       for (let n = a; n <= e; n++) out[n - a] = path.at(sP - rod.sNode[n]);
-    }, 0.4);
+    }, 0.3);
     // (under: once the hand turns back and the cable slides off the wrist; before, the loop hangs over it as it falls)
     const tIn = b.kind === 'under' ? this.unturnAt(b) : b.tTurned + 0.35 * (b.tAbove - b.tTurned);
     const tOff = b.t1 + 0.15;
@@ -729,7 +729,7 @@ export class CoilController {
         const p = nodeOf(rod, n), depth = dot(p, N);
         out[n - la] = [A[0] * x + N[0] * depth, y, A[2] * x + N[2] * depth];
       }
-    }, 0.4);
+    }, 0.3);
     // (after the hand-over it fades to a keeper of KEEP: the loop keeps its round shape in its plane,
     // as a cable that has been coiled for years does, instead of sagging into a drop)
     rod.addGuide({ nodes: [la, le], target: loop.target, compliance: 0.08, weight: (t) => ramp(t, tIn, Math.max(tIn + 0.7, b.tAbove)) * (1 - (1 - KEEP) * ramp(t, tOff, tOff + 0.6)) });
