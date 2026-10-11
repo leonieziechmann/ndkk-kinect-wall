@@ -11,7 +11,7 @@
 // The ring is laid out over-under and pressed into a bundle (deploy-ring.ts; pulled apart in the
 // air it leaves |Tw| < 0.3). Pseudo-simulation: the thrown part is held by a shape-keeping grip,
 // in the fist, then on a ballistic frame that turns a quarter turn forward on the way (in the
-// ring's own plane, so it lands on its edge), slides and lets go. Whenever the free cable between
+// ring's own plane); it lands on its edge, slides, falls over and lets go. Whenever the free cable between
 // the hand's loops and the flying ring is nearly taut, nodes are let go: from the loops in the open
 // hand (all of it before the release, a third after it) and from the flying ring, in winding order.
 // The free cable, the floor and Kofi's body (capsules, hands left out) are simulated. The contact
@@ -21,7 +21,7 @@
 // Coordinates: Kofi stands at the origin and throws along +x; his right side is +z. The choreography
 // needs a few points of the ring; the bake records them as constant tracks (throwGeo).
 
-import { Frame, Quat, Rod, V3, add, lerp3, quatFromAxisAngle, quatRotate, smooth, sub } from '../sim';
+import { Frame, Quat, Rod, V3, add, lerp3, quatFromAxisAngle, quatMul, quatRotate, smooth, sub } from '../sim';
 import { KOFI } from '../people/cast';
 import { J } from '../people/people';
 import type { Capsule } from '../people/people';
@@ -250,19 +250,28 @@ function slerpQ(a: Quat, b: Quat, u: number): Quat {
 
 // ---------------------------------------------------------------- the flight
 
-/** the thrown part's frame after the release: ballistic, turning a quarter turn forward in its plane */
+/**
+ * The thrown part's frame after the release: ballistic, turning a quarter turn forward in its own
+ * plane on the way; it lands on its edge, slides 15 cm and falls over sideways (about the line
+ * where it touches the floor), so it ends up lying flat
+ */
 function coilFrameAt(geo: ThrowGeo, t: number): Frame {
-  const { centre, c0, v, tLand, tumble, drop } = flightOf(geo);
+  const { centre, c0, v, tLand, tumble } = flightOf(geo);
   const tau = Math.min(t, tLand) - tRelease;
   const c: V3 = [c0[0] + v[0] * tau, c0[1] + v[1] * tau - 0.5 * G * tau * tau, c0[2] + v[2] * tau];
-  // after landing it slides 15 cm with the speed dying away and settles onto the floor
-  if (t > tLand) {
-    c[0] += 0.15 * (1 - Math.exp(-(t - tLand) / 0.06));
-    c[1] -= drop * smooth((t - tLand) / 0.2);
-  }
-  const q = quatFromAxisAngle(0, 0, 1, -tumble * tau);
-  return { p: sub(c, quatRotate(q, centre)), q };
+  if (t > tLand) c[0] += 0.15 * (1 - Math.exp(-(t - tLand) / 0.06));
+  const q0 = quatFromAxisAngle(0, 0, 1, -tumble * tau);
+  const p0 = sub(c, quatRotate(q0, centre));
+  // falling over: faster and faster, about the floor contact under the centre
+  const u = Math.min(1, Math.max(0, (t - tLand - TIP[0]) / TIP[1]));
+  if (u <= 0) return { p: p0, q: q0 };
+  const r = quatFromAxisAngle(1, 0, 0, (Math.PI / 2) * u * u);
+  const pivot: V3 = [c[0], PIVOT_Y, c[2]];
+  return { p: add(pivot, quatRotate(r, sub(p0, pivot))), q: quatMul(r, q0) };
 }
+
+/** after landing: falling over starts at TIP[0] and takes TIP[1] seconds; the pivot's height */
+const TIP = [0.15, 0.35], PIVOT_Y = 0.025;
 
 /** the flight: from the ring's centre relative to the fist, the release point and speed */
 function flightOf(geo: ThrowGeo) {
@@ -270,10 +279,10 @@ function flightOf(geo: ThrowGeo) {
   const pRel = handOnArc(RELEASE);
   const v: V3 = [SPEED * Math.cos(RELEASE), SPEED * Math.sin(RELEASE), 0];
   const c0 = add(pRel, centre);
-  // lands on its edge: the centre one ring radius (plus the bundle) above the floor
-  const landY = 0.135;
+  // lands on its edge: the centre a ring radius above the pivot
+  const landY = PIVOT_Y + 0.125;
   const tFly = (v[1] + Math.sqrt(v[1] * v[1] + 2 * G * (c0[1] - landY))) / G;
-  return { centre, c0, v, tLand: tRelease + tFly, tumble: Math.PI / 2 / tFly, drop: 0.01 };
+  return { centre, c0, v, tLand: tRelease + tFly, tumble: Math.PI / 2 / tFly };
 }
 
 /** shot times of the release, the landing, the end of the hand's loops and of the shot */
@@ -328,9 +337,12 @@ export const throwShot: ShotDef = {
           stage = 1;
         }
         if (stage === 0) return;
-        if (stage === 1 && t >= times.land + 0.3) {
-          // landed and slid to rest: let go, it falls over and settles
+        if (stage === 1 && t >= times.land + TIP[0] + TIP[1]) {
+          // landed, slid and fallen over: let go; the loops sink onto each other, held in place
+          // (seen from above) by guides that fade out
           r.releaseGrip(gc);
+          const x0 = x.slice(), tg = t;
+          r.addGuide({ nodes: [kc, kEnd], compliance: 1e-4, weight: (tt) => 1 - smooth((tt - tg - 0.3) / 0.5), target: (i) => [x0[3 * i], x[3 * i + 1], x0[3 * i + 2]] });
           stage = 2;
         }
         if (stage === 2 && t >= times.letGo) {

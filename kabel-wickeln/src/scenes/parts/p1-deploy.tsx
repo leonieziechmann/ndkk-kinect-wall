@@ -3,8 +3,8 @@
 //
 //   A  short cable: Ilse at the FOH desk opens the velcro tie of a short charging-cable ring, takes
 //      both ends (both outside the ring, highlighted) and pulls her hands apart: the loops open one
-//      after the other, the cable lies calm on the desk. First from outside, then split: her own
-//      view and from outside, behind her right shoulder.
+//      after the other, the cable hangs and lies calm. First from outside, then split: her own view
+//      and from outside, behind her left shoulder.
 //   B  long cable: Kofi keeps the end and two or three loops loosely in his open left hand and
 //      throws the rest of a 15 m XLR ring underhand towards a mic stand. In real time from behind
 //      him, then in slow motion (0.25×) from the side: the loops peel off the back of the flying
@@ -137,8 +137,8 @@ function* shortCable(layer: Node) {
   viewLayers(extCam, 'ext');
   const povCam = makeCamera(70);
   viewLayers(povCam, 'pov');
-  // her own view: from the eyes (a little forward and down), steady
-  // (raised and moved back a little, so both hands stay in the picture when they are apart)
+  // her own view, steady: from the eyes, raised and moved back a little, so both hands stay in the
+  // picture when they are apart
   const eyes = eyesOf(pose(T.gripB));
   const povEye: V3 = [eyes.p[0], eyes.p[1] + 0.1, eyes.p[2] - 0.12];
   const povLook: V3 = [0, 0.95, 0.42];
@@ -146,7 +146,9 @@ function* shortCable(layer: Node) {
   /** both ends glow while they are pointed out */
   const endsOn = () => ramp(t(), T.gripB + 0.1, T.gripB + 0.5) * (1 - ramp(t(), T.pull0 - 0.1, T.pull0 + 0.4));
   const white = rgba('#ffffff', 1);
-  const o: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
+  const o1: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
+  const o2: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
+  const o3: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
 
   const world = new World3D('p1-deploy-ilse', () => {
     const tt = t();
@@ -168,9 +170,9 @@ function* shortCable(layer: Node) {
     tie.group.position.copy(pv).add(new THREE.Vector3(...s.move.p)).sub(pv.clone().applyQuaternion(q));
     // cameras
     const sp = split();
-    const back = mixOrbit(A_BACK, A_BACK_WIDE, easeInOutCubic(ramp(tt, T.outB, T.pull0)), o);
-    const front = mixOrbit(A_WIDE, A_TIE, easeInOutCubic(ramp(tau(), 0.5, A_INTRO + T.reach + 0.3)), { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 });
-    orbit(extCam, sp < 1 ? mixOrbit(front, back, sp, { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 }) : back);
+    const back = mixOrbit(A_BACK, A_BACK_WIDE, easeInOutCubic(ramp(tt, T.outB, T.pull0)), o1);
+    const front = mixOrbit(A_WIDE, A_TIE, easeInOutCubic(ramp(tau(), 0.5, A_INTRO + T.reach + 0.3)), o2);
+    orbit(extCam, sp < 1 ? mixOrbit(front, back, sp, o3) : back);
     lookFrom(povCam, povEye, povLook, 78);
   });
   const scene = world.scene;
@@ -230,18 +232,17 @@ function* shortCable(layer: Node) {
   world.dispose();
 }
 
-
 // ===================================================================================== B: long
 
-/** the cameras of the throw */
+// the cameras of the throw
 /** his front right, close enough for the tie and the split */
 const B_MED: Orbit = { target: [0.22, 1.02, -0.05], yaw: 0.9, pitch: 0.12, dist: 2.9, fov: 34 };
 /** behind him, high and wide: the whole throw to the mic stand, in real time */
 const B_BACK: Orbit = { target: [3.0, 0.3, 0.1], yaw: -1.45, pitch: 0.42, dist: 6.3, fov: 42 };
 /** from his right side, following the flying ring (slow motion) */
 const B_SIDE = { yaw: 0.06, pitch: 0.08, dist: 2.9, fov: 34 };
-/** the laid cable from behind, higher */
-const B_END: Orbit = { target: [3.3, 0.0, 0.1], yaw: -1.35, pitch: 0.75, dist: 5.6, fov: 40 };
+/** the laid cable from behind him and to his right, higher: from his hand to the mic stand */
+const B_END: Orbit = { target: [3.2, 0.1, 0.0], yaw: -1.16, pitch: 0.45, dist: 6.9, fov: 40 };
 
 function* longCable(layer: Node) {
   const bake = (yield loadBake('throw')) as BakedRod;
@@ -258,7 +259,7 @@ function* longCable(layer: Node) {
     { len: S1, shot0: 0, rate: 1, cam: 'med' },
     { len: T.land + 1.3 - S1, shot0: S1, rate: 1, cam: 'back' },
     { len: (T.land + 0.35 - (T.release - 0.5)) / 0.25, shot0: T.release - 0.5, rate: 0.25, cam: 'side' },
-    { len: T.end - (T.land + 0.35) + 2.2, shot0: T.land + 0.35, rate: 1, cam: 'end' },
+    { len: T.end - (T.land + 0.35) + 2.6, shot0: T.land + 0.35, rate: 1, cam: 'end' },
   ] as const;
   const starts = takes.map((_, i) => takes.slice(0, i).reduce((a, k) => a + k.len, 0));
   const B_LEN = starts[3] + takes[3].len;
@@ -361,7 +362,7 @@ function* longCable(layer: Node) {
     chip.opacity(1, 0.5),
     (function* () {
       // the caption while he gets ready, standing through the throw in real time
-      yield* waitFor(1.0);
+      yield* waitFor(0.5);
       yield* cap.show(CAP);
       yield* waitFor(Math.max(readTime(CAP), starts[2] - 0.6 - tau()));
       yield* cap.hide();

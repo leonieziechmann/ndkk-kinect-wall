@@ -385,13 +385,14 @@ export const coilShot: ShotDef = {
               // the end of the loop swings round in front of its start, then settles into place
               const frac = (i * SEG - c.sP[k - 1]) / (c.sP[k] - c.sP[k - 1]);
               const p = add(loopP, scale(c.n, SWEEP * smooth((frac - 0.35) / 0.3) * (1 - smooth((t - b.tPlace + 0.3 * ret) / (0.25 * ret)))));
-              // only where the hand, still on its way, already lets the cable reach
-              if (length(sub(p, c.right(t).cable.p)) > b.sGrip - i * SEG + 0.003) return null;
-              if (!hookedLoop) return p;
-              // hooked behind the previous ("unter") loop: the start keeps its own depth
-              if (c.depthNear(k, p).phi > 1.9) return p;
+              // only where the hand, still on its way, already lets the cable reach (eased in with
+              // the slack, so the cable is never pulled taut against a target)
+              const slack = b.sGrip - i * SEG - length(sub(p, c.right(t).cable.p));
+              if (slack < 0) return null;
               const cur: V3 = [rod.x[3 * i], rod.x[3 * i + 1], rod.x[3 * i + 2]];
-              return add(p, scale(c.n, dot(sub(cur, p), c.n)));
+              // hooked behind the previous ("unter") loop: the start keeps its own depth
+              const q = !hookedLoop || c.depthNear(k, p).phi > 1.9 ? p : add(p, scale(c.n, dot(sub(cur, p), c.n)));
+              return lerp3(cur, q, smooth(slack / 0.03));
             },
           });
           // the cable to the floor: once the right hand lets go it hangs down through the new loop
@@ -408,7 +409,9 @@ export const coilShot: ShotDef = {
               if (r.sleeve > 0 && t > b.tOpen && i * SEG > r.s - FIST_HALF - 0.02) return null;
               const hang = b.letGo ? smooth((t - b.tOpen) / 0.3) * (next ? 1 - smooth((t - next.tSlide + 0.15) / 0.15) : 1) : 0;
               const path = hang > 0 ? c.floorTarget(k, i * SEG) : null;
-              const p = path ? lerp3(cur, path, hang) : i > iG + 3 ? cur : null;
+              // (the path lets go of the cable gradually toward its end, so it hangs on in a curve)
+              const fade = 1 - smooth((i * SEG - c.sP[k] - FIST_HALF - 0.22) / 0.2);
+              const p = path ? lerp3(cur, path, hang * fade) : i > iG + 3 ? cur : null;
               if (!p) return null;
               const loc = c.local(p);
               const near = c.depthNear(k, p);
@@ -437,15 +440,18 @@ export const coilShot: ShotDef = {
       });
       events.push({ t: b.tPlace + 0.1, run: () => rod.removeGuide(shape) });
       // the new strand is laid into the left fist (in its slot, along the fist) while the hand arrives
-      // (after an "unter" loop not up to the fist's edge: there the loop's start crosses over it)
+      // (not up to the fist's edge: there the start of an "unter" loop crosses over it)
       const strandGuide = rod.addGuide({
-        nodes: [nodeAt(c.sP[k] - FIST_HALF), nodeAt(c.sP[k] + (b.kind === 'under' ? 0.02 : FIST_HALF))],
+        nodes: [nodeAt(c.sP[k] - FIST_HALF), nodeAt(c.sP[k] + 0.02)],
         compliance: 2e-4,
         weight: (t) => smooth((t - b.tPlace + 0.3 * ret) / (0.3 * ret)),
         target: (i, t) => {
           const p = add(c.strand(k), scale(c.a, i * SEG - c.sP[k]));
-          // (only what the hand, still on its way, already lets reach its place)
-          return length(sub(p, c.right(t).cable.p)) > b.sGrip - i * SEG + 0.003 ? null : p;
+          // (only what the hand, still on its way, already lets reach its place; eased in with the slack)
+          const slack = b.sGrip - i * SEG - length(sub(p, c.right(t).cable.p)) + 0.003;
+          if (slack < 0) return null;
+          const cur: V3 = [rod.x[3 * i], rod.x[3 * i + 1], rod.x[3 * i + 2]];
+          return lerp3(cur, p, smooth(slack / 0.02));
         },
       });
       events.push({ t: b.tPlace + 0.1, run: () => rod.removeGuide(strandGuide) });
@@ -479,7 +485,9 @@ export const coilShot: ShotDef = {
       if (!b) return;
       const iG = nodeAt(b.sGrip);
       const [l0, l1] = loopNodes(b.k);
-      const ang = -r.twistTurns(l0, l1 - 1) * 2 * Math.PI * 0.2;
+      // (firmly in the last moment before the left hand takes the loop: it is laid in flat)
+      const gain = t > b.tPlace - 0.1 ? 0.5 : 0.2;
+      const ang = -r.twistTurns(l0, l1 - 1) * 2 * Math.PI * gain;
       for (let j = l0; j < iG + GRIP_HALF; j++) {
         const roll = quatFromAxisAngle(0, 0, 1, ang * Math.min(1, (j - l0 + 0.5) / (l1 - l0)));
         r.q.set(quatMul([r.q[4 * j], r.q[4 * j + 1], r.q[4 * j + 2], r.q[4 * j + 3]], roll), 4 * j);

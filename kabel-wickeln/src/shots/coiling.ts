@@ -775,7 +775,8 @@ export class Coiling {
    */
   rig(spec: PersonSpec, t: number, pov = false, rightGrip?: Frame): Rig {
     const r = this.right(t);
-    const right: HandRig = { grip: rightGrip ?? r.hand, radius: XLR_R, thumbAlong: -1, open: r.open, pinch: r.pinch };
+    // (a hand that holds nothing keeps its thumb relaxed by the index finger)
+    const right: HandRig = { grip: rightGrip ?? r.hand, radius: XLR_R, thumbAlong: -1, open: r.open, pinch: r.holds === 'none' && r.mode !== 'tie' ? Math.max(r.pinch, 0.6) : r.pinch };
     return {
       ...stand(spec, [0, 0], 0, { width: 0.3 }),
       lean: 0.08,

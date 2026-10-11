@@ -49,7 +49,7 @@ const LENGTH = timeline.scene(SHOT_END);
 // ------------------------------------------------------------------------------- cameras
 
 /** wide: Noor standing with the cable, the rest of it on the floor */
-const WIDE: Orbit = { target: [0.05, 0.9, -0.3], yaw: 2.25, pitch: 0.16, dist: 2.7, fov: 34 };
+const WIDE: Orbit = { target: [0.05, 0.97, -0.3], yaw: 2.25, pitch: 0.16, dist: 2.75, fov: 34 };
 /** the outside camera: on her right, slightly behind her, above the hands, looking down */
 const EXT: Orbit = { target: COIL1.at(0.12, -0.14, 0.0), yaw: 1.2, pitch: 0.42, dist: 0.95, fov: 42 };
 /** the tie: from above and in front of her, looking down on the top of the ring where it closes */
@@ -140,8 +140,9 @@ export function* part(layer: Node) {
       const tt = t();
       return Math.min(smooth((tt - B[k - 1].tFree) / 0.35), smooth((B[k].t0 + 0.3 - tt) / 0.3));
     };
-    layer.add(callout({ view: povView, target, at: [xL + wL - 330, TOP + PANEL_H - 110], text: LABELS[k - 1], color, opacity: inPov }));
-    layer.add(callout({ view: extView, target, at: [xR + wR / 2, TOP + PANEL_H - 80], text: LABELS[k - 1], color, size: 32, opacity: () => sw(k) }));
+    // (arrowheads stop short of the crossing, so it stays visible which strand is on top)
+    layer.add(callout({ view: povView, target, at: [xL + wL - 330, TOP + PANEL_H - 110], text: LABELS[k - 1], color, arrow: true, opacity: inPov }));
+    layer.add(callout({ view: extView, target, at: [xR + wR / 2, TOP + PANEL_H - 80], text: LABELS[k - 1], color, size: 32, arrow: true, opacity: () => sw(k) }));
   }
 
   // the end: ✓ the ring lies round and flat
