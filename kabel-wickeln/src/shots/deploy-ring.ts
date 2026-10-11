@@ -164,12 +164,12 @@ export function windRing(spec: RingSpec, onFrame?: (rod: Rod, t: number) => void
     onFrame?.(rod, rod.time);
   }
   rod.removeGuide(guide);
-  fist.remove();
   // relax for a moment without the guides, still without gravity, then remember this shape
   for (let f = 0; f < 20; f++) {
     rod.step(1 / 60, 60);
     onFrame?.(rod, rod.time);
   }
+  fist.remove();
   rod.opts.iterations = it;
   rod.rememberShape();
   rod.opts.gravity = g;
@@ -298,7 +298,7 @@ export function pullApart(ring: Ring, spec: RingSpec, o: { chord?: number; T?: n
   const dA = normalize(sub(P(iA + 2), P(0)));
   const dB = normalize(sub(P(n - 1), P(iB - 2)));
   const pA = P(iA), pB = P(iB);
-  const pB1: V3 = [mid[0] - 0.2, pB[1] + 0.05, pB[2]];
+  const pB1: V3 = [mid[0] - 0.1, pB[1] + 0.02, pB[2]];
   const qB = quatFromTo(dB, [-1, 0, 0]);
   const fa = moving(pA, [mid[0] + Ltot / 2, mid[1], mid[2]], quatFromTo(dA, [-1, 0, 0]), 1.0, T);
   const fb0 = moving(pB, pB1, qB, 0, 0.6), fb1 = moving(pB1, [mid[0] - Ltot / 2, mid[1], mid[2]], [0, 0, 0, 1], 1.0, T);
