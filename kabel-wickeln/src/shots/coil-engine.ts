@@ -239,6 +239,9 @@ export class CoilController {
     gripped: boolean;
     held: boolean;
     added: boolean;
+    /** the pinch held before the hand reached the hip: when, and where the hand stops */
+    stopT: number | null;
+    stopP: V3 | null;
   } | null = null;
   /** what happened when (printed with the summary) */
   readonly log: string[] = [];
@@ -386,19 +389,24 @@ export class CoilController {
     const sh = normalize([g.S[0], 0, g.S[2]]);
     // (over: a little slack at the hip; under: the span stays as it is while the hand turns over, so the
     // cable cannot just swing round with the pads: it has to go round the back of the hand)
-    const slack = b.kind === 'under' ? g.hip : lerpV(g.hip, exit, 0.06);
+    // (where the hand stopped: the hip, or earlier when a loop's worth of cable had passed sooner)
+    const hip = m.stopP ?? g.hip;
+    const slack = b.kind === 'under' ? hip : lerpV(hip, exit, 0.06);
     const spread = madd(madd(madd(meet, sh, -0.22), UP, -0.03), g.N, 0.04);
     const above = madd(madd(meet, sh, -0.05), g.N, 0.012);
     const tBack = Math.max(b.tTurned, b.tHeld);
     const tAbove = b.tSpread + 0.6 * (b.tMeet - b.tSpread);
     let p: V3;
     if (t < b.tOut) {
-      p = lerpV(m.p0, g.hip, ramp(t, b.tSlide, b.tOut));
+      const slideAt = (x: number) => lerpV(m.p0, g.hip, ramp(x, b.tSlide, b.tOut));
+      p = slideAt(t);
+      // it held early: the hand comes to a stop instead of pulling on
+      if (m.stopT !== null && m.stopP && t > m.stopT) p = lerpV(slideAt(m.stopT), m.stopP, minJerk((t - m.stopT) / 0.16));
       // the fingers keep the cable between them: the hand follows where the cable really is across
       // its length (read from the simulation), it only chooses how far along it slides
       if (this.padsErr && t > b.tSlide) p = add(p, this.padsErr);
     }
-    else if (t < tBack) p = lerpV(g.hip, slack, ramp(t, b.tOut, tBack));
+    else if (t < tBack) p = lerpV(hip, slack, ramp(t, b.tOut, tBack));
     else if (t < b.tSpread) p = lerpV(slack, spread, ramp(t, tBack, b.tSpread));
     else if (t < tAbove) p = lerpV(spread, above, ramp(t, b.tSpread, tAbove));
     else p = lerpV(above, meet, ramp(t, tAbove, b.tMeet));
@@ -769,7 +777,7 @@ export class CoilController {
     const arms = this.pose.body.arms!;
     if (!this.memo || this.memo.k !== b.k) {
       // a new loop: the hand lets go at the hand-over (the first loop: it already holds next to the left hand)
-      this.memo = { k: b.k, p0: arms[1].grip!.p, q0: arms[1].pads!.q, outPose: null, outQ: null, homeQ: null, qMeet: null, gripLocal: null, gripDirLocal: null, rollTo: null, guide: 0, strand: 0, cross: 0, gripped: false, held: false, added: false };
+      this.memo = { k: b.k, p0: arms[1].grip!.p, q0: arms[1].pads!.q, outPose: null, outQ: null, homeQ: null, qMeet: null, gripLocal: null, gripDirLocal: null, rollTo: null, guide: 0, strand: 0, cross: 0, gripped: false, held: false, added: false, stopT: null, stopP: null };
       if (i > 0) {
         // the hand goes where the cable really comes out of the left hand
         const lf = arms[0].grip!;
@@ -794,6 +802,13 @@ export class CoilController {
     if (m.gripped && !m.held && tn >= b.tSlide && (pin.s >= sHold || tn >= b.tOut)) {
       pin.set('held', 0.25);
       m.held = true;
+      if (tn < b.tOut - 0.1) {
+        // early: the hand stops a few cm further on (decelerating), not at the hip
+        const slideAt = (x: number) => lerpV(m.p0, GEOM.hip, ramp(x, b.tSlide, b.tOut));
+        const a = slideAt(tn), v = mul(sub(slideAt(tn + DT), a), 1 / DT);
+        m.stopT = tn;
+        m.stopP = madd(a, v, 0.16 * 0.5);
+      }
       this.log.push(`t ${tn.toFixed(2)} loop ${b.k}: holds at s ${pin.s.toFixed(3)} (wanted ${sHold.toFixed(3)})`);
     }
     if (b.kind === 'under' && !m.outPose && tn >= b.tHeld) {

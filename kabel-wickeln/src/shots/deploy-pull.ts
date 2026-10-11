@@ -70,10 +70,10 @@ export const PULL_T = {
   /** then the right hand draws its end out to the side, clear of the falling loops (not before: the ring's top is still in the left hand, the end's tail runs through its eye) */
   out: 4.1,
   /** both hands hold still with their ends (they are pointed out) */
-  pull0: 4.8,
+  pull0: 5.2,
   /** hands apart: the loops open; then the hands sink a little, the cable lies calm */
-  pull1: 7.8, lay1: 8.8,
-  end: 10.1,
+  pull1: 8.2, lay1: 9.2,
+  end: 10.5,
 };
 const T = PULL_T;
 

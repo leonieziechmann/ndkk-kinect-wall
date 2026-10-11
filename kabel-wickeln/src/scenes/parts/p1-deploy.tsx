@@ -23,7 +23,7 @@ import { C, FONT } from '../../lib/theme';
 import { Mark, StageChip } from '../../lib/ui';
 import { CableMesh, paint, rgba } from '../../three/cable';
 import { Orbit, makeCamera, mixOrbit, orbit, povFollow } from '../../three/camera';
-import { callout } from '../../three/overlay';
+import { callout, project } from '../../three/overlay';
 import { table, wheelchair } from '../../three/props';
 import { StrapMesh } from '../../three/strap';
 import { Studio } from '../../three/studio';
@@ -47,14 +47,25 @@ const ramp = (x: number, a: number, b: number) => smooth((x - a) / (b - a));
 
 /** scene seconds: a still moment before the shot runs; the split screen (shot times); the end */
 const A_INTRO = 0.6;
-const A_SPLIT_IN = PULL_T.pull0 - 0.9, A_SPLIT_OUT = PULL_T.lay1 + 0.9, A_SPLIT = 0.8;
+// (her view only while her hands are still in it: they leave it as they go wide)
+const A_SPLIT_IN = PULL_T.pull0 - 0.7, A_SPLIT_OUT = PULL_T.pull0 + 1.7, A_SPLIT = 0.6;
 const A_LEN = A_INTRO + PULL_T.end + 0.9;
 
-/** the outside cameras: from her front left across the desk; wide (who and where), then on the ring and her hands */
+/**
+ * The outside cameras. Wide from her front left across the desk (who and where); then a cut to
+ * over her right shoulder for the tie and the second end (the black ring against the light desk,
+ * not against her dark jacket); a cut back to her front left, closer, for the two ends; wider for
+ * the pull.
+ */
 const A_WIDE: Orbit = { target: [0.0, 0.95, 0.3], yaw: 0.62, pitch: 0.3, dist: 2.3, fov: 34 };
-const A_NEAR: Orbit = { target: [0.02, 1.06, 0.4], yaw: 0.72, pitch: 0.22, dist: 1.05, fov: 34 };
+const A_WIDE_IN: Orbit = { target: [0.0, 1.0, 0.35], yaw: 0.6, pitch: 0.28, dist: 2.0, fov: 34 };
+const A_OTS: Orbit = { target: [0.0, 1.06, 0.42], yaw: Math.PI + 0.55, pitch: 0.72, dist: 0.85, fov: 34 };
+const A_OTS2: Orbit = { target: [0.0, 1.02, 0.42], yaw: Math.PI + 0.5, pitch: 0.68, dist: 0.95, fov: 34 };
+const A_HOLD: Orbit = { target: [0.0, 1.03, 0.42], yaw: 0.5, pitch: 0.25, dist: 1.35, fov: 34 };
 /** while she pulls: wide enough for both hands */
 const A_PULL: Orbit = { target: [0.0, 1.0, 0.42], yaw: 0.45, pitch: 0.28, dist: 2.1, fov: 36 };
+/** the cuts (scene seconds from the part's start; shot seconds) */
+const A_CUT_OTS = A_INTRO + 0.35, A_CUT_FRONT = PULL_T.pull0 - 0.7;
 
 /** a small FOH mixing desk: sloped surface, fader rows, knobs, a meter bridge (on the floor, facing -z) */
 function mixer(): THREE.Group {
@@ -118,8 +129,8 @@ function* shortCable(layer: Node) {
   const desk = table({ width: DESK.width, depth: DESK.depth, height: DESK.height });
   desk.position.set(DESK.x, 0, DESK.z);
   const mix = mixer();
-  mix.position.set(0.3, DESK.height, DESK.z + 0.2);
-  mix.rotation.y = -0.25;
+  mix.position.set(-0.42, DESK.height, DESK.z + 0.15);
+  mix.rotation.y = 0.25;
   const chair = wheelchair();
   const f = yawFrame(YAW);
   chair.position.set(SEAT[0] + f.f[0] * 0.03, 0, SEAT[1] + f.f[2] * 0.03);
@@ -155,9 +166,10 @@ function* shortCable(layer: Node) {
     const s = tieShape(plan, tt, root);
     s.pts.forEach((p, k) => tiePath.set(p, 3 * k));
     tie.update(tiePath, TIE_POINTS, s.side);
-    // cameras: wide, closer on the ring, wider for the pull
-    const near = mixOrbit(A_WIDE, A_NEAR, easeInOutCubic(ramp(tau(), 0.3, A_INTRO + T.pinch)), oa);
-    orbit(extCam, mixOrbit(near, A_PULL, easeInOutCubic(ramp(tt, T.takeB - 0.4, T.pull0 + 0.6)), ob));
+    // cameras: wide; cut over her shoulder; cut back to the front, wider for the pull
+    if (tau() < A_CUT_OTS) orbit(extCam, mixOrbit(A_WIDE, A_WIDE_IN, easeInOutCubic(ramp(tau(), 0, A_CUT_OTS)), oa));
+    else if (tt < A_CUT_FRONT) orbit(extCam, mixOrbit(A_OTS, A_OTS2, easeInOutCubic(ramp(tt, T.letTie, T.takeB)), oa));
+    else orbit(extCam, mixOrbit(A_HOLD, A_PULL, easeInOutCubic(ramp(tt, T.pull0 - 0.6, T.pull0 + 1.0)), ob));
     povFollow(povCam, (x) => eyesOfRig(ILSE, rig(x)), () => [0.0, 1.0, 0.46], tt, { back: 0.08, up: 0.04, fov: 64, smooth: 0.3 });
   });
   const scene = world.scene;
@@ -179,10 +191,17 @@ function* shortCable(layer: Node) {
   layer.add(chip);
 
   // both ends: labels in the outside view while both hands hold still with them
+  // (the plates stand above their ends, each on its own side, so the leaders never cross)
   const endAt = (i: number) => () => bake.nodeAt(t(), i, [0, 0, 0]);
-  const labelsOn = () => ramp(t(), T.takeB, T.takeB + 0.3) * (1 - ramp(t(), T.pull0 + 0.3, T.pull0 + 0.6));
-  layer.add(callout({ view: extView, target: endAt(i0 + 3), at: [xR + 120, TOP + 190], text: 'Ende', opacity: labelsOn }));
-  layer.add(callout({ view: extView, target: endAt(i1 - 3), at: [xR + wR - 120, TOP + 190], text: 'Ende', opacity: labelsOn }));
+  const plugA = endAt(i0 - 2), plugB = endAt(i1 + 2);
+  const labelAt = (me: () => V3, other: () => V3) => () => {
+    const p = project(extView, me()), q = project(extView, other());
+    const side = p.x <= q.x ? -1 : 1;
+    return [Math.max(-960 + GAP + 110, Math.min(960 - GAP - 110, p.x + side * 190)), Math.max(TOP + 60, p.y - 170)] as [number, number];
+  };
+  const labelsOn = () => ramp(t(), T.takeB, T.takeB + 0.3) * (1 - ramp(t(), A_SPLIT_IN - 0.3, A_SPLIT_IN));
+  layer.add(callout({ view: extView, target: plugA, at: labelAt(plugA, plugB), text: 'Ende', opacity: labelsOn }));
+  layer.add(callout({ view: extView, target: plugB, at: labelAt(plugB, plugA), text: 'Ende', opacity: labelsOn }));
 
   // the end: ✓ (the cable hangs calm, no curls)
   const done = (<Layout layout direction={'row'} alignItems={'center'} x={() => -960 + GAP + fullW / 2 + (xR + wR / 2 - (-960 + GAP + fullW / 2)) * split()} y={TOP + PANEL_H - 70} opacity={0}><Mark good size={58} /></Layout>) as Layout;

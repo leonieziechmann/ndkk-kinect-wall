@@ -53,8 +53,8 @@ export interface Pace {
 
 /** a slow loop for teaching: about 3.2 s (over) and 3.65 s (under) */
 export const TEACH: Pace = { regrip: 0, slide: 1.0, hold: 0.2, turn: 0.45, spread: 0.85, approach: 0.65, give: 0.4 };
-/** the user's natural pace: about 2.3 s (over) and 2.6 s (under) */
-export const NATURAL: Pace = { regrip: 0, slide: 0.85, hold: 0.06, turn: 0.3, spread: 0.55, approach: 0.45, give: 0.25 };
+/** the user's natural pace: about 2.4 s (over) and 2.7 s (under); the slide as slow as in TEACH (a faster slide yanks the cable's free end off the floor) */
+export const NATURAL: Pace = { regrip: 0, slide: 1.0, hold: 0.06, turn: 0.3, spread: 0.55, approach: 0.45, give: 0.25 };
 
 /** time for the pinch to loosen before the hand moves */
 export const LOOSEN = 0.1;
