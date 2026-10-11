@@ -25,3 +25,6 @@ fn2/logs/
 *.log
 # wall-bevy (native output): build output
 wall-bevy/target/
+
+# agent worktrees (Claude Code)
+.claude/worktrees/

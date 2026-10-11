@@ -19,12 +19,17 @@ The user sees the scenes of every worktree at http://127.0.0.1:8090/; each workt
 
 The scenes run on a 6 × 2 m LED wall (1008 × 336). One shared core handles it: `wall: true` makes the canvas the LED image, `ctx.wall` maps the Kinect onto the wall through the scene's projection (play field → wall, curves, mirror, body size; a default plus per-scene values), and the control center `http://127.0.0.1:<port>/control/` runs the output window `/wall/` (show, params per scene, projections, test images, wall setup). Do not build your own wall emulation into a scene.
 
+## Native output: `wall-bevy/`
+
+`wall-bevy/` is the output window `/wall/` as a native app (Rust, Bevy 0.20, wgpu), built for a picture that never stutters: the same show, scenes (same names and params), projections and control center. The scenes of `web/scenes/` have Rust ports in `wall-bevy/src/scenes/` (same names; the show skips a scene without one); a port does not follow changes of its browser scene by itself, so say so when you change a scene that has one (`wall-bevy/PORTING.md` says how to port). Build: `cd wall-bevy && cargo build --release` (Rust 1.97 or newer: `rustup update`). Test without the Kinect: `fake_hub` and `--shots` (`wall-bevy/README.md`).
+
 ## Show launcher: `start-wand.cmd`
 
 The user's one-click launcher for the exhibition. It starts the hub, the main checkout's dev server, the kiosk output and the control center. The displays are detected automatically: the output goes only on the second display, never on the notebook's panel, and the control center goes maximized on the notebook's panel. Until it ends, it tunes Windows: power plan, priorities and efficiency mode. Windows services stay as they are: Windows restarts them within seconds. It keeps its journal and logs in `%LOCALAPPDATA%\kinect-wand\`.
 - Do not run it unless asked: it changes system settings and stops what it started.
 - It shares the notebook with the show, so it must stay cheap (about 5 ms CPU per second). Keep WMI, `Get-Process`, `Invoke-RestMethod`, display queries and `Write-Host` out of its loop; the header of `start-wand.ps1` says how.
 - **R** in its window records training data while the show runs: 5 min (`-RecordMinutes`) of depth and IR from the hub with `kinect-hub-probe record`, into `recordings/wand-<date>-<time>.k2rec`. It asks for consent first and checks the free disk space.
+- `-Bevy` starts the native output `wall-bevy` instead of the kiosk browser window (falls back to the browser while it is not built).
 - To test it, run `-NoWall -NoControl -Hub 8091`. For a dev server and kiosk of your own, add `-Checkout <worktree>` and set `KINECT_WALL_DIR`.
 - End a test run by creating `quit.flag` in that folder.
 - Diff the power plan and priorities before and after.
