@@ -45,7 +45,7 @@ export const HAND_LOOPS = 3;
 /** the loop that hangs between his hands while he swings (the first one the right hand does not hold) */
 const BETWEEN = HAND_LOOPS;
 /** the velcro tie: band length, width, thickness; where it lives on the start end (m from the plug's tip) */
-export const TIE_K: TieSpec = { length: 0.3, width: 0.02, thickness: 0.0016, s: 0.44 };
+export const TIE_K: TieSpec = { length: 0.45, width: 0.02, thickness: 0.0016, s: 0.44 };
 
 /** where Kofi stands and his facing (+x) */
 export const KOFI_AT: [number, number] = [0, 0];
