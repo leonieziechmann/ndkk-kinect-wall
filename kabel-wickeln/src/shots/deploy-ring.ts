@@ -82,6 +82,8 @@ export interface Ring {
   held: [number, number][];
   /** the bundle in the fist: centre, radius across the stack, its extent along the stack (z) */
   top: { c: V3; r: number; z0: number; z1: number };
+  /** the node positions right after pressing, before gravity (factory coordinates): the ring round, as it lay stored */
+  pressed: number[];
 }
 
 /** a small deterministic irregularity per loop, -1 … 1 */
@@ -222,6 +224,7 @@ function layRing(spec: RingSpec, onFrame?: (rod: Rod, t: number) => void): Ring 
   rod.removeGuide(guide);
   rod.opts.iterations = it;
   if (spec.memoryRound) rod.rememberShape();
+  const pressed = Array.from(rod.x, (v) => Math.fround(v));
   // the fist takes the top of every loop (where a hand holds a coil), gravity comes back and the
   // loops hang and settle; then the strands remember this shape (it was stored like this)
   const held: [number, number][] = [];
@@ -259,7 +262,7 @@ function layRing(spec: RingSpec, onFrame?: (rod: Rod, t: number) => void): Ring 
   let r2 = 0;
   for (let j = 0; j < rod.ns; j++) if (inside(j)) r2 = Math.max(r2, Math.hypot(rod.c[3 * j] - c[0], rod.c[3 * j + 1] - c[1]));
   fist.remove();
-  return { state: rod.saveState(), loops, sLoops, R: L.R, cable: built.cable, sCable: built.sCable, length: rod.totalLength, rc, held, top: { c, r: r2 + rc, z0, z1 } };
+  return { state: rod.saveState(), loops, sLoops, R: L.R, cable: built.cable, sCable: built.sCable, length: rod.totalLength, rc, held, top: { c, r: r2 + rc, z0, z1 }, pressed };
 }
 
 /** A rod from a ring's state with its plug masses back (they are not part of a saved state). */

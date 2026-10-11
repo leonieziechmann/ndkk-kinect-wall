@@ -13,7 +13,7 @@
 
 import { XLR } from '../sim';
 import { CoilController, CoilOptions } from './coil-engine';
-import { CoilPlan, LoopKind, NATURAL, TEACH } from './coiling';
+import { CoilPlan, LoopKind, NATURAL, NATURAL_UNDER, TEACH } from './coiling';
 import type { ShotDef } from './types';
 
 const KINDS: LoopKind[] = ['over', 'under', 'over', 'under', 'over', 'under'];
@@ -21,7 +21,7 @@ const KINDS: LoopKind[] = ['over', 'under', 'over', 'under', 'over', 'under'];
 /** stage 1: two slow loops, four at the natural pace; 5 m in six loops leaves ~30 cm and the plug in the right hand */
 export const COIL1: CoilPlan = {
   kinds: KINDS,
-  paces: KINDS.map((_, i) => (i < 2 ? TEACH : NATURAL)),
+  paces: KINDS.map((k, i) => (i < 2 ? TEACH : k === 'under' ? NATURAL_UNDER : NATURAL)),
   start: 0.6,
   loopLength: 0.72,
 };
@@ -77,7 +77,7 @@ export const coilDev1 = coilShotOf('coil-dev1', { ...COIL1, kinds: ['over'], pac
 export const coilDevU = coilShotOf('coil-dev-u', { ...COIL1, kinds: ['under'], paces: [TEACH] }, 1.0);
 
 /** over and under at the natural pace, for experiments */
-export const coilDevN = coilShotOf('coil-dev-n', { ...COIL1, kinds: ['over', 'under'], paces: [NATURAL, NATURAL] }, 1.0);
+export const coilDevN = coilShotOf('coil-dev-n', { ...COIL1, kinds: ['over', 'under'], paces: [NATURAL, NATURAL_UNDER] }, 1.0);
 
 /** the first four loops of stage 1 */
 export const coilDev4 = coilShotOf('coil-dev4', { ...COIL1, kinds: KINDS.slice(0, 4), paces: COIL1.paces.slice(0, 4) }, 1.0);

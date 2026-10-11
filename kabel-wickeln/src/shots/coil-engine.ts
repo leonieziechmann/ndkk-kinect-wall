@@ -302,6 +302,8 @@ function layDir(s: V3): V3 {
 const STRAND = GEOM.gap + 2 * GEOM.half;
 /** how strongly the crossing is helped (0 = not at all; 1 = compliance 0.4 m/N) */
 const CROSS_HELP = { over: 2, under: 1 };
+/** what is left of a loop's guide once it is laid (a keeper, fading in its arc's plane only) */
+const KEEP = 0.15;
 /** the fist starts taking the new strand this long before the hand-over [s] */
 const TAKE = 0.25;
 /**
@@ -336,6 +338,8 @@ interface LoopMemo {
   added: boolean;
   guided: boolean;
   draped: boolean;
+  /** the pinch tightened for a moment because the cable ran through too fast (a reflex), since */
+  tight: number | null;
 }
 
 // ------------------------------------------------------------------ the controller
@@ -430,12 +434,12 @@ export class CoilController {
     return lerpV(g.leftOut, g.leftMeet, ramp(t, b.tTurned + 0.2 * (b.tAbove - b.tTurned), b.tMeet - 0.1));
   }
 
-  /** the fist's radius at time t: round the strands it holds, growing as the new one comes in */
+  /** the fist's radius at time t: round the strands it holds, making room for the new one before it comes in */
   fistR(t: number): number {
     const i = loopAt(this.bs, t);
     if (i < 0) return GEOM.fist(0);
     const b = this.bs[i];
-    return GEOM.fist(b.k - 1) + (GEOM.fist(b.k) - GEOM.fist(b.k - 1)) * ramp(t, b.tMeet - 0.2, b.tMeet + 0.05);
+    return GEOM.fist(b.k - 1) + (GEOM.fist(b.k) - GEOM.fist(b.k - 1)) * ramp(t, b.tAbove - 0.35, b.tAbove);
   }
 
   private leftRig(t: number): HandRig {
@@ -655,7 +659,7 @@ export class CoilController {
 
   /** under: when the hand starts turning back (the cable slides off the wrist) */
   private unturnAt(b: LoopBeat) {
-    return b.tAbove - 0.25 * (b.tAbove - b.tTurned);
+    return b.tAbove - 0.15 * (b.tAbove - b.tTurned);
   }
 
   /** the pads' frame at loop b's hand-over as an over loop would reach it (solved once, statelessly): where the under loop's turn unwinds to */
@@ -717,7 +721,8 @@ export class CoilController {
     const A = GEOM.A, N = GEOM.N;
     const P2 = (p: V3): [number, number] => [dot(p, A), p[1]];
     const loop = new Follow(rod, la, le, (t, out) => {
-      const g = padsNow(), E = this.strandPath(b.k, t, g.p, padsDir(g)).e;
+      // (once the fist holds the strand: its real lateral end, the hand may go)
+      const g = padsNow(), E = t > b.tMeet ? nodeOf(rod, a) : this.strandPath(b.k, t, g.p, padsDir(g)).e;
       const arc = hangingArc(P2(nodeOf(rod, la)), P2(E), len);
       for (let n = la; n <= le; n++) {
         const [x, y] = arc((rod.sNode[n] - rod.sNode[la]) / len);
@@ -725,7 +730,9 @@ export class CoilController {
         out[n - la] = [A[0] * x + N[0] * depth, y, A[2] * x + N[2] * depth];
       }
     }, 0.4);
-    rod.addGuide({ nodes: [la, le], target: loop.target, compliance: 0.08, weight: (t) => ramp(t, tIn, Math.max(tIn + 0.7, b.tAbove)) * (1 - ramp(t, tOff, tOff + 0.6)) });
+    // (after the hand-over it fades to a keeper of KEEP: the loop keeps its round shape in its plane,
+    // as a cable that has been coiled for years does, instead of sagging into a drop)
+    rod.addGuide({ nodes: [la, le], target: loop.target, compliance: 0.08, weight: (t) => ramp(t, tIn, Math.max(tIn + 0.7, b.tAbove)) * (1 - (1 - KEEP) * ramp(t, tOff, tOff + 0.6)) });
     void s0;
     if (CROSS_HELP[b.kind] > 0) this.guideCross(i, rod, la, le);
   }
@@ -779,25 +786,43 @@ export class CoilController {
 
   /**
    * A weak help for the crossing (KONZEPT: "Führungskräfte, so dass die Kreuzungen stimmen"): the
-   * first 45 cm of the cable to the floor are led, along the coil's axis only, a few cm to the side
-   * of the new loop they belong on (over: Noor's side, under: behind it). Weak (a fifth of the other
-   * guides' strength), fading in over 0.6 s while the hand lays the strand, off before the next
-   * slide. What the hands do decides it first; this only keeps it.
+   * first 40 cm of the cable to the floor are led a few cm to the side of the new loop they belong
+   * on along the coil's axis (over: Noor's side, under: behind it), and, where they hang beside the
+   * loop's medial side, 2 cm in across it, so that they really cross it below the hand (where the
+   * labels can show it). Weak (compliance 0.2–0.4, five to eight times softer than the strand's
+   * guide), fading in over 0.6 s while the hand lays the strand, its targets moving at most 0.3 m/s,
+   * off before the next slide. What the hands do decides the crossing first; this only makes it
+   * clear.
    */
   private guideCross(i: number, rod: Rod, la: number, le: number) {
     const b = this.bs[i];
     const sP = this.pin.s;
-    const a = rod.segmentAt(sP + 0.06), e = Math.min(rod.n - 2, rod.segmentAt(sP + 0.5));
-    const N = GEOM.N, side = b.kind === 'over' ? -1 : 1;
+    const a = rod.segmentAt(sP + 0.04), e = Math.min(rod.n - 2, rod.segmentAt(sP + 0.4));
+    const N = GEOM.N, A = GEOM.A, side = b.kind === 'over' ? -1 : 1;
     const m0 = la + Math.floor((le - la) / 3), m1 = le - Math.floor((le - la) / 3);
     const cross = new Follow(rod, a, e, (_t, out) => {
       let depth = 0;
       for (let j = m0; j <= m1; j++) depth += dot(nodeOf(rod, j), N) / (m1 - m0 + 1);
       const want = depth + side * (b.kind === 'over' ? 0.05 : 0.035);
+      // the loop's medial (right, −A) side: its outline at each height
+      let yTop = -Infinity, yLow = Infinity;
+      for (let j = la; j <= le; j++) { const y = rod.x[3 * j + 1]; yTop = Math.max(yTop, y); yLow = Math.min(yLow, y); }
+      const rightAt = (y: number) => {
+        let x = Infinity;
+        for (let j = la; j <= le; j++) if (Math.abs(rod.x[3 * j + 1] - y) < 0.012) x = Math.min(x, dot(nodeOf(rod, j), A));
+        return x;
+      };
       for (let n = a; n <= e; n++) {
-        const p = nodeOf(rod, n), off = want - dot(p, N);
+        let p = nodeOf(rod, n);
+        const off = want - dot(p, N);
         // (only towards the right side: a cable already there is left alone)
-        out[n - a] = off * side > 0 ? madd(p, N, off) : p;
+        if (off * side > 0) p = madd(p, N, off);
+        // across: in by 2 cm where it hangs just outside the loop's medial side (the upper two thirds)
+        if (p[1] < yTop - 0.03 && p[1] > yLow + 0.35 * (yTop - yLow)) {
+          const xr = rightAt(p[1]), x = dot(p, A);
+          if (Number.isFinite(xr) && x < xr + 0.02 && x > xr - 0.12) p = madd(p, A, xr + 0.02 - x);
+        }
+        out[n - a] = p;
       }
     }, 0.3);
     const t0 = b.tAbove - 0.1, t1 = b.t1 - 0.05;
@@ -881,7 +906,7 @@ export class CoilController {
     this.coil.add(0, sMed - 0.003, 0.01);
     // (rolls: the cable turns with the hand, the under loop's turn-over and the thumb's roll go into it;
     // the curled fingers keep it through the bend where it hangs down from them while they slide)
-    this.pin = rod.pinch({ frame: this.pose.body.arms![1].grip!, hand: 1, mode: 'held', blend: 0.01, rolls: true, lostDistance: 0.02, lostAngle: (78 * Math.PI) / 180 });
+    this.pin = rod.pinch({ frame: this.pose.body.arms![1].grip!, hand: 1, mode: 'held', blend: 0.01, rolls: true, lostDistance: 0.03, lostAngle: (80 * Math.PI) / 180 });
     rod.setCapsules((tt) => this.capsAt(tt));
     const frames = Math.round(pre * 60);
     for (let f = 0; f < frames; f++) {
@@ -928,7 +953,7 @@ export class CoilController {
       ...handColliders(pose, 0, { group: 0, soft: { index: 0.3, middle: 0.3, ring: 0.3, little: 0.3, thumb: 0.3 } }),
       // (the right hand's middle, ring and little fingers are not part of the pinch: the cable past the
       // pads drapes over them instead of passing through, so they keep colliding next to the pads too)
-      ...handColliders(pose, 1, { group: 1, soft: { index: 0.3, middle: 0.3, ring: 0.3, little: 0.3, thumb: 0.3 } }).map((c) => (c.part === 'middle' || c.part === 'ring' || c.part === 'little' ? { ...c, group: 2, soft: 1 } : c)),
+      ...handColliders(pose, 1, { group: 1, soft: { index: 0.3, middle: 0.3, ring: 0.3, little: 0.3, thumb: 0.3 } }).map((c) => (c.part === 'middle' || c.part === 'ring' || c.part === 'little' ? { ...c, group: 2, soft: this.slideStart(tn) ? 0.3 : 1 } : c)),
       ...this.legs,
     ];
     if (jump) {
@@ -961,6 +986,18 @@ export class CoilController {
         this.pin.moveTo(arms[1].grip!, DT);
       }
     }
+  }
+
+  /**
+   * While the pinch loosens and the hand starts sliding out, the curled fingers below the pinch give
+   * way to the cable (soft at a slow approach) instead of dragging it: a cable caught over them would
+   * otherwise snap off as the hand turns towards the hip
+   */
+  private slideStart(t: number): boolean {
+    const i = loopAt(this.bs, t);
+    if (i < 0) return false;
+    const b = this.bs[i];
+    return t >= b.t0 && t < b.tSlide + 0.5;
   }
 
   /** the capsules at a substep: interpolated between the last two solved frames (same order) */
@@ -1023,7 +1060,7 @@ export class CoilController {
     const b = this.bs[i];
     if (!this.memo || this.memo.k !== b.k) {
       const p0 = arms[1].grip!.p;
-      this.memo = { k: b.k, p0, q0: arms[1].pads!.q, outPose: null, outQ: null, stopT: null, stopP: null, holdP: null, homeQ: b.kind === 'under' ? this.homeFrame(b) : null, held: false, added: false, guided: false, draped: false };
+      this.memo = { k: b.k, p0, q0: arms[1].pads!.q, outPose: null, outQ: null, stopT: null, stopP: null, holdP: null, homeQ: b.kind === 'under' ? this.homeFrame(b) : null, held: false, added: false, guided: false, draped: false, tight: null };
       // the pads loosen on the cable next to the fist and slide
       pin.set('loose', LOOSEN);
       this.log.push(`t ${tn.toFixed(2)} loop ${b.k}: the pinch loosens at s ${pin.s.toFixed(3)} (edge ${this.sEdge[b.k - 1].toFixed(3)})`);
@@ -1045,6 +1082,18 @@ export class CoilController {
         m.holdP = add(m.stopP, this.padsErr);
       } else m.holdP = arms[1].grip!.p;
       this.log.push(`t ${tn.toFixed(2)} loop ${b.k}: holds at s ${pin.s.toFixed(3)} (wanted ${sHold.toFixed(3)})`);
+    }
+    // a reflex: when the cable runs through the loose pinch much faster than the hand slides (a bight
+    // falling, the cable to the floor coming off the leg), the fingers tighten for a moment
+    if (!m.held && pin.state === 'loose' && tn > b.tSlide) {
+      if (m.tight === null && pin.slip > 1.0) {
+        m.tight = tn;
+        pin.set('held', 0.04);
+        this.log.push(`t ${tn.toFixed(2)} loop ${b.k}: the cable runs through at ${pin.slip.toFixed(2)} m/s, the pinch tightens for a moment`);
+      }
+    } else if (!m.held && m.tight !== null && tn > m.tight + 0.2) {
+      m.tight = null;
+      pin.set('loose', 0.1);
     }
     if (m.held && !m.holdP) m.holdP = arms[1].grip!.p;
     if (b.kind === 'under' && !m.outPose && m.held && tn >= b.tHeld) {

@@ -19,8 +19,8 @@ import { Studio } from '../../three/studio';
 import { ThreeView, World3D } from '../../three/view';
 
 const BAKE = 'coil-dev4';
-/** the fourth view close on the right hand instead of both hands */
-const CLOSE = false;
+/** the fourth view: close on the right hand, close on the left fist, or both hands from above in front */
+const CLOSE: 'right' | 'left' | 'both' = 'left';
 
 export default makeScene2D(function* (view) {
   view.fill(C.bg);
@@ -41,7 +41,7 @@ export default makeScene2D(function* (view) {
   const cams = [makeCamera(60), makeCamera(36), makeCamera(34), makeCamera(36)];
   viewLayers(cams[0], 'pov');
   for (const c of cams.slice(1)) viewLayers(c, 'ext');
-  const titles = ['Ich-Ansicht', 'Vorn, Hüfthöhe (B)', 'Rechts vorn', 'Hände, oben vorn (A)'];
+  const titles = ['Ich-Ansicht', 'Vorn, Hüfthöhe (B)', 'Rechts vorn', CLOSE === 'left' ? 'Linke Faust, nah' : CLOSE === 'right' ? 'Rechte Hand, nah' : 'Hände, oben vorn (A)'];
 
   function update() {
     const tt = t();
@@ -55,9 +55,16 @@ export default makeScene2D(function* (view) {
     lookFrom(cams[1], [0.0, 0.85, -1.6], [0.0, 0.72, -0.2], 38);
     lookFrom(cams[2], [1.0, 1.15, -1.1], [0.02, 0.72, -0.25], 36);
     const rh = bake.frame('gripR', tt).p;
-    const mid: V3 = CLOSE ? [rh[0], rh[1] - 0.02, rh[2]] : [lh[0] + 0.12, lh[1] - 0.1, lh[2]];
-    if (CLOSE) lookFrom(cams[3], [mid[0] + 0.25, mid[1] + 0.25, mid[2] - 0.35], mid, 34);
-    else lookFrom(cams[3], [mid[0] + 0.05, mid[1] + 0.55, mid[2] - 0.55], mid, 46);
+    if (CLOSE === 'right') {
+      const mid: V3 = [rh[0], rh[1] - 0.02, rh[2]];
+      lookFrom(cams[3], [mid[0] + 0.25, mid[1] + 0.25, mid[2] - 0.35], mid, 34);
+    } else if (CLOSE === 'left') {
+      const mid: V3 = [lh[0] + 0.02, lh[1] - 0.03, lh[2]];
+      lookFrom(cams[3], [mid[0] + 0.12, mid[1] + 0.3, mid[2] - 0.3], mid, 40);
+    } else {
+      const mid: V3 = [lh[0] + 0.12, lh[1] - 0.1, lh[2]];
+      lookFrom(cams[3], [mid[0] + 0.05, mid[1] + 0.55, mid[2] - 0.55], mid, 46);
+    }
     scene.updateMatrixWorld();
   }
 

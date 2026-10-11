@@ -53,6 +53,8 @@ export interface Pace {
 export const TEACH: Pace = { slide: 1.0, hold: 0.2, turn: 0.5, back: 1.0, lay: 0.7, give: 0.4 };
 /** the user's natural pace: about 2.4 s (over) and 2.7 s (under) */
 export const NATURAL: Pace = { slide: 0.9, hold: 0.05, turn: 0.3, back: 0.62, lay: 0.48, give: 0.27 };
+/** an under loop at the natural pace: the turn and the way back with the loop over the wrist a little slower (3.0 s) */
+export const NATURAL_UNDER: Pace = { ...NATURAL, turn: 0.35, back: 0.8 };
 
 /** time for the pinch to loosen before the hand moves */
 export const LOOSEN = 0.15;
@@ -162,7 +164,7 @@ export const GEOM = (() => {
      * Noor's side of the new loop (the cable to the floor hangs between her and the loop); under, in
      * front of it (the wrist came through the loop: the cable to the floor hangs outside it)
      */
-    padsDepth: { over: -0.035, under: 0.02 },
+    padsDepth: { over: -0.035, under: 0.0 },
     /** how far the hand turns over for "under" [rad] (the arm hangs nearly straight at the hip: forearm and upper arm turn together; the video shows 150–180°) */
     underTurn: 150 * D,
     /** the roll of the cable between thumb and index on the way back [rad]: over +, under − */
