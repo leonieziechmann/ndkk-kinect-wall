@@ -16,7 +16,17 @@ pub use tiny_skia::Color as SkColor;
 struct FontState {
     sys: FontSystem,
     cache: SwashCache,
-    families: std::collections::HashMap<String, Option<String>>,
+    families: std::collections::HashMap<String, Fam>,
+}
+
+/// A CSS font-family list resolved to what is installed.
+#[derive(Clone, Debug)]
+enum Fam {
+    /// a family, with the weight its name implies ("Segoe UI Black": "Segoe UI", 900)
+    Name(String, Option<u16>),
+    Serif,
+    SansSerif,
+    Monospace,
 }
 
 static FONTS: OnceLock<Arc<Mutex<Option<FontState>>>> = OnceLock::new();
@@ -76,7 +86,39 @@ pub enum Baseline {
 }
 
 /// The first family of a CSS list that this system has (None: the generic sans-serif).
-fn resolve_family(st: &mut FontState, list: &str) -> Option<String> {
+fn has_family(st: &FontState, name: &str) -> bool {
+    st.sys.db().faces().any(|face| face.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name)))
+}
+
+/// "Segoe UI Black" -> ("Segoe UI", 900): the font database lists a face under its typographic
+/// family (name ID 16), the browser also finds it by its legacy family name with the style in it.
+fn weight_suffix(name: &str) -> Option<(&str, u16)> {
+    const SUFFIXES: [(&str, u16); 19] = [
+        (" Black", 900),
+        (" Heavy", 900),
+        (" ExtraBold", 800),
+        (" Extra Bold", 800),
+        (" UltraBold", 800),
+        (" SemiBold", 600),
+        (" Semibold", 600),
+        (" Semi Bold", 600),
+        (" DemiBold", 600),
+        (" Bold", 700),
+        (" Medium", 500),
+        (" SemiLight", 350),
+        (" Semilight", 350),
+        (" ExtraLight", 200),
+        (" Extra Light", 200),
+        (" UltraLight", 200),
+        (" Light", 300),
+        (" Thin", 100),
+        (" Regular", 400),
+    ];
+    SUFFIXES.iter().find_map(|(suffix, w)| name.strip_suffix(suffix).map(|base| (base.trim_end(), *w)))
+}
+
+/// The first family of a CSS list that is installed; generic names as the browser maps them.
+fn resolve_family(st: &mut FontState, list: &str) -> Fam {
     if let Some(r) = st.families.get(list) {
         return r.clone();
     }
@@ -86,24 +128,34 @@ fn resolve_family(st: &mut FontState, list: &str) -> Option<String> {
         if name.is_empty() {
             continue;
         }
-        let generic = matches!(name, "sans-serif" | "system-ui" | "serif" | "monospace" | "ui-monospace");
-        if generic {
+        let generic = match name.to_ascii_lowercase().as_str() {
+            "serif" => Some(Fam::Serif),
+            "sans-serif" => Some(Fam::SansSerif),
+            "monospace" => Some(Fam::Monospace),
+            // the browser's UI fonts (Windows: Segoe UI, Consolas)
+            "system-ui" | "-apple-system" | "ui-sans-serif" => Some(["Segoe UI", "Inter", "DejaVu Sans"].iter().find(|n| has_family(st, n)).map_or(Fam::SansSerif, |n| Fam::Name((*n).to_string(), None))),
+            "ui-monospace" => Some(["Consolas", "Cascadia Mono", "DejaVu Sans Mono"].iter().find(|n| has_family(st, n)).map_or(Fam::Monospace, |n| Fam::Name((*n).to_string(), None))),
+            _ => None,
+        };
+        if generic.is_some() {
+            found = generic;
             break;
         }
-        if st.sys.db().faces().any(|face| face.families.iter().any(|(n, _)| n.eq_ignore_ascii_case(name))) {
-            found = Some(name.to_string());
+        if has_family(st, name) {
+            found = Some(Fam::Name(name.to_string(), None));
+            break;
+        }
+        if let Some((base, w)) = weight_suffix(name)
+            && has_family(st, base)
+        {
+            found = Some(Fam::Name(base.to_string(), Some(w)));
             break;
         }
     }
-    // the system's UI font where there is one (Windows: Segoe UI)
-    if found.is_none() {
-        for name in ["Segoe UI", "Inter", "DejaVu Sans", "Liberation Sans", "Arial"] {
-            if st.sys.db().faces().any(|face| face.families.iter().any(|(n, _)| n == name)) {
-                found = Some(name.to_string());
-                break;
-            }
-        }
-    }
+    // nothing of the list: the system's UI font where there is one (Windows: Segoe UI)
+    let found = found.unwrap_or_else(|| {
+        ["Segoe UI", "Inter", "DejaVu Sans", "Liberation Sans", "Arial"].iter().find(|n| has_family(st, n)).map_or(Fam::SansSerif, |n| Fam::Name((*n).to_string(), None))
+    });
     st.families.insert(list.to_string(), found.clone());
     found
 }
@@ -115,8 +167,10 @@ fn layout_text(st: &mut FontState, text: &str, font: &Font) -> Buffer {
     let mut buf = Buffer::new(&mut st.sys, metrics);
     buf.set_size(&mut st.sys, None, None);
     let attrs = match &fam {
-        Some(f) => Attrs::new().family(Family::Name(f)).weight(Weight(font.weight)),
-        None => Attrs::new().family(Family::SansSerif).weight(Weight(font.weight)),
+        Fam::Name(f, w) => Attrs::new().family(Family::Name(f)).weight(Weight(w.unwrap_or(font.weight))),
+        Fam::Serif => Attrs::new().family(Family::Serif).weight(Weight(font.weight)),
+        Fam::SansSerif => Attrs::new().family(Family::SansSerif).weight(Weight(font.weight)),
+        Fam::Monospace => Attrs::new().family(Family::Monospace).weight(Weight(font.weight)),
     };
     buf.set_text(&mut st.sys, text, &attrs, Shaping::Advanced, None);
     buf.shape_until_scroll(&mut st.sys, false);
