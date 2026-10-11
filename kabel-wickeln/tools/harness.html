@@ -4,7 +4,8 @@
   <body style="margin: 0; background: #000">
     <script type="module">
       // Loads the project without the editor, for tools/render.mjs (stills and the whole video).
-      // ?project=test loads the test project (model sheets, render tests).
+      // ?project=test loads the test project (model sheets, render tests); ?preview=1 is read by
+      // src/three/view.ts (cheap 3D for quick reviews).
       import { PlaybackState, Renderer } from '@motion-canvas/core';
       const q = new URLSearchParams(location.search);
       const projects = {

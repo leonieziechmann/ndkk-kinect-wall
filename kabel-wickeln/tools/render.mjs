@@ -5,6 +5,7 @@
 //   npm run render -- --fps 30           the same with 30 fps (half the time)
 //   npm run stills -- 3 12.5 40          single frames (seconds) → output/stills/*.jpg
 //   npm run stills -- --project test 2   frames of the test project (model sheets, render tests)
+//   --preview                            cheap 3D (half resolution, no shadows, no MSAA) for reviews
 //
 // Options: --fps N, --scale S (resolution factor), --from S --to S (seconds), --out DIR (stills).
 // The browser: CHROME_PATH, else Chrome/Edge/Chromium from the usual places.
@@ -35,7 +36,10 @@ const to = Number(opt('to', 1e9));
 const outDir = path.resolve(root, opt('out', 'output/stills'));
 /** `--project test` renders the test project (model sheets, render tests) */
 const project = opt('project', 'project');
-const times = args.slice(1).filter((a, i, all) => !a.startsWith('--') && !(all[i - 1] ?? '').startsWith('--')).map(Number);
+/** `--preview`: cheap 3D (half resolution, no shadows, no MSAA) for quick reviews */
+const preview = args.includes('--preview');
+const FLAGS = ['--preview'];
+const times = args.slice(1).filter((a, i, all) => !a.startsWith('--') && (!(all[i - 1] ?? '').startsWith('--') || FLAGS.includes(all[i - 1]))).map(Number);
 
 function findBrowser() {
   const local = process.env.LOCALAPPDATA ?? '';
@@ -119,7 +123,7 @@ try {
     failed = true;
     console.error('page error:', e.message);
   });
-  await page.goto(new URL(`tools/harness.html?project=${project}`, base).href);
+  await page.goto(new URL(`tools/harness.html?project=${project}${preview ? '&preview=1' : ''}`, base).href);
   await page.waitForFunction(() => window.__mc, { timeout: 120000 });
 
   if (mode === 'stills') {
