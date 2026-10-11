@@ -47,14 +47,14 @@ const ramp = (x: number, a: number, b: number) => smooth((x - a) / (b - a));
 
 /** scene seconds: a still moment before the shot runs; the split screen (shot times); the end */
 const A_INTRO = 0.6;
-const A_SPLIT_IN = PULL_T.takeB - 0.6, A_SPLIT_OUT = PULL_T.end - 0.3, A_SPLIT = 1.0;
+const A_SPLIT_IN = PULL_T.pull0 - 0.9, A_SPLIT_OUT = PULL_T.lay1 + 0.9, A_SPLIT = 0.8;
 const A_LEN = A_INTRO + PULL_T.end + 0.9;
 
 /** the outside cameras: from her front left across the desk; wide (who and where), then on the ring and her hands */
 const A_WIDE: Orbit = { target: [0.0, 0.95, 0.3], yaw: 0.62, pitch: 0.3, dist: 2.3, fov: 34 };
 const A_NEAR: Orbit = { target: [0.02, 1.06, 0.4], yaw: 0.72, pitch: 0.22, dist: 1.05, fov: 34 };
 /** while she pulls: wide enough for both hands */
-const A_PULL: Orbit = { target: [0.0, 1.0, 0.42], yaw: 0.55, pitch: 0.3, dist: 1.7, fov: 36 };
+const A_PULL: Orbit = { target: [0.0, 1.0, 0.42], yaw: 0.45, pitch: 0.28, dist: 2.1, fov: 36 };
 
 /** a small FOH mixing desk: sloped surface, fader rows, knobs, a meter bridge (on the floor, facing -z) */
 function mixer(): THREE.Group {

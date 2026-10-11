@@ -92,7 +92,8 @@ export class CoilWorld {
 
     const look = state.look ?? ((t: number) => {
       const g = bake.frame('gripL', t).p;
-      return [g[0] + 0.14, g[1] - 0.2, g[2] + 0.02] as V3;
+      // (ahead and below the hands: both hands, the coil hanging from the left one, the right hip)
+      return [g[0] + 0.12, g[1] - 0.28, g[2] - 0.22] as V3;
     });
 
     this.world = new World3D(key, () => {
@@ -124,7 +125,7 @@ export class CoilWorld {
         tie.pose({ center: c, axis: s, start: [0, 1, 0], radius: 0.026, wrap: tv.wrap, fold: tv.fold, droop: 1 - tv.wrap });
       }
 
-      povFollow(this.povCam, (x) => eyesOfRig(spec, this.replay.at(x).rig), look, t, { back: 0.05, up: 0.03, fov: 60, smooth: 0.25 });
+      povFollow(this.povCam, (x) => eyesOfRig(spec, this.replay.at(x).rig), look, t, { back: 0.05, up: 0.03, fov: 62, smooth: 0.25 });
       orbit(this.extCam, state.ext());
     });
     const scene = this.world.scene;

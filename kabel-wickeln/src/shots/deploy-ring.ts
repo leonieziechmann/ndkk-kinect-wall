@@ -84,9 +84,12 @@ function layout(spec: RingSpec, rc: number) {
   const R = (0.97 * loop) / (2 * Math.PI);
   const dense: V3[] = [];
   const step = 0.001;
-  for (let s = 0; s < lead; s += step) dense.push([lead - s, 0, 0]);
+  // the start end lies right in front of the first loop (touching it: the bundle in the fist is
+  // compact, a hand can pinch it)
+  const zLead = Math.max(0, DZ - 2 * rc - 0.001);
+  for (let s = 0; s < lead; s += step) dense.push([lead - s, 0, zLead]);
   const starts: number[] = [];
-  let zPrev = 0, Rprev = R;
+  let zPrev = zLead, Rprev = R;
   for (let k = 0; k < N; k++) {
     starts.push(dense.length);
     const z = (k + 1) * DZ;
@@ -186,7 +189,8 @@ function layRing(spec: RingSpec, onFrame?: (rod: Rod, t: number) => void): Ring 
 
   // press: the start end held in the fist, every other node held where it was laid by soft guides
   // whose targets move toward the middle of the stack; contacts sort the loops into a bundle
-  const zMid = FIST[2] + ((N + 1) / 2) * spec.spacing;
+  // (towards the first loop, which lies against the start end: the bundle closes up behind it)
+  const zMid = FIST[2] + spec.spacing;
   const press = spec.press ?? 0;
   const T = spec.pressTime ?? 3;
   const g = rod.opts.gravity;

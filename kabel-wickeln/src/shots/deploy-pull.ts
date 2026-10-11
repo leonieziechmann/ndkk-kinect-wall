@@ -50,9 +50,9 @@ export const YAW = Math.PI;
  * (Seated, Ilse's hands reach about 1.1 m apart: a 1.8 m cable would keep its last loop lying on
  * the desk, a curl; this one opens completely.)
  */
-export const SHORT_RING: RingSpec = { cable: CHARGING, loop: 0.29, pattern: 'ouou', lead: 0.07, tail: 0.22, spacing: 0.01, press: 0.5, pressTime: 3 };
+export const SHORT_RING: RingSpec = { cable: CHARGING, loop: 0.29, pattern: 'ouou', lead: 0.07, tail: 0.22, spacing: 0.01, press: 0.75, pressTime: 3 };
 /** the velcro tie: band length, width, thickness; where it lives on the start end (m from the plug's tip) */
-export const TIE = { length: 0.18, width: 0.012, thickness: 0.0015, s: 0.094 };
+export const TIE = { length: 0.17, width: 0.012, thickness: 0.0015, s: 0.094 };
 
 /** the ring as the factory made it: its face looks at Ilse, the start end sticks out to her left */
 const QRING: Quat = [0, 0, 0, 1];
@@ -65,15 +65,15 @@ export const PULL_T = {
   reach: 0.25, pinch: 0.85, unfold: 1.35, letTie: 1.5,
   /** the right hand goes round the ring (well clear of it, on her right) down to the other end, following it, and closes on it */
   side: 1.85, under: 2.3, takeB: 3.0,
-  /** the right hand draws its end out to the side (not under the ring any more) */
-  out: 3.6,
   /** the left hand opens but keeps the start end: the ring falls and hangs between the hands */
-  drop: 3.7,
+  drop: 3.4,
+  /** then the right hand draws its end out to the side, clear of the falling loops (not before: the ring's top is still in the left hand, the end's tail runs through its eye) */
+  out: 4.1,
   /** both hands hold still with their ends (they are pointed out) */
-  pull0: 4.9,
+  pull0: 4.8,
   /** hands apart: the loops open; then the hands sink a little, the cable lies calm */
-  pull1: 7.9, lay1: 8.9,
-  end: 10.2,
+  pull1: 7.8, lay1: 8.8,
+  end: 10.1,
 };
 const T = PULL_T;
 
@@ -222,8 +222,8 @@ const PALM: V3 = normalize([0, -0.7, 0.7]);
 /** the right hand at rest: open, on the desk's front edge (an open pinch, so every move is between grip frames) */
 const REST_R = gripFrame([-0.19, DESK.height + 0.05, 0.36], normalize([1, 0, 0.3]), normalize([0, -0.7, -0.7]));
 /** where the hands end: wide apart (the cable hangs free, all loops open), the cable leaving the pads forward; then lower: its middle lies on the desk */
-const PULL_L = gripFrame([0.56, 1.2, 0.38], normalize([-0.3, -0.2, 1]), PALM), PULL_R = gripFrame([-0.56, 1.2, 0.38], normalize([0.3, -0.2, 1]), PALM);
-const LAY_L: Grip = { p: [0.5, 1.03, 0.42], q: PULL_L.q }, LAY_R: Grip = { p: [-0.5, 1.03, 0.42], q: PULL_R.q };
+const PULL_L = gripFrame([0.52, 1.2, 0.38], normalize([-0.3, -0.2, 1]), PALM), PULL_R = gripFrame([-0.52, 1.2, 0.38], normalize([0.3, -0.2, 1]), PALM);
+const LAY_L: Grip = { p: [0.48, 1.03, 0.4], q: PULL_L.q }, LAY_R: Grip = { p: [-0.48, 1.03, 0.4], q: PULL_R.q };
 
 /** a grip frame between two (p eased linearly by u, q slerped) */
 const mixGrip = (a: Grip, b: Grip, u: number): Grip => ({ p: lerpV(a.p, b.p, u), q: slerpQ(a.q, b.q, u) });
@@ -272,7 +272,7 @@ export function pullRig(p: Plan, ends: Ends) {
       return { grip: mixGrip(under(), end(t), u), ...PINCH, open: 1 - ease(t, T.takeB - 0.25, T.takeB), free: 0.6 };
     }
     const held = end(T.takeB), out: Grip = { p: add(held.p, [-0.07, 0.02, 0]), q: held.q };
-    const g = mixGrip(mixGrip(mixGrip(held, out, ease(t, T.takeB + 0.1, T.out)), PULL_R, ease(t, T.pull0, T.pull1)), LAY_R, ease(t, T.pull1, T.lay1));
+    const g = mixGrip(mixGrip(mixGrip(held, out, ease(t, T.drop + 0.15, T.out)), PULL_R, ease(t, T.pull0, T.pull1)), LAY_R, ease(t, T.pull1, T.lay1));
     return { grip: g, ...PINCH, open: 0, free: 0.5 };
   };
 

@@ -365,7 +365,8 @@ export class CoilController {
     const laying = normalize(madd(g.S, [0, -1, 0], 0.2));
     // after the last loop: the hand opens and leaves the coil
     if (last && t >= b.t1) {
-      const away = madd(madd(meet, UP, 0.08), g.S, -0.12);
+      // (forward first, clear of the strands that come out of the left hand's edge behind the pads)
+      const away = madd(madd(madd(meet, UP, 0.06), g.S, -0.1), g.N, 0.07);
       const p = lerpV(meet, away, ramp(t, b.t1, b.t1 + 0.6));
       const rig = this.pinchRig(p, laying, { q: m.qMeet ?? undefined, free: 1, open: ramp(t, b.t1, b.t1 + 0.2) });
       return { rig, turn: 0 };
@@ -419,7 +420,8 @@ export class CoilController {
     const d3 = normalize(lerpV(along, laying, w));
     if (b.kind === 'over' || t < b.tHeld) return { rig: this.pinchRig(p, d3, { roll, open, cross, out }), turn: this.turnLeft(i, t) };
     // under: turn the hold frame about the forearm, unwinding into the hand-over frame on the way back
-    const turn = t < b.tTurned ? ramp(t, b.tHeld, b.tTurned) : 1 - 0.7 * ramp(t, b.tSpread - 0.2, b.tMeet);
+    // (turned back by the hand-over, so the next loop starts from the same hand as an over loop)
+    const turn = t < b.tTurned ? ramp(t, b.tHeld, b.tTurned) : 1 - ramp(t, b.tSpread - 0.2, b.tMeet - 0.05);
     const home = ramp(t, b.tSpread - 0.3, b.tMeet);
     const outPose = m.outPose ?? this.pose;
     const base: Frame = { p, q: quatSlerp(m.outQ ?? m.q0, m.homeQ ?? m.q0, home) };
@@ -502,7 +504,7 @@ export class CoilController {
     // (the first 12 cm beyond the pads hang as they want: the pads slide along them next)
     const a = rod.segmentAt(sP + 0.12), e = Math.min(rod.n - 2, rod.segmentAt(sP + 0.55));
     const l0 = rod.segmentAt(this.sEdge[b.k - 1]) + 4, l1 = rod.segmentAt(sP - 0.1);
-    const N = GEOM.N, A = GEOM.A;
+    const N = GEOM.N;
     const side = b.kind === 'over' ? -1 : 1;
     let tc = NaN, ref = 0;
     const target = (n: number, t: number): V3 | null => {
@@ -516,17 +518,29 @@ export class CoilController {
         ref = sum / Math.max(1, cnt) + side * 0.03;
       }
       const n3 = 3 * n, p: V3 = [rod.x[n3], rod.x[n3 + 1], rod.x[n3 + 2]];
-      const q = madd(p, N, ref - dot(p, N));
-      // at the hand-over it hangs from the pads down through the new loop
-      // (the first 10-20 cm beyond the pads hang as they want: the pads slide along them next)
-      const w = ramp(t, b.tMeet - 0.25, b.tMeet) * ramp(rod.sNode[n] - sP, 0.1, 0.22);
-      if (w <= 0) return q;
-      const xm = dot(this.exitPoint(b.k, t), A) - 0.03;
-      return madd(q, A, w * (xm - dot(q, A)));
+      return madd(p, N, ref - dot(p, N));
     };
     // (off before the next loop's slide: the pads run along this cable then)
     const t0 = b.tSpread - 0.15, t1 = b.t1 - 0.3;
     m.cross = rod.addGuide({ nodes: [a, e], target, compliance: 0.03, weight: (t) => (t < t1 ? ramp(t, t0, t0 + 0.35) : 1 - ramp(t, t1, b.t1 - 0.02)) });
+    // across: at the hand-over the cable hangs from the pads down through the new loop (so it crosses
+    // it), then, before the pads slide along it again, back to hanging straight below them (no hook
+    // for the pads to run into)
+    const A = GEOM.A;
+    const h0 = rod.segmentAt(sP + 0.03), h1 = Math.min(rod.n - 2, rod.segmentAt(sP + 0.45));
+    // (through the loop until 60 % of the hand-over, back below the pads by the time they slide)
+    const inEnd = b.tMeet + 0.6 * (b.t1 - b.tMeet);
+    const across = (n: number, t: number): V3 | null => {
+      if (n < h0 || n > h1) return null;
+      const n3 = 3 * n, p: V3 = [rod.x[n3], rod.x[n3 + 1], rod.x[n3 + 2]];
+      const pads = this.pose.body.arms![1].grip!.p;
+      const xin = dot(this.exitPoint(b.k, t), A) - 0.03, xout = dot(pads, A) - 0.03;
+      const wIn = ramp(rod.sNode[n] - sP, 0.1, 0.22);
+      const x = lerpV([xin, 0, 0], [xout, 0, 0], ramp(t, inEnd, b.t1 + 0.06))[0];
+      const w = t < inEnd ? wIn : 1;
+      return madd(p, A, w * (x - dot(p, A)));
+    };
+    rod.addGuide({ nodes: [h0, h1], target: across, compliance: 0.04, weight: (t) => ramp(t, b.tMeet - 0.3, b.tMeet) * (1 - ramp(t, b.t1 + 0.04, b.t1 + 0.1)) });
   }
 
   /** the roll the last loop left on the cable (0 before the first) */
@@ -534,10 +548,9 @@ export class CoilController {
     return i > 0 ? (this.rolls[i - 1] ?? 0) : 0;
   }
 
-  /** an under loop's turn still to undo at the start of the next loop (for the arrow and the rig) */
-  private turnLeft(i: number, t: number): number {
-    if (i < 1 || this.bs[i - 1].kind !== 'under') return 0;
-    return 0.3 * (1 - ramp(t, this.bs[i].t0, this.bs[i].tGrip));
+  /** an under loop's turn still to undo at the start of the next loop (none: it turns back before the hand-over) */
+  private turnLeft(_i: number, _t: number): number {
+    return 0;
   }
 
   /** the whole rig at time t */
@@ -619,9 +632,8 @@ export class CoilController {
     this.solve(-pre, true);
     this.coil = rod.bundle({ frame: this.pose.body.arms![0].grip!, hand: 0, blend: 0.01 });
     this.coil.add(this.plugStrand[0], this.plugStrand[1] + 0.004, 0.01);
-    // (a swivel: the cable turns between thumb and index as it wants, its twist runs on to the floor;
-    // sliding, the loose pinch pulls with ~1 N: the user's span sags only a few cm)
-    this.pin = rod.pinch({ frame: this.pose.body.arms![1].grip!, hand: 1, mode: 'held', blend: 0.01, rolls: false, friction: 1.0 });
+    // (a swivel: the cable turns between thumb and index as it wants, its twist runs on to the floor)
+    this.pin = rod.pinch({ frame: this.pose.body.arms![1].grip!, hand: 1, mode: 'held', blend: 0.01, rolls: false });
     rod.setCapsules((tt) => this.capsAt(tt));
     const frames = Math.round(pre * 60);
     for (let f = 0; f < frames; f++) {

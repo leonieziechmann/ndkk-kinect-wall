@@ -7,8 +7,9 @@ import './fonts.css';
 
 import coilPose from './scenes/test/coil-pose?scene';
 import coilSim from './scenes/test/coil-sim?scene';
+import coilCompare from './scenes/test/coil-compare?scene';
 
 export default makeProject({
   name: 'kabel-wickeln-coil',
-  scenes: [coilSim, coilPose],
+  scenes: [coilSim, coilPose, coilCompare],
 });

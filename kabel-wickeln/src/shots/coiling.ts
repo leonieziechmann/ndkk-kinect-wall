@@ -8,24 +8,26 @@
 // hand along the knuckles (from the little finger, low and medial, to the index finger, high and
 // lateral), the thumb on top. The loops hang below the hand in planes facing forward and a little
 // to the right; their axis N points away from the body, and every new loop is laid IN FRONT of the
-// others (further along N, ~6.5 mm per loop: "von der Halterung Richtung Ende", never over
+// others (further along N, 8 mm per loop: "von der Halterung Richtung Ende", never over
 // everything). The cable comes out of the hand at its medial edge and runs to the right hand.
 //
 // A loop (the right hand never lets go of the cable, it only loosens the pinch):
-//   1. slide: the pinch (thumb and index) loosens next to the left hand, the hand slides out along
-//      the cable to the right hip until a loop length of cable has passed (then it holds); the left
-//      hand moves out a little to the left
-//   2. under only: at the hip the forearm turns over (supination ~140°), so the loop that forms falls
+//   1. slide: the pinch (thumb and index) loosens next to the left hand's medial edge, the hand slides
+//      out along the cable to the right hip until a loop length of cable has passed (then it holds);
+//      the left hand moves out a little to the left
+//   2. under only: at the hip the forearm turns over (supination ~130°), so the loop that forms falls
 //      over the back of the hand and the wrist
 //   3. return: the right hand comes back towards the left hand, rolling the cable a little between
-//      thumb and index (over and under the other way round), first to a point ~18 cm medial of it
-//      where the loop hangs open between the hands, then along the knuckle line to the left hand's
-//      medial edge, laying the last ~9 cm of the loop across the open left hand (the loop's tangent
-//      continues into the hand: the loop falls round); the left hand comes towards the midline to
-//      meet it. Under: the hand turns back on the way, the wrist is still inside the new loop at the
-//      hand-over and slips out on the next slide
+//      thumb and index (over and under the other way round), first to a point ~22 cm medial of it
+//      where the loop hangs open between the hands, then to the left hand's medial edge, the thumb tip
+//      pointing along the knuckle line: the ~9 cm past it lie across the open left hand, and the loop
+//      comes up at the hand's lateral edge (it falls round); the left hand comes towards the midline
+//      to meet it. Under: the hand turns back on the way
 //   4. give: the left hand closes over the new strand (the bundle takes it), the pinch stays on the
 //      cable and loosens for the next loop
+//
+// Over and under differ only in where the cable to the floor crosses the new loop (KONZEPT): over,
+// on Noor's side of it; under, behind it (the loop covers it).
 
 import type { V3 } from '../sim';
 
@@ -51,8 +53,8 @@ export interface Pace {
 
 /** a slow loop for teaching: about 3.2 s (over) and 3.65 s (under) */
 export const TEACH: Pace = { regrip: 0, slide: 1.0, hold: 0.2, turn: 0.45, spread: 0.85, approach: 0.65, give: 0.4 };
-/** the user's natural pace: about 2.1 s (over) and 2.4 s (under) */
-export const NATURAL: Pace = { regrip: 0, slide: 0.7, hold: 0.06, turn: 0.3, spread: 0.55, approach: 0.45, give: 0.25 };
+/** the user's natural pace: about 2.3 s (over) and 2.6 s (under) */
+export const NATURAL: Pace = { regrip: 0, slide: 0.85, hold: 0.06, turn: 0.3, spread: 0.55, approach: 0.45, give: 0.25 };
 
 /** time for the pinch to loosen before the hand moves */
 export const LOOSEN = 0.1;

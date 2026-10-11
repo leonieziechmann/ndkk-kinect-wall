@@ -71,11 +71,11 @@ export function* part(layer: Node) {
   const gl = bake.frame('gripL', freezeAt(1)).p;
   const coilAt: [number, number, number] = [gl[0] + 0.02, gl[1] - 0.16, gl[2]];
   /** wide: Noor standing with the cable, the rest of it on the floor to her right front */
-  const WIDE: Orbit = { target: [0.12, 0.78, -0.45], yaw: 2.5, pitch: 0.2, dist: 3.1, fov: 34 };
+  const WIDE: Orbit = { target: [0.12, 0.8, -0.45], yaw: 2.5, pitch: 0.22, dist: 2.6, fov: 34 };
   /** the outside camera: her right front, the coil and both hands */
-  const EXT: Orbit = { target: [0.12, 0.76, -0.24], yaw: 2.3, pitch: 0.3, dist: 1.6, fov: 38 };
+  const EXT: Orbit = { target: [0.08, 0.8, -0.26], yaw: 2.35, pitch: 0.42, dist: 1.45, fov: 40 };
   /** the freeze: ~45° further round the left hand, to her right side: front and back of the loops become left and right */
-  const FREEZE_CAM: Orbit = { target: coilAt, yaw: 2.3 - 0.8, pitch: 0.2, dist: 0.95, fov: 40 };
+  const FREEZE_CAM: Orbit = { target: coilAt, yaw: 2.35 - 0.8, pitch: 0.22, dist: 1.05, fov: 40 };
   /** the finished ring from the front at hip height */
   const END_CAM: Orbit = { target: [coilAt[0] - 0.04, coilAt[1] + 0.02, coilAt[2] + 0.04], yaw: Math.PI - 0.3, pitch: 0.12, dist: 1.0, fov: 38 };
   const o1: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
