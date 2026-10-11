@@ -4432,6 +4432,7 @@ dependencies = [
  "tiny-skia",
  "tungstenite",
  "wgpu",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

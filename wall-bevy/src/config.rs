@@ -9,6 +9,7 @@
 //!                                    web/.cache/dev-server.json, re-read while running)
 //!   --scene NAME                     plays this scene instead of the show
 //!   --windowed                       a normal window (testing), --monitor N|NAME a screen
+//!   --screen X,Y,W,H                 the screen with this desktop rectangle (start-wand.ps1)
 //!   --fps N                          caps the render rate (as ?fps= in the browser)
 //!   --vsync fifo|mailbox|immediate   presentation (default fifo: steady, never tears)
 //!   --shots DIR --seconds S          test: renders S seconds, writes PNGs and frame times to DIR
@@ -30,6 +31,8 @@ pub struct Config {
     pub scene: Option<String>,
     pub windowed: bool,
     pub monitor: Option<String>,
+    /// the output screen as start-wand.ps1 knows it: x, y, width, height (desktop pixels)
+    pub screen: Option<[i32; 4]>,
     pub fps: f64,
     pub vsync: String,
     pub shots: Option<PathBuf>,
@@ -114,6 +117,7 @@ impl Config {
             scene: None,
             windowed: false,
             monitor: None,
+            screen: None,
             fps: 0.0,
             vsync: "fifo".into(),
             shots: None,
@@ -133,6 +137,12 @@ impl Config {
                 "--scene" => cfg.scene = Some(value("--scene")?),
                 "--windowed" => cfg.windowed = true,
                 "--monitor" => cfg.monitor = Some(value("--monitor")?),
+                "--screen" => {
+                    let v = value("--screen")?;
+                    let n: Vec<i32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    let [x, y, w, h] = n[..] else { return Err("--screen x,y,breite,höhe".into()) };
+                    cfg.screen = Some([x, y, w, h]);
+                }
                 "--fps" => cfg.fps = value("--fps")?.parse().map_err(|_| "--fps: Zahl erwartet")?,
                 "--vsync" => cfg.vsync = value("--vsync")?,
                 "--shots" => cfg.shots = Some(PathBuf::from(value("--shots")?)),
@@ -202,6 +212,7 @@ const HELP: &str = "wall-bevy: die LED-Wand-Ausgabe als native App (Bevy)
   --dev URL                      Dev-Server für die Steuerzentrale (Standard: dev-server.json)
   --scene NAME                   nur diese Szene statt der Show (-p key=wert für Parameter)
   --windowed                     normales Fenster (Test); --monitor N|NAME Bildschirm
+  --screen X,Y,B,H               der Bildschirm mit diesem Desktop-Rechteck (start-wand)
   --fps N                        Bildrate begrenzen
   --vsync fifo|mailbox|immediate Darstellung (Standard fifo)
   --shots DIR --seconds S        Test: S Sekunden rendern, PNGs und Bildzeiten nach DIR

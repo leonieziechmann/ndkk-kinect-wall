@@ -43,6 +43,10 @@ jpeg-encoder = "0.6"
 base64 = "0.22"
 qrcodegen = "1.8"
 
+# Windows: process priority and power throttling (platform.rs); already in the tree via winit
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 # dev: the scenes run fast enough to judge them (deps optimized), links stay quick and small
 [profile.dev]
 opt-level = 1

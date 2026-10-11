@@ -18,6 +18,7 @@ mod output;
 mod params;
 mod patterns;
 mod persons;
+mod platform;
 mod preview;
 mod scene;
 mod scenes;
@@ -25,8 +26,6 @@ mod shader_pass;
 mod show;
 mod wall;
 mod wall_persons;
-
-use std::time::Duration;
 
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::prelude::*;
@@ -100,17 +99,22 @@ fn main() {
         )
         .insert_resource(cfg)
         .add_plugins((compositor::CompositorPlugin, output::OutputPlugin))
-        .add_systems(Startup, (spawn_camera, output::init_output))
+        .add_systems(Startup, (spawn_camera, output::init_output, platform_tune))
         .add_systems(Update, place_window)
         .run();
+}
+
+fn platform_tune() {
+    platform::tune_process();
 }
 
 fn spawn_camera(mut commands: Commands) {
     commands.spawn((Camera2d, Tonemapping::None, DebandDither::Disabled, Msaa::Off));
 }
 
-/// The output screen: the setup's (chosen in the control center), else the first one that is not
-/// the primary; without a second screen a window on the primary one (fitted), until one comes.
+/// The output screen: --screen (start-wand.ps1), --monitor, the setup's (chosen in the control
+/// center), else the leftmost one that is not the primary; without a second screen a window on the
+/// primary one (fitted), until one comes; started by start-wand (--screen) it ends instead.
 fn place_window(
     cfg: Res<Config>,
     out: Option<NonSend<output::OutputState>>,
@@ -119,6 +123,7 @@ fn place_window(
     mut last: Local<Option<(Option<Entity>, u64)>>,
     time: Res<Time>,
     mut checked: Local<f64>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     let now = time.elapsed_secs_f64();
     if *checked > 0.0 && now - *checked < 1.0 {
@@ -137,10 +142,21 @@ fn place_window(
     }
     let Some(out) = out else { return };
     let want = out.setup_window();
-    let pick = cfg
-        .monitor
-        .as_deref()
-        .and_then(|m| {
+    // the screen whose desktop rectangle holds the middle of --screen (physical or logical pixels)
+    let by_rect = cfg.screen.and_then(|[x, y, w, h]| {
+        let (cx, cy) = (x + w / 2, y + h / 2);
+        list.iter()
+            .find(|m| {
+                let p = m.1.physical_position;
+                let (pw, ph) = (m.1.physical_width as i32, m.1.physical_height as i32);
+                let s = m.1.scale_factor.max(0.1);
+                let inside = |px: i32, py: i32, w: i32, h: i32| cx >= px && cy >= py && cx < px + w && cy < py + h;
+                inside(p.x, p.y, pw, ph) || inside((f64::from(p.x) / s) as i32, (f64::from(p.y) / s) as i32, (f64::from(pw) / s) as i32, (f64::from(ph) / s) as i32)
+            })
+            .map(|m| m.0)
+    });
+    let pick = by_rect.or_else(|| {
+        cfg.monitor.as_deref().and_then(|m| {
             m.parse::<usize>()
                 .ok()
                 .and_then(|i| list.get(i).map(|x| x.0))
@@ -158,7 +174,9 @@ fn place_window(
                     .map(|x| x.0)
             })
         })
-        .or_else(|| list.iter().find(|x| !x.2).map(|x| x.0));
+    })
+    // else the leftmost screen that is not the primary one (as start-wand.ps1 picks it)
+    .or_else(|| list.iter().filter(|x| !x.2).min_by_key(|x| (x.1.physical_position.x, x.1.physical_position.y)).map(|x| x.0));
     let key = (pick, out.setup_generation());
     if last.as_ref() == Some(&key) {
         return;
@@ -171,6 +189,13 @@ fn place_window(
             window.mode = WindowMode::BorderlessFullscreen(MonitorSelection::Entity(m));
             window.decorations = false;
         }
+        // started by start-wand.ps1 for a screen that is gone (Windows would move the window onto the
+        // notebook's panel): end; start-wand opens the output again as soon as there is a screen
+        None if cfg.screen.is_some() => {
+            info!("der Bildschirm der Wand ist weg: Ausgabe endet (start-wand öffnet sie wieder)");
+            exit.write(AppExit::Success);
+            return;
+        }
         None => {
             info!("kein zweiter Bildschirm: Ausgabe als Fenster, bis einer angeschlossen wird");
             window.mode = WindowMode::Windowed;
@@ -179,5 +204,4 @@ fn place_window(
         }
     }
     window.visible = true;
-    let _ = Duration::ZERO;
 }

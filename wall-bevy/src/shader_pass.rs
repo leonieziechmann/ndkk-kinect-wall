@@ -5,14 +5,14 @@
 
 use crate::gpu::{FULLSCREEN_WGSL, Gpu, GpuResult, TARGET_FORMAT, layout};
 use crate::kinect_gpu::{KinectGpu, PERSON_POINTS};
-use crate::params::{Kind, ParamSpec, Params};
+use crate::params::{Kind, ParamSpec};
 use crate::persons::{BONES, MAX_PERSONS, PERSON_COLORS, POINTS};
 use crate::scene::FrameCtx;
 use crate::wall::wall_wgsl;
 use crate::wall_persons::WallPersons;
 
 /// WGSL struct for the params, plus where each value goes (floats) in the uniform.
-struct ParamLayout {
+pub struct ParamLayout {
     code: String,
     size: usize,
     writers: Vec<(usize, ParamSpec)>,

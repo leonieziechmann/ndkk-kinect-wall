@@ -1,0 +1,102 @@
+# wall-bevy: die LED-Wand-Ausgabe als native App
+
+`wall-bevy` ist das Ausgabefenster der LED-Wand (`/wall/` im Browser) als eigenes Programm in Rust
+(Bevy 0.20, wgpu). Es spielt dieselbe Show mit denselben Szenen: gleiche Namen, Parameter,
+Projektionen und Personen-Einstellungen. Die Steuerzentrale bleibt im Browser und steuert es über
+den Dev-Server wie das Browser-Fenster: Show, Weiter/Zurück, Szene ansehen, Blackout, Testbilder,
+Parameter, Projektion, Wand-Setup, Vorschau und Status.
+
+Warum: Das Bild soll nie ruckeln. Im Browser teilen sich die Szene, der Compositor, die
+Garbage Collection und die Steuerzentrale einen Takt; hier gehört der Takt der Ausgabe allein.
+
+## Bauen (einmal je Checkout)
+
+```
+rustup update stable          # Bevy 0.20 braucht Rust 1.97 oder neuer
+cd wall-bevy
+cargo build --release         # beim ersten Mal 10–20 min, danach Sekunden
+```
+
+Das Programm liegt dann in `wall-bevy\target\release\wall-bevy.exe` (`target/` ist nicht in git).
+
+## Starten
+
+```
+wall-bevy\target\release\wall-bevy.exe
+```
+
+Ohne Optionen: Hub `127.0.0.1:8090` (oder `KINECT_HUB`), der `web/`-Ordner neben dem Programm,
+der Dev-Server aus `web/.cache/dev-server.json` (die Steuerzentrale), Setup und Projektionen aus
+`web/.cache/wall/` des Haupt-Checkouts (oder `KINECT_WALL_DIR`), die Show aus
+`web/.cache/wall/show.json`. Die Ausgabe geht randlos auf den Bildschirm der Wand: den aus dem
+Wand-Setup (in der Steuerzentrale gewählt), sonst den linkesten, der nicht der Hauptbildschirm ist.
+Ohne zweiten Bildschirm öffnet sich ein Fenster auf dem Hauptbildschirm, bis einer angeschlossen
+wird. Schließen: Alt+F4 oder „Ausgabe schließen“ in der Steuerzentrale.
+
+Es darf nur **eine** Ausgabe laufen: entweder das Browser-Fenster `/wall/` oder `wall-bevy`.
+
+| Option | |
+|---|---|
+| `--hub 8091` / `host:port` / URL | anderer Hub, z. B. ein Replay-Hub |
+| `--scene NAME [-p key=wert ...]` | nur diese Szene statt der Show |
+| `--windowed` | normales Fenster (zum Ausprobieren auf einem Bildschirm) |
+| `--monitor N\|NAME`, `--screen X,Y,B,H` | Bildschirm erzwingen (Nummer, Name oder Desktop-Rechteck) |
+| `--fps N` | Bildrate begrenzen (wie `?fps=` im Browser) |
+| `--vsync fifo\|mailbox\|immediate` | Darstellung; Standard `fifo` (gleichmäßig, nie Risse) |
+| `--web DIR`, `--dev URL` | `web/`-Ordner bzw. Dev-Server von Hand |
+| `--mute`, `--no-bus` | ohne Ton, ohne Steuerzentrale |
+| `--shots DIR --seconds S [--shot-every T]` | Test: S Sekunden spielen, Bilder und Bildzeiten nach DIR |
+
+## Was es gegen Ruckler tut
+
+- **Ein fester Takt:** Vsync (`fifo`), höchstens zwei Bilder unterwegs. Szenen mit Bildraten-Grenze
+  (`maxFps: 30`) rendern jedes zweite Anzeigebild, immer im gleichen Abstand; die Ausgabe zeigt
+  trotzdem jedes Anzeigebild.
+- **Nichts Schweres im Takt:** Hub-Verbindung und das Entpacken der Tiefenbilder und Personen-Masken
+  laufen in einem eigenen Thread (Puffer werden wiederverwendet), das Einrichten einer Szene in
+  einem Worker-Thread (die laufende spielt weiter), JPEG-Vorschauen und Testbilder werden
+  asynchron gelesen und in einem eigenen Thread kodiert, Dokumente (Show, Setup, Projektion) in
+  einem eigenen Thread beobachtet.
+- **Keine Shader-Übersetzung beim Szenenwechsel:** Beim Start wird jede Szene einmal eingerichtet
+  und ein paar Bilder lang unsichtbar gerendert; alle Pipelines liegen danach im Cache.
+- **Personen im Takt der Anzeige:** Die Personen werden nach der Aufnahmezeit des Sensors
+  ausgespielt, mit einer kleinen, sich selbst einstellenden Verzögerung, phasenstarr zum
+  Anzeigetakt. So kommt jedes Kinect-Bild gleich lange auf die Wand, auch wenn Netz und Hub
+  schwanken.
+- **Fehler halten die Show nicht an:** Jede Szene läuft in einem eigenen GPU-Fehlerbereich; eine
+  Szene mit Fehlern wird nach 2 s neu versucht und nach drei Fehlern in 30 s übersprungen. Ein
+  verlorenes GPU-Gerät wird neu aufgebaut. Unter Windows läuft die Ausgabe mit Priorität „höher als
+  normal“ und ohne Energiespar-Drosselung (wie Hub und Kiosk-Browser in `start-wand`).
+
+## Szenen
+
+Jede Szene aus `web/scenes/` hat hier ein Gegenstück in `src/scenes/` (gleicher Name). Szenen, die
+nur der Browser hat, überspringt die Show mit einer Fehlermeldung in der Steuerzentrale.
+Wie eine Szene hierher kommt: [`PORTING.md`](PORTING.md).
+
+## Testen ohne Kinect
+
+```
+cargo build
+./target/debug/fake_hub --bind 127.0.0.1:8099 --persons 3        # 3 erfundene Personen
+./target/debug/wall-bevy --hub 8099 --windowed                   # Show im Fenster
+./target/debug/wall-bevy --hub 8099 --scene pixel-spiegel --shots shots --seconds 8
+```
+
+`fake_hub` spricht das Hub-Protokoll mit Tiefe, IR, Personen-Masken und Skeletten; `--freeze 4.2`
+zeigt immer denselben Augenblick (für Bildvergleiche). Echte Aufnahmen spielt der Replay-Hub ab
+(siehe `CLAUDE.md`). `--shots` schreibt PNGs und `frames.json` (Bildzeiten, Fehler).
+
+## Aufbau
+
+| Datei | |
+|---|---|
+| `main.rs` | Fenster, Bildschirmwahl, Bevy-Plugins |
+| `output.rs` | die Ausgabe: Show, Übergänge, Blackout, Testbilder, Steuerzentrale, Telemetrie |
+| `compositor.rs` | bringt das fertige LED-Bild ins Fenster (1:1, gestreckt oder eingepasst) |
+| `hub.rs`, `kinect.rs`, `kinect_gpu.rs` | Hub-Client, Kinect-Daten, Ausspielen der Personen, GPU-Texturen |
+| `persons.rs`, `wall.rs`, `wall_persons.rs` | Personen, Wand-Abbildung (Projektionen), Personen auf der Wand |
+| `shader_pass.rs` | `createShaderPass` mit demselben WGSL-Vorspann |
+| `canvas.rs`, `audio.rs`, `patterns.rs` | 2D-Zeichnen, Ton, Testbilder |
+| `scenes/` | die Szenen |
+| `bin/fake_hub.rs` | Test-Hub |
