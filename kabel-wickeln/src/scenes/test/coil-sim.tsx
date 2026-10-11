@@ -39,7 +39,7 @@ export default makeScene2D(function* (view) {
   const cams = [makeCamera(54), makeCamera(36), makeCamera(36), makeCamera(44), makeCamera(30)];
   viewLayers(cams[0], 'pov');
   for (const c of cams.slice(1)) viewLayers(c, 'ext');
-  const titles = ['Ich-Ansicht', 'Rechts vorn', 'Vorn, Hüfthöhe (B)', 'Vorn oben (A)', 'Hände'];
+  const titles = ['Ich-Ansicht', 'Rechts vorn', 'Vorn, Hüfthöhe (B)', 'Rechte Hand', 'Linke Hand'];
 
   function update() {
     const tt = t();
@@ -53,7 +53,8 @@ export default makeScene2D(function* (view) {
     lookFrom(cams[0], [e[0], e[1] + 0.04, e[2] + 0.02], [lh[0] + 0.12, lh[1] - 0.15, lh[2] - 0.05], 56);
     lookFrom(cams[1], [0.95, 1.3, -1.05], [0.0, 0.72, -0.25], 36);
     lookFrom(cams[2], [0.0, 0.8, -1.7], [-0.02, 0.72, -0.2], 38);
-    lookFrom(cams[3], [0.0, 1.95, -0.85], [-0.05, 0.75, -0.25], 46);
+    const rh = bake.frame('gripR', tt).p;
+    lookFrom(cams[3], [rh[0] + 0.12, rh[1] + 0.22, rh[2] - 0.42], [rh[0], rh[1] - 0.04, rh[2]], 40);
     const mid: V3 = [lh[0] + 0.1, lh[1] - 0.05, lh[2]];
     lookFrom(cams[4], [mid[0] + 0.25, mid[1] + 0.25, mid[2] - 0.55], mid, 30);
     scene.updateMatrixWorld();

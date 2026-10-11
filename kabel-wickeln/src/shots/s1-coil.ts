@@ -62,4 +62,7 @@ export const coilShot = coilShotOf('s1-coil', COIL1, COIL1_TAIL);
 /** the first two loops of stage 1, for experiments */
 export const coilDev = coilShotOf('coil-dev', { ...COIL1, kinds: KINDS.slice(0, 2), paces: [TEACH, TEACH] }, 1.2);
 
-export const COIL_SHOTS: ShotDef[] = [coilShot, coilDev];
+/** two loops the same way (over, over): the comparison for the twist checks */
+export const coilDevSame = coilShotOf('coil-dev-oo', { ...COIL1, kinds: ['over', 'over'], paces: [TEACH, TEACH] }, 1.2);
+
+export const COIL_SHOTS: ShotDef[] = [coilShot, coilDev, coilDevSame];

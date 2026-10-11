@@ -50,9 +50,9 @@ export interface Pace {
 }
 
 /** a slow loop for teaching: about 3.2 s (over) and 3.6 s (under) */
-export const TEACH: Pace = { regrip: 0.35, slide: 0.95, hold: 0.2, turn: 0.45, spread: 0.8, approach: 0.6, give: 0.35 };
+export const TEACH: Pace = { regrip: 0, slide: 0.95, hold: 0.2, turn: 0.45, spread: 0.8, approach: 0.6, give: 0.35 };
 /** the user's natural pace: about 2.1 s (over) and 2.4 s (under) */
-export const NATURAL: Pace = { regrip: 0.22, slide: 0.62, hold: 0.06, turn: 0.3, spread: 0.5, approach: 0.4, give: 0.22 };
+export const NATURAL: Pace = { regrip: 0, slide: 0.62, hold: 0.06, turn: 0.3, spread: 0.5, approach: 0.4, give: 0.22 };
 
 /** time for the pinch to loosen before the hand moves */
 export const LOOSEN = 0.1;
@@ -140,15 +140,15 @@ export const GEOM = (() => {
     /** the left hand's grip point (the middle of the strands in the hand): resting in front of the left hip */
     leftRest: [-0.17, 0.88, -0.27] as V3,
     /** out to the left while the right hand slides out */
-    leftOut: [-0.25, 0.87, -0.24] as V3,
+    leftOut: [-0.27, 0.87, -0.23] as V3,
     /** towards the midline to meet the right hand */
-    leftMeet: [-0.03, 0.89, -0.32] as V3,
+    leftMeet: [-0.06, 0.89, -0.32] as V3,
     /** the right hand at the hip, slid out */
-    hip: [0.4, 0.83, -0.12] as V3,
+    hip: [0.44, 0.81, -0.1] as V3,
     /** half the length of the strand in the left hand, along S [m] */
     half: 0.045,
-    /** the stack: strand k (0 = the plug end, 1… the loops) lies this far along N from the hand's middle [m] */
-    stack: (k: number) => -0.019 + 0.0065 * k,
+    /** the stack: the top of loop k (0 = the plug end) lies this far along N from the hand's middle [m] */
+    stack: (k: number) => -0.024 + 0.008 * k,
     /** the bundle's radius for the hand shape [m] */
     bundle: 0.02,
     /** the right hand's pads this far beyond the left hand's medial edge at the hand-over [m] */

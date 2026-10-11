@@ -14,7 +14,7 @@ import { Layout, Node, Txt } from '@motion-canvas/2d';
 import { all, createSignal, easeInOutCubic, linear, waitFor } from '@motion-canvas/core';
 import * as THREE from 'three';
 import { BakedRod, V3, loadBake, smooth } from '../../sim';
-import { DESK, PULL_T, SEAT, SHORT_RING, TIE, TIE_POINTS, YAW, planFrom, pullRig, pullTrack, tieShape } from '../../shots/deploy-pull';
+import { DESK, PULL_T, SEAT, SHORT_RING, TIE, TIE_POINTS, YAW, endsFrom, planFrom, pullRig, pullTrack, tieShape } from '../../shots/deploy-pull';
 import { ILSE } from '../../people/cast';
 import { yawFrame } from '../../people/people';
 import { eyesOfRig } from '../../people/rig';
@@ -97,8 +97,9 @@ function mixer(): THREE.Group {
 function* shortCable(layer: Node) {
   const bake = (yield loadBake('deploy-pull')) as BakedRod;
   const plan = planFrom((name, t) => bake.vector(name, t));
-  const track = pullTrack(plan);
-  const rig = pullRig(plan).rig;
+  const ends = endsFrom((name, t) => bake.frame(name, t));
+  const track = pullTrack(plan, ends);
+  const rig = pullRig(plan, ends).rig;
   const T = PULL_T;
   const i0 = Math.round(bake.track('cable0', 0)), i1 = Math.round(bake.track('cable1', 0));
   const nc = i1 - i0 + 1;
@@ -134,7 +135,7 @@ function* shortCable(layer: Node) {
   const white = rgba('#ffffff', 1);
   const oa: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
   const ob: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
-  const nodeV: V3 = [0, 0, 0];
+  const nodeA: V3 = [0, 0, 0], nodeB: V3 = [0, 0, 0];
   const end = 0.04 / 0.006;
 
   const world = new World3D('p1-deploy-ilse', () => {
@@ -149,8 +150,9 @@ function* shortCable(layer: Node) {
     }
     cable.update(pos.subarray(3 * i0), d1.subarray(3 * i0), nc, undefined, on > 0 ? halo : undefined);
     // the tie: kinematic round the ring, then hanging from the cable it lives on
-    const root = tt >= T.letTie ? bake.nodeAt(tt, tieNode, nodeV) : undefined;
-    const s = tieShape(plan, tt, root ? [root[0], root[1], root[2]] : undefined);
+    const ra = bake.nodeAt(tt, tieNode - 1, nodeA), rb = bake.nodeAt(tt, tieNode + 1, nodeB);
+    const root = { p: [(ra[0] + rb[0]) / 2, (ra[1] + rb[1]) / 2, (ra[2] + rb[2]) / 2] as V3, d: [rb[0] - ra[0], rb[1] - ra[1], rb[2] - ra[2]] as V3 };
+    const s = tieShape(plan, tt, root);
     s.pts.forEach((p, k) => tiePath.set(p, 3 * k));
     tie.update(tiePath, TIE_POINTS, s.side);
     // cameras: wide, closer on the ring, wider for the pull
