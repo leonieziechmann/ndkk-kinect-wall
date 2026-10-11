@@ -17,7 +17,8 @@ behave like the browser scene. Read this whole file first.
 | `params: {...}` | `fn params() -> Vec<ParamSpec>` with `params::{num, boolean, color, select, select_map, text}` |
 | `projection: {...}` | `fn projection() -> serde_json::Value`: the same object with `json!({...})` (flat keys like `"body.scale"` or nested, `field: 'cone'` / `{ depth, width }`) |
 | `streams: ['persons']`, `persons: {...}` | `persons: fn(&Params) -> Option<PersonOptions>` (`PersonOptions::live()` = `delay: 0`, `::exact()` = default delay 12, `::both()` = `live: true`); other streams (`'depth'`, `'ir'`): `streams: fn(&Params) -> Vec<&str>` |
-| `maxFps` | `max_fps: fn(&Params) -> f64` (0 = none; `scene::cap30`) |
+| `persons: { mode: 'full', delay: 0 }` / `{ mode: 'full' }` (default delay) / `{ live: true }` | `scene::live` / `scene::exact` / `Some(PersonOptions::both())`; `mode: 'skeleton'` → `PersonOptions { skeleton: true, ..PersonOptions::live() }` |
+| `maxFps` | `max_fps: fn(&Params) -> f64` (0 = none; `scene::cap30`); a `maxFps()` method of the params → a fn reading `&Params` |
 | `state per instance (WeakMap ctx)` | fields of your scene struct |
 
 Register it in `src/scenes/mod.rs` (`v.push(&yourscene::DEF)` in `registry()`).
@@ -49,6 +50,10 @@ Register it in `src/scenes/mod.rs` (`v.push(&yourscene::DEF)` in `registry()`).
 | `ctx.track(obj)`, `ctx.onDispose` | not needed (Drop) |
 | sounds (`sound.js`, WebAudio) | `ctx.audio.play(&pcm, volume)` with PCM made once in `make` by `audio::{render, osc, noise, exp_ramp, lin_ramp, Biquad, OnePole, mix}` |
 | `Math.random()` | `scenes::common::rand::{Rng, random}` (a seeded `Rng` per instance is nicer) |
+| `ctx.scene` (name, for labels) | `ctx.name` in `make` / your `DEF.name` |
+| `ctx.wall.pointer` (mouse on the preview page), `ctx.params.mouse`, `ctx.on(window, 'pointerdown'/'keydown', …)` | none in the output: no pointer, no keyboard (the LED wall has no mouse). Behave as with `pointer.inside == false`; audio needs no unlock. Keep the param itself (show entries may carry it). |
+| DOM overlays (`document.*`, HTML elements on top of the canvas) | draw them into the LED image (Canvas → texture) if the wall showed them; leave out what only the dev page showed |
+| three.js (`three/webgpu`, TSL, BloomNode) | no three.js here: write the same scene with wgpu directly (meshes as vertex buffers, a camera matrix from the same numbers, bloom as a few blur passes); match the look at the LED resolution |
 
 ### ctx.wall (WallMap)
 
