@@ -273,7 +273,8 @@ export class CoilController {
     const open = t < b.tOut ? 0.45 * ramp(t, b.t0, b.tSlide) * (1 - ramp(t, b.tOut - 0.15, b.tOut)) : 0;
     // the roll on the way back: over +, under −; back to 0 on the next slide (the pinch is loose then)
     const sign = b.kind === 'over' ? 1 : -1;
-    const roll = t < b.tTurned ? 0 : sign * g.roll * ramp(t, b.tTurned, b.tSpread);
+    const prevRoll = i > 0 ? (this.bs[i - 1].kind === 'over' ? 1 : -1) * g.roll : 0;
+    const roll = t < b.tTurned ? prevRoll * (1 - ramp(t, b.t0, b.tSlide + 0.3)) : sign * g.roll * ramp(t, b.tTurned, b.tSpread);
     // the cable's direction: along the span, turning onto the knuckle line for the hand-over
     const w = ramp(t, b.tSpread - 0.2, b.tMeet);
     const d3 = normalize(lerpV(spanDir(p), g.S, w));
@@ -281,7 +282,7 @@ export class CoilController {
     // under loop's hand finishes turning back: the wrist slips out of the new loop)
     const blendIn = ramp(t, b.t0, b.tSlide + 0.35);
     if (b.kind === 'over' || t < b.tHeld) {
-      const rig = this.pinchRig(p, d3, { roll: t < b.tTurned ? 0 : roll, open, cross, out });
+      const rig = this.pinchRig(p, d3, { roll, open, cross, out });
       if (blendIn < 1) {
         rig.grip = { p, q: quatSlerp(m.q0, gripFrame(p, d3, [0, 0, 1]).q, blendIn) };
         rig.free = blendIn;
@@ -417,8 +418,8 @@ export class CoilController {
 
   /** solves the arms for time tn and moves the hands (pinch, bundle, capsules) there over the next frame */
   private solve(tn: number, jump: boolean) {
-    const rig = this.rigAt(tn);
     this.tPose = tn;
+    const rig = this.rigAt(tn);
     const pose = rigPose(this.spec, rig, this.ik);
     this.pose = pose;
     const caps = [

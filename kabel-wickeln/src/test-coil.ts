@@ -6,8 +6,9 @@ import { makeProject } from '@motion-canvas/core';
 import './fonts.css';
 
 import coilPose from './scenes/test/coil-pose?scene';
+import coilSim from './scenes/test/coil-sim?scene';
 
 export default makeProject({
   name: 'kabel-wickeln-coil',
-  scenes: [coilPose],
+  scenes: [coilSim, coilPose],
 });
