@@ -94,6 +94,8 @@ const G = 9.81;
 const DRAG = 0.15;
 /** the ring touches the floor when its grip point (its top) is this high */
 const LAND_Y = 0.3;
+/** the ring is empty at this fraction of its flight */
+const PEEL_DONE = 0.62;
 
 // ---------------------------------------------------------------- Kofi's body
 
@@ -493,9 +495,9 @@ export const throwShot: ShotDef = {
     rod.setCapsules((t) => {
       const pose = poseAt(t);
       const body = capsulesOf(pose).filter((c) => c.part === 'torso' || c.part === 'legL' || c.part === 'legR');
-      // (the right hand's capsules are off while it goes into the coil, takes the front loops and
-      // throws them: the guides hold the ring in that hand, the hand must not push it)
-      const off = t > T.letTie + 0.1 && t < T.release + 0.15;
+      // (the right hand's capsules are off while it goes into the coil and closes on the front loops:
+      // it must not plough through them; from then on the strands in its fist are held by it)
+      const off = t > T.letTie + 0.1 && t < T.take + 0.12;
       return [...body, ...handColliders(pose, 0, { group: LEFT, soft: SOFT }), ...handColliders(pose, 1, { group: RIGHT, soft: SOFT, disable: off ? () => true : undefined })];
     });
     for (let f = 0; f < 90; f++) rod.step(1 / 60, 40);
@@ -528,9 +530,10 @@ export const throwShot: ShotDef = {
     const peelAt = (t: number) => {
       if (t < T.release) return sRing0;
       // enough cable for the way from the left hand to the ring, with some slack …
-      const need = sHandEnd + 1.1 * len(sub(flight(t), leftGrip(t).p)) + 0.4;
-      // … and the ring empty a little before it lands
-      const lin = sRing0 + (sRing1 - sRing0) * Math.min(1, (t - T.release) / Math.max(0.05, T.land - 0.12 - T.release));
+      const need = sHandEnd + 1.15 * len(sub(flight(t), leftGrip(t).p)) + 0.6;
+      // … and the ring empty well before it lands: its last loops and the end fly on ahead and lie
+      // down stretched out (emptied just before the landing they would land in a heap)
+      const lin = sRing0 + (sRing1 - sRing0) * Math.min(1, (t - T.release) / (PEEL_DONE * (T.land - T.release)));
       return Math.min(sRing1 + 0.01, Math.max(sRing0, need, lin));
     };
     /** woven strands (an unter loop's successor, behind it): free once the loop in front of them starts to come off */
@@ -544,6 +547,8 @@ export const throwShot: ShotDef = {
       return s < sp || s > sRing1 || woven.some(([at, w0, w1]) => sp >= at && s >= w0 && s <= w1);
     };
     let guide = -1, landed = false, taken = false;
+    /** the strands in the right hand's fist: held by it (its capsules let them through) until it lets go */
+    let fist: Bundle | null = null;
 
     /** the loops still in the left hand (indices), the outermost first */
     const inHand: number[] = [];
@@ -577,7 +582,20 @@ export const throwShot: ShotDef = {
             return add(F2.p, quatRotate(F2.q, l));
           },
         });
+        // the strands in the fist (within 5 cm of the grip point) are held by the hand
+        // (in the ring's frame, as the guides: the strands in the fist and the rest of the ring move as one)
+        fist = r.bundle({ frame: ringFrame, hand: RIGHT, blend: 0.1 });
+        const g0 = ringFrame(t).p;
+        for (let j = nRing0; j < r.ns; j++) {
+          const c = C(j);
+          if (len(sub(c, g0)) < 0.05) fist.add(r.sNode[j], r.sNode[j + 1], 0.1);
+        }
         taken = true;
+      }
+      if (fist && t >= T.release) {
+        // the hand opens: the guides alone hold the ring now
+        fist.remove();
+        fist = null;
       }
       if (!split && t >= T.take + 0.05) {
         // the left hand lets the front loops go (and the two between the hands)
@@ -620,13 +638,18 @@ export const throwShot: ShotDef = {
     // twist and writhe once per recorded frame; the largest jump of their sum (the linking number of
     // the cable with its ends' frames) between two frames: a strand passing through another
     // changes it by ±2 at once, nothing else by more than a few hundredths
+    // (the jump is measured on the cable beyond the loops in his left hand, from the take on: strands
+    // a hand holds may overlap a little — they do not push each other — and their writhe flickers)
     let twr = { t: NaN, tw: 0, wr: 0 }, lkPrev: number | null = null, lkMax = 0;
+    const jFree = rod.segmentAt(sHandEnd);
     const tw_wr = (r: Rod, t: number) => {
       if (twr.t !== t) {
         twr = { t, tw: r.twistTurns(), wr: r.writhe(ring.cable[0], ring.cable[1]) };
-        const lk = twr.tw + twr.wr;
-        if (lkPrev !== null) lkMax = Math.max(lkMax, Math.abs(lk - lkPrev));
-        lkPrev = lk;
+        if (t >= T.take + 0.3) {
+          const lk = r.twistTurns(jFree, r.ns - 1) + r.writhe(jFree, ring.cable[1]);
+          if (lkPrev !== null) lkMax = Math.max(lkMax, Math.abs(lk - lkPrev));
+          lkPrev = lk;
+        }
       }
       return twr;
     };

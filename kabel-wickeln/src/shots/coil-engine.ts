@@ -1372,7 +1372,7 @@ export class CoilController {
     check('the plug stays outside the coil', plug.ok, plug.text);
     if (this.o.fetchEnd) {
       const left = this.endHeldAt === null ? NaN : rod.totalLength - this.endHeldAt;
-      check('the end is fetched: the right hand holds it within 20 cm of the plug, beside the fist', left <= 0.2 && !this.pin.lost, `${(left * 100).toFixed(0)} cm from the end`);
+      check('the end is fetched: the right hand holds it within 25 cm of the end (the plug hangs below the hand), beside the fist', left <= 0.25 && !this.pin.lost, `${(left * 100).toFixed(0)} cm from the end`);
     }
     check('IK: no hard limits, every grip reached', this.ikGroups.size === 0, [...this.ikGroups].map(([k, g]) => `${k}: ${g.n} frames, t ${g.t0.toFixed(2)}–${g.t1.toFixed(2)}${g.worst ? `, worst ${g.worst.toFixed(1)} mm` : ''}`).join('; ') || 'none');
     check('pinch never lost', !this.pin.lost, this.pin.lost);

@@ -104,12 +104,19 @@ export function* part(layer: Node) {
     // outside the forearm (away from her body, horizontally) and back along it towards the elbow: the camera
     const outside = norm3([w[0], 0, w[2] + 0.1]);
     const o = norm3([-fa[0] + 0.9 * outside[0], -fa[1] + 0.35, -fa[2] + 0.9 * outside[2]]);
-    const target: [number, number, number] = [w[0] + 0.02 * fa[0], w[1] + 0.02 * fa[1] - 0.03, w[2] + 0.02 * fa[2]];
-    return { target, yaw: Math.atan2(o[0], o[2]), pitch: Math.asin(Math.max(-0.2, Math.min(0.9, o[1]))), dist: 0.62, fov: 38 } as Orbit;
+    return { target: [w[0], w[1], w[2]], yaw: Math.atan2(o[0], o[2]), pitch: Math.asin(Math.max(-0.2, Math.min(0.9, o[1]))), dist: 0.62, fov: 38 } as Orbit;
   })());
+  /** the slow motion's camera follows the right hand (between its pads and its wrist) */
+  const slowFollow: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
+  const slowNow = (): Orbit => {
+    const c = slowCam(), g = bake.frame('gripR', t()).p;
+    slowFollow.target[0] = g[0]; slowFollow.target[1] = g[1] + 0.04; slowFollow.target[2] = g[2];
+    slowFollow.yaw = c.yaw; slowFollow.pitch = c.pitch; slowFollow.dist = c.dist; slowFollow.fov = c.fov;
+    return slowFollow;
+  };
   /** 0 … 1 … 0 around the slow motion: the outside camera comes close to the right hand */
   const slowU = () => {
-    const a = timeline.scene(SLOW_AT) - 0.9, b = timeline.scene(SLOW_AT + SLOW_LEN) + 0.6;
+    const a = timeline.scene(SLOW_AT) - 0.9, b = timeline.scene(SLOW_AT + SLOW_LEN) + 0.9;
     const s = tau();
     return smooth((s - a) / 0.9) * (1 - smooth((s - b) / 1.0));
   };
@@ -124,7 +131,7 @@ export function* part(layer: Node) {
       return mixOrbit(wide, EXT, easeInOutCubic(Math.max(0, (s - INTRO) / SPLIT)), o2);
     }
     if (endU() > 0) return mixOrbit(EXT, END_CAM, easeInOutCubic(endU()), o2);
-    if (slowU() > 0) return mixOrbit(EXT, slowCam(), easeInOutCubic(slowU()), o2);
+    if (slowU() > 0) return mixOrbit(EXT, slowNow(), easeInOutCubic(slowU()), o2);
     const k = sw(2) > 0 ? 2 : 1;
     return mixOrbit(EXT, FREEZE_CAM(k), easeInOutCubic(freeze()), o2);
   };
