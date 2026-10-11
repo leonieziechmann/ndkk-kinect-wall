@@ -7,7 +7,9 @@
 //   npm run stills -- --project test 2   frames of the test project (model sheets, render tests)
 //   --preview                            cheap 3D (half resolution, no shadows, no MSAA) for reviews
 //
-// Options: --fps N, --scale S (resolution factor), --from S --to S (seconds), --out DIR (stills).
+// Options: --fps N, --scale S (resolution factor), --from S --to S (seconds), --out DIR (stills),
+// --scene NAME (only this scene: still times and --from/--to count from its start),
+// --name N (video → output/N.mp4, so that several renders can run at the same time).
 // The browser: CHROME_PATH, else Chrome/Edge/Chromium from the usual places.
 //
 // Every stage of the video is a chapter in the mp4 (src/lib/chapters.ts): players such as VLC
@@ -30,9 +32,13 @@ const opt = (name, def) => {
   return i >= 0 ? args[i + 1] : def;
 };
 const fps = Number(opt('fps', mode === 'stills' ? 30 : 60));
+/** `--scene NAME`: only this scene (video range, or still times relative to its start) */
+const sceneName = opt('scene', null);
+/** `--name N`: the video goes to output/N.mp4 */
+const videoName = opt('name', null);
 const scale = Number(opt('scale', mode === 'stills' ? 0.5 : 1));
-const from = Number(opt('from', 0));
-const to = Number(opt('to', 1e9));
+let from = Number(opt('from', 0));
+let to = Number(opt('to', 1e9));
 const outDir = path.resolve(root, opt('out', 'output/stills'));
 /** `--project test` renders the test project (model sheets, render tests) */
 const project = opt('project', 'project');
@@ -130,7 +136,7 @@ try {
     fs.mkdirSync(outDir, { recursive: true });
     const list = [...times].sort((a, b) => a - b);
     const shots = await page.evaluate(
-      async ({ list, fps, scale }) => {
+      async ({ list, fps, scale, sceneName }) => {
         const { project, PlaybackState, Renderer } = window.__mc;
         const r = new Renderer(project);
         const settings = { ...project.meta.getFullRenderingSettings(), name: project.name, fps, resolutionScale: scale };
@@ -141,31 +147,56 @@ try {
         await r.playback.recalculate();
         const scenes = r.playback.scenes.current.map((s) => ({ name: s.name, from: s.firstFrame / fps, to: s.lastFrame / fps }));
         await r.playback.reset();
+        const s0 = sceneName ? scenes.find((s) => s.name === sceneName) : null;
+        if (sceneName && !s0) throw new Error(`no scene ${sceneName}: ${scenes.map((s) => s.name).join(', ')}`);
         const out = [];
         for (const t of list) {
           const t0 = performance.now();
-          await r.playback.seek(r.status.secondsToFrames(t));
+          await r.playback.seek(r.status.secondsToFrames(t + (s0 ? s0.from : 0)));
           await r.stage.render(r.playback.currentScene, r.playback.previousScene);
           out.push({ t, data: r.stage.finalBuffer.toDataURL('image/jpeg', 0.9), ms: performance.now() - t0 });
         }
         return { out, scenes };
       },
-      { list, fps, scale },
+      { list, fps, scale, sceneName },
     );
     for (const s of shots.scenes) console.log(`  ${s.name.padEnd(16)} ${s.from.toFixed(2).padStart(7)} – ${s.to.toFixed(2).padStart(7)} s`);
     for (const s of shots.out) {
-      const file = path.join(outDir, `t${String(s.t.toFixed(2)).padStart(6, '0')}.jpg`);
+      const file = path.join(outDir, `${sceneName ? sceneName + '-' : ''}t${String(s.t.toFixed(2)).padStart(6, '0')}.jpg`);
       fs.writeFileSync(file, Buffer.from(s.data.split(',')[1], 'base64'));
       console.log(`${file}  (${Math.round(s.ms)} ms)`);
     }
   } else {
+    if (sceneName) {
+      // the scene's range: compute the scene lengths once without rendering
+      const scenes = await page.evaluate(
+        async ({ fps, scale }) => {
+          const { project, PlaybackState, Renderer } = window.__mc;
+          const r = new Renderer(project);
+          const settings = { ...project.meta.getFullRenderingSettings(), name: project.name, fps, resolutionScale: scale };
+          r.stage.configure(settings);
+          r.playback.fps = fps;
+          r.playback.state = PlaybackState.Rendering;
+          await r.reloadScenes(settings);
+          await r.playback.recalculate();
+          return r.playback.scenes.current.map((s) => ({ name: s.name, from: s.firstFrame / fps, to: s.lastFrame / fps }));
+        },
+        { fps, scale },
+      );
+      const s0 = scenes.find((s) => s.name === sceneName);
+      if (!s0) throw new Error(`no scene ${sceneName}: ${scenes.map((s) => s.name).join(', ')}`);
+      // --from/--to count from the scene's start
+      to = Math.min(s0.to, s0.from + to);
+      from = s0.from + from;
+      console.log(`${sceneName}: ${from.toFixed(2)} – ${to.toFixed(2)} s`);
+    }
     const { result, name, scenes } = await page.evaluate(
-      async ({ fps, scale, from, to }) => {
+      async ({ fps, scale, from, to, videoName }) => {
         const { project, Renderer } = window.__mc;
         const r = new Renderer(project);
         const settings = {
           ...project.meta.getFullRenderingSettings(),
-          name: project.name,
+          name: videoName ?? project.name,
           fps,
           resolutionScale: scale,
           range: [from, to],
@@ -182,9 +213,9 @@ try {
         r.render(settings);
         const result = await done;
         const scenes = r.playback.scenes.current.map((s) => ({ name: s.name, first: s.firstFrame, last: s.lastFrame }));
-        return { result, name: project.name, scenes };
+        return { result, name: videoName ?? project.name, scenes };
       },
-      { fps, scale, from, to },
+      { fps, scale, from, to, videoName },
     );
     const file = path.join(root, 'output', `${name}.mp4`);
     if (result === 0) {
