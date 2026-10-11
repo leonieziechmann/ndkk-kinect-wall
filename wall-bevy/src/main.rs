@@ -24,6 +24,7 @@ mod scene;
 mod scenes;
 mod shader_pass;
 mod show;
+mod store;
 mod wall;
 mod wall_persons;
 

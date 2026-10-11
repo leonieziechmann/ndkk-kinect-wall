@@ -763,6 +763,8 @@ fn panic_text(p: &Box<dyn std::any::Any + Send>) -> String {
 #[allow(clippy::too_many_arguments)]
 pub fn init_output(world: &mut World) {
     let cfg = world.resource::<Config>().clone();
+    // the scenes' localStorage (tests keep theirs in memory)
+    crate::store::init(cfg.shots.is_none().then(|| cfg.web_dir.join(".cache").join("wall").join("bevy-store.json")));
     world.insert_non_send(new_state(cfg));
 }
 

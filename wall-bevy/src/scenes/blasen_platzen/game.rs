@@ -8,7 +8,6 @@
 
 use std::collections::HashMap;
 use std::f64::consts::PI;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::persons::PersonsView;
 use crate::scenes::common::rand::Rng;
@@ -22,16 +21,15 @@ pub enum Kind {
     Giant = 2,
 }
 
-/// The record: kept by the browser in localStorage, here for the run of the output (every instance
-/// of the scene shares it, as the browser's instances share their storage).
-static BEST: AtomicU64 = AtomicU64::new(0);
+/// The record: the browser keeps it in localStorage, here in the output's store (the same key)
+const BEST_KEY: &str = "blasen-platzen:best";
 
 fn load_best() -> u64 {
-    BEST.load(Ordering::Relaxed)
+    crate::store::get(BEST_KEY).and_then(|v| v.trim().parse::<f64>().ok()).filter(|v| v.is_finite() && *v > 0.0).map_or(0, |v| v as u64)
 }
 
 fn save_best(v: u64) {
-    BEST.fetch_max(v, Ordering::Relaxed);
+    crate::store::set(BEST_KEY, &v.to_string());
 }
 
 /// neon: cyan, blue, violet, magenta, pink and back (no yellow or green, they fade to olive)

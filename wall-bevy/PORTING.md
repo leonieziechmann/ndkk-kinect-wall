@@ -50,6 +50,7 @@ Register it in `src/scenes/mod.rs` (`v.push(&yourscene::DEF)` in `registry()`).
 | `ctx.track(obj)`, `ctx.onDispose` | not needed (Drop) |
 | sounds (`sound.js`, WebAudio) | `ctx.audio.play(&pcm, volume)` with PCM made once in `make` by `audio::{render, osc, noise, exp_ramp, lin_ramp, Biquad, OnePole, mix}` |
 | `Math.random()` | `scenes::common::rand::{Rng, random}` (a seeded `Rng` per instance is nicer) |
+| `localStorage.getItem/setItem(key, …)` | `crate::store::get(key)` / `crate::store::set(key, value)` (same key; kept in `web/.cache/wall/bevy-store.json`, written by a thread of its own) |
 | `ctx.scene` (name, for labels) | `ctx.name` in `make` / your `DEF.name` |
 | `ctx.wall.pointer` (mouse on the preview page), `ctx.params.mouse`, `ctx.on(window, 'pointerdown'/'keydown', …)` | none in the output: no pointer, no keyboard (the LED wall has no mouse). Behave as with `pointer.inside == false`; audio needs no unlock. Keep the param itself (show entries may carry it). |
 | DOM overlays (`document.*`, HTML elements on top of the canvas) | draw them into the LED image (Canvas → texture) if the wall showed them; leave out what only the dev page showed |
