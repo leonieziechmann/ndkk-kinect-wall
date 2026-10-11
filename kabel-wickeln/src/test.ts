@@ -7,8 +7,9 @@ import './fonts.css';
 import cast from './scenes/test/cast?scene';
 import render from './scenes/test/render?scene';
 import derisk from './scenes/test/derisk?scene';
+import ik from './scenes/test/ik?scene';
 
 export default makeProject({
   name: 'kabel-wickeln-test',
-  scenes: [render, cast, derisk],
+  scenes: [render, cast, derisk, ik],
 });

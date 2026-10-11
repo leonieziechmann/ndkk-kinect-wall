@@ -390,8 +390,9 @@ export class Pinch implements Attachment {
         cax += ws[k] * (al - this.sigma * (sm - this.s));
         sw += ws[k];
       }
-      // (never into what another hand holds rigidly)
-      const next = sw > 0 ? this.s - this.sigma * (cax / sw) : this.s;
+      // (at most half the pads per substep, and never into what another hand holds rigidly)
+      const ds = sw > 0 ? Math.max(-this.pad / 2, Math.min(this.pad / 2, -this.sigma * (cax / sw))) : 0;
+      const next = this.s + ds;
       if (rod.wc[rod.segmentAt(next)] !== 0) this.s = next;
     }
     this.slip = h > 0 ? (this.s - sOld) / h : 0;

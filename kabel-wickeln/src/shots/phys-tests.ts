@@ -332,8 +332,9 @@ export const physCoil: ShotDef = {
         const tA = t0 + BEAT.take, tS = tA + BEAT.slide, tC = tS + BEAT.close, tR = tC + BEAT.ret;
         const above: V3 = [at[0] + 0.04, at[1] + 0.1, at[2] + 0.03];
         path = keyPath([[t0, from], [t0 + BEAT.take * 0.6, above], [tA, at], [tS, out], [tC, out], [tC + BEAT.ret * 0.5, mid], [tR, back], [tR + BEAT.place + 0.05, back], [tR + BEAT.place + BEAT.open, [back[0] + 0.08, back[1] + 0.06, back[2] + 0.06]]]);
-        const dOut = normalize(sub(out, at)), dBack = normalize(sub(back, mid));
-        axis = (tt) => (tt < tA ? dir : tt < tC ? normalize(lerpV(dir, dOut, minJerk((tt - tA) / 0.3))) : normalize(lerpV(dOut, dBack, minJerk((tt - tC) / BEAT.ret))));
+        // the pads along the cable while sliding out, and the hand keeps that direction on the way back
+        const dOut = normalize(sub(out, at));
+        axis = (tt) => (tt < tA ? dir : normalize(lerpV(dir, dOut, minJerk((tt - tA) / 0.3))));
         phase = 'take';
       }
       if (k < 0) return;
