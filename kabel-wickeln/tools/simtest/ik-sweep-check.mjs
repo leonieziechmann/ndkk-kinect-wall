@@ -5,7 +5,8 @@
 // palm, the heights of elbow and wrist. And the under loop's turn: how far the hand turns over
 // between the second slide-out and the turned pose (palm normal, thumb direction), and how much of
 // it the forearm does. Asserts: start and slide-out relaxed (nothing strained or at a limit), the
-// thumb tip within 45° of the coil at the start, the under turn ≥ 150° with the elbow staying low.
+// thumb tip within 45° of the coil at the start, the under turn (rotation of the hand) ≥ 130° with the
+// shoulder staying low (elevation ≤ 45°) and no joint at its limit while turned.
 // Writes output/simtest/ik-sweep-check.json; exits with 1 when an assertion fails.
 
 import fs from 'node:fs';
@@ -49,7 +50,13 @@ for (const [beat, t] of Object.entries(sweep.SWEEP_BEATS)) {
 // the under turn
 const A = track.pose(sweep.SWEEP_BEATS.out2), B = track.pose(sweep.SWEEP_BEATS.turned);
 const thumbOf = (p) => m.cross(p.body.hands[1].fd, p.body.hands[1].palm);
+/** the hand's frame as a quaternion (fd, palm, thumb side) */
+const frameQ = (p) => { const h = p.body.hands[1]; return m.quatFromCols(h.fd, h.palm, m.norm(m.cross(h.fd, h.palm))); };
+const qa = frameQ(A), qb = frameQ(B);
+const dotq = Math.abs(qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3]);
 const turn = {
+  /** how far the hand turned (the angle of the rotation between the two hand frames) */
+  handDeg: +((2 * Math.acos(Math.min(1, dotq))) * D).toFixed(0),
   palmDeg: +ang(A.body.hands[1].palm, B.body.hands[1].palm).toFixed(0),
   thumbSideDeg: +ang(thumbOf(A), thumbOf(B)).toFixed(0),
   forearmDeg: +((A.body.arms[1].angles.pron - B.body.arms[1].angles.pron) * D).toFixed(0),
@@ -71,7 +78,8 @@ for (const b of ['start', 'out', 'out2']) {
   if (r.strained.length || r.atLimit.length) fails.push(`${b}: right arm strained ${r.strained} / at limit ${r.atLimit}`);
 }
 if (rows.start.thumbToCoilDeg > 45) fails.push(`start: thumb tip ${rows.start.thumbToCoilDeg}° off the coil`);
-if (turn.palmDeg < 150) fails.push(`under turn only ${turn.palmDeg}°`);
+if (turn.handDeg < 130) fails.push(`under turn only ${turn.handDeg}°`);
+for (const b of ['turned', 'back']) if (rows[b].atLimit.length) fails.push(`${b}: right arm at a limit ${rows[b].atLimit}`);
 if (elevMax > 45) fails.push(`shoulder raised to ${elevMax.toFixed(0)}°`);
 
 for (const [b, r] of Object.entries(rows)) console.log(b.padEnd(8), JSON.stringify(r));

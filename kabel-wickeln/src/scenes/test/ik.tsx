@@ -34,7 +34,7 @@ import { makeCamera, orbit, povFollow } from '../../three/camera';
 import { project } from '../../three/overlay';
 import { Studio } from '../../three/studio';
 import { ThreeView, World3D } from '../../three/view';
-import { SWEEP_PERIOD, sweepRig } from './ik-sweep';
+import { SWEEP_BEATS, SWEEP_PERIOD, sweepHands, sweepRig } from './ik-sweep';
 
 const SHEET_GAP = 0.85;
 const XLR = 0.0032;
@@ -50,7 +50,7 @@ interface Case {
 const towardsLeft: V3 = norm([-1, -0.3, -0.35]);
 const SHEETS: Case[][] = [
   [
-    { label: 'Pinzettengriff vorn', hands: [null, { grip: gripFrame([0.0, 0.9, -0.32], towardsLeft, [0, 0, 1]), hold: 'pinch', radius: XLR, free: 1, prefer: [{ hand: [0, 0, 1], world: [0, 1, 0], weight: 0.25 }] }] },
+    { label: 'Pinzettengriff vorn', hands: [null, { grip: gripFrame([0.0, 0.9, -0.32], towardsLeft, [0, 0, 1]), hold: 'pinch', radius: XLR, free: 1, thumbTo: [-1, 0, 0] }] },
     { label: 'Über Kopf', hands: [null, { wrist: [0.12, 1.78, -0.12], palm: [0, 0, -1], curl: 0.2 }] },
     { label: 'Hinter dem Rücken', hands: [null, { wrist: [0.04, 0.98, 0.17], palm: [0, 0, 1], curl: 0.3 }] },
     { label: 'Quer zur linken Schulter', hands: [null, { wrist: [-0.1, 1.28, -0.16], palm: [0, 0, 1], curl: 0.3 }] },
@@ -63,18 +63,23 @@ const SHEETS: Case[][] = [
     { label: 'Tief an der Seite', hands: [null, { wrist: [0.3, 0.62, -0.08], dir: [0, -1, -0.2], curl: 0.4 }] },
     { label: 'Weit vorn, Oberkörper hilft', reach: 1, hands: [null, { wrist: [0.15, 1.0, -0.72], palm: [0, -1, 0], curl: 0.3 }] },
     { label: 'Daumen nach oben, gestreckt', hands: [null, { wrist: [0.3, 1.05, -0.42], dir: [0, 0, -1], palm: [-1, 0, 0], curl: 0.2 }] },
-    { label: 'Wickelstart', lean: 0.05, hands: [{ grip: gripFrame([-0.08, 0.9, -0.3], norm([0.1, 0.4, -1]), [-1, 0.1, 0]), hold: 'coil', radius: 0.012, free: 0.6 }, { grip: gripFrame([-0.02, 0.88, -0.31], towardsLeft, [0, 0, 1]), hold: 'pinch', radius: XLR, free: 1, prefer: [{ hand: [0, 0, 1], world: [0, 1, 0], weight: 0.25 }] }] },
+    { label: 'Wickelstart', lean: 0.05, hands: [sweepHands(SWEEP_BEATS.start).left, sweepHands(SWEEP_BEATS.start).right] },
   ],
 ];
 
 /** the hand close-ups: pinch variants and coil sizes, each a figure of its own */
+const pinchClose: HandRig = { grip: gripFrame([0.06, 0.95, -0.33], towardsLeft, [0, 0, 1]), hold: 'pinch', radius: XLR, free: 1, thumbTo: [-1, 0, 0] };
+const coilClose = (radius: number): HandRig => ({ grip: gripFrame([-0.1, 0.92, -0.3], norm([0.1, 0.4, -1]), [-1, 0.1, 0]), hold: 'coil', radius, free: 0.6 });
+const fistClose = (radius: number, wrap: number): HandRig => ({ grip: gripFrame([0.1, 0.95, -0.32], norm([-1, 0.1, -0.2]), [0, 1, 0]), radius, wrap, free: 1 });
 const CLOSE: { label: string; hand: HandRig; side: 0 | 1 }[] = [
-  { label: 'Pinzette', side: 1, hand: { grip: gripFrame([0.06, 0.95, -0.33], towardsLeft, [0, 0, 1]), hold: 'pinch', radius: XLR, free: 1, prefer: [{ hand: [0, 0, 1], world: [0, 1, 0], weight: 0.3 }] } },
-  { label: 'Pinzette, um 70° gerollt', side: 1, hand: { grip: gripFrame([0.06, 0.95, -0.33], towardsLeft, [0, 0, 1]), hold: 'pinch', radius: XLR, roll: 70 * DEG, free: 1, prefer: [{ hand: [0, 0, 1], world: [0, 1, 0], weight: 0.3 }] } },
-  { label: 'Pinzette offen (Kabel gleitet)', side: 1, hand: { grip: gripFrame([0.06, 0.95, -0.33], towardsLeft, [0, 0, 1]), hold: 'pinch', radius: XLR, open: 1, free: 1, prefer: [{ hand: [0, 0, 1], world: [0, 1, 0], weight: 0.3 }] } },
-  { label: 'Bund Ø 1,6 cm', side: 0, hand: { grip: gripFrame([-0.1, 0.92, -0.3], norm([0.1, 0.4, -1]), [-1, 0.1, 0]), hold: 'coil', radius: 0.008, free: 0.6 } },
-  { label: 'Bund Ø 2,8 cm', side: 0, hand: { grip: gripFrame([-0.1, 0.92, -0.3], norm([0.1, 0.4, -1]), [-1, 0.1, 0]), hold: 'coil', radius: 0.014, free: 0.6 } },
-  { label: 'Bund Ø 4,4 cm', side: 0, hand: { grip: gripFrame([-0.1, 0.92, -0.3], norm([0.1, 0.4, -1]), [-1, 0.1, 0]), hold: 'coil', radius: 0.022, free: 0.6 } },
+  { label: 'Pinzette', side: 1, hand: pinchClose },
+  { label: 'Pinzette, um 70° gerollt', side: 1, hand: { ...pinchClose, roll: 70 * DEG } },
+  { label: 'Pinzette offen (Kabel gleitet)', side: 1, hand: { ...pinchClose, open: 1 } },
+  { label: 'Faust, Daumen halb umgelegt', side: 1, hand: fistClose(XLR, 0.5) },
+  { label: 'Bund Ø 1,6 cm', side: 0, hand: coilClose(0.008) },
+  { label: 'Bund Ø 2,8 cm', side: 0, hand: coilClose(0.014) },
+  { label: 'Bund Ø 4,4 cm', side: 0, hand: coilClose(0.022) },
+  { label: 'Faust um Bund Ø 1,6 cm', side: 1, hand: fistClose(0.008, 1) },
 ];
 
 const GREEN = new THREE.Color('#2f9a55');
@@ -200,7 +205,7 @@ export default makeScene2D(function* (view) {
   // figure 0 on the left of the picture (the camera looks at their fronts)
   const sheetX = (i: number) => (2.5 - i) * SHEET_GAP;
   const sheetRig = (c: Case, i: number): Rig => ({ ...stand(NOOR, [sheetX(i), 0], 0, { width: 0.3 }), lean: c.lean ?? 0.03, look: [sheetX(i), 1.0, -0.5], reach: c.reach, hands: atX(sheetX(i), c.hands) });
-  const closeX = (i: number) => (i - 2.5) * 1.2;
+  const closeX = (i: number) => (i - (CLOSE.length - 1) / 2) * 1.2;
   const closeRig = (i: number): Rig => {
     const c = CLOSE[i];
     const hands: [HandRig | null, HandRig | null] = c.side ? [null, c.hand] : [c.hand, null];
@@ -209,9 +214,9 @@ export default makeScene2D(function* (view) {
 
   // the people: one per figure on a sheet (reused for the close-ups), one for the sweep
   const figures: Person3D[] = [];
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < CLOSE.length; i++) {
     const spec: PersonSpec = { ...NOOR, name: `Noor ${i}` };
-    const p = new Person3D(spec, rigPose(spec, sheetRig(SHEETS[0][i], i)));
+    const p = new Person3D(spec, rigPose(spec, i < 6 ? sheetRig(SHEETS[0][i], i) : closeRig(i)));
     p.material.transparent = false;
     figures.push(p);
     scene.add(p.group);
@@ -238,8 +243,8 @@ export default makeScene2D(function* (view) {
 
   // joint markers and target spheres (sheets)
   const dotGeo = new THREE.SphereGeometry(0.022, 14, 10);
-  const markers = figures.map(() => [0, 1, 2, 3].map(() => new THREE.Mesh(dotGeo, new THREE.MeshBasicMaterial({ color: GREEN, depthTest: false, transparent: true }))));
-  const targets = figures.map(() => new THREE.Mesh(new THREE.SphereGeometry(0.016, 14, 10), new THREE.MeshBasicMaterial({ color: RED })));
+  const markers = SHEETS[0].map(() => [0, 1, 2, 3].map(() => new THREE.Mesh(dotGeo, new THREE.MeshBasicMaterial({ color: GREEN, depthTest: false, transparent: true }))));
+  const targets = SHEETS[0].map(() => new THREE.Mesh(new THREE.SphereGeometry(0.016, 14, 10), new THREE.MeshBasicMaterial({ color: RED })));
   for (const m of markers.flat()) {
     m.renderOrder = 10;
     scene.add(m);
@@ -274,7 +279,7 @@ export default makeScene2D(function* (view) {
     const b = board();
     const tt = t();
     const sheet = b <= 1;
-    for (const f of figures) f.group.visible = b <= 2;
+    figures.forEach((f, i) => (f.group.visible = b === 2 || (b <= 1 && i < 6)));
     for (const f of kofis) f.group.visible = b === 4;
     noor.person.group.visible = b === 3;
     for (const m of [...markers.flat(), ...targets]) m.visible = sheet;
@@ -320,6 +325,7 @@ export default makeScene2D(function* (view) {
           closeCables[i].set(throughGrip(arm, 0.22, 0.22));
         }
         for (const cap of handColliders(pose, c.side, { forearm: false })) {
+          if (cap.off) continue;
           const a = new THREE.Vector3(...cap.a), bb = new THREE.Vector3(...cap.b);
           const len = a.distanceTo(bb);
           const m = new THREE.Mesh(new THREE.CapsuleGeometry(cap.r, Math.max(1e-4, len), 4, 12), capMat);
@@ -330,7 +336,8 @@ export default makeScene2D(function* (view) {
         const g = arm.grip?.p ?? pose.body.hands[c.side].wrist;
         // the pinch from above, in front and a little from the middle (as she sees it); the coil hand
         // from in front and below the midline side, into the hook of the fingers
-        const eye: V3 = c.side ? [g[0] - 0.05, g[1] + 0.24, g[2] - 0.2] : [g[0] + 0.16, g[1] - 0.02, g[2] - 0.3];
+        // the fist from in front, on its thumb side
+        const eye: V3 = c.hand.hold === 'coil' ? [g[0] + 0.16, g[1] - 0.02, g[2] - 0.3] : c.hand.hold === 'pinch' ? [g[0] - 0.05, g[1] + 0.24, g[2] - 0.2] : [g[0] - 0.2, g[1] + 0.02, g[2] - 0.2];
         closeCams[i].position.set(...eye);
         closeCams[i].lookAt(g[0], g[1] - 0.01, g[2]);
       });
@@ -359,14 +366,13 @@ export default makeScene2D(function* (view) {
         const p = right.grip.p;
         const sag = Math.max(0.06, 0.32 - 0.3 * Math.hypot(p[0] - left.grip.p[0], p[2] - left.grip.p[2]));
         sweepCable.set(bezier(p, madd(madd(p, d3, 0.12), [0, -1, 0], sag), madd(left.grip.p, [0.1, -0.05, 0], -sag), left.grip.p, 24));
-        const back = madd(p, d3, -0.06);
+        const back = madd(p, d3, -0.015);
         // down to the floor and lying there in a curve off to the right
         sweepTail.set([madd(p, d3, 0.01), p, back, madd(back, [0, -1, 0], 0.1), [back[0], 0.3, back[2]], [back[0] + 0.02, 0.006, back[2] - 0.06], [back[0] + 0.2, 0.004, back[2] - 0.2], [back[0] + 0.45, 0.004, back[2] - 0.15]]);
         loopsOf(left, 4, 0.012).forEach((pts, k) => sweepLoops[k].set(pts));
       }
       orbit(sweepCam, { target: [0.02, 0.98, -0.2], yaw: Math.PI - 0.55, pitch: 0.12, dist: 2.6, fov: 30 });
-      povFollow(povCam, (x) => eyesOfRig(NOOR, sweepRig(x)), () => [0.05, 0.84, -0.32], st, { back: 0.06, up: 0.05, fov: 56, smooth: 0.3 });
-      viewLayers(povCam, 'pov');
+      povFollow(povCam, (x) => eyesOfRig(NOOR, sweepRig(x)), () => [0.05, 0.84, -0.36], st, { back: 0.02, up: 0.04, fov: 54, smooth: 0.3 });
       studio.focus([0, 0.8, -0.2], 1.3);
     }
     shownBoard = b;
@@ -410,9 +416,9 @@ export default makeScene2D(function* (view) {
   const closeRoot = (<Node opacity={() => (board() === 2 ? 1 : 0)} />) as Node;
   view.add(closeRoot);
   CLOSE.forEach((c, i) => {
-    const col = i % 3, row = Math.floor(i / 3);
-    const w = 600, h = 500;
-    const x = (col - 1) * (w + 24), y = (row - 0.5) * (h + 24);
+    const col = i % 4, row = Math.floor(i / 4);
+    const w = 456, h = 500;
+    const x = (col - 1.5) * (w + 16), y = (row - 0.5) * (h + 24);
     closeRoot.add(<ThreeView world={world} camera={closeCams[i]} x={x} y={y} width={w} height={h} radius={20} />);
     closeRoot.add(
       <Rect x={x - w / 2 + 16} y={y - h / 2 + 16} offset={[-1, -1]} layout padding={[6, 16]} radius={30} fill={'#ffffffe0'}>
@@ -462,7 +468,7 @@ export default makeScene2D(function* (view) {
         board();
         const pose = track.pose(Math.max(0, t() - SWEEP_AT));
         const r = pose.body.arms![1];
-        return `rechter Arm: ${limitsText(r)} · Pinzette ${Math.round((r.report.axisErrors[0] ?? 0) / DEG)}° neben der Kabelrichtung`;
+        return `rechter Arm: ${limitsText(r)} · Unterarm ${Math.round(r.angles.pron / DEG)}° · Kabelrichtung ±${Math.round((r.report.axisErrors[0] ?? 0) / DEG)}°`;
       }}
       fontFamily={FONT}
       fontWeight={600}

@@ -46,7 +46,18 @@ function bakeOne(index, id, hash) {
     id, hash, duration: def.duration, fps: baked.fps, frames: baked.frames, nodes: baked.n, radius: baked.radius,
     tracks: baked.trackNames, substeps: baked.stats.substeps, bytes: bin.length,
     wallSeconds: +baked.stats.wallSeconds.toFixed(2), simSecondsPerWallSecond: +baked.stats.simSecondsPerWallSecond.toFixed(3),
+    // what the simulation reports about itself (rod.stats): a good bake has no capped speeds, no
+    // held slips and no warnings, and joint gaps well below a millimetre
+    maxJointGap_mm: baked.stats.maxJointGap !== undefined ? +(baked.stats.maxJointGap * 1000).toFixed(3) : undefined,
+    speedCapped: baked.stats.speedCapped, heldSlip: baked.stats.heldSlip, jointFixes: baked.stats.jointFixes,
+    warnings: baked.stats.warnings,
   };
+  const bad = [];
+  if (baked.stats.speedCapped) bad.push(`${baked.stats.speedCapped} capped speeds`);
+  if (baked.stats.heldSlip) bad.push(`${baked.stats.heldSlip} held-pinch slips`);
+  if (baked.stats.warnings?.length) bad.push(`${baked.stats.warnings.length} warnings, first: ${baked.stats.warnings[0]}`);
+  if (baked.stats.maxJointGap > 0.0005) bad.push(`joint gap ${(baked.stats.maxJointGap * 1000).toFixed(2)} mm`);
+  if (bad.length) console.warn(`  ${id}: ${bad.join('; ')}`);
   fs.writeFileSync(path.join(BAKES, `${id}.json`), JSON.stringify(meta, null, 2));
   return meta;
 }

@@ -3,24 +3,35 @@
 // with a straight back, kneeling on one knee, sitting), the head looking at a point, the spine
 // leaning and twisting, hands that hold a cable at a grip frame (a fist, a thumb-index pinch, a coil
 // in the hook of the fingers) or are placed freely, and walking along waypoints (the erklaervideo
-// gait). Keyframe helpers make choreographies short: every rig is a pure function of the shot time,
-// so scrubbing works (pass a RigIK to rigPose to solve frame by frame, staying close to the last
-// frame, e.g. in a bake).
+// gait). Keyframe helpers make choreographies short: every rig is a pure function of the shot time.
+//
+// Solving over time: RigTrack(spec, rigAt) solves a choreography once, in order, with the stateful IK
+// and samples it at any time. Bake and scene each build one with the same arguments and get exactly
+// the same arms: the simulation's grip frames and hand capsules come from track.pose(t) at every
+// substep, the scene draws track.pose(t). rigPose(spec, rig) alone is stateless (stills, sheets);
+// with a RigIK it solves frame by frame (a rig that depends on the running simulation; store the
+// angles in the bake and give them back to the scene as rigPose(…, fixed)).
 //
 // Grip frame (shared with the cable simulation): p on the cable axis in the middle of the hold,
 // columns of q: d1 from the cable axis towards the hand (the palm in a fist and a coil grip, the
 // index finger in a pinch), d2 = d3 × d1, d3 along the cable (a fist or coil: where the thumb points;
-// a pinch: where the cable leaves past the thumb tip). The frame the hand really reaches is
-// pose.body.arms[i].grip: the one to give the simulation.
+// a pinch: where the cable leaves past the thumb tip). The frames the hand really reaches are
+// pose.body.arms[i].grip (the cable's frame: a pinch's roll included) and .pads (the hand's frame,
+// without the roll). Give the simulation grip with PinchSpec.roll = 0, or pads with PinchSpec.roll =
+// HandRig.roll, never both.
 
 import {
   V3, Quat, add, across, clamp, cross, dot, easeInOut, len, lerp, local, madd, mix3, norm, quatAxisAngle, quatCols, quatFromCols, quatMul, scale, slerp, smooth, sub, turn,
 } from './math';
 import { ArmPose, Body, Frame, HandPose, Pose, PersonSpec, UP, withUp, yawFrame } from './people';
-import { FIST_SLOPE, FIST_Z, GripShape, coilAround, fistAround, fistThumb, freeThumb, pinchAround, thumbChain } from './body/hand';
+import { FIST_SLOPE, FIST_Z, GLOVE_EXTRA, GripShape, coilAround, fistAround, fistThumb, freeThumb, pinchAround, thumbChain } from './body/hand';
 import { ARM_JOINTS, ArmAngles, ArmIK, ArmIKOptions, ArmSetup, ArmSolution, AxisGoal, HandTarget, armPose, evaluateArm, projectToLimits, solveArm, toLocal } from './ik';
 
-/** a grip frame: position on the cable axis and orientation (d1 to the hand, d3 along the cable) */
+/**
+ * A grip frame: position on the cable axis and orientation (d1 to the hand, d3 along the cable). As
+ * a HandRig.grip of a pinch it is the pads' frame (d1 to the index finger as at roll 0); the roll
+ * turns only the cable inside it.
+ */
 export interface Grip {
   p: V3;
   q: Quat;
@@ -36,6 +47,26 @@ export function gripFrame(p: V3, along: V3, toPalm: V3): Grip {
 /** the grip frame turned about its cable direction d3 (rolling the cable in the hand), rad */
 export function rollGrip(g: Grip, angle: number): Grip {
   return { p: g.p, q: quatMul(g.q, quatAxisAngle([0, 0, 1], angle)) };
+}
+
+/**
+ * A grip frame turned with the forearm: `g` turned by `supination` rad (+ supination: the palm turns
+ * up and forward, a pinch's thumb tip outwards; − pronation) about the forearm's axis as the forearm
+ * lies relative to the hand in `pose` (arm `side`, 0 left / 1 right), its point kept. The axis is
+ * taken in g's own frame, so it moves with g: g may travel and change while the turn is keyed. The
+ * way to key a turn the forearm makes (the under loop's turn-over): g = the frame a solved pose
+ * reached (pose.body.arms[side].pads), key the angle, give the result with free: 0, and the IK turns
+ * the forearm (and the shoulder and wrist as far as the forearm's range needs).
+ */
+export function turnWithForearm(pose: Pose, side: 0 | 1, g: Grip, supination: number): Grip {
+  const arm = pose.body.arms?.[side];
+  const ref = arm?.pads ?? arm?.grip;
+  const a = arm?.forearm.dir ?? norm(sub(pose.joints[side ? 10 : 9], pose.joints[side ? 8 : 7]));
+  if (!ref) return { p: g.p, q: quatMul(quatAxisAngle(a, (side ? 1 : -1) * supination), g.q) };
+  // the forearm's axis in the reference frame's coordinates, then turned about in g's frame
+  const [c1, c2, c3] = quatCols(ref.q);
+  const local: V3 = [dot(a, c1), dot(a, c2), dot(a, c3)];
+  return { p: g.p, q: quatMul(g.q, quatAxisAngle(local, (side ? 1 : -1) * supination)) };
 }
 
 /** how a hand holds its grip */
@@ -100,6 +131,10 @@ export interface HandRig {
   elbow?: V3;
   /** how much the elbow wish counts (default 1) */
   elbowWeight?: number;
+  /** wishes for single joint angles of the arm (ik.ts ArmAngles, rad), e.g. { rot: 0.6 }: the upper arm turns out */
+  joints?: Partial<ArmAngles>;
+  /** how much they count per rad (default 1; 3 = firm) */
+  jointWeight?: number;
 }
 
 /** a standing leg: ankle and foot direction (heel → toes); or a kneeling one: the knee on the floor */
@@ -163,7 +198,8 @@ const handSize = (spec: PersonSpec) => (spec.height / 1.75) * spec.build.hands;
  */
 export function gripShape(spec: PersonSpec, side: number, h: HandRig): GripShape {
   const q = handSize(spec);
-  const r = (h.radius ?? 0.0035) / q;
+  // a glove's surface is a little further out: what the hand holds lies on it
+  const r = (h.radius ?? 0.0035) / q + ((spec.gloves ?? 'none') !== 'none' ? GLOVE_EXTRA : 0);
   const open = clamp(h.open ?? 0);
   const hold = h.hold ?? 'fist';
   let g: GripShape;
@@ -406,7 +442,7 @@ function targetOf(spec: PersonSpec, side: -1 | 1, h: HandRig, s: ArmSetup, k: nu
       ...(h.prefer ?? []),
     ];
     if (h.thumbTo) axes.push({ hand: shape.thumbTip, world: h.thumbTo, weight: h.thumbWeight ?? 0.3 });
-    return { target: { p: h.grip.p, at: shape.p, axes, elbow, elbowWeight }, shape };
+    return { target: { p: h.grip.p, at: shape.p, axes, elbow, elbowWeight, joints: h.joints, jointWeight: h.jointWeight }, shape };
   }
   const axes: AxisGoal[] = [...(h.prefer ?? [])];
   if (h.dir) axes.push({ hand: [1, 0, 0], world: h.dir, weight: 1 });
@@ -414,7 +450,7 @@ function targetOf(spec: PersonSpec, side: -1 | 1, h: HandRig, s: ArmSetup, k: nu
   if (h.thumbTo) axes.push({ hand: freeThumbTip(h), world: h.thumbTo, weight: h.thumbWeight ?? 0.3 });
   // no wrist: the hand hangs half an arm below the shoulder
   const p = h.wrist ?? add(s.sc, add(scale(s.U, -0.5 * k), scale(s.L, 0.16 * k)));
-  return { target: { p, axes, elbow, elbowWeight }, shape: null };
+  return { target: { p, axes, elbow, elbowWeight, joints: h.joints, jointWeight: h.jointWeight }, shape: null };
 }
 
 /** an arm for a hand rig (null: hanging), solved; the hand pose and what the arm reached */
@@ -424,8 +460,9 @@ function solveSide(spec: PersonSpec, g: Rig, c: Core, i: 0 | 1, ik?: RigIK, fixe
   const s = armSetup(spec, c, side, g.shoulders?.[i]);
   const h = g.hands[i];
   if (!h) {
-    ik?.arms[i].reset();
     const sol = armPose(s, hangingAngles(spec.build, g.swing?.[i] ?? 0));
+    // the next grip starts from the hanging arm (no pop)
+    ik?.arms[i].hold(sol.angles);
     const hand = freeHand(q, sol.wrist, sol.hand.fd, sol.hand.palm, 0.25, 0);
     return { hand, sol, arm: { angles: sol.angles, report: sol.report, sc: s.sc, forearm: sol.forearm } };
   }
@@ -563,9 +600,12 @@ export function rigPose(spec: PersonSpec, rig: Rig, ik?: RigIK, fixed?: [ArmAngl
 /**
  * A choreography solved once, frame by frame, with the stateful IK (RigIK: continuous, no pops),
  * then sampled at any time: the arm angles are interpolated between the frames, everything else
- * (torso, legs, hand shapes) comes from the rig at that time. Deterministic and scrubbable: frames are
- * solved in order up to the latest one asked for and kept. Use it wherever a scene shows a
- * choreography (the bake can use the same track, so cable and arms agree).
+ * (torso, legs, hand shapes) comes from the rig at that time, and the report (residuals, limits) is
+ * measured against it. Deterministic and scrubbable: frames are solved in order up to the latest one
+ * asked for and kept. THE source of the arms for bake and scene: both build a RigTrack with the same
+ * spec, rigAt, t0 and fps; the bake asks track.pose(t) at every simulation substep (grip frames:
+ * pose.body.arms[i].grip / .pads, capsules: colliders.ts handColliders(pose, i)), the scene at every
+ * frame, and both see the same arms (tools/simtest/ik-continuity.mjs checks it).
  */
 export class RigTrack {
   private readonly frames: [ArmAngles | null, ArmAngles | null][] = [];

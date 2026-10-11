@@ -8,28 +8,38 @@
 // guides, documented grip frames, shape-keeping grips and swivel grips.
 //
 // The "dead" cable (src/sim/cables.ts has calibrated presets):
-//   - bendDamping / twistDamping: Kelvin-Voigt material damping, a viscous moment τ·EI·dκ/dt per
-//     joint, solved implicitly inside the direct solve (XPBD damping, Macklin et al. 2016, eq. 26:
-//     row scaled by 1/(1+γ), γ = τ/h), so it is unconditionally stable and acts on the whole chain
-//   - plastic: friction between the strands (stick-slip hysteresis, plastic memory). A second,
-//     stiff bending element in parallel whose rest shape is the memorised bend: it holds a gentle
-//     bend near that shape stiffly (round loops keep their shape), slips beyond a yield curvature
-//     (the memory follows: a bend the hands give the cable stays) and creeps slowly
-// Hands (src/sim/grips.ts): pinches (thumb and index pads: held, loose and sliding, rolling) and
-// bundles (a coil in a hand) are attachments to kinematic hand frames. Each one is projected
-// before the direct solve and makes the bodies it holds heavier in the directions it holds them
-// (an anisotropic inverse mass, the Schur complement of the attachment), so the direct solve
-// keeps them where the hand put them while it closes the joints. Hand capsules move with the
+//   - plastic: friction between the strands (stick-slip, plastic memory). A second, stiff bending
+//     element in parallel whose rest shape is the memorised bend: it holds a bend near that shape
+//     up to a yield moment (loops keep the shape the hands gave them), slips beyond it (the memory
+//     follows: a bend the hands give the cable stays), no creep by default (a shape is final
+//     once the hands are done)
+//   - bendDamping / twistDamping: Kelvin-Voigt material damping, a viscous moment per joint,
+//     solved implicitly inside the direct solve (XPBD damping, Macklin et al. 2016, eq. 26: row
+//     scaled by 1/(1+γ)), unconditionally stable. While a joint's strands slip, the viscosity
+//     belongs to the elastic element only (relaxation time plastic.slipDamping): a bend that
+//     yields relaxes in that time instead of crawling against the stuck strands' viscosity
+//   - holdDamping: a hand calms the cable it holds (damping across the cable relative to the
+//     nearest hand, fading along the cable); damping (air) is small, so a free cable falls at g
+// Hands (src/sim/grips.ts): pinches (thumb and index pads: held, loose and sliding, rolling,
+// re-gripping) and bundles (a coil in a hand) are attachments to kinematic hand frames. Each one
+// is projected before the direct solve and makes the bodies it holds heavier in the directions it
+// holds them (an anisotropic inverse mass, the Schur complement of the attachment), so the direct
+// solve keeps them where the hand put them while it closes the joints. Hand capsules move with the
 // hand per substep: friction against the capsule's own motion, and every capsule-segment pair
 // that comes near remembers which side it is on, so a fast hand (tested to 5 m/s) never pushes
-// the cable through a finger; pushes out of a capsule are limited per iteration (MAX_PUSH).
-// Controllers that steer the hands from the cable (sim in the loop) read it with closestPoint,
-// pointAt, tangentAt, frameAt and velocityAt.
+// the cable through a finger. Contacts stop what comes at them within the substep, but an overlap
+// that was there before (pieces a hand had pressed together, then let go) comes apart at most at
+// DEPEN_SPEED; pieces held by hands do not collide with each other (the holds decide), and where
+// contacts leave a joint open one more direct solve closes it (stats.jointFixes): the cable may
+// sink a little into something, it never tears. Controllers that steer the hands from the cable
+// (sim in the loop) read it with closestPoint, pointAt, tangentAt, frameAt, velocityAt and
+// memoryCurl; rod.stats and rod.warnings say what went wrong (capped speeds, held slips, grips off
+// the cable, a lost cable).
 //
 // For a damped cable (bendDamping > 0) contacts and friction act on the centre lines (no lever
 // that tilts or rolls a segment): with the strongly damped bending such levers pump energy (a
 // cable over a finger swings out of its plane and creeps off). Undamped rods keep the
-// prototype's contact model.
+// prototype's contact model (core.mjs: bit-identical to its reference).
 //
 // Units: metres, kilograms, seconds, radians. World: y up, ground plane y = groundY.
 // Quaternions [x, y, z, w].
@@ -41,18 +51,18 @@
 //   joints    k = 0..ns-2  between segment k and k+1; rest Darboux quaternion rest[k] = q̄_k q_{k+1}
 //                          at rest (natural curvature and twist: "memory")
 //
-// Per substep: predict (gravity, damping) -> grips (kinematic) -> attachments (what they hold,
-//   how firmly) -> capsules -> `iterations` x { attachments project, direct XPBD solve of all
-//   joints (stretch 3 rows + bend-twist 3 rows: EI1 about d1, EI2 about d2, GJ about d3, with
-//   material damping), pins and swivels, guides, self-contact (segment capsules, spatial hash,
-//   remembered normals), kinematic capsules, ground (Coulomb friction) } -> strand friction
-//   (plastic memory) -> attachments finish (sliding, rolling) -> velocities (capped at maxSpeed)
-//   -> internal damping.
+// Per substep: predict (gravity, damping) -> grips (kinematic) -> attachments (bundles first: what
+//   they hold, how firmly) -> capsules -> `iterations` x { attachments project, direct XPBD solve
+//   of all joints (stretch 3 rows + bend-twist 3 rows: EI1 about d1, EI2 about d2, GJ about d3,
+//   with material damping), pins and swivels, guides, self-contact (segment capsules, spatial
+//   hash, remembered normals), kinematic capsules, ground (Coulomb friction) } -> one more direct
+//   solve if a joint is open -> strand friction (plastic memory) -> attachments finish (sliding,
+//   rolling) -> velocities -> hold damping -> speed cap (maxSpeed, counted) -> internal damping.
 //
 // Determinism: fixed step, fixed order, no randomness; two runs give bit-identical frames.
 
 import { Frame, Quat, TAU, V3, quatConj, quatFromAxisAngle, quatFromFrame, quatFromTo, quatMul, quatRotate, quatSlerp, smooth } from './vec';
-import { Attachment, Bundle, BundleSpec, Pinch, PinchSpec } from './grips';
+import { Attachment, Bundle, BundleSpec, HoldMotion, Pinch, PinchSpec } from './grips';
 
 /** A number per joint k (0..ns-2), or one number for all joints. */
 export type PerJoint = number | ((k: number) => number);
@@ -109,6 +119,17 @@ export interface RodOptions {
    * away. A cable in a hand never moves faster than a few m/s. Infinity = off.
    */
   maxSpeed: number;
+  /**
+   * What a human hand does to a cable it holds: it calms it (the arm gives way, the fingers damp).
+   * Velocity damping [1/s] across the cable, relative to the motion of the nearest hand that holds
+   * it (a pinch or a bundle, rod.pinch / rod.bundle), fading with the material distance from that
+   * hand (e-folding length holdDampingReach). A held cable that the hand stops swings out calmly
+   * instead of pendulating for seconds; a cable the hand carries is not held back, and a cable
+   * nobody holds (falling, lying) feels only the air (damping). 0 = off.
+   */
+  holdDamping: number;
+  /** e-folding length of holdDamping along the cable from the hand [m] */
+  holdDampingReach: number;
 }
 
 /**
@@ -120,22 +141,39 @@ export interface RodOptions {
  * Together they act as one element of stiffness EI + frictionEI toward the weighted rest
  * (EI κn + frictionEI κf) / (EI + frictionEI), exact for the quadratic bending energy. Every
  * substep, with e = κ − κf (the current bend minus the memory, a vector in the cross-section):
- *   |e| > yield: the strands slip, κf follows κ at `rate` until |e| = yield
- *   always:      κf creeps toward κ at `creep` (the stuck strands relax)
+ *   |e| > yield: the strands slip, κf follows κ at `rate` until |e| = yield. The yield is a
+ *                moment: the friction element never carries more than yieldMoment
+ *                (yield curvature = yieldMoment / frictionEI), an ideal Coulomb friction
+ *   always:      κf creeps toward κ at `creep` (default 0: a shape the hands leave stays)
  * So a gentle bend near the memorised shape is stiff (a loop the hands formed stays round), a tight
  * bend is soft (the cable drapes over a finger), and a bend the hands give the cable stays when
- * they let go, slowly sagging under gravity. Twist stays elastic. The friction memory starts as
- * the rod's initial shape; setRestFromCurrent sets it too.
+ * they let go. While the strands slip, the material damping (bendDamping) acts on the elastic
+ * element only: a slipping joint relaxes in about bendDamping seconds instead of crawling against
+ * the stuck strands' viscosity (rod.slipping[k] says which joints slip). Twist stays elastic. The
+ * friction memory starts as the rod's initial shape; setRestFromCurrent and rememberShape set it.
  */
 export interface Plasticity {
   /** bending stiffness of the stuck strands [N m²] (adds to EI near the memorised bend) */
   frictionEI: number;
-  /** slip range [1/m]: a bend that departs further from the memorised one makes the strands slip */
-  yieldCurvature: number;
+  /** most moment the stuck strands carry before they slip [N m] (preferred over yieldCurvature) */
+  yieldMoment?: number;
+  /** slip range [1/m] (= yieldMoment / frictionEI): used when yieldMoment is not given */
+  yieldCurvature?: number;
   /** slip rate beyond the yield [1/s] (large: ideal Coulomb friction) */
   rate: number;
   /** creep of the memory toward the current bend [1/s] (default 0) */
   creep?: number;
+  /**
+   * Kelvin-Voigt relaxation time of the elastic element while the strands slip [s] (default
+   * bendDamping): how slowly a bend the hands let go of opens up again (a "dead" cable: slowly).
+   */
+  slipDamping?: number;
+}
+
+/** The yield curvature [1/m] of a strand friction model (yieldMoment / frictionEI, or yieldCurvature). */
+export function yieldCurvatureOf(P: Plasticity): number {
+  if (P.yieldMoment !== undefined) return P.frictionEI > 0 ? P.yieldMoment / P.frictionEI : Infinity;
+  return P.yieldCurvature ?? Infinity;
 }
 
 export const ROD_DEFAULTS: RodOptions = {
@@ -163,6 +201,8 @@ export const ROD_DEFAULTS: RodOptions = {
   twistDamping: 0,
   plastic: null,
   maxSpeed: Infinity,
+  holdDamping: 0,
+  holdDampingReach: 0.5,
 };
 
 export interface RodBuildOptions extends Partial<RodOptions> {
@@ -198,8 +238,9 @@ export interface Capsule {
   group?: number;
   /**
    * 0..1: how much of a penetration is pushed out per iteration (default 1, hard). Fingers are
-   * soft: with ~0.3 a hand that squeezes the cable against something held gives way a little
-   * instead of making the constraints fight.
+   * soft: with ~0.3 a hand that squeezes the cable slowly against something held gives way a
+   * little instead of making the constraints fight. It only gives way while it moves slowly
+   * against the cable: from 0.3 m/s on (SOFT_SPEED) it is hard, so a fast hand never sinks in.
    */
   soft?: number;
 }
@@ -256,6 +297,14 @@ export interface RodStats {
   candidates: number;
   minDist2: number;
   crossings: number;
+  /** segment speeds cut to maxSpeed (count over all substeps): constraints fighting, should stay 0 */
+  speedCapped: number;
+  /** substeps in which a held pinch let the cable slip (pulled with more than its MAX_HOLD) */
+  heldSlip: number;
+  /** extra joint solves after contacts left a joint open (see JOINT_GAP) */
+  jointFixes: number;
+  /** problems reported by the hands (rod.warnings): grips made off the cable, a lost cable, … */
+  warnings: number;
 }
 
 type GripKind = 'pin' | 'rigid' | 'swivel';
@@ -295,6 +344,14 @@ interface Guide {
 const EZ: V3 = [0, 0, 1];
 /** largest push out of a kinematic capsule per iteration [m] (see solveCapsules) */
 const MAX_PUSH = 0.0015;
+/** time constant over which a joint's damping follows its slip state [s] (no chattering) */
+const SLIP_SMOOTH = 0.01;
+/** cable pieces pressed into each other come apart at most this fast [m/s] (see solveSelf) */
+const DEPEN_SPEED = 0.3;
+/** a soft capsule (Capsule.soft) moving against the cable at this speed [m/s] or faster is hard */
+const SOFT_SPEED = 0.3;
+/** a joint gap above this after the contacts gets one more direct solve in that substep [m] */
+const JOINT_GAP = 0.0002;
 
 /**
  * Discrete Cosserat rod as a chain of rigid segments linked by joints with two constraints each:
@@ -338,6 +395,10 @@ export class Rod {
   /** weight of the friction element per joint in the bend rows about d1 and d2 */
   private readonly phi1: Float64Array;
   private readonly phi2: Float64Array;
+  /** per joint: 1 while the strands slip (opts.plastic; the material damping then acts on EI only) */
+  readonly slipping: Uint8Array;
+  /** per joint: the slip state smoothed over SLIP_SMOOTH (what the damping uses) */
+  private readonly slipLevel: Float64Array;
   /** compliances per joint: bending about d1, about d2, twist */
   private readonly alpha1: Float64Array;
   private readonly alpha2: Float64Array;
@@ -347,7 +408,9 @@ export class Rod {
   readonly rc: number;
   totalLength = 0;
   time = 0;
-  readonly stats: RodStats = { contacts: 0, candidates: 0, minDist2: Infinity, crossings: 0 };
+  readonly stats: RodStats = { contacts: 0, candidates: 0, minDist2: Infinity, crossings: 0, speedCapped: 0, heldSlip: 0, jointFixes: 0, warnings: 0 };
+  /** the first problems the hands reported (stats.warnings counts all), e.g. a pinch closed off the cable */
+  readonly warnings: string[] = [];
 
   private readonly grips = new Map<number, Grip>();
   private gripId = 1;
@@ -375,6 +438,10 @@ export class Rod {
   private touched: number[] = [];
   /** per body: capsules of this group do not touch it (a hand holding it), -1 = none @internal */
   readonly skipGroup: Int32Array;
+  /** per body: held by (or right next to) a hand this substep; two such bodies do not collide @internal */
+  readonly heldMark: Uint8Array;
+  /** per body: how firmly a bundle holds it this substep (0..1); a pinch on it gives way by as much @internal */
+  readonly bundleHold: Float32Array;
   /** capsules of the previous substep (same order), for their motion */
   private capsPrev: Capsule[] = [];
   /** per capsule (by index) and segment: the remembered contact normal while the pair is near */
@@ -384,6 +451,14 @@ export class Rod {
   private readonly Cn: Float64Array;
   /** the dt of the last step() */
   lastDt = 1 / 60;
+  /** the substep of the last step() */
+  private hSub = 1 / 1800;
+  // holdDamping scratch
+  private readonly holdMotions: HoldMotion[] = [];
+  private readonly holdSegs: number[] = [];
+  private readonly holdOf: Int32Array;
+  private readonly holdNear: Int32Array;
+  private readonly holdDist: Float64Array;
 
   private readonly guides = new Map<number, Guide>();
   private guideId = 1;
@@ -447,6 +522,8 @@ export class Rod {
     this.tax = new Float64Array(3 * ns);
     this.aniso = new Uint8Array(ns);
     this.skipGroup = new Int32Array(ns).fill(-1);
+    this.heldMark = new Uint8Array(ns);
+    this.bundleHold = new Float32Array(ns);
     this.Cn = new Float64Array(3 * Math.max(0, ns - 1));
     this.dC = new Float64Array(3 * Math.max(0, ns - 1));
 
@@ -461,6 +538,11 @@ export class Rod {
     this.restFric = new Float64Array(2 * nj);
     this.phi1 = new Float64Array(nj);
     this.phi2 = new Float64Array(nj);
+    this.slipping = new Uint8Array(nj);
+    this.slipLevel = new Float64Array(nj);
+    this.holdOf = new Int32Array(ns);
+    this.holdNear = new Int32Array(ns);
+    this.holdDist = new Float64Array(ns);
     this.alpha1 = new Float64Array(nj);
     this.alpha2 = new Float64Array(nj);
     this.alphaT = new Float64Array(nj);
@@ -724,6 +806,25 @@ export class Rod {
     this.restChanged();
   }
 
+  /**
+   * The strand friction memory (opts.plastic) as curvatures [1/m]: fn(k, s) -> [k1, k2] (bending
+   * about d1, about d2, as in setRestCurvature), or one pair for all joints; e.g. the coil a used
+   * cable remembers (cables.ts, BuildCableOptions.memory). Without friction memory: nothing.
+   */
+  setMemoryCurvature(fn: [number, number] | ((k: number, s: number) => [number, number])) {
+    if (this.frictionEI() <= 0) return;
+    let s = 0;
+    for (let k = 0; k < this.nj; k++) {
+      const l = (this.L[k] + this.L[k + 1]) / 2;
+      s += this.L[k];
+      const [k1, k2] = typeof fn === 'function' ? fn(k, s) : fn;
+      const ang = Math.hypot(k1, k2) * l, sn = ang < 1e-12 ? 0 : Math.sin(ang / 2) / Math.hypot(k1, k2);
+      this.restFric[2 * k] = k1 * sn;
+      this.restFric[2 * k + 1] = k2 * sn;
+    }
+    this.restChanged();
+  }
+
   /** rest <- slerp(rest, other, a) (the natural rest with friction memory): partial memory, or memory fading. */
   blendRest(other: Float64Array, a: number) {
     const R = this.restTarget();
@@ -870,6 +971,31 @@ export class Rod {
     const rx = this.d3[j3] * u, ry = this.d3[j3 + 1] * u, rz = this.d3[j3 + 2] * u;
     const ox = this.om[j3], oy = this.om[j3 + 1], oz = this.om[j3 + 2];
     return [this.v[j3] + oy * rz - oz * ry, this.v[j3 + 1] + oz * rx - ox * rz, this.v[j3 + 2] + ox * ry - oy * rx];
+  }
+
+  /** Reports a problem (rod.warnings keeps the first 50, stats.warnings counts all). */
+  warn(msg: string) {
+    this.stats.warnings++;
+    if (this.warnings.length < 50) this.warnings.push(msg);
+  }
+
+  /**
+   * The memorised bend at material coordinate s: the strand friction memory (opts.plastic, the
+   * default when there is one) or the natural rest. kappa [1/m] and the direction the cable curls
+   * toward (the centre of the bend) in the material frame: n1 along d1, n2 along d2. null where it
+   * is straight. Pinch.rollToCurl uses it to roll a remembered bend into the loop being formed.
+   */
+  memoryCurl(s: number, which: 'friction' | 'natural' = this.frictionEI() > 0 ? 'friction' : 'natural'): { kappa: number; n1: number; n2: number } | null {
+    if (this.nj < 1) return null;
+    const j = this.segmentAt(s), k = Math.max(0, Math.min(this.nj - 1, s < this.sNode[j] + this.L[j] / 2 ? j - 1 : j));
+    const l = (this.L[k] + this.L[k + 1]) / 2;
+    let x: number, y: number;
+    if (which === 'friction' && this.frictionEI() > 0) { x = this.restFric[2 * k]; y = this.restFric[2 * k + 1]; }
+    else { const R = this.restTarget(); x = R[4 * k]; y = R[4 * k + 1]; }
+    // Im(Ω) ≈ κ l / 2 per axis; bending about d1 (x) curls toward -d2, about d2 (y) toward +d1
+    const k1 = (2 * x) / l, k2 = (2 * y) / l, kappa = Math.hypot(k1, k2);
+    if (kappa < 1e-6) return null;
+    return { kappa, n1: k2 / kappa, n2: -k1 / kappa };
   }
 
   /**
@@ -1053,7 +1179,61 @@ export class Rod {
   step(dt: number, substeps = 20) {
     const h = dt / substeps;
     this.lastDt = dt;
+    this.hSub = h;
     for (let s = 0; s < substeps; s++) this.substep(h);
+  }
+
+  /**
+   * holdDamping: the velocity of every free segment across the cable is damped toward the velocity
+   * of the nearest hold along the cable, with a rate that fades with the material distance to it.
+   */
+  private dampHeld(h: number) {
+    const { ns, v, d3, sNode, L, wc, opts } = this;
+    const holds = this.holdMotions;
+    holds.length = 0;
+    const id = this.holdOf;
+    id.fill(-1);
+    const seg = this.holdSegs;
+    for (const a of this.attachments) {
+      const m = a.motion();
+      if (!m) continue;
+      seg.length = 0;
+      a.segments(seg);
+      if (!seg.length) continue;
+      const k = holds.length;
+      holds.push(m);
+      for (const j of seg) id[j] = k;
+    }
+    if (!holds.length) return;
+    // nearest hold along the cable: one sweep from each end
+    const near = this.holdNear, dist = this.holdDist;
+    let last = -1, sLast = 0;
+    for (let j = 0; j < ns; j++) {
+      const sm = sNode[j] + L[j] / 2;
+      if (id[j] >= 0) { last = id[j]; sLast = sm; }
+      near[j] = last;
+      dist[j] = last >= 0 ? sm - sLast : Infinity;
+    }
+    last = -1;
+    for (let j = ns - 1; j >= 0; j--) {
+      const sm = sNode[j] + L[j] / 2;
+      if (id[j] >= 0) { last = id[j]; sLast = sm; }
+      if (last >= 0 && sLast - sm < dist[j]) { near[j] = last; dist[j] = sLast - sm; }
+    }
+    const rate = opts.holdDamping, reach = opts.holdDampingReach;
+    for (let j = 0; j < ns; j++) {
+      if (wc[j] === 0 || near[j] < 0) continue;
+      const m = holds[near[j]], w = m.strength * Math.exp(-dist[j] / reach);
+      if (w < 1e-3) continue;
+      const j3 = 3 * j;
+      // velocity relative to the hand (its translation: a turning hand does not swing distant
+      // cable rigidly), its part across the cable
+      let ux = v[j3] - m.v[0], uy = v[j3 + 1] - m.v[1], uz = v[j3 + 2] - m.v[2];
+      const tx = d3[j3], ty = d3[j3 + 1], tz = d3[j3 + 2], a = ux * tx + uy * ty + uz * tz;
+      ux -= a * tx; uy -= a * ty; uz -= a * tz;
+      const f = 1 - Math.exp(-rate * w * h);
+      v[j3] -= f * ux; v[j3 + 1] -= f * uy; v[j3 + 2] -= f * uz;
+    }
   }
 
   /** caps segment speeds at vmax, bending spins at 2 vmax / L, rolling at vmax / rc (see RodOptions.maxSpeed) */
@@ -1062,7 +1242,7 @@ export class Rod {
     for (let j = 0; j < ns; j++) {
       const j3 = 3 * j;
       const s = Math.hypot(v[j3], v[j3 + 1], v[j3 + 2]);
-      if (s > vmax) { const f = vmax / s; v[j3] *= f; v[j3 + 1] *= f; v[j3 + 2] *= f; }
+      if (s > vmax) { const f = vmax / s; v[j3] *= f; v[j3 + 1] *= f; v[j3 + 2] *= f; this.stats.speedCapped++; }
       const tx = d3[j3], ty = d3[j3 + 1], tz = d3[j3 + 2];
       const a = om[j3] * tx + om[j3 + 1] * ty + om[j3 + 2] * tz;
       let px = om[j3] - a * tx, py = om[j3 + 1] - a * ty, pz = om[j3 + 2] - a * tz;
@@ -1080,10 +1260,16 @@ export class Rod {
     }
     this.touched.length = 0;
     this.skipGroup.fill(-1);
+    this.heldMark.fill(0);
+    this.bundleHold.fill(0);
     let removed = false;
-    for (const a of this.attachments) {
-      a.prepare(this.time, h);
-      if (a.done) removed = true;
+    // bundles first: a pinch on a strand that a bundle is taking over gives way to it
+    for (let pass = 0; pass < 2; pass++) {
+      for (const a of this.attachments) {
+        if ((a instanceof Bundle) !== (pass === 0)) continue;
+        a.prepare(this.time, h);
+        if (a.done) removed = true;
+      }
     }
     if (removed) {
       for (let i = this.attachments.length - 1; i >= 0; i--) if (this.attachments[i].done) this.attachments.splice(i, 1);
@@ -1123,13 +1309,23 @@ export class Rod {
   /** Friction memory: slip beyond the yield, creep below it (see Plasticity). */
   private plasticFlow(h: number, P: Plasticity) {
     if (!(P.frictionEI > 0)) return;
-    const { nj, C, rest, L, restFric } = this;
-    const fy = 1 - Math.exp(-h * P.rate), fc = P.creep ? 1 - Math.exp(-h * P.creep) : 0;
+    const { nj, q, L, restFric, slipping, slipLevel } = this;
+    const fy = P.rate === Infinity ? 1 : 1 - Math.exp(-h * P.rate), fc = P.creep ? 1 - Math.exp(-h * P.creep) : 0;
+    const yc = yieldCurvatureOf(P), fs = 1 - Math.exp(-h / SLIP_SMOOTH);
     for (let k = 0; k < nj; k++) {
-      const l = (L[k] + L[k + 1]) / 2, k6 = 6 * k, a4 = 4 * k;
-      // the rows hold Im(ω) - Im(rest), so the current bend is C + rest (half angles ≈ κ l / 2)
-      const ex = C[k6 + 3] + rest[a4] - restFric[2 * k], ey = C[k6 + 4] + rest[a4 + 1] - restFric[2 * k + 1];
-      const e = Math.hypot(ex, ey), y = 0.5 * P.yieldCurvature * l;
+      const l = (L[k] + L[k + 1]) / 2, a4 = 4 * k, b4 = a4 + 4;
+      // the current bend: Im(q̄_k q_{k+1}) (half angles ≈ κ l / 2), w ≥ 0
+      const ax = q[a4], ay = q[a4 + 1], az = q[a4 + 2], aw = q[a4 + 3];
+      const bx = q[b4], by = q[b4 + 1], bz = q[b4 + 2], bw = q[b4 + 3];
+      const sg = aw * bw + ax * bx + ay * by + az * bz < 0 ? -1 : 1;
+      const ox = sg * (aw * bx - ax * bw - ay * bz + az * by), oy = sg * (aw * by + ax * bz - ay * bw - az * bx);
+      const ex = ox - restFric[2 * k], ey = oy - restFric[2 * k + 1];
+      const e = Math.hypot(ex, ey), y = 0.5 * yc * l;
+      // slipping: beyond the yield (the flow keeps e just above it while the bend keeps growing);
+      // slipLevel follows it smoothly (SLIP_SMOOTH) for the damping, so it does not chatter
+      const sl = e > y * 0.999 ? 1 : 0;
+      slipping[k] = sl;
+      slipLevel[k] += (sl - slipLevel[k]) * fs;
       let f = fc;
       if (e > y) f += fy * (1 - y / e);
       if (f <= 0) continue;
@@ -1194,6 +1390,16 @@ export class Rod {
       if (this.caps.length) this.solveCapsules();
       if (opts.groundY !== null && opts.groundY !== undefined) this.solveGround();
     }
+    // contacts come last in an iteration; where they left a joint open (a strand pressed between
+    // held ones, a finger squeezing it), one more direct solve closes the joints: a cable may sink
+    // a little into another, it never tears
+    if (this.capPush && (this.derive(), this.maxJointGap() > JOINT_GAP)) {
+      if (att) for (const a of this.attachments) a.project(h, opts.iterations);
+      this.solveRod(h);
+      this.solveGripConstraints();
+      this.derive();
+      this.stats.jointFixes++;
+    }
     if (opts.plastic && this.nj > 0) this.plasticFlow(h, opts.plastic);
     if (att) for (const a of this.attachments) a.finish(h);
     const ih = 1 / h;
@@ -1210,6 +1416,7 @@ export class Rod {
       const sg = rw < 0 ? -2 * ih : 2 * ih;
       om[j3] = rx * sg; om[j3 + 1] = ry * sg; om[j3 + 2] = rz * sg;
     }
+    if (opts.holdDamping > 0 && att) this.dampHeld(h);
     if (opts.maxSpeed < Infinity) this.capSpeeds(opts.maxSpeed);
     const kd = opts.internalDamping;
     if (kd > 0) {
@@ -1304,7 +1511,9 @@ export class Rod {
   private solveRod(h: number) {
     const { nj, c, q, L, wc, wt, rest, alpha1, alpha2, alphaT, opts } = this;
     if (nj < 1) return;
-    const { J, C, lam, Cp, dp, Cc, M, D, rhs, Cn, dC, aniso } = this;
+    const { J, C, lam, Cp, dp, Cc, M, D, rhs, Cn, dC, aniso, phi1, phi2 } = this;
+    const slip = this.slipLevel;
+    const P = opts.plastic, slipRatio = P && P.slipDamping !== undefined && opts.bendDamping > 0 ? P.slipDamping / opts.bendDamping : 1;
     const ih2 = 1 / (h * h), aS = opts.stretchCompliance * ih2;
     // material damping: XPBD damping γ = τ / h on the bend-twist rows
     const gB = opts.bendDamping / h, gT = opts.twistDamping / h, damp = gB > 0 || gT > 0;
@@ -1364,11 +1573,14 @@ export class Rod {
       rhs[1] = -C[k6 + 1] - aS * lam[k6 + 1];
       rhs[2] = -C[k6 + 2] - aS * lam[k6 + 2];
       if (damp) {
-        // rows scaled by 1 / (1 + γ): the matrix stays symmetric
-        const k3 = 3 * k, ib = 1 / (1 + gB), it = 1 / (1 + gT);
-        D[0] += aS; D[7] += aS; D[14] += aS; D[21] += a1 * ib; D[28] += a2 * ib; D[35] += at * it;
-        rhs[3] = (-C[k6 + 3] - a1 * lam[k6 + 3] - gB * dC[k3]) * ib;
-        rhs[4] = (-C[k6 + 4] - a2 * lam[k6 + 4] - gB * dC[k3 + 1]) * ib;
+        // rows scaled by 1 / (1 + γ): the matrix stays symmetric. While the strands slip, the
+        // viscosity belongs to the elastic element only (γ scaled by EI / (EI + frictionEI), and by
+        // slipDamping / bendDamping), blended by the smoothed slip level
+        const k3 = 3 * k, sv = slip[k], s1 = 1 + sv * ((1 - phi1[k]) * slipRatio - 1), s2 = 1 + sv * ((1 - phi2[k]) * slipRatio - 1);
+        const g1 = gB * s1, g2 = gB * s2, ib1 = 1 / (1 + g1), ib2 = 1 / (1 + g2), it = 1 / (1 + gT);
+        D[0] += aS; D[7] += aS; D[14] += aS; D[21] += a1 * ib1; D[28] += a2 * ib2; D[35] += at * it;
+        rhs[3] = (-C[k6 + 3] - a1 * lam[k6 + 3] - g1 * dC[k3]) * ib1;
+        rhs[4] = (-C[k6 + 4] - a2 * lam[k6 + 4] - g2 * dC[k3 + 1]) * ib2;
         rhs[5] = (-C[k6 + 5] - at * lam[k6 + 5] - gT * dC[k3 + 2]) * it;
       } else {
         D[0] += aS; D[7] += aS; D[14] += aS; D[21] += a1; D[28] += a2; D[35] += at;
@@ -1691,24 +1903,32 @@ export class Rod {
         }
         const mx = mem[j3], my = mem[j3 + 1], mz = mem[j3 + 2];
         const side = nx * mx + ny * my + nz * mz;
-        let pen: number;
+        let pen: number, crossed = false;
         if (d < 1e-9 || side < 0) {
           // on the wrong side of the axis: back along the remembered normal
           pen = R - side;
           nx = mx; ny = my; nz = mz;
+          crossed = true;
         } else {
           nx /= d; ny /= d; nz /= d;
           mem[j3] = nx; mem[j3 + 1] = ny; mem[j3 + 2] = nz;
           pen = R - d;
         }
         if (pen <= 0) continue;
+        // the capsule's motion at the contact point during this substep
+        const kmx = (A[0] - A0[0]) * (1 - t) + (B[0] - B0[0]) * t, kmy = (A[1] - A0[1]) * (1 - t) + (B[1] - B0[1]) * t, kmz = (A[2] - A0[2]) * (1 - t) + (B[2] - B0[2]) * t;
+        if (!crossed && cap.soft !== undefined && cap.soft < 1) {
+          // a soft capsule gives way only while it squeezes slowly: coming at the cable faster than
+          // SOFT_SPEED (relative to the segment, along the normal) it is hard, so a fast finger
+          // never sinks into the cable
+          const sx = c[j3] - cp[j3], sy = c[j3 + 1] - cp[j3 + 1], sz = c[j3 + 2] - cp[j3 + 2];
+          const approach = Math.abs((kmx - sx) * nx + (kmy - sy) * ny + (kmz - sz) * nz) / Math.max(this.hSub, 1e-9);
+          pen *= cap.soft + (1 - cap.soft) * Math.min(1, approach / SOFT_SPEED);
+        }
         // at most MAX_PUSH per iteration: a segment forced deep into a capsule (by a hand that is
         // also holding the cable, or squeezed against a held part) comes out over a few substeps
         // instead of being shot out (a push of p in one substep is a speed of p / h)
-        if (cap.soft !== undefined) pen *= cap.soft;
         if (pen > MAX_PUSH) pen = MAX_PUSH;
-        // the capsule's motion at the contact point during this substep
-        const kmx = (A[0] - A0[0]) * (1 - t) + (B[0] - B0[0]) * t, kmy = (A[1] - A0[1]) * (1 - t) + (B[1] - B0[1]) * t, kmz = (A[2] - A0[2]) * (1 - t) + (B[2] - B0[2]) * t;
         this.contact(j, px - c[j3] - nx * rc, py - c[j3 + 1] - ny * rc, pz - c[j3 + 2] - nz * rc, -1, 0, 0, 0, nx, ny, nz, pen, mu, kmx, kmy, kmz);
       }
     }
@@ -1782,12 +2002,15 @@ export class Rod {
   }
 
   private solveSelf() {
-    const { c, d3, L, rc, opts, cand, st } = this;
-    const N3 = this.candN, V = this.candV;
+    const { c, d3, L, rc, opts, cand, st, wc } = this;
+    const N3 = this.candN, V = this.candV, mark = this.heldMark;
     const R = 2 * rc, R2 = R * R;
     let contacts = 0;
     for (let i = 0; i < this.ncand; i++) {
       const j = cand[2 * i], o = cand[2 * i + 1];
+      // two pieces that hands hold (or that lie right next to a hand) do not push each other: the
+      // holds decide where they are, and a push would only open the joints next to them
+      if ((mark[j] || wc[j] === 0) && (mark[o] || wc[o] === 0)) continue;
       const j3 = 3 * j, o3 = 3 * o, hj = L[j] / 2, ho = L[o] / 2;
       const a0x = c[j3] - d3[j3] * hj, a0y = c[j3 + 1] - d3[j3 + 1] * hj, a0z = c[j3 + 2] - d3[j3 + 2] * hj;
       const a1x = c[j3] + d3[j3] * hj, a1y = c[j3 + 1] + d3[j3 + 1] * hj, a1z = c[j3 + 2] + d3[j3 + 2] * hj;
@@ -1817,9 +2040,21 @@ export class Rod {
       }
       contacts++;
       if (dd < this.stats.minDist2) this.stats.minDist2 = dd;
-      // (at most MAX_PUSH per iteration, as for capsules: a strand squeezed against one a hand
-      // holds rigidly comes out over a few substeps instead of being shot out)
-      if (this.capPush && pen > MAX_PUSH) pen = MAX_PUSH;
+      if (this.capPush) {
+        // a damped cable or one in hands: a strand stops what comes at it this substep (the
+        // approach), but an overlap that was there before (two pieces a hand had pressed into each
+        // other, then let go) comes apart at most at DEPEN_SPEED, never shot apart; and never more
+        // than MAX_PUSH per iteration
+        if (!(V[i] && hn < 0)) {
+          const pm = this.pm;
+          this.pointMotion(j, px - c[j3], py - c[j3 + 1], pz - c[j3 + 2], pm, 0);
+          this.pointMotion(o, qx - c[o3], qy - c[o3 + 1], qz - c[o3 + 2], pm, 3);
+          const dn = (pm[0] - pm[3]) * nx + (pm[1] - pm[4]) * ny + (pm[2] - pm[5]) * nz;
+          const allow = Math.max(0, -dn) + DEPEN_SPEED * this.hSub;
+          if (pen > allow) pen = allow;
+        }
+        if (pen > MAX_PUSH) pen = MAX_PUSH;
+      }
       this.contact(j, px - c[j3] - nx * rc, py - c[j3 + 1] - ny * rc, pz - c[j3 + 2] - nz * rc,
         o, qx - c[o3] + nx * rc, qy - c[o3 + 1] + ny * rc, qz - c[o3 + 2] + nz * rc, nx, ny, nz, pen, opts.selfFriction);
     }
@@ -1845,6 +2080,19 @@ export class Rod {
     const x = this.x;
     for (let i = 0; i < this.ns; i++) s += Math.hypot(x[3 * i + 3] - x[3 * i], x[3 * i + 4] - x[3 * i + 1], x[3 * i + 5] - x[3 * i + 2]);
     return s;
+  }
+
+  /** Largest gap at a joint [m]. */
+  maxJointGap() {
+    const { c, d3, L, nj } = this;
+    let m = 0;
+    for (let k = 0; k < nj; k++) {
+      const a3 = 3 * k, b3 = a3 + 3, ha = L[k] / 2, hb = L[k + 1] / 2;
+      const dx = c[a3] + d3[a3] * ha - c[b3] + d3[b3] * hb, dy = c[a3 + 1] + d3[a3 + 1] * ha - c[b3 + 1] + d3[b3 + 1] * hb, dz = c[a3 + 2] + d3[a3 + 2] * ha - c[b3 + 2] + d3[b3 + 2] * hb;
+      const g = dx * dx + dy * dy + dz * dz;
+      if (g > m) m = g;
+    }
+    return Math.sqrt(m);
   }
 
   /** Largest gap at a joint relative to the segment length (inextensibility error). */

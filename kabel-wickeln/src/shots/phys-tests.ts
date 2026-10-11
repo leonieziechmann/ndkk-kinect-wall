@@ -11,13 +11,14 @@
 //   phys-lay     a hand lays the cable in a bend on the floor and lets go
 //   phys-coil    pinch and bundle together: the right hand slides out along the cable through a
 //                loose pinch, holds, brings the point back into the left hand, which takes it
-//                into its bundle; three loops, then the left hand moves the coil
+//                into its bundle; five loops (a 5 m XLR coils in 4.5-5), then the left hand moves
+//                the coil and holds it still
 //   phys-roll    a held pinch rolls the cable 180° between thumb and index, then the hand turns
 //
 // The hands go to the cable: every grip is made where the cable is at that moment (the scripts
 // read the rod, sim in the loop), and the hand frames and capsules are recorded as vectors.
 
-import { BuiltCable, Bundle, Capsule, Frame, Pinch, Rod, RodBuildOptions, V3, XLR, buildCable, capsuleTrack, frameTrack, gripFrame, normalize, quatFromAxisAngle, quatMul, quatRotate, sub } from '../sim';
+import { BuiltCable, Bundle, Capsule, CoilMemory, Frame, Pinch, Rod, RodBuildOptions, V3, XLR, buildCable, capsuleTrack, frameTrack, gripFrame, normalize, quatFromAxisAngle, quatMul, quatRotate, sub } from '../sim';
 import type { ShotDef } from './types';
 
 const RC = XLR.od / 2;
@@ -49,20 +50,24 @@ const local = (f: Frame, v: V3): V3 => {
 /**
  * Test hand for a pinch frame (d1 toward the palm, d3 along the cable): the index and thumb pads
  * on either side of the cable, the palm behind them, the other fingers curled below the index.
- * Radii: fingers 7.5–9 mm, palm 22 mm.
+ * Radii: fingers 7.5–9 mm, palm 22 mm. open 0..1 moves the pads apart and the thumb up (a hand
+ * that lets go opens its fingers before it moves away).
  */
-export function pinchHand(f: Frame, group: number): Capsule[] {
-  const fi = 0.0075, th = 0.009;
+export function pinchHand(f: Frame, group: number, open = 0): Capsule[] {
+  const fi = 0.0075, th = 0.009, o = Math.min(1, Math.max(0, open));
   const c = (a: V3, b: V3, r: number): Capsule => ({ a: local(f, a), b: local(f, b), r, group });
   return [
     c([0.085, -0.01, -0.03], [0.085, -0.01, 0.03], 0.022), // palm
-    c([0.075, -0.022, -0.012], [0.036, -0.018, -0.004], fi), // index, proximal
-    c([0.036, -0.018, -0.004], [0.004, -(RC + fi), 0], fi), // index, distal: pad against the cable
-    c([0.065, 0.032, 0.02], [0.03, 0.022, 0.01], th), // thumb, proximal
-    c([0.03, 0.022, 0.01], [0.004, RC + th, 0], th), // thumb, distal: pad against the cable
+    c([0.075, -0.022, -0.012], [0.036, -0.018 - 0.006 * o, -0.004], fi), // index, proximal
+    c([0.036, -0.018 - 0.006 * o, -0.004], [0.004 + 0.004 * o, -(RC + fi) - 0.012 * o, 0], fi), // index, distal: pad against the cable
+    c([0.065, 0.032, 0.02], [0.03 + 0.006 * o, 0.022 + 0.008 * o, 0.01], th), // thumb, proximal
+    c([0.03 + 0.006 * o, 0.022 + 0.008 * o, 0.01], [0.004 + 0.012 * o, RC + th + 0.014 * o, 0], th), // thumb, distal: pad against the cable
     c([0.078, -0.038, -0.004], [0.042, -0.05, 0.006], 0.008), // middle, ring and little fingers, curled
   ];
 }
+
+/** how open the pads of a pinch are (for pinchHand): closed when held, a little when loose, open when free */
+export const padsOpen = (pin: Pinch | null, t: number) => (pin ? 1 - Math.min(1, pin.level(t) / 0.5) : 1);
 
 /** Test hand holding a bundle: a fist round the frame's d3 axis (palm toward d1). */
 export function fistHand(f: Frame, group: number, r = 0.012): Capsule[] {
@@ -116,7 +121,7 @@ export const DRAPE = { finger: { a: [0, 1, -0.05] as V3, b: [0, 1, 0.05] as V3, 
 
 export const physDrape: ShotDef = {
   id: 'phys-drape',
-  duration: 4,
+  duration: 12,
   substeps: XLR.substeps,
   build() {
     const H = 1, top = H + DRAPE.finger.r + RC, R = 0.02, cy = top - R;
@@ -239,7 +244,7 @@ export const physGrab: ShotDef = {
 
 // ---------------------------------------------------------------- phys-lay
 
-export const LAY = { s: 1.0, tAt: 0.6, tLift: 0.9, tLay: 3.2, tDown: 3.5, tOpen: 3.6, radius: 0.15, lift: 0.04, duration: 6.5 };
+export const LAY = { s: 1.3, tAt: 0.6, tLift: 0.9, tLay: 3.2, tDown: 3.5, tOpen: 3.6, radius: 0.15, lift: 0.04, duration: 6.5 };
 
 export const physLay: ShotDef = {
   id: 'phys-lay',
@@ -272,14 +277,16 @@ export const physLay: ShotDef = {
     };
     const frame = (t: number): Frame => gripFrame(hand(t), t < LAY.tLift ? [1, 0, 0] : dirAt(t), [0, 1, 0]);
     let pin: Pinch | null = null;
-    rod.setCapsules((t) => pinchHand(frame(t), 1));
+    // the fingers come down open, close on the cable, open again when they let go
+    const open = (t: number) => (t < LAY.tAt ? 1 - minJerk((t - LAY.tAt + 0.25) / 0.25) : padsOpen(pin, t));
+    rod.setCapsules((t) => pinchHand(frame(t), 1, open(t)));
     return {
       rod,
       script: (r: Rod, t: number) => {
         if (!pin && t >= LAY.tAt) pin = r.pinch({ frame, hand: 1, mode: 'held', blend: 0.1 });
         if (pin && t >= LAY.tOpen && pin.state !== 'free') pin.release(0.15);
       },
-      vectors: { right: frameTrack((_, t) => frame(t)), caps: capsuleTrack(6, (_, t) => pinchHand(frame(t), 1)) },
+      vectors: { right: frameTrack((_, t) => frame(t)), caps: capsuleTrack(6, (r) => r.currentCapsules()) },
       tracks: cableRange(built),
     };
   },
@@ -289,7 +296,7 @@ export const physLay: ShotDef = {
 
 export const COIL = {
   left: [0, 1.0, 0] as V3,
-  loops: 3,
+  loops: 5,
   /** per loop: approach, slide out, close, return, place, open; then the next loop */
   beat: { take: 0.35, slide: 1.3, close: 0.15, ret: 1.3, place: 0.2, open: 0.3 },
   out: [0.72, -0.22, 0.03] as V3,
@@ -298,7 +305,7 @@ export const COIL = {
 };
 const BEAT = COIL.beat, LOOP = BEAT.take + BEAT.slide + BEAT.close + BEAT.ret + BEAT.place + BEAT.open;
 COIL.tMoveCoil = 0.3 + COIL.loops * LOOP + 0.3;
-COIL.duration = COIL.tMoveCoil + 2.5;
+COIL.duration = COIL.tMoveCoil + 4;
 
 /** the left hand: a fist, the cable running through it toward +x; at the end it moves the coil */
 export function coilLeft(t: number): Frame {
@@ -308,8 +315,20 @@ export function coilLeft(t: number): Frame {
   return { p, q };
 }
 
-export const physCoil: ShotDef = {
-  id: 'phys-coil',
+/** Options of the coil test (experiments: tools/simtest; the shot phys-coil uses the defaults). */
+export interface CoilTestOptions {
+  id?: string;
+  /** the coil a used cable remembers (BuildCableOptions.memory) */
+  memory?: CoilMemory;
+  /** while the hand brings the strand back, roll the remembered bend down into the loop (Pinch.rollToCurl) */
+  rollToCurl?: boolean;
+  /** extra rod options */
+  rod?: RodBuildOptions;
+}
+
+export function coilShot(o: CoilTestOptions = {}): ShotDef {
+  return {
+  id: o.id ?? 'phys-coil',
   duration: COIL.duration,
   substeps: XLR.substeps,
   build() {
@@ -319,8 +338,8 @@ export const physCoil: ShotDef = {
     corner(pts, [1, 0, 0], [0, -1, 0], 0.04);
     pts.push(...polyline(pts[pts.length - 1], [[[0, -1, 0], L[1] - 0.04 - RC - 0.05]]).slice(1));
     corner(pts, [0, -1, 0], [1, 0, 0], 0.05);
-    pts.push(...polyline(pts[pts.length - 1], [[[1, 0, 0.3], 2.3]]).slice(1));
-    const built = buildCable(XLR, pts, { plugs: 'both' }), { rod, sCable } = built;
+    pts.push(...polyline(pts[pts.length - 1], [[[1, 0, 0.3], 0.8 * COIL.loops + 0.6]]).slice(1));
+    const built = buildCable(XLR, pts, { plugs: 'both', memory: o.memory ?? null, ...o.rod }), { rod, sCable } = built;
     const coil: Bundle = rod.bundle({ frame: coilLeft, hand: 0, blend: 0.15 });
     rod.time = -1.5;
     coil.add(0, 0.11);
@@ -352,19 +371,30 @@ export const physCoil: ShotDef = {
         const tA = t0 + BEAT.take, tS = tA + BEAT.slide, tC = tS + BEAT.close, tR = tC + BEAT.ret;
         const above: V3 = [at[0] + 0.04, at[1] + 0.1, at[2] + 0.03];
         path = keyPath([[t0, from], [t0 + BEAT.take * 0.6, above], [tA, at], [tS, out], [tC, out], [tC + BEAT.ret * 0.5, mid], [tR, back], [tR + BEAT.place + 0.05, back], [tR + BEAT.place + BEAT.open, [back[0] + 0.08, back[1] + 0.06, back[2] + 0.06]]]);
-        // the pads along the cable while sliding out, and the hand keeps that direction on the way back
-        const dOut = normalize(sub(out, at));
-        axis = (tt) => (tt < tA ? dir : normalize(lerpV(dir, dOut, minJerk((tt - tA) / 0.3))));
+        // the pads along the cable while sliding out; on the way back the wrist turns them level
+        // (+x, slightly up), so the strand comes into the fist from below and the loop closes round
+        const dOut = normalize(sub(out, at)), dIn: V3 = normalize([1, 0.2, 0]);
+        axis = (tt) => (tt < tA ? dir : tt < tC ? normalize(lerpV(dir, dOut, minJerk((tt - tA) / 0.3))) : normalize(lerpV(dOut, dIn, minJerk((tt - tC) / BEAT.ret))));
         phase = 'take';
       }
       if (k < 0) return;
       const tA = t0 + BEAT.take, tS = tA + BEAT.slide, tC = tS + BEAT.close, tR = tC + BEAT.ret, tP = tR + BEAT.place;
       if (phase === 'take' && t >= tA) {
-        pin = r.pinch({ frame: right, hand: 1, mode: 'loose', blend: 0.1 });
+        // the same pinch every loop: it closes on whatever is between the pads now
+        if (!pin) pin = r.pinch({ frame: right, hand: 1, mode: 'loose', blend: 0.1 });
+        else pin.set('loose', 0.1);
         phase = 'slide';
       }
       if (phase === 'slide' && t >= tS && pin) {
         pin.set('held', BEAT.close);
+        if (o.rollToCurl) {
+          // the thumb rolls the remembered bend so that it curls down, into the loop
+          const want = pin.rollToCurl([0, -1, 0]);
+          if (want !== null) {
+            const r0 = pin.roll(), t1 = t + BEAT.close;
+            pin.setRoll((tt) => r0 + (want - r0) * minJerk((tt - t1) / (0.5 * BEAT.ret)));
+          }
+        }
         phase = 'return';
       }
       if (phase === 'return' && t >= tR && pin) {
@@ -379,16 +409,19 @@ export const physCoil: ShotDef = {
       }
       if (pin) sHand = pin.s;
     };
-    const caps = (t: number) => [...fistHand(coilLeft(t), 0), ...pinchHand(right(t), 1)];
+    const caps = (t: number) => [...fistHand(coilLeft(t), 0), ...pinchHand(right(t), 1, padsOpen(pin, t))];
     rod.setCapsules(caps);
     return {
       rod,
       script,
-      vectors: { left: frameTrack((_, t) => coilLeft(t)), right: frameTrack((_, t) => right(t)), caps: capsuleTrack(9, (_, t) => caps(t)) },
+      vectors: { left: frameTrack((_, t) => coilLeft(t)), right: frameTrack((_, t) => right(t)), caps: capsuleTrack(9, (r) => r.currentCapsules()) },
       tracks: { sHand: () => sHand, slip: () => (pin ? pin.slip : 0), force: () => (pin ? pin.force : 0), sCable0: () => sCable[0], ...cableRange(built) },
     };
   },
-};
+  };
+}
+
+export const physCoil: ShotDef = coilShot();
 
 // ---------------------------------------------------------------- phys-roll
 

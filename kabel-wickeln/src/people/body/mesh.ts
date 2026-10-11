@@ -38,7 +38,7 @@ export const MAT_COUNT = Object.keys(MAT).length;
 
 /**
  * Layer of everything but the arms: head, hair, neck, torso, legs, shoes and the top of the upper
- * arms. A first-person camera leaves it out and sees only the own arms (from the upper arm down);
+ * arms. A first-person camera leaves it out and sees only the own arms (up to the shoulder);
  * it still casts its shadow (view.ts renders shadows with a camera that sees every layer).
  */
 export const SELF = 1;

@@ -1,24 +1,30 @@
 // The IK test choreography (pure TS, also loaded by tools/simtest/ik-continuity.mjs and
 // ik-sweep-check.mjs): Noor's hands on the over-under path of the reference videos, as targets only
-// (no cable). The left hand holds a coil in front of the left hip (palm towards the midline, the
-// bundle pointing forward like a rod the loops hang on) and moves between the hip and the midline.
-// The right hand pinches the cable next to it, the thumb tip towards the coil, slides out to the
-// right hip (the pinch loosened), and comes back rolling the cable (over loop). For the under loop
-// it turns over at the right hip by about 180° (palm up and forward, the thumb tip away from the
-// coil: mostly forearm supination) and turns back on the way in.
+// (no cable). It also shows how to key the hands with the rig.ts API.
+//
+// Left hand: holds a coil in front of the left hip (palm towards the midline, the bundle pointing
+// forward like a rod the loops hang on) and moves between the hip and the midline.
+// Right hand: pinches the cable next to the left hand, the thumb tip towards the coil (the cable runs
+// along the thumb: cross 0.3), slides out to the right hip with the pinch loosened (the cable turns
+// across the thumb pad, cross 1.2, the fingers hang, the back of the hand forward: B 2.3), and comes
+// back rolling the cable (over loop). For the under loop it turns over at the right hip by 145°: the
+// grip frame the hand reached at the hip is turned about the forearm's axis (rig.ts
+// turnWithForearm, free: 0), so the forearm supinates (palm up and forward, the thumb tip away from
+// the coil) while elbow and shoulder stay low; on the way back the turn unwinds into the start pose.
 //
 // The cable direction d3 at the pinch is where the cable leaves past the thumb tip (body/hand.ts
-// pinchAround): towards the coil while the thumb points there; turned over, the cable leaves the
-// pinch away from the coil and comes back to it over the back of the hand (the wrist in the loop).
+// pinchAround). Turned over, the cable leaves the pads away from the coil and comes back to it over
+// the back of the hand (the wrist in the loop).
 
-import { V3, Quat, norm } from '../../people/math';
+import { V3, Quat, norm, quatCols, slerp } from '../../people/math';
+import type { Pose } from '../../people/people';
 import { NOOR } from '../../people/cast';
-import { Grip, HandRig, Key, Rig, gripFrame, keys, stand } from '../../people/rig';
+import { Grip, HandRig, Key, Rig, gripFrame, keys, rigPose, stand, turnWithForearm } from '../../people/rig';
 
 /** one over loop and one under loop, s */
 export const SWEEP_PERIOD = 6.6;
 
-/** the beats of a period (s): used by the checks and the test scene's captions */
+/** the beats of a period (s): used by the checks and the test scene */
 export const SWEEP_BEATS = {
   /** pinched next to the left hand */
   start: 0.2,
@@ -36,6 +42,13 @@ export const SWEEP_BEATS = {
   underIn: 6.2,
 };
 
+/**
+ * How far the hand turns over for the under loop, rad: the forearm supinates from about 30° pronated
+ * to its limit (115°), the wrist does the rest. With the elbow bent at the hip, the upper arm's
+ * rotation would swing the forearm sideways rather than turn the hand, so more would lift the arm.
+ */
+export const UNDER_TURN = (145 * Math.PI) / 180;
+
 const k = <T>(list: [number, T][]) => list as Key<T>[];
 
 /** the right hand's pinch point */
@@ -48,18 +61,17 @@ const rightP = keys(k<V3>([
   [3.3, [-0.02, 0.88, -0.31]],
   [3.65, [0.0, 0.875, -0.31]],
   [4.55, [0.3, 0.84, -0.2]],
-  [5.1, [0.31, 0.88, -0.26]],
-  [5.5, [0.2, 0.9, -0.32]],
+  // turned over, the hand comes up a little (B 6.1)
+  [5.1, [0.3, 0.9, -0.26]],
+  [5.5, [0.2, 0.92, -0.32]],
   [6.2, [-0.01, 0.89, -0.32]],
   [6.6, [-0.02, 0.88, -0.31]],
 ]));
 
 /** towards the coil from next to it: along the thumb, a little down into the loop between the hands */
 const towards: V3 = norm([-1, -0.3, -0.35]);
-/** from the right hip towards the coil: the cable spans the hands, sagging */
-const sagging: V3 = norm([-1, -0.3, -0.3]);
-/** turned over: the cable leaves the pads away from the coil and comes back over the back of the hand */
-const away: V3 = norm([0.87, 0.5, 0]);
+/** at the right hip: the cable comes in from the coil, sagging, and runs down past the thumb tip */
+const sagging: V3 = norm([-0.6, -1, -0.3]);
 const rightDir = keys(k<V3>([
   [0, towards],
   [0.35, towards],
@@ -68,25 +80,18 @@ const rightDir = keys(k<V3>([
   [2.7, towards],
   [3.65, towards],
   [4.55, sagging],
-  [5.1, away],
-  [5.5, away],
   [6.2, towards],
 ]));
 /**
  * The angle between thumb and cable (HandRig.cross): next to the coil the cable runs along the thumb
  * towards it (A 3.0/4.0); while the hand slides out it turns across the thumb pad, and at the hip it
- * crosses the pad nearly at right angles while the fingers hang and the thumb points down (B 2.3)
+ * crosses the pad at about 70° while the fingers hang and the thumb points down (B 2.3)
  */
-const rightCross = keys(k<number>([[0, 0.3], [0.35, 0.3], [1.35, 1.5], [1.6, 1.5], [2.7, 0.3], [3.65, 0.3], [4.55, 1.5], [5.1, 0.9], [5.5, 0.9], [6.2, 0.3]]));
-
-/** 0 = not turned, 1 = turned over (palm up and forward, thumb away) */
-const turned = keys(k<number>([[0, 0], [4.55, 0], [5.1, 1], [5.5, 1], [6.2, 0]]));
+const rightCross = keys(k<number>([[0, 0.3], [0.35, 0.3], [1.35, 1.2], [1.6, 1.2], [2.7, 0.3], [3.65, 0.3], [4.55, 1.2], [5.5, 1.2], [6.2, 0.3]]));
 /** 0 next to the coil … 1 out at the hip */
 const outside = keys(k<number>([[0, 0], [0.35, 0], [1.35, 1], [1.6, 1], [2.7, 0], [3.65, 0], [4.55, 1], [5.5, 1], [6.2, 0]]));
-/** the palm's wishes: towards the body at the hip (the back of the hand forward and out, B 2.3), up and forward turned over */
-const PALM_IN: V3 = norm([-0.8, 0, 0.6]);
-const PALM_UP: V3 = norm([0.6, 0.8, -0.1]);
-const AWAY: V3 = norm([1, 0.2, -0.3]);
+/** the palm's wish out at the hip: back towards the body and down (the back of the hand forward and out, B 2.3; the forearm pronated, so it has room to turn over) */
+const PALM_IN: V3 = norm([-0.4, -0.3, 0.87]);
 
 /** the roll of the cable between thumb and index finger on the way back (rad) */
 const rightRoll = keys(k<number>([
@@ -96,6 +101,13 @@ const rightRoll = keys(k<number>([
 const rightOpen = keys(k<number>([
   [0, 0], [0.35, 0], [0.5, 0.6], [1.3, 0.6], [1.5, 0], [3.3, 0], [3.65, 0], [3.8, 0.6], [4.5, 0.6], [4.65, 0], [6.6, 0],
 ]));
+
+/** the under loop (from out2 to the hand-over): the turn (0 … 1 of UNDER_TURN), and the way from the hip frame to the start frame */
+const UNDER = [SWEEP_BEATS.out2, SWEEP_BEATS.underIn] as const;
+const turn = keys(k<number>([[UNDER[0], 0], [SWEEP_BEATS.turned, 1], [SWEEP_BEATS.back, 1], [UNDER[1], 0]]));
+const home = keys(k<number>([[SWEEP_BEATS.back, 0], [UNDER[1], 1]]));
+/** how freely the hand may turn about the cable: the turn holds the whole frame (0), the rest only the cable's direction (1) */
+const rightFree = keys(k<number>([[UNDER[0], 1], [UNDER[0] + 0.12, 0], [UNDER[1], 0], [UNDER[1] + 0.2, 1]]));
 
 /** the left hand: in front of the left hip, towards the midline for every hand-over, out while the right slides */
 const leftP = keys(k<V3>([
@@ -111,39 +123,62 @@ const leftP = keys(k<V3>([
 const LEFT_ALONG: V3 = norm([0.1, 0.4, -1]);
 const LEFT_TO_PALM: V3 = [-1, 0.1, 0];
 
-/** a blend of two directions, normalised */
-const mix = (a: V3, b: V3, w: number): V3 => norm([a[0] + (b[0] - a[0]) * w, a[1] + (b[1] - a[1]) * w, a[2] + (b[2] - a[2]) * w]);
-
-/** the hand targets at time t (s, periodic) */
-export function sweepHands(t: number): { left: HandRig; right: HandRig } {
-  const u = ((t % SWEEP_PERIOD) + SWEEP_PERIOD) % SWEEP_PERIOD;
+/** the right hand outside the under loop: the cable's direction, the hand free about it, wishes for the thumb and the palm */
+function pinchAt(u: number, free = 1): HandRig {
   const p = rightP(u);
-  const tw = turned(u);
   const lp = leftP(u);
-  // the thumb tip's wish: towards the coil (the left hand), turned over away from it
+  // the thumb tip towards the coil (the left hand) next to it; out at the hip the palm towards the body
   const toCoil = norm([lp[0] - p[0], 0.4 * (lp[1] - p[1]), lp[2] - p[2]]);
   const out = outside(u);
-  const right: HandRig = {
+  return {
     grip: gripFrame(p, norm(rightDir(u)), [0, 0, 1]),
     hold: 'pinch',
     radius: 0.0032,
     roll: rightRoll(u),
     open: rightOpen(u),
     cross: rightCross(u),
-    free: 1,
-    // next to the coil the thumb tip points to it; turned over, away from it
-    thumbTo: tw > 0 ? AWAY : toCoil,
-    thumbWeight: 0.3 * Math.max(1 - out, tw),
-    prefer: [{ hand: [0, 1, 0], world: tw > 0 ? PALM_UP : PALM_IN, weight: 0.3 * Math.max(out * (1 - tw), tw) }],
+    free,
+    thumbTo: toCoil,
+    thumbWeight: 0.2 * (1 - out),
+    prefer: [{ hand: [0, 1, 0], world: PALM_IN, weight: 0.3 * out }],
   };
-  const left: HandRig = { grip: gripFrame(lp, LEFT_ALONG, LEFT_TO_PALM), hold: 'coil', radius: 0.012, free: 0.6 };
+}
+
+const rigOf = (left: HandRig, right: HandRig): Rig => ({ ...stand(NOOR, [0, 0], 0, { width: 0.3 }), lean: 0.05, look: [0.05, 0.85, -0.35], hands: [left, right] });
+const leftAt = (u: number): HandRig => ({ grip: gripFrame(leftP(u), LEFT_ALONG, LEFT_TO_PALM), hold: 'coil', radius: 0.012, free: 0.6 });
+
+/**
+ * The frames the right hand reaches at the hip before the under loop and next to the coil after it
+ * (solved once, statelessly): the under loop turns the first about the forearm and ends in the second.
+ */
+const OUT_POSE = rigPose(NOOR, rigOf(leftAt(UNDER[0]), pinchAt(UNDER[0])));
+const padsD1 = (pose: Pose): V3 => quatCols(pose.body.arms?.[1].pads?.q ?? [0, 0, 0, 1])[0];
+/** at the hip: the cable's direction as asked, the hand's angle about it as reached */
+const OUT_Q = gripFrame([0, 0, 0], sagging, padsD1(OUT_POSE)).q;
+/** next to the coil after the under loop: the same */
+const HOME_D1 = padsD1(rigPose(NOOR, rigOf(leftAt(UNDER[1]), pinchAt(UNDER[1]))));
+const HOME_Q = gripFrame([0, 0, 0], towards, HOME_D1).q;
+
+/** the hand targets at time t (s, periodic) */
+export function sweepHands(t: number): { left: HandRig; right: HandRig } {
+  const u = ((t % SWEEP_PERIOD) + SWEEP_PERIOD) % SWEEP_PERIOD;
+  const left = leftAt(u);
+  if (u <= UNDER[0]) return { left, right: pinchAt(u) };
+  // the hand-over after the under loop: the frame it arrived in, then free about the cable again
+  if (u >= UNDER[1]) return { left, right: { ...pinchAt(u, rightFree(u)), grip: { p: rightP(u), q: HOME_Q } } };
+  // the under loop: the hip frame turned about the forearm (supination), unwinding into the start frame
+  const base: Grip = { p: rightP(u), q: slerp(OUT_Q, HOME_Q, home(u)) };
+  const pinch = pinchAt(u, rightFree(u));
+  // the wishes fade while the frame takes over
+  const prefer = (pinch.prefer ?? []).map((g) => ({ ...g, weight: (g.weight ?? 1) * rightFree(u) }));
+  const right: HandRig = { ...pinch, grip: turnWithForearm(OUT_POSE, 1, base, UNDER_TURN * turn(u)), thumbTo: undefined, prefer };
   return { left, right };
 }
 
 /** Noor's whole rig on the sweep */
 export function sweepRig(t: number): Rig {
   const h = sweepHands(t);
-  return { ...stand(NOOR, [0, 0], 0, { width: 0.3 }), lean: 0.05, look: [0.05, 0.85, -0.35], hands: [h.left, h.right] };
+  return rigOf(h.left, h.right);
 }
 
 /** the right hand's grip as asked (for drawing the target in the test scene) */

@@ -7,7 +7,9 @@
 // frames, how much faster the joints moved than the target (a pop shows up as a jump far above the
 // path's own speed), hard-limit violations (must be 0), position error, and solve time. A third
 // mode samples a RigTrack (the stateful solve at 60 fps, interpolated) at 120 fps, as a scene does.
-// Writes output/simtest/ik-continuity.json.
+// Then the call rate: RigIK at 30 and 120 fps against RigTrack at 60 fps (a bake at another rate than
+// the scene). Asserts: no limit violations, stateful/track jumps ≤ 20°/frame, RigIK@30 and @120 within
+// 2° and 1 mm of RigTrack@60 on the sweep (3° / 3 mm on the spinning pinch). Writes output/simtest/ik-continuity.json; exits with 1 when an assertion fails.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -35,7 +37,7 @@ function violations(a) {
 
 /** runs a rig path at `fps` for `seconds`: 'stateless', 'stateful' (RigIK) or 'track' (RigTrack at 60 fps) */
 function run(name, rigAt, seconds, fps, mode) {
-  const state = mode === 'stateful' ? new rig.RigIK() : undefined;
+  const state = mode === 'stateful' ? new rig.RigIK(1 / fps) : undefined;
   const track = mode === 'track' ? new rig.RigTrack(cast.NOOR, rigAt, 0, 60) : null;
   const n = Math.round(seconds * fps);
   let prev = null;
@@ -115,6 +117,47 @@ for (const mode of ['stateless', 'stateful', 'track']) {
   }
 }
 
+// ---------------------------------------------------------------- the call rate
+// The stateful solver counts speeds per second and checks on a time grid: RigIK at another rate
+// (a bake at 120 or 30 fps) must give the same arms as the scene's RigTrack at 60 fps. Paths: the
+// sweep, and a pinch whose cable direction turns all the way round at the right hip (the arm has
+// to change its configuration on the way).
+const pinchSpin = (t) => ({ ...STAND, hands: [null, { grip: rig.gripFrame([0.22, 0.9, -0.22], [Math.cos(t), -0.2, Math.sin(t)], [0, 0, 1]), hold: 'pinch', radius: 0.0032, free: 1 }] });
+const rate = [];
+for (const [name, rigAt, seconds] of [['sweep', sweep.sweepRig, sweep.SWEEP_PERIOD * 2], ['pinchSpin', pinchSpin, 12]]) {
+  const ref = new rig.RigTrack(cast.NOOR, rigAt, 0, 60);
+  for (const fps of [30, 120]) {
+    const st = new rig.RigIK(1 / fps);
+    let worst = { deg: 0 }, worstMm = 0;
+    for (let f = 0; f <= Math.round(seconds * fps); f++) {
+      const t = f / fps;
+      const g = rigAt(t);
+      const a = rig.rigPose(cast.NOOR, g, st), b = ref.pose(t);
+      for (const side of [0, 1]) {
+        if (!g.hands[side]) continue;
+        for (const j of J) {
+          const d = Math.abs(a.body.arms[side].angles[j] - b.body.arms[side].angles[j]) / DEG;
+          if (d > worst.deg) worst = { deg: +d.toFixed(2), joint: j, side, t: +t.toFixed(3) };
+        }
+        const ga = a.body.arms[side].grip, gb = b.body.arms[side].grip;
+        if (ga && gb) worstMm = Math.max(worstMm, Math.hypot(ga.p[0] - gb.p[0], ga.p[1] - gb.p[1], ga.p[2] - gb.p[2]) * 1000);
+      }
+    }
+    rate.push({ path: name, fps, maxAngleDiffDeg: worst.deg, worst, maxGripDiffMm: +worstMm.toFixed(2) });
+  }
+}
+
+const fails = [];
+for (const r of results) if (r.violations) fails.push(`${r.name} ${r.mode}: ${r.violations} limit violations`);
+for (const r of results) if (r.mode !== 'stateless' && r.maxJumpDeg > 20) fails.push(`${r.name} ${r.mode}: jump ${r.maxJumpDeg.toFixed(1)}°`);
+// the sweep within 2° and 1 mm; the spinning pinch (the arm changes its configuration, the hand lags
+// up to 6 mm behind its target) within 3° and 3 mm
+const RATE_TOL = { sweep: [2, 1], pinchSpin: [3, 3] };
+for (const r of rate) {
+  const [deg, mm] = RATE_TOL[r.path];
+  if (r.maxAngleDiffDeg > deg || r.maxGripDiffMm > mm) fails.push(`${r.path}: RigIK@${r.fps} vs RigTrack@60 differ by ${r.maxAngleDiffDeg}° / ${r.maxGripDiffMm} mm`);
+}
+
 for (const r of results) {
   console.log(
     `${r.name.padEnd(32)} ${r.mode.padEnd(9)} jump ${r.maxJumpDeg.toFixed(2).padStart(6)}°/frame (${r.worst.joint} @${r.worst.frame}, target ${(r.worst.speed * 1000).toFixed(1)} mm)` +
@@ -122,5 +165,8 @@ for (const r of results) {
       `  out of reach ${r.notReached}  ${r.msPerPose.toFixed(2)} ms/pose`,
   );
 }
-fs.writeFileSync(path.join(OUT, 'ik-continuity.json'), JSON.stringify(results, null, 1));
+for (const r of rate) console.log(`RATE ${r.path.padEnd(10)} RigIK@${r.fps} vs RigTrack@60: max angle diff ${r.maxAngleDiffDeg}° (${r.worst.joint ?? '-'} @${r.worst.t ?? '-'} s), grip point ${r.maxGripDiffMm} mm`);
+console.log(fails.length ? `FAIL\n  ${fails.join('\n  ')}` : 'OK');
+fs.writeFileSync(path.join(OUT, 'ik-continuity.json'), JSON.stringify({ results, rate, fails }, null, 1));
 await close();
+process.exit(fails.length ? 1 : 0);

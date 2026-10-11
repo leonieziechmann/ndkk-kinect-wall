@@ -1,7 +1,7 @@
 // A person in three.js: the body mesh of body/styles.ts as two BufferGeometries (one draw call each),
 // updated in place every frame from a Pose. Low-poly bodies with one flat colour per face from the
-// person's palette; faces marked smooth (the hands) get vertex normals. The arms from the upper arm
-// down are on layer 0, everything else (head, hair, neck, torso, legs, shoes) is a separate mesh on
+// person's palette; faces marked smooth (the hands) get vertex normals. The arms (from the shoulder
+// joint down) are on layer 0, everything else (head, hair, neck, torso, legs, shoes) is a separate mesh on
 // layer SELF (1): a first-person camera that leaves layer 1 out sees only the own arms, and both
 // meshes cast shadows (view.ts renders the shadow map with a camera that sees every layer), so the
 // body still throws its shadow in the first-person view. Every other camera must enable layer 1.

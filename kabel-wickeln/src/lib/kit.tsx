@@ -5,7 +5,7 @@
 //     (characters / 12 + 1 s, KONZEPT "Text")
 //   - Timeline (lib/timeline.ts): scene time ↔ shot time with freezes and slow motion
 //   - splitPerson / viewLayers: one person in both views of a split screen: the own view sees only
-//     the arms (from the upper arm down), the outside view everything; the whole body casts its
+//     the arms (up to the round top of the shoulder), the outside view everything; the whole body casts its
 //     shadow in both (an invisible shadow caster, as in games)
 //   - small things: tally (ü u ü …), the "Zeitlupe" badge, the clock signal
 //
@@ -122,7 +122,7 @@ export const LAYER = { OUTSIDE: 2, FIRST: 3 } as const;
 
 /**
  * One person in both views of a split screen, the same mesh for both: the own view (a camera set up
- * with viewLayers(cam, 'pov')) sees only the arms, from the upper arm down; the outside view sees the
+ * with viewLayers(cam, 'pov')) sees only the arms, up to the shoulder; the outside view sees the
  * whole person. Every part casts its shadow in both views (the shadow map is rendered with a camera
  * that sees every layer), so the own view shows the body's shadow on the floor without the body.
  * Both views show exactly the same arms and hands.

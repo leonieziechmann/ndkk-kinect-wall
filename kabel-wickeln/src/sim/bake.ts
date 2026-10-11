@@ -105,6 +105,13 @@ export interface BakeStats {
   substeps: number;
   fps: number;
   nodes: number;
+  /** largest joint gap in any recorded frame [m] (a torn cable: should stay below ~0.3 mm) */
+  maxJointGap: number;
+  /** what went wrong during the bake (rod.stats): speeds cut to maxSpeed, held pinches that slipped, extra joint solves, hand warnings */
+  speedCapped: number;
+  heldSlip: number;
+  jointFixes: number;
+  warnings: string[];
 }
 
 /** Runs the rod for `duration` seconds and records it. */
@@ -119,6 +126,8 @@ export function bake(rod: Rod, o: BakeOptions): BakedRod {
   const vtracks = vnames.map((k) => o.vectors![k]);
   const vdata = vtracks.map((v) => new Float32Array(F * v.size));
   const t0 = rod.time;
+  const st0 = { ...rod.stats }, w0 = rod.warnings.length;
+  let maxGap = 0;
   const start = performance.now();
   for (let f = 0; f < F; f++) {
     o.script?.(rod, rod.time, f);
@@ -132,12 +141,17 @@ export function bake(rod: Rod, o: BakeOptions): BakedRod {
       if (v.length !== size) throw new Error(`vector "${vnames[k]}" has ${v.length} values, expected ${size}`);
       vdata[k].set(v, f * size);
     }
+    maxGap = Math.max(maxGap, rod.maxJointGap());
     o.onFrame?.(rod, rod.time, f);
   }
   const wall = (performance.now() - start) / 1000;
   const vectors: VectorInfo[] = vnames.map((name, k) => ({ name, size: vtracks[k].size, quats: vtracks[k].quats ?? [] }));
   const baked = new BakedRod({ id: o.id ?? '', fps, frames: F, nodes: n, radius: rod.radius, t0, tracks: names, min: [0, 0, 0], scale: [1, 1, 1], vectors }, pos, quat, tracks, vdata);
-  baked.stats = { wallSeconds: wall, simSecondsPerWallSecond: o.duration / wall, substeps, fps, nodes: n };
+  baked.stats = {
+    wallSeconds: wall, simSecondsPerWallSecond: o.duration / wall, substeps, fps, nodes: n, maxJointGap: maxGap,
+    speedCapped: rod.stats.speedCapped - st0.speedCapped, heldSlip: rod.stats.heldSlip - st0.heldSlip, jointFixes: rod.stats.jointFixes - st0.jointFixes,
+    warnings: rod.warnings.slice(w0),
+  };
   return baked;
 }
 

@@ -6,12 +6,13 @@
 // the top has a radius of 1.5-2.2 cm.
 //
 // Two models:
-//   - elastic: one bending stiffness EI, no memory. The fit is EI ≈ 1.3e-4 N m², but then a loop
-//     of 30 cm hangs as a narrow teardrop (w R³ / EI ≈ 13), not round as in the user's videos.
-//   - the preset: strand friction (opts.plastic, a stiff element frictionEI that slips beyond a
-//     yield curvature and creeps). The cable was straight before it was hung over the finger: the
-//     drape starts with a straight memory, so it is wider at first and creeps narrower; it matches
-//     the photo a few seconds after hanging with EI (strands slipping) ≈ 1.0e-4 N m².
+//   - elastic: one bending stiffness EI, no memory. The fit is EI ≈ 1.0-1.3e-4 N m² (4.7-5.3 cm),
+//     but then a loop of 30 cm hangs as a narrow teardrop, not as the ovals of the user's videos.
+//   - the preset: strand friction (opts.plastic: frictionEI 2e-3 up to a yield moment of 3e-3 N m,
+//     no creep) on top of EI 1e-4. The cable was straight before it was hung over the finger: the
+//     drape starts with a straight memory; it is final after ~2 s (5.1-5.3 cm, plug leg ~10° off
+//     vertical where the photo shows it vertical).
+// The full fit of the preset (stub, drape, loops, fall, swing) is tools/simtest/model-fit.mjs.
 // The separation is printed over 10 s for each.
 //   node tools/simtest/calib-xlr.mjs
 // Output: output/simtest/calib-xlr.summary.json, calib-xlr.png

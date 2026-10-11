@@ -31,7 +31,7 @@
 import type { Capsule as SimCapsule } from '../sim/rod';
 import { V3, madd } from './math';
 import type { HandPose, Pose } from './people';
-import { FINGERS, THUMB_CAPS, handJoints, palmSurface } from './body/hand';
+import { FINGERS, THUMB_CAPS, fingerCaps, handJoints, palmSurface } from './body/hand';
 
 export type HandPart = 'palm' | 'thumb' | 'index' | 'middle' | 'ring' | 'little' | 'forearm';
 
@@ -100,10 +100,11 @@ export function handCapsules(h: HandPose, side: number, gloved = false, o: Colli
   hj.fingers.forEach((f, i) => {
     const d = FINGERS[i];
     const [K, J1, J2, T] = f.p;
-    add(K, J1, d.r0, names[i], 0);
+    const r = fingerCaps(d);
+    add(K, J1, r[0], names[i], 0);
     // a pinched cable lies on the side of the index finger's middle bone
-    add(J1, J2, (d.r0 + d.r1) / 2, names[i], 1, i === 0);
-    add(J2, T, d.r1, names[i], 2);
+    add(J1, J2, r[1], names[i], 1, i === 0);
+    add(J2, T, r[2], names[i], 2);
   });
   // the thumb: metacarpal (inside the ball of the thumb), first and last phalanx
   const [B, M, IP, T] = hj.thumb;

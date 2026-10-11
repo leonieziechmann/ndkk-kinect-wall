@@ -98,13 +98,21 @@ function segDist(px: number, py: number, ax: number, ay: number, bx: number, by:
   return Math.hypot(px - ax - dx * t, py - ay - dy * t);
 }
 
+/** a finger's collision radius per bone (proximal, middle, distal; size 1): what colliders.ts uses */
+export const fingerCaps = (f: FingerDef): [number, number, number] => [f.r0, (f.r0 + f.r1) / 2, f.r1];
+
+/** how much a glove adds to the hand's radii (size 1, about 8 % of a finger): grips keep what they hold this much further out */
+export const GLOVE_EXTRA = 0.0009;
+
 const tmp2 = new Array<number>(8).fill(0);
 /** how much room the finger leaves around the point (gx, gy) at curl c (< 0: it cuts in) */
 function gap(f: FingerDef, c: number, gx: number, gy: number, r: number) {
   chain2(f, c, tmp2);
+  const caps = fingerCaps(f);
   let d = Infinity;
-  for (let s = 0; s < 3; s++) d = Math.min(d, segDist(gx, gy, tmp2[s * 2], tmp2[s * 2 + 1], tmp2[s * 2 + 2], tmp2[s * 2 + 3]));
-  return d - r - (f.r0 + f.r1) / 2;
+  for (let s = 0; s < 3; s++) d = Math.min(d, segDist(gx, gy, tmp2[s * 2], tmp2[s * 2 + 1], tmp2[s * 2 + 2], tmp2[s * 2 + 3]) - caps[s]);
+  // a little room: the fingers fan out of their planes, and a held cable runs across them at a slant
+  return d - r - 0.0006;
 }
 
 /**
@@ -447,7 +455,14 @@ export function pinchAround(r: number, roll = 0, open = 0, crossing = PINCH_CROS
   const n = norm(cross(d3, side));
   const slide = roll - PINCH_ROLL_MAX;
   const p = madd(axis0, n, r * slide);
-  const thumb = madd(madd(madd(madd(axis0, side, pad + PINCH_LIFT * o), td, 0.008), n, 2 * r * slide), [0, -1, 0], 0.004 * o);
+  let thumb = madd(madd(madd(madd(axis0, side, pad + PINCH_LIFT * o), td, 0.008), n, 2 * r * slide), [0, -1, 0], 0.004 * o);
+  // rolled far, the thumb's first phalanx comes down onto the cable: lift the thumb off it
+  for (let it = 0; it < 3; it++) {
+    const c = thumbChain(thumb);
+    const clear = Math.min(segLine(c[0], c[1], p, d3) - THUMB_CAPS[0], segLine(c[1], c[2], p, d3) - THUMB_CAPS[1]) - r;
+    if (clear >= 0.0003) break;
+    thumb = madd(thumb, side, 0.0003 - clear);
+  }
   const ch = thumbChain(thumb);
   return { curl, spread: 0, thumb, thumbNail: side, p, d3, d1: turn(scale(side, -1), d3, roll), pads: scale(side, -1), thumbTip: norm(sub(ch[3], ch[2])) };
 }
@@ -479,7 +494,7 @@ export function coilAround(R: number): GripShape {
   const along = norm([FIST_SLOPE, 0, 1]);
   const B = THUMB.base;
   const ax: V3 = [gxAt(fist, B[2]), fist.gy, B[2]];
-  const radii = [THUMB.r[0], THUMB.r[1], THUMB.r[2]];
+  const radii = THUMB_CAPS.map((x) => x / 0.92);
   // the thumb lies on the bundle along its axis, its joint where metacarpal and first phalanx
   // reach at a natural bend (≈ 40° at the knuckle)
   const place = (beta: number) => {

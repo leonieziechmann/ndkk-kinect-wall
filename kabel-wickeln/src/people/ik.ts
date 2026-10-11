@@ -31,10 +31,13 @@
 //
 // Continuity. Stateless (no prev): four analytic starts (two-bone IK with the elbow down, out,
 // forward, and a relaxed hand; each a continuous function of the target) are polished a little and
-// the best one is finished: deterministic, and smooth along smooth target paths as long as the best
-// solution does not change to another family (that can happen where a target asks for an extreme
-// turn; the stateful solver and RigTrack never jump). Stateful (prev, or ArmIK between calls): it
-// starts from the last solution, stays close to it and changes no joint by more than maxStep per call.
+// the best one is finished (when none gets the hand within 1 cm, five more starts: elbow back, up …):
+// deterministic, and smooth along smooth target paths as long as the best solution does not change
+// to another family (that can happen where a target asks for an extreme turn; the stateful solver
+// and RigTrack never jump). Stateful (prev, or ArmIK between calls): it starts from the last
+// solution, stays close to it, and no joint turns faster than ArmIKOptions.maxSpeed (rad/s). ArmIK
+// works on a fixed time grid (substeps of 1/120 s, the target interpolated in arm-local
+// coordinates), so its result hardly depends on the call rate.
 //
 // Conventions: world metres, y up. Arm-local coordinates (used inside): x forward, y up, z lateral
 // (away from the body's midline); right-handed for the right arm, mirrored for the left. Hand frame
@@ -179,6 +182,13 @@ export interface HandTarget {
   elbow?: V3;
   /** weight of the elbow wish (default 1) */
   elbowWeight?: number;
+  /**
+   * wishes for single joint angles (rad), e.g. { rot: 0.6 } to let the upper arm turn outwards
+   * during a turn of the hand; they pull with jointWeight per rad (default 1, like the comfort
+   * pull; 3 = firm) and never push a joint past its limits
+   */
+  joints?: Partial<ArmAngles>;
+  jointWeight?: number;
 }
 
 /** a full hand frame as orientation goals: fingers along fd, palm out along palm */
@@ -490,6 +500,8 @@ interface Problem {
   axes: { hand: V3; world: V3; w: number }[];
   elbow: V3 | null;
   elbowW: number;
+  /** joint wishes: index, value, weight */
+  joints: [number, number, number][];
   prev: Float64Array | null;
   /** an attractor (raw angles) and its weight */
   toward: Float64Array | null;
@@ -498,6 +510,8 @@ interface Problem {
   res: Float64Array;
   /** the angles of the raw parameters being evaluated */
   q: Float64Array;
+  /** weight of staying with prev */
+  prevW: number;
   /** the cost of the last minimisation */
   cost: number;
 }
@@ -558,6 +572,7 @@ function residuals(pr: Problem, p: Float64Array): number {
     r[n++] = w * (py - hy);
     r[n++] = w * (pz - hz);
   }
+  for (const [j, v, w] of pr.joints) r[n++] = w * (q[j] - v);
   // comfort: the clavicle follows the arm, the rest relaxes towards its middle
   const [ce, cp] = clavicleRhythm(q);
   r[n++] = (W.comfort * (q[I.clavElev] - ce)) / CLAV_SCALE[0];
@@ -575,9 +590,17 @@ function residuals(pr: Problem, p: Float64Array): number {
   r[n++] = W.torso * insideTorso(pr.s, o.wr[0], o.wr[1], o.wr[2]);
   r[n++] = W.torso * insideTorso(pr.s, o.eff[0], o.eff[1], o.eff[2]);
   // stay with the previous frame
-  if (pr.prev) for (let j = 0; j < NQ; j++) r[n++] = W.prev * (q[j] - pr.prev[j]);
+  if (pr.prev) for (let j = 0; j < NQ; j++) r[n++] = pr.prevW * (q[j] - pr.prev[j]);
   if (pr.toward) for (let j = 0; j < NQ; j++) r[n++] = pr.towardW * (q[j] - pr.toward[j]);
   return n;
+}
+
+/** how far the hand point is from the target at the raw parameters p (m) */
+function posErrorOf(pr: Problem, p: Float64Array) {
+  toAngles(p, pr.q);
+  fk(pr.s, pr.q, pr.at, pr.chain);
+  const e = pr.chain.eff;
+  return Math.hypot(e[0] - pr.p[0], e[1] - pr.p[1], e[2] - pr.p[2]);
 }
 
 function costOf(pr: Problem, q: Float64Array) {
@@ -800,17 +823,22 @@ function relaxedHand(s: ArmSetup, q: Float64Array): [number[], number[]] {
 
 /** where the elbow points in the starting guesses (arm-local): down, out and back; out and up; down and forward */
 const POLES: V3[] = [norm([-0.25, -1, 0.45]), norm([-0.1, -0.35, 1]), norm([0.5, -1, 0.1])];
+/**
+ * more starts, tried only when none of the first ones gets the hand within 1 cm (targets behind the
+ * back, above the head, across the shoulder): the elbow back, up, out and up, forward and up
+ */
+const MORE_POLES: V3[] = [norm([-1, -0.3, 0.3]), norm([0, 1, 0.4]), norm([-0.4, 0.5, 1]), norm([0.7, 0.6, 0.2]), norm([-0.6, -0.6, -0.5])];
 
 /**
  * An analytic starting point (elbow towards one of POLES; relaxed: the hand as relaxed as possible,
  * ignoring the orientation goals): a deterministic, continuous function of the target
  */
-function initialGuess(pr: Problem, start = 0, relaxed = false): Float64Array {
+function initialGuess(pr: Problem, start: number | V3 = 0, relaxed = false): Float64Array {
   const s = pr.s;
   const q = new Float64Array(NQ);
   const sh = [...s.clav];
   // the elbow towards the pole, blended with the target's wish
-  let pole = POLES[start];
+  let pole = typeof start === 'number' ? POLES[start] : start;
   if (pr.elbow) {
     const k = clamp(pr.elbowW, 0, 1);
     pole = norm([0, 1, 2].map((i) => pole[i] * (1 - k) + pr.elbow![i] * k * 2) as V3);
@@ -856,6 +884,8 @@ export interface SolveOptions {
   toward?: ArmAngles | null;
   /** how strongly (per rad, default 3) */
   towardWeight?: number;
+  /** how strongly the solution stays with prev (per rad, default W.prev = 0.25: right for 60 calls per second) */
+  prevWeight?: number;
 }
 
 /** iterations per start before the best start is finished */
@@ -877,12 +907,14 @@ function problemOf(s: ArmSetup, target: HandTarget, o: SolveOptions = {}): Probl
     axes,
     elbow: target.elbow ? toLocal(s, norm(target.elbow)) : null,
     elbowW: target.elbowWeight ?? 1,
+    joints: ARM_JOINTS.filter((j) => target.joints?.[j] !== undefined).map((j) => [I[j], target.joints?.[j] ?? 0, target.jointWeight ?? 1]),
     prev: o.prev ? toArray(o.prev) : null,
     toward: o.toward ? toArray(o.toward) : null,
     towardW: o.towardWeight ?? 3,
     chain: newChain(),
-    res: new Float64Array(60 + 3 * axes.length),
+    res: new Float64Array(60 + 3 * axes.length + NQ),
     q: new Float64Array(NQ),
+    prevW: o.prevWeight ?? W.prev,
     cost: 0,
   };
 }
@@ -904,7 +936,47 @@ export function evaluateArm(s: ArmSetup, target: HandTarget, angles: ArmAngles):
 
 /** the arm reaching for a target (see the file header) */
 export function solveArm(s: ArmSetup, target: HandTarget, o: SolveOptions = {}): ArmSolution {
-  const pr = problemOf(s, target, o);
+  return solveProblem(problemOf(s, target, o), o);
+}
+
+/** a problem with these solve options (prev, pull) set; the target part is shared, not copied */
+function withOptions(pr: Problem, o: SolveOptions): Problem {
+  return {
+    ...pr,
+    prev: o.prev ? toArray(o.prev) : null,
+    toward: o.toward ? toArray(o.toward) : null,
+    towardW: o.towardWeight ?? 3,
+    prevW: o.prevWeight ?? W.prev,
+    chain: newChain(),
+    res: new Float64Array(pr.res.length),
+    q: new Float64Array(NQ),
+    cost: 0,
+  };
+}
+
+/**
+ * The problem a fraction u of the way from a to b (arm-local: the target point, the hand point, the
+ * orientation goals, the elbow and joint wishes), on b's setup. In arm-local coordinates the angles
+ * depend only on the target, so this is the target at a time between two calls. Goals that do not
+ * match (another number of axes, other joints) are b's.
+ */
+function lerpProblem(a: Problem, b: Problem, u: number): Problem {
+  const l3 = (x: V3, y: V3): V3 => [x[0] + (y[0] - x[0]) * u, x[1] + (y[1] - x[1]) * u, x[2] + (y[2] - x[2]) * u];
+  const n3 = (x: V3, y: V3): V3 => norm(l3(x, y));
+  const sameAxes = a.axes.length === b.axes.length;
+  const sameJoints = a.joints.length === b.joints.length && a.joints.every((j, i) => j[0] === b.joints[i][0]);
+  return {
+    ...b,
+    p: l3(a.p, b.p),
+    at: l3(a.at, b.at),
+    axes: sameAxes ? b.axes.map((g, i) => ({ hand: n3(a.axes[i].hand, g.hand), world: n3(a.axes[i].world, g.world), w: a.axes[i].w + (g.w - a.axes[i].w) * u })) : b.axes,
+    elbow: a.elbow && b.elbow ? n3(a.elbow, b.elbow) : b.elbow,
+    elbowW: a.elbowW + (b.elbowW - a.elbowW) * u,
+    joints: sameJoints ? b.joints.map((j, i) => [j[0], a.joints[i][1] + (j[1] - a.joints[i][1]) * u, a.joints[i][2] + (j[2] - a.joints[i][2]) * u]) : b.joints,
+  };
+}
+
+function solveProblem(pr: Problem, o: SolveOptions): ArmSolution {
   const maxIter = o.maxIter ?? 60;
   const p = new Float64Array(NQ);
   let iterations = 0;
@@ -924,15 +996,19 @@ export function solveArm(s: ArmSetup, target: HandTarget, o: SolveOptions = {}):
     // starts with the elbow down, out and forward, and a relaxed hand with the elbow down; a few
     // iterations each, the best one is finished
     let best = Infinity;
-    for (let k = 0; k <= POLES.length; k++) {
+    const tryStart = (q0: Float64Array) => {
       const c = new Float64Array(NQ);
-      toRaw(k < POLES.length ? initialGuess(pr, k) : initialGuess(pr, 0, true), c);
+      toRaw(q0, c);
       iterations += minimise(pr, c, PROBE);
       if (pr.cost < best - 1e-9) {
         best = pr.cost;
         p.set(c);
       }
-    }
+    };
+    for (let k = 0; k < POLES.length; k++) tryStart(initialGuess(pr, k));
+    tryStart(initialGuess(pr, 0, true));
+    // a hard target (none of these gets the hand close): more starts
+    if (posErrorOf(pr, p) > 0.01) for (const pole of MORE_POLES) tryStart(initialGuess(pr, pole));
     iterations += minimise(pr, p, maxIter);
   }
   // the cost of the pose itself (without staying close or being pulled): comparable between solves
@@ -946,7 +1022,7 @@ export function solveArm(s: ArmSetup, target: HandTarget, o: SolveOptions = {}):
 
 /** forward kinematics only: where an arm with these angles puts its joints and hand */
 export function armPose(s: ArmSetup, angles: ArmAngles, at: V3 = [0, 0, 0]): ArmSolution {
-  const pr: Problem = { s, p: [0, 0, 0], at, axes: [], elbow: null, elbowW: 0, prev: null, toward: null, towardW: 0, chain: newChain(), res: new Float64Array(60), q: new Float64Array(NQ), cost: 0 };
+  const pr: Problem = { s, p: [0, 0, 0], at, axes: [], elbow: null, elbowW: 0, joints: [], prev: null, toward: null, towardW: 0, chain: newChain(), res: new Float64Array(60), q: new Float64Array(NQ), prevW: 0, cost: 0 };
   const q = toArray(angles);
   const sol = finish(pr, q, 0);
   sol.report.posError = 0;
@@ -1008,6 +1084,8 @@ export interface ArmIKOptions {
   pause?: number;
   /** give up a move over that takes longer than this, s (default 2) */
   maxMigrate?: number;
+  /** the solver's time step, s (default 1/120): a call with a longer dt is solved in substeps of about this */
+  step?: number;
 }
 
 /**
@@ -1028,6 +1106,8 @@ export interface ArmIKOptions {
 export class ArmIK {
   private last: ArmAngles | null = null;
   private goal: ArmAngles | null = null;
+  /** the last call's problem (arm-local target), to interpolate the substeps from */
+  private lastProblem: Problem | null = null;
   /** time since the first call, s */
   private time = 0;
   /** the check grid cell of the last check */
@@ -1041,28 +1121,50 @@ export class ArmIK {
   public readonly o: Required<ArmIKOptions>;
 
   public constructor(o: ArmIKOptions = {}) {
-    this.o = { maxSpeed: 12, checkEvery: 0.1, migrateSpeed: 3.6, pause: 0.5, maxMigrate: 2, ...o };
+    this.o = { maxSpeed: 12, checkEvery: 0.1, migrateSpeed: 3.6, pause: 0.5, maxMigrate: 2, step: 1 / 120, ...o };
   }
 
-  /** solves for this call; dt = seconds since the last call (default 1/60) */
+  /**
+   * Solves for this call; dt = seconds since the last call (default 1/60). A long dt is solved in
+   * substeps of about o.step, with the target interpolated (in arm-local coordinates) from the last
+   * call's: every call rate walks the same fine time grid.
+   */
   public solve(s: ArmSetup, target: HandTarget, dt = 1 / 60, maxIter?: number): ArmSolution {
-    const o = this.o;
+    const cur = problemOf(s, target);
     if (!this.last) {
-      const first = solveArm(s, target, { maxIter });
+      const first = solveProblem(cur, { maxIter });
       this.last = first.angles;
+      this.lastProblem = cur;
       this.time = 0;
       this.cell = 0;
       return first;
     }
     const h = Math.max(1e-6, dt);
+    const n = Math.max(1, Math.round(h / this.o.step));
+    const from = this.lastProblem;
+    let sol: ArmSolution | null = null;
+    for (let k = 1; k <= n; k++) sol = this.step(k < n && from ? lerpProblem(from, cur, k / n) : cur, h / n, maxIter);
+    this.lastProblem = cur;
+    return sol as ArmSolution;
+  }
+
+  /** one step of h seconds towards the problem */
+  private step(pr: Problem, h: number, maxIter?: number): ArmSolution {
+    const o = this.o;
     this.time += h;
+    // per-call weights scaled so that what the arm does per second does not depend on the step:
+    // a pull of weight w per step relaxes a free direction by about w² / (H + w²) per step; with
+    // w² ∝ 1/h it relaxes the same per second (W.prev is tuned for 60 steps per second)
+    const rate = Math.sqrt(1 / 60 / h);
+    const prevWeight = W.prev * rate;
     if (this.goal) {
       // the better arm moves with the target; follow it
-      this.goal = solveArm(s, target, { prev: this.goal, maxIter }).angles;
+      this.goal = solveProblem(withOptions(pr, { prev: this.goal, prevWeight }), { maxIter }).angles;
     }
     // the pull towards the better arm grows while moving over, so it gets past awkward poses in between
-    const pull = Math.min(40, 3 + 60 * this.moving);
-    const sol = solveArm(s, target, { prev: this.last, maxIter, maxStep: (this.goal ? o.migrateSpeed : o.maxSpeed) * h, toward: this.goal, towardWeight: pull });
+    const pull = Math.min(40, 3 + 60 * this.moving) * rate;
+    const opts: SolveOptions = { prev: this.last, maxIter, prevWeight, maxStep: (this.goal ? o.migrateSpeed : o.maxSpeed) * h, toward: this.goal, towardWeight: pull };
+    const sol = solveProblem(withOptions(pr, opts), opts);
     const cell = Math.floor(this.time / o.checkEvery + 1e-6);
     const due = cell !== this.cell;
     this.cell = cell;
@@ -1077,7 +1179,7 @@ export class ArmIK {
       }
     } else if (this.time >= this.resume - 1e-9 && (due || sol.report.posError > MIGRATE_OFF)) {
       // on the check grid, and at once when the hand misses its target
-      const fresh = solveArm(s, target, { maxIter });
+      const fresh = solveProblem(withOptions(pr, {}), { maxIter });
       if (fresh.report.cost < 0.75 * sol.report.cost - 1 && distance(fresh.angles, sol.angles) > 0.25) {
         this.goal = fresh.angles;
         this.moving = 0;
@@ -1088,9 +1190,21 @@ export class ArmIK {
     return sol;
   }
 
+  /**
+   * The arm is held at these angles by someone else (rig.ts: a hanging arm): the next solve starts
+   * from them and moves at no more than maxSpeed (no pop when a hand takes a grip).
+   */
+  public hold(angles: ArmAngles) {
+    this.last = angles;
+    this.goal = null;
+    this.lastProblem = null;
+    this.moving = 0;
+  }
+
   public reset() {
     this.last = null;
     this.goal = null;
+    this.lastProblem = null;
     this.time = 0;
     this.cell = 0;
     this.resume = 0;

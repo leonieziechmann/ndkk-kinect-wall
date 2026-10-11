@@ -304,8 +304,11 @@ const ARM_PUSHED: ArmPt[] = [
   [1.2, 0.036, MAT.skin], [1.3, 0.039, MAT.skin], [1.65, 0.032, MAT.skin], [2, 0.026, MAT.skin],
 ];
 
-/** where the first-person view's arm starts (along the arm: 0 shoulder, 1 elbow) */
-const POV_CUT = 0.15;
+/**
+ * where the first-person view's arm starts (along the arm: 0 shoulder, 1 elbow). 0: the whole arm up
+ * to the round top of the shoulder, which lies outside the own view's picture: no cut to see
+ */
+const POV_CUT = 0;
 
 /** more rings along the forearm (at most 0.12 apart), so its twist spreads evenly */
 function densify(pts: ArmPt[]): ArmPt[] {
@@ -608,8 +611,8 @@ function clothed(m: Mesh, p: Pose) {
   m.curLayer = 0;
 
   // ---- arms: from the shoulder joint (its dome is the round top of the shoulder) down to the wrist.
-  // The first-person view sees them from just below the shoulder (layer 0; a cap hidden inside the
-  // sleeve closes the cut, which lies at the edge of its picture or outside). The forearm's oval
+  // The first-person view sees the whole arm (layer 0, from POV_CUT; the round top of the shoulder
+  // lies outside its picture, so no end shows). The forearm's oval
   // turns from the elbow's axis to the wrist's radio-ulnar axis along its length (pronation) and
   // flattens towards the wrist.
   const sleeve = densify(top === 'tee' ? ARM_TEE : spec.pushed ? ARM_PUSHED : banded ? ARM_CUFF : ARM_LONG);
@@ -650,10 +653,12 @@ function clothed(m: Mesh, p: Pose) {
       0.5,
       (j) => (sleeve[j][0] < POV_CUT ? SELF : 0),
     );
-    // the cap that closes the first-person view's cut, hidden inside the sleeve for everyone else
+    // the cap that closes the first-person view's cut (if the arm is cut), hidden inside the sleeve for everyone else
     const ci = sleeve.findIndex(([t]) => t >= POV_CUT);
-    const cut = rings[ci];
-    ellipsoid(m, cut.c, cut.x, norm(up), cut.y, cut.rx * 0.97, cut.rx * 0.35, cut.ry * 0.97, D.limb, 3, sleeve[ci][2]);
+    if (ci > 0) {
+      const cut = rings[ci];
+      ellipsoid(m, cut.c, cut.x, norm(up), cut.y, cut.rx * 0.97, cut.rx * 0.35, cut.ry * 0.97, D.limb, 3, sleeve[ci][2]);
+    }
     hand(m, a.hand, a.sign, norm(fa), 0.026 * ak, spec);
   });
 
