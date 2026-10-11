@@ -45,7 +45,9 @@ impl Audio {
 #[derive(Resource, Default)]
 pub struct SoundQueue {
     pub pending: Vec<(Pcm, f32)>,
-    cache: HashMap<usize, Handle<AudioSource>>,
+    /// by the sound's address; the entry keeps the sound alive, so the address cannot be reused
+    /// by another sound while it is cached
+    cache: HashMap<usize, (Pcm, Handle<AudioSource>)>,
 }
 
 fn wav_bytes(pcm: &[f32]) -> Vec<u8> {
@@ -79,14 +81,13 @@ pub fn play_sounds(mut q: ResMut<SoundQueue>, mut sources: ResMut<Assets<AudioSo
     for (pcm, vol) in pending {
         let key = Arc::as_ptr(&pcm) as usize;
         let handle = match q.cache.get(&key) {
-            Some(h) => h.clone(),
+            Some((_, h)) => h.clone(),
             None => {
-                let h = sources.add(AudioSource { bytes: wav_bytes(&pcm).into() });
-                q.cache.insert(key, h.clone());
-                // the Arc stays alive in the scene; a few stale entries do no harm
-                if q.cache.len() > 512 {
+                if q.cache.len() >= 512 {
                     q.cache.clear();
                 }
+                let h = sources.add(AudioSource { bytes: wav_bytes(&pcm).into() });
+                q.cache.insert(key, (pcm.clone(), h.clone()));
                 h
             }
         };
