@@ -24,7 +24,7 @@ export const COIL1: CoilPlan = {
 };
 
 /** how long the coil hangs still after the last loop (the strap closes in the scene) */
-export const COIL1_TAIL = 2.6;
+export const COIL1_TAIL = 3.2;
 
 function coilShotOf(id: string, plan: CoilPlan, tail: number): ShotDef & { controller: () => CoilController | null } {
   let last: CoilController | null = null;

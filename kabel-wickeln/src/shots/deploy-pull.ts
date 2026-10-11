@@ -52,7 +52,7 @@ export const YAW = Math.PI;
  */
 export const SHORT_RING: RingSpec = { cable: CHARGING, loop: 0.29, pattern: 'ouou', lead: 0.07, tail: 0.22, spacing: 0.01, press: 0.5, pressTime: 3 };
 /** the velcro tie: band length, width, thickness; where it lives on the start end (m from the plug's tip) */
-export const TIE = { length: 0.22, width: 0.012, thickness: 0.0015, s: 0.082 };
+export const TIE = { length: 0.18, width: 0.012, thickness: 0.0015, s: 0.094 };
 
 /** the ring as the factory made it: its face looks at Ilse, the start end sticks out to her left */
 const QRING: Quat = [0, 0, 0, 1];
@@ -140,8 +140,8 @@ export const TIE_POINTS = 90;
 export function tieShape(p: Plan, t: number, root?: { p: V3; d: V3 }): TieShape {
   const c0 = v3(p, SLOTS.tieC), a = p[SLOTS.tieA], b = p[SLOTS.tieB];
   const E = v3(p, SLOTS.tieE), V = v3(p, SLOTS.tieV), W = v3(p, SLOTS.tieW);
-  /** where the end sticks out once it is out of the eyelet: up */
-  const out0 = normalize(add(V, [0, 1.5, 0]));
+  /** the pull tab and the end out of the eyelet point up */
+  const UP: V3 = normalize(add(V, [0, 1.5, 0]));
   const ell = (c: V3, phi: number, off: number) => onEllipse(c, E, V, a, b, phi, off);
   const th = TIE.thickness, L = TIE.length, n = TIE_POINTS, ds = L / (n - 1);
   const fold = 1 - smooth((t - T.pinch) / (T.unfold - T.pinch));
@@ -159,8 +159,17 @@ export function tieShape(p: Plan, t: number, root?: { p: V3; d: V3 }): TieShape 
     return ((k + (s - arc[k]) / Math.max(1e-9, arc[k + 1] - arc[k])) / M) * 2 * Math.PI;
   };
   const eye = ell(c, 0, off);
-  // once let go the end flops over, to her right and down
-  const down = normalize([-0.5, -0.8, 0]);
+  // closed: through the eyelet, folded back over the band (towards her) for TIE_FOLD, then the pull
+  // tab stands up (the right hand pinches it 5 cm above the loops: its fingers stay clear of them)
+  const R = (a + b) * 0.95, foldEnd = ell(c, -TIE_FOLD / R, th * 2.6);
+  // let go: the end flops over away from her (a half turn, 1.2 cm wide) and hangs behind the ring
+  const r = 0.012, flopTop = add(eye, scale(UP, 0.008)), hangDir = normalize(add(scale(V, -1), scale(E, 0.25)));
+  const flop = (e: number): V3 => {
+    if (e < 0.008) return add(eye, scale(UP, e));
+    const th2 = (e - 0.008) / r;
+    if (th2 < Math.PI) return add(flopTop, add(scale(UP, r * Math.sin(th2)), scale(E, r * (1 - Math.cos(th2)))));
+    return add(add(flopTop, scale(E, 2 * r)), scale(hangDir, e - 0.008 - Math.PI * r));
+  };
   const pts: V3[] = [];
   for (let k = 0; k < n; k++) {
     const s = k * ds;
@@ -169,37 +178,39 @@ export function tieShape(p: Plan, t: number, root?: { p: V3; d: V3 }): TieShape 
       continue;
     }
     const e = s - turn;
-    // through the eyelet and back over the band (closed) …
-    const folded = e < 0.006 ? ell(c, 0, th * (1.5 + e / 0.006)) : ell(c, -(e - 0.006) / ((a + b) * 0.95), th * 2.6);
+    // through the eyelet, back over the band, the tab up (closed) …
+    const folded =
+      e < 0.006 ? ell(c, 0, th * (1.5 + e / 0.006)) : e < 0.006 + TIE_FOLD ? ell(c, -(e - 0.006) / R, th * 2.6) : add(foldEnd, scale(UP, e - 0.006 - TIE_FOLD));
     // … or out of it, straight up; flopped over once let go
-    const out = add(eye, scale(out0, e));
-    const flop = add(add(eye, scale(out0, Math.min(e, 0.01))), scale(down, Math.max(0, e - 0.01)));
-    pts.push(lerpV(lerpV(out, folded, fold), flop, loose));
+    const out = add(eye, scale(UP, e));
+    pts.push(lerpV(lerpV(out, folded, fold), flop(e), loose));
   }
   // the loops slipped out of it: the band hangs from the cable it lives on (a small loop round the
   // cable, then down)
   let side = W;
   if (hang > 0 && root) {
-    const d = normalize(root.d), r = CHARGING.od / 2 + th;
+    const d = normalize(root.d), rr = CHARGING.od / 2 + th;
     const e1 = normalize(sub([0, -1, 0], scale(d, -d[1]))), e2 = cross(d, e1);
-    const loop = 2 * Math.PI * r;
+    const loop = 2 * Math.PI * rr, shift = scale(sub(root.p, eye), hang);
     for (let k = 0; k < n; k++) {
       const s = k * ds;
       let h: V3;
       if (s < loop) {
-        const ph = s / r;
-        h = add(root.p, add(scale(e1, r * Math.cos(ph)), add(scale(e2, r * Math.sin(ph)), scale(d, 0.002 * ph))));
+        const ph = s / rr;
+        h = add(root.p, add(scale(e1, rr * Math.cos(ph)), add(scale(e2, rr * Math.sin(ph)), scale(d, 0.002 * ph))));
       } else {
-        const e = s - loop, bottom = add(root.p, scale(e1, r));
+        const e = s - loop, bottom = add(root.p, scale(e1, rr));
         h = add(bottom, add([0, -e, 0], scale(e2, 0.012 * Math.sin(e * 14) * Math.min(1, e / 0.03))));
       }
-      pts[k] = lerpV(add(pts[k], sub(root.p, eye)), h, hang);
+      pts[k] = lerpV(add(pts[k], shift), h, hang);
       pts[k][1] = Math.max(pts[k][1], DESK.height + th / 2);
     }
     side = normalize(lerpV(W, d, hang));
   }
   return { pts, tip: pts[n - 1], side };
 }
+/** how far the closed band's end is folded back over the band before the pull tab stands up */
+const TIE_FOLD = 0.012;
 
 const lerpV = (a: V3, b: V3, u: number): V3 => [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
 
@@ -231,7 +242,7 @@ export function pullRig(p: Plan, ends: Ends) {
     return { p: add(g.p, off), q: g.q };
   };
   /** the tie's end in the right hand's pads, thumb up, the hand on her right of it */
-  const tieGrip = (t: number): Grip => gripFrame(add(tieShape(p, t).tip, [0, -0.008, 0]), normalize([0, 1, 0.3]), [1, 0, 0]);
+  const tieGrip = (t: number): Grip => gripFrame(add(tieShape(p, t).tip, [0, -0.01, 0]), normalize([0, 1, 0.3]), [1, 0, 0]);
   /**
    * On the way round the ring, open: up and out to her right of it, then down beside it to the
    * other end, 7 cm in front of it on her side, so the open pads come onto the cable from where
@@ -352,19 +363,10 @@ export const deployPull: ShotDef = {
     // loops' ends come together; the tie sits on her right of the hand, round the loops' starts
     put(plan, SLOTS.left, top(0.012));
     const tc = top(-0.012);
-    let a = 0, b = 0;
-    for (let i = ring.loops[0][0]; i <= ring.loops[ring.loops.length - 1][1]; i++) {
-      const q = sub(P(i), tc);
-      if (Math.abs(q[0]) > 0.005 || q[1] < -0.025) continue;
-      a = Math.max(a, Math.abs(q[2]));
-      b = Math.max(b, Math.abs(q[1]));
-    }
     put(plan, SLOTS.tieC, tc);
     put(plan, SLOTS.tieE, [0, 0, 1]);
     put(plan, SLOTS.tieV, [0, 1, 0]);
     put(plan, SLOTS.tieW, [1, 0, 0]);
-    plan[SLOTS.tieA] = Math.fround(a + ring.rc + 0.001);
-    plan[SLOTS.tieB] = Math.fround(Math.max(b, 2 * ring.rc) + ring.rc + 0.001);
 
     // the other end: the cable 2.5 cm from its plug, leaving past the thumb up, towards the ring;
     // the palm out to her right
@@ -408,6 +410,17 @@ export const deployPull: ShotDef = {
     // let the ring hang still in the hand before the shot starts (the plug end droops)
     for (let f = 0; f < 90; f++) rod.step(1 / 60, 40);
     rod.time = 0;
+    // the tie's ellipse round the strands at its place, as they hang now (the right hand reads it
+    // from T.reach on, nothing before)
+    let a = 0, b = 0;
+    for (let i = ring.cable[0]; i <= ring.cable[1]; i++) {
+      const q = sub(P(i), tc);
+      if (Math.abs(q[0]) > 0.005 || q[1] < -0.025 || Math.abs(q[2]) > 0.04) continue;
+      a = Math.max(a, Math.abs(q[2]));
+      b = Math.max(b, Math.abs(q[1]));
+    }
+    plan[SLOTS.tieA] = Math.fround(a + ring.rc + 0.001);
+    plan[SLOTS.tieB] = Math.fround(Math.max(b, 2 * ring.rc) + ring.rc + 0.001);
 
     // the ends are held in pinches that let the cable turn in the pads (rolls: false): the hands
     // turn as they pull, but a pinch does not wring the cable

@@ -392,9 +392,7 @@ export class CoilController {
     const tAbove = b.tSpread + 0.6 * (b.tMeet - b.tSpread);
     let p: V3;
     if (t < b.tOut) {
-      const u = ramp(t, b.tSlide, b.tOut);
-      // (lifting a little at first, clear of the loop's first leg that hangs from the left hand's edge)
-      p = madd(lerpV(m.p0, g.hip, u), UP, 0.035 * Math.sin(Math.PI * Math.min(1, 1.6 * u)));
+      p = lerpV(m.p0, g.hip, ramp(t, b.tSlide, b.tOut));
     }
     else if (t < tBack) p = lerpV(g.hip, slack, ramp(t, b.tOut, tBack));
     else if (t < b.tSpread) p = lerpV(slack, spread, ramp(t, tBack, b.tSpread));
@@ -415,7 +413,7 @@ export class CoilController {
     // while the pads slide they follow the cable where it really runs through them (read from the
     // simulation): after a hand-over it hangs down from them and comes up into line as they go
     if (this.cableDir && t < b.tOut + 0.1) {
-      const u = 1 - ramp(t, b.tOut - 0.3, b.tOut + 0.1);
+      const u = 0.85 * (1 - ramp(t, b.tOut - 0.3, b.tOut + 0.1));
       if (dot(this.cableDir, along) > 0) along = normalize(lerpV(along, this.cableDir, u));
     }
     const d3 = normalize(lerpV(along, laying, w));
@@ -501,7 +499,8 @@ export class CoilController {
   private crossFloor(i: number, rod: Rod) {
     const b = this.bs[i], m = this.memo!;
     const sP = this.pin.s;
-    const a = rod.segmentAt(sP + 0.03), e = Math.min(rod.n - 2, rod.segmentAt(sP + 0.5));
+    // (the first 12 cm beyond the pads hang as they want: the pads slide along them next)
+    const a = rod.segmentAt(sP + 0.12), e = Math.min(rod.n - 2, rod.segmentAt(sP + 0.55));
     const l0 = rod.segmentAt(this.sEdge[b.k - 1]) + 4, l1 = rod.segmentAt(sP - 0.1);
     const N = GEOM.N, A = GEOM.A;
     const side = b.kind === 'over' ? -1 : 1;
@@ -522,8 +521,7 @@ export class CoilController {
       // (the first 10-20 cm beyond the pads hang as they want: the pads slide along them next)
       const w = ramp(t, b.tMeet - 0.25, b.tMeet) * ramp(rod.sNode[n] - sP, 0.1, 0.22);
       if (w <= 0) return q;
-      // (inside the loop: a little lateral of the edge where the loop's first leg goes down)
-      const xm = dot(this.exitPoint(b.k, t), A) + 0.035;
+      const xm = dot(this.exitPoint(b.k, t), A) - 0.03;
       return madd(q, A, w * (xm - dot(q, A)));
     };
     // (off before the next loop's slide: the pads run along this cable then)
@@ -621,8 +619,9 @@ export class CoilController {
     this.solve(-pre, true);
     this.coil = rod.bundle({ frame: this.pose.body.arms![0].grip!, hand: 0, blend: 0.01 });
     this.coil.add(this.plugStrand[0], this.plugStrand[1] + 0.004, 0.01);
-    // (a swivel: the cable turns between thumb and index as it wants, its twist runs on to the floor)
-    this.pin = rod.pinch({ frame: this.pose.body.arms![1].grip!, hand: 1, mode: 'held', blend: 0.01, rolls: false });
+    // (a swivel: the cable turns between thumb and index as it wants, its twist runs on to the floor;
+    // sliding, the loose pinch pulls with ~1 N: the user's span sags only a few cm)
+    this.pin = rod.pinch({ frame: this.pose.body.arms![1].grip!, hand: 1, mode: 'held', blend: 0.01, rolls: false, friction: 1.0 });
     rod.setCapsules((tt) => this.capsAt(tt));
     const frames = Math.round(pre * 60);
     for (let f = 0; f < frames; f++) {
@@ -742,9 +741,7 @@ export class CoilController {
     const tn = t + DT;
     // the cable's direction at the pads, towards the coil, and a point a little beyond them (the slide follows it)
     if (this.pin && this.pin.state !== 'free') {
-      // (the pads lie along the chord of the bend the cable makes through them: half its turn on each side)
-      const before = rod.tangentAt(this.pin.s - 0.02), after = rod.tangentAt(this.pin.s + 0.025);
-      this.cableDir = normalize(mul(add(before, after), -1));
+      this.cableDir = mul(rod.tangentAt(this.pin.s), -1);
       this.follow = rod.pointAt(this.pin.s + 0.006);
     }
     const i = loopAt(this.bs, tn);
@@ -929,6 +926,7 @@ export class CoilController {
     check('no free cable deeper than 1.5 mm in a hand or leg', this.maxPen < 0.0015, `${(this.maxPen * 1000).toFixed(2)} mm (${this.maxPenWhere})`);
     check('IK: no hard limits, every grip reached', this.ikGroups.size === 0, [...this.ikGroups].map(([k, g]) => `${k}: ${g.n} frames, t ${g.t0.toFixed(2)}–${g.t1.toFixed(2)}${g.worst ? `, worst ${g.worst.toFixed(1)} mm` : ''}`).join('; ') || 'none');
     check('pinch never lost', !this.pin.lost, this.pin.lost);
+    check('no simulation warnings (cable got away, grips off the cable, ...)', rod.warnings.length === 0, rod.warnings.slice(0, 4).join(' | ') || 'none');
     return { ok, lines, data: { results: this.results, lk, maxPen: this.maxPen, ik: this.ikIssues } };
   }
 
