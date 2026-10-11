@@ -42,8 +42,15 @@ export type { TieShape };
 export const LONG_RING: RingSpec = { cable: XLR, loop: 0.88, pattern: 'ou'.repeat(8), lead: 0.4, tail: 0.5, spacing: 0.016, press: 0.6, pressTime: 3 };
 /** the loops that stay in his left hand (the first ones, next to the start end) */
 export const HAND_LOOPS = 3;
-/** the loop that hangs between his hands while he swings (the first one the right hand does not hold) */
-const BETWEEN = HAND_LOOPS;
+/**
+ * The first loop of the ring the right hand takes and throws (rigid, see below). Two loops hang
+ * between his hands: a loop can only come off the ring if the start of the next one, which an unter
+ * loop has woven through its eye, can move as well (pinned to a rigid ring, the loop's cable would
+ * be pulled through it). For the same reason one loop always rides free at the ring's back in
+ * flight. (Axial pay-out tests: with a free loop ahead over-under comes out with |Tw| ≈ 0.2, without
+ * one a strand passes through another.)
+ */
+const RING_FIRST = HAND_LOOPS + 2;
 /** the velcro tie: band length, width, thickness; where it lives on the start end (m from the plug's tip) */
 export const TIE_K: TieSpec = { length: 0.45, width: 0.02, thickness: 0.0016, s: 0.44 };
 
@@ -366,7 +373,7 @@ export const throwShot: ShotDef = {
     const tk = top(-0.08);
     for (let j = 0; j < rod.ns; j++) {
       const k = loopOf(j);
-      if (k <= BETWEEN || k >= ring.sLoops.length) continue;
+      if (k < RING_FIRST || k >= ring.sLoops.length) continue;
       const c = C(j);
       if (c[1] < topY - 0.035 || Math.abs(c[2] - tk[2]) > 0.035) continue;
       frontSegs.push(j);
@@ -438,31 +445,34 @@ export const throwShot: ShotDef = {
     for (let k = HAND_LOOPS - 1; k >= 0; k--) inHand.push(k);
     let landed = false, split = false;
     const leftEnd = () => ring.sLoops[inHand.length ? inHand[0] : 0][inHand.length ? 1 : 0];
+    /** the loop riding free at the ring's back (released, not yet paying out) */
+    let buffer = -1;
     const script = (r: Rod, t: number) => {
       if (!rh && t >= T.take) {
         rh = r.bundle({ frame: ringFrame, hand: RIGHT, blend: 0.12 });
-        for (let k = BETWEEN + 1; k < ring.sLoops.length; k++) inRing.push(k);
+        for (let k = RING_FIRST; k < ring.sLoops.length; k++) inRing.push(k);
         // the front loops, whole (a ring flies as one), and the end tail hanging from it
-        rh.add(ring.sLoops[BETWEEN + 1][0], r.totalLength);
+        rh.add(ring.sLoops[RING_FIRST][0], r.totalLength);
       }
       if (!split && t >= T.take + 0.05) {
-        // the left hand lets the front loops go (and the one between the hands)
-        for (let k = BETWEEN; k < ring.sLoops.length; k++) lh.release(ring.sLoops[k][0], ring.sLoops[k][1], 0.06);
+        // the left hand lets the front loops go (and the two between the hands)
+        for (let k = HAND_LOOPS; k < ring.sLoops.length; k++) lh.release(ring.sLoops[k][0], ring.sLoops[k][1], 0.06);
         lh.release(ring.sLoops[ring.sLoops.length - 1][1], ring.sCable[1] + 1, 0.06);
         split = true;
       }
       if (rh && t > T.release) {
         const fp = flight(t);
-        // a loop leaves the ring's back when the free cable behind it would not reach any more
+        // a loop leaves the ring's back when the free cable behind it (up to the loop riding free
+        // at the back) would not reach any more
         const hand = reached(t, LEFT).p;
         const D = len(sub(fp, hand));
-        while (inRing.length) {
-          const k = inRing[0];
-          const free = ring.sLoops[k][0] - leftEnd();
-          if (free > 1.1 * D + 0.5) break;
-          rh.release(ring.sLoops[k][0], ring.sLoops[k][1], 0.05);
-          inRing.shift();
-        }
+        const letGo = () => {
+          const k = inRing.shift() as number;
+          rh?.release(ring.sLoops[k][0], ring.sLoops[k][1], 0.05);
+          buffer = k;
+        };
+        if (buffer < 0 && inRing.length) letGo();
+        while (inRing.length && ring.sLoops[buffer][0] - leftEnd() < 1.1 * D + 0.5) letGo();
         if (!inRing.length && rh.ranges().length) rh.release(-Infinity, Infinity, 0.05);
         // landing: whatever is left of the ring goes onto the floor
         if (!landed && fp[1] < 0.34) {
