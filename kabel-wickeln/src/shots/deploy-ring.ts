@@ -68,7 +68,9 @@ export interface Ring {
   length: number;
   /** contact radius [m] */
   rc: number;
-  /** the bundle at the top, where a hand holds it: centre, radius, its extent along the stack (z) */
+  /** what the fist holds (material ranges: the start end and the top of every loop): a shot must take exactly these at once */
+  held: [number, number][];
+  /** the bundle in the fist: centre, radius across the stack, its extent along the stack (z) */
   top: { c: V3; r: number; z0: number; z1: number };
 }
 
@@ -164,37 +166,45 @@ export function windRing(spec: RingSpec, onFrame?: (rod: Rod, t: number) => void
     onFrame?.(rod, rod.time);
   }
   rod.removeGuide(guide);
-  // relax for a moment without the guides, still without gravity, then remember this shape
-  for (let f = 0; f < 20; f++) {
-    rod.step(1 / 60, 60);
+  rod.opts.iterations = it;
+  // the fist takes the top of every loop (where a hand holds a coil), gravity comes back and the
+  // loops hang and settle; then the strands remember this shape (it was stored like this)
+  const held: [number, number][] = [];
+  for (let j = 0; j < rod.ns; j++) {
+    const c = [rod.c[3 * j], rod.c[3 * j + 1], rod.c[3 * j + 2]];
+    const inFist = c[1] > FIST[1] - 0.02 && Math.abs(c[0] - FIST[0]) < 0.022;
+    if (!inFist && rod.sNode[j] > sLoops[0][0]) continue;
+    const last = held[held.length - 1];
+    if (last && Math.abs(last[1] - rod.sNode[j]) < 1e-9) last[1] = rod.sNode[j + 1];
+    else held.push([rod.sNode[j], rod.sNode[j + 1]]);
+  }
+  for (const [a, b] of held) fist.add(a, b);
+  rod.opts.gravity = g;
+  for (let f = 0; f < 72; f++) {
+    rod.step(1 / 60, 30);
     onFrame?.(rod, rod.time);
   }
-  fist.remove();
-  rod.opts.iterations = it;
   rod.rememberShape();
-  rod.opts.gravity = g;
   rod.v.fill(0);
   rod.om.fill(0);
   rod.time = 0;
 
-  // the bundle at the top: loop nodes within 2.5 cm below the fist
+  // the bundle in the fist: centre, radius across the stack, extent along it
   let c: V3 = [0, 0, 0], m = 0, z0 = Infinity, z1 = -Infinity;
-  for (let i = loops[0][0]; i <= loops[N - 1][1]; i++) {
-    const p: V3 = [rod.x[3 * i], rod.x[3 * i + 1], rod.x[3 * i + 2]];
-    if (p[1] > FIST[1] - 0.025 && Math.abs(p[0] - FIST[0]) < 0.03) {
-      c = add(c, p);
-      m++;
-      z0 = Math.min(z0, p[2]);
-      z1 = Math.max(z1, p[2]);
-    }
+  const inside = (j: number) => held.some(([a, b]) => rod.sNode[j] >= a - 1e-9 && rod.sNode[j + 1] <= b + 1e-9) && rod.sNode[j] > sLoops[0][0];
+  for (let j = 0; j < rod.ns; j++) {
+    if (!inside(j)) continue;
+    const p: V3 = [rod.c[3 * j], rod.c[3 * j + 1], rod.c[3 * j + 2]];
+    c = add(c, p);
+    m++;
+    z0 = Math.min(z0, p[2]);
+    z1 = Math.max(z1, p[2]);
   }
   c = scale(c, 1 / Math.max(1, m));
   let r2 = 0;
-  for (let i = loops[0][0]; i <= loops[N - 1][1]; i++) {
-    const p: V3 = [rod.x[3 * i], rod.x[3 * i + 1], rod.x[3 * i + 2]];
-    if (p[1] > FIST[1] - 0.025 && Math.abs(p[0] - FIST[0]) < 0.03) r2 = Math.max(r2, Math.hypot(p[0] - c[0], p[1] - c[1]));
-  }
-  return { state: rod.saveState(), loops, sLoops, R: L.R, cable: built.cable, sCable: built.sCable, length: rod.totalLength, rc, top: { c, r: r2 + rc, z0, z1 } };
+  for (let j = 0; j < rod.ns; j++) if (inside(j)) r2 = Math.max(r2, Math.hypot(rod.c[3 * j] - c[0], rod.c[3 * j + 1] - c[1]));
+  fist.remove();
+  return { state: rod.saveState(), loops, sLoops, R: L.R, cable: built.cable, sCable: built.sCable, length: rod.totalLength, rc, held, top: { c, r: r2 + rc, z0, z1 } };
 }
 
 /** A rod from a ring's state with its plug masses back (they are not part of a saved state). */
@@ -319,11 +329,16 @@ export function pullApart(ring: Ring, spec: RingSpec, o: { chord?: number; T?: n
   };
   const armA = arm(fa, pA, P(0), [1, 0, 0]), armB = arm(fb, pB, P(n - 1), [-1, 0, 0]);
   rod.setCapsules((t) => [armA(t), armB(t)]);
-  const x0 = rod.x.slice();
-  // the ring (not the end tail, which is taken out to the side) is let go gently
-  rod.addGuide({ nodes: [iA + 2, ring.loops[ring.loops.length - 1][1]], compliance: 1e-4, weight: (t) => 1 - smooth((t - 0.6) / 0.8), target: (i) => [x0[3 * i], x0[3 * i + 1], x0[3 * i + 2]] });
+  // the fist holds the ring as it was stored and opens at 0.6 s (the start end stays in the other hand)
+  const fist = rod.bundle({ frame: { p: [...FIST] as V3, q: [0, 0, 0, 1] }, blend: 0.001 });
+  for (const [a, b] of ring.held) if (b > ring.sCable[0] + hold + 0.01) fist.add(Math.max(a, ring.sCable[0] + hold + 0.01), b);
+  let opened = false;
   const frames = Math.round((T + 1) * 60);
   for (let f = 0; f < frames; f++) {
+    if (!opened && rod.time >= 0.6) {
+      fist.release(-Infinity, Infinity, 0.3);
+      opened = true;
+    }
     rod.step(1 / 60, o.substeps ?? 30);
     o.onFrame?.(rod, rod.time);
   }
