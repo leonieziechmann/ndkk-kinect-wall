@@ -27,7 +27,7 @@ use wall::prelude::*;
 wall::scene! {
     name: "{name}",
     title: "{title}",
-    // what the control center can change (wall::params: num, boolean, color, choice, text)
+    // what the control center can change (wall::params: num, boolean, color, select, text)
     params: [
         color("farbe", "#5ad1ff", "Farbe"),
         num("tempo", 1.0, 0.0, 3.0, 0.05, "Tempo"),

@@ -4423,6 +4423,7 @@ dependencies = [
  "glam",
  "naga",
  "parking_lot",
+ "png 0.18.1",
  "qrcodegen",
  "serde",
  "serde_json",

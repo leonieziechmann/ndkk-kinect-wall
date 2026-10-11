@@ -24,6 +24,7 @@ bytemuck.workspace = true
 tiny-skia.workspace = true
 cosmic-text.workspace = true
 qrcodegen.workspace = true
+png.workspace = true
 
 [lints]
 workspace = true

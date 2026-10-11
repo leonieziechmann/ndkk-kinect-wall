@@ -17,7 +17,12 @@ cd wall-bevy
 cargo build --release         # beim ersten Mal 10–20 min, danach Sekunden
 ```
 
-Das Programm liegt dann in `wall-bevy\target\release\wall-bevy.exe` (`target/` ist nicht in git).
+Das baut den ganzen Workspace: die Ausgabe, das Framework `wall` und jede Szene als eigene Bibliothek.
+Alles liegt dann in `wall-bevy\target\release\` (`target/` ist nicht in git): `wall-bevy.exe`,
+`wall.dll` (das Framework), `std-*.dll` (Rusts Standardbibliothek, die sich alle teilen; das
+Build-Skript kopiert sie aus der Toolchain) und je Szene eine `wall_scene_<name>.dll`. Immer den ganzen
+Workspace bauen, nie ein Paket allein mit `-p`: die Bibliotheken müssen zur Ausgabe passen, in die sie
+geladen werden.
 
 ## Starten
 
@@ -59,6 +64,8 @@ Es darf nur **eine** Ausgabe laufen: entweder das Browser-Fenster `/wall/` oder 
 | `--mute`, `--no-bus` | ohne Ton, ohne Steuerzentrale |
 | `--shots DIR --seconds S [--shot-every T]` | Test: S Sekunden spielen, Bilder und Bildzeiten nach DIR (als Fenster in LED-Größe; mit `--monitor`/`--screen` randlos auf dem Bildschirm) |
 | `--list-scenes` | alle Szenen-Deklarationen als JSON ausgeben und beenden |
+| `--watch [DIR]` | Szenen beim Speichern selbst neu bauen und im laufenden Bild austauschen (DIR: der Workspace `wall-bevy/`, Standard: der, aus dem das Programm gebaut ist) |
+| `--new-scene NAME` | neue Szene aus der Vorlage anlegen (`scenes/NAME/`) und beenden |
 
 ## Was es gegen Ruckler tut
 
@@ -86,8 +93,13 @@ Es darf nur **eine** Ausgabe laufen: entweder das Browser-Fenster `/wall/` oder 
 
 ## Szenen
 
-Alle 19 Szenen aus `web/scenes/` haben hier ein Gegenstück in `src/scenes/` (gleicher Name, gleiche
-Parameter, gleiche Projektionswünsche): blasen-platzen, cyberspiegel, depth-shader,
+Jede Szene ist eine eigene Crate in `scenes/<name>/` und wird zu einer eigenen Bibliothek gebaut. Die
+Ausgabe lädt beim Start alle, die neben ihr liegen, und lädt eine Bibliothek neu, sobald sie neu gebaut
+ist: Die laufende Szene wird im Bild ausgetauscht, ohne dass die Ausgabe beendet wird. Eine Bibliothek,
+die gegen einen anderen Stand des Frameworks gebaut ist, lädt sie nicht (Build-ID).
+
+Alle 19 Szenen aus `web/scenes/` haben hier ein Gegenstück (gleicher Name, gleiche Parameter, gleiche
+Projektionswünsche): blasen-platzen, cyberspiegel, depth-shader,
 fluid-simulation, fruit-ninja, invaders-tracking, leonie-ziechmann, live-exakt, llg-sakura,
 modern-events, neon-room, person-mask, person-skeleton, pixel-jump-run, pixel-spiegel, pointcloud,
 space-invaders, three-points, wand-spiegel. Die WGSL-Dateien der Browser-Szenen werden, wo es geht,
@@ -103,6 +115,22 @@ Browser-Szenen passen.
 Eine Szene, die es nur im Browser gibt (eine neue), überspringt die Show mit einer Fehlermeldung in
 der Steuerzentrale. Ändert sich eine Browser-Szene, folgt ihr Port nicht von selbst: wie eine Szene
 hierher kommt, steht in [`PORTING.md`](PORTING.md).
+
+### Szenen hier entwickeln
+
+```
+target\release\wall-bevy.exe --new-scene meine-szene              # scenes/meine-szene/ aus der Vorlage
+target\release\wall-bevy.exe --watch --scene meine-szene --windowed
+```
+
+Mit `--watch` baut die Ausgabe eine Szene nach jedem Speichern selbst neu (mit niedriger Priorität)
+und tauscht sie aus: vom Speichern bis zum neuen Bild 1,2 s bei einer kleinen Szene, 2,9 s bei
+fruit-ninja (6.500 Zeilen; Release-Profil, gemessen auf einer VM mit 4 Kernen). Ohne `--watch` lädt sie
+Szenen, die jemand anderes baut (`cargo build --release`), genauso; so lässt sich eine Szene auch in der
+laufenden Show austauschen. Ändert sich das Framework (`wall/`) oder die Ausgabe (`src/`), muss die
+Ausgabe neu gebaut und gestartet werden. Wie eine Szene geschrieben wird (Deklaration, `setup`,
+`frame`, Zeichnen, Personen, UI-Bausteine, Ton): [`SCENES.md`](SCENES.md); die Beispielszene ist
+`scenes/hallo-wand`.
 
 ## Testen ohne Kinect
 
@@ -144,14 +172,21 @@ Wand-Setup (oder `--screen x,y,b,h`). Ergebnisse: Tabelle im Terminal, alle Zahl
 
 ## Aufbau
 
+Drei Teile in einem Workspace: die Ausgabe (`src/`), das Framework (`wall/`, eine Bibliothek, die
+Ausgabe und Szenen teilen) und die Szenen (`scenes/*`, je eine Bibliothek).
+
 | Datei | |
 |---|---|
-| `main.rs` | Fenster, Bildschirmwahl, Bevy-Plugins |
-| `output.rs` | die Ausgabe: Show, Übergänge, Blackout, Testbilder, Steuerzentrale, Telemetrie |
-| `compositor.rs` | bringt das fertige LED-Bild ins Fenster (1:1, gestreckt oder eingepasst) |
-| `hub.rs`, `kinect.rs`, `kinect_gpu.rs` | Hub-Client, Kinect-Daten, Ausspielen der Personen, GPU-Texturen |
-| `persons.rs`, `wall.rs`, `wall_persons.rs` | Personen, Wand-Abbildung (Projektionen), Personen auf der Wand |
-| `shader_pass.rs` | `createShaderPass` mit demselben WGSL-Vorspann |
-| `canvas.rs`, `audio.rs`, `patterns.rs` | 2D-Zeichnen, Ton, Testbilder |
-| `scenes/` | die Szenen |
-| `bin/fake_hub.rs` | Test-Hub |
+| `src/main.rs` | Fenster, Bildschirmwahl, Bevy-Plugins |
+| `src/output.rs` | die Ausgabe: Show, Übergänge, Blackout, Testbilder, Steuerzentrale, Telemetrie |
+| `src/scenes.rs`, `src/devbuild.rs`, `src/newscene.rs` | Szenen-Bibliotheken laden und austauschen, `--watch`, `--new-scene` |
+| `src/compositor.rs` | bringt das fertige LED-Bild ins Fenster (1:1, gestreckt oder eingepasst) |
+| `src/audio.rs`, `src/patterns.rs` | Tonausgabe, Testbilder |
+| `src/bin/fake_hub.rs` | Test-Hub |
+| `wall/src/scene.rs`, `sketch.rs` | was eine Szene ist (`Scene`, `SceneDef`), die kurze Form (`Sketch`, `wall::scene!`) |
+| `wall/src/draw.rs`, `ui.rs`, `particles.rs`, `people.rs` | 2D auf der GPU, UI-Bausteine, Partikel, Personen in LED-Pixeln |
+| `wall/src/hub.rs`, `kinect.rs`, `kinect_gpu.rs` | Hub-Client, Kinect-Daten, Ausspielen der Personen, GPU-Texturen |
+| `wall/src/persons.rs`, `map.rs`, `wall_persons.rs` | Personen, Wand-Abbildung (Projektionen), Personen auf der Wand |
+| `wall/src/shader_pass.rs` | `createShaderPass` mit demselben WGSL-Vorspann |
+| `wall/src/canvas.rs`, `audio.rs`, `common/` | 2D auf der CPU, Ton erzeugen, Helfer der Szenen |
+| `scenes/<name>/` | die Szenen |

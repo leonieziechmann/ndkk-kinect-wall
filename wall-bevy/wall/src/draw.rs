@@ -831,6 +831,12 @@ impl Draw {
         Ok(Image { id: (self.images.len() - 1) as u32, w, h })
     }
 
+    /// Loads a PNG file's picture once (in setup: `s.draw.load_png(include_bytes!("logo.png"))`).
+    pub fn load_png(&mut self, bytes: &[u8]) -> Result<Image, String> {
+        let (w, h, rgba) = decode_png(bytes)?;
+        self.load_image(w, h, &rgba)
+    }
+
     /// A bigger image atlas with every image in it again (and room for one of w × h).
     fn grow_images(&mut self, w: u32, h: u32) -> Result<(), String> {
         let fits = |size: u32, images: &[ImageSlot]| {
@@ -1062,6 +1068,10 @@ pub trait Paints {
     fn load_image(&mut self, w: u32, h: u32, rgba: &[u8]) -> Result<Image, String> {
         Draw::load_image(self.painter(), w, h, rgba)
     }
+    /// Loads a PNG file's picture once.
+    fn load_png(&mut self, bytes: &[u8]) -> Result<Image, String> {
+        Draw::load_png(self.painter(), bytes)
+    }
     /// A text; its anchor (default the centre of its box) at (x, y).
     fn text(&mut self, text: &str, x: f32, y: f32, t: &Text) {
         Draw::text(self.painter(), text, x, y, t);
@@ -1075,5 +1085,50 @@ pub trait Paints {
 impl Paints for Draw {
     fn painter(&mut self) -> &mut Draw {
         self
+    }
+}
+
+/// A PNG file as RGBA8 (straight alpha): width, height, pixels. Any color type and depth.
+pub fn decode_png(bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
+    let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
+    dec.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = dec.read_info().map_err(|e| format!("PNG: {e}"))?;
+    let mut buf = vec![0u8; reader.output_buffer_size().ok_or("PNG: zu groß")?];
+    let info = reader.next_frame(&mut buf).map_err(|e| format!("PNG: {e}"))?;
+    let px = buf.get(..info.buffer_size()).ok_or("PNG: zu wenige Pixel")?;
+    let rgba: Vec<u8> = match info.color_type {
+        png::ColorType::Rgba => px.to_vec(),
+        png::ColorType::Rgb => px.as_chunks::<3>().0.iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect(),
+        png::ColorType::GrayscaleAlpha => px.as_chunks::<2>().0.iter().flat_map(|&[l, a]| [l, l, l, a]).collect(),
+        png::ColorType::Grayscale => px.iter().flat_map(|&l| [l, l, l, 255]).collect(),
+        png::ColorType::Indexed => return Err("PNG: Palette nicht aufgelöst".into()),
+    };
+    Ok((info.width, info.height, rgba))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_png;
+
+    fn encode(w: u32, h: u32, color: png::ColorType, px: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_color(color);
+        enc.set_depth(png::BitDepth::Eight);
+        if let Ok(mut wr) = enc.write_header() {
+            assert!(wr.write_image_data(px).is_ok());
+        }
+        out
+    }
+
+    #[test]
+    fn png_as_rgba() {
+        let rgb = encode(2, 1, png::ColorType::Rgb, &[255, 0, 0, 0, 255, 0]);
+        assert_eq!(decode_png(&rgb), Ok((2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255])));
+        let ga = encode(1, 1, png::ColorType::GrayscaleAlpha, &[100, 50]);
+        assert_eq!(decode_png(&ga), Ok((1, 1, vec![100, 100, 100, 50])));
+        let rgba = encode(1, 1, png::ColorType::Rgba, &[1, 2, 3, 4]);
+        assert_eq!(decode_png(&rgba), Ok((1, 1, vec![1, 2, 3, 4])));
+        assert!(decode_png(b"not a png").is_err());
     }
 }
