@@ -385,7 +385,9 @@ export function pullApart(ring: Ring, spec: RingSpec, o: { chord?: number; T?: n
   const frames = Math.round((T + 1) * 60);
   for (let f = 0; f < frames; f++) {
     if (!opened && rod.time >= 0.6) {
-      fist.release(-Infinity, Infinity, 0.3);
+      // (quickly: pieces a bundle still holds, leaving or not, do not collide with each other, so a
+      // slow release lets strands that move apart under gravity pass through each other)
+      fist.release(-Infinity, Infinity, 0.06);
       opened = true;
     }
     rod.step(1 / 60, o.substeps ?? 30);

@@ -1,5 +1,5 @@
 // Stage 1, item 4: a long cable laid out again, done right. Kofi stands on the stage with a long
-// over-under ring of XLR (15 m, 14 loops of about Ø 31 cm), its top in his left hand, the stack of
+// over-under ring of XLR (15 m, 16 loops of about Ø 27 cm), its top in his left hand, the stack of
 // loops pointing forward (the first loop next to his hand, every later one further out), closed by
 // a velcro tie. His right hand pulls the tie's tab out of the eyelet and lets go (the band stays on
 // the cable). It takes the front ten loops off the left hand, which keeps the start end and three
@@ -15,7 +15,7 @@
 // on a planned path (the swing, then a ballistic arc with a little drag); a loop leaves it, into the
 // simulation, whenever the free cable behind it would not reach any more. Everything that has left
 // the ring, the loops in his left hand, the landing and the cable on the floor are simulated (XLR
-// preset, 1.25 cm segments). Kofi's arms come from one RigTrack (people/rig.ts), the single source
+// preset). Kofi's arms come from one RigTrack (people/rig.ts), the single source
 // for the bake and the scene; the ring's geometry the rig needs is recorded in the bake ("plan").
 //
 // Coordinates: Kofi stands at the origin facing +x (his right is +z), the floor at y = 0.
@@ -33,8 +33,12 @@ import { TIE_POINTS, TieShape, TieSpec, tieAt } from './deploy-tie';
 export { TIE_POINTS };
 export type { TieShape };
 
-/** the ring: 14 loops over-under of 1 m (Ø 31 cm), the start end 40 cm, the end tail 50 cm: 15 m */
-export const LONG_RING: RingSpec = { cable: XLR, segment: 0.0125, loop: 1.0, pattern: 'ou'.repeat(7), lead: 0.4, tail: 0.5, spacing: 0.016, press: 0.85, pressTime: 3 };
+/**
+ * The ring: 16 loops over-under of 88 cm (Ø 27 cm), the start end 40 cm, the end tail 50 cm: 15 m.
+ * The preset's 7.5 mm segments: with 1.25 cm ones the pressed stack lost its alternation (strands
+ * passed through each other) and pulling it apart left 1.8 turns.
+ */
+export const LONG_RING: RingSpec = { cable: XLR, loop: 0.88, pattern: 'ou'.repeat(8), lead: 0.4, tail: 0.5, spacing: 0.016, press: 0.85, pressTime: 3 };
 /** the loops that stay in his left hand (the first ones, next to the start end) */
 export const HAND_LOOPS = 3;
 /** the loop that hangs between his hands while he swings (the first one the right hand does not hold) */
@@ -246,6 +250,58 @@ export const throwTrack = (p: Plan) => new RigTrack(KOFI, throwRig(p).rig, 0, 60
 /** the plan from a bake (the scene) */
 export const planFromK = (vector: (name: string, t: number) => ArrayLike<number>): Plan => Float64Array.from(vector('plan', T.end));
 
+// ---------------------------------------------------------------- the landed cable
+
+/**
+ * Curls in the cable lying on the floor: the self-crossings of its floor plan (nodes i0..i1 lower
+ * than `maxY`, projected on x-z; a curl or a knot always crosses itself there, gentle bends never),
+ * and its tightest bend (radius, m, from three nodes `span` apart). A grid of 3 cm cells keeps it
+ * near linear.
+ */
+export function floorCurls(x: ArrayLike<number>, i0: number, i1: number, maxY = 0.05, span = 4) {
+  const cell = 0.03;
+  const grid = new Map<string, number[]>();
+  const on = (i: number) => x[3 * i + 1] < maxY && x[3 * i + 4] < maxY;
+  const key = (a: number, b: number) => `${a},${b}`;
+  for (let i = i0; i < i1; i++) {
+    if (!on(i)) continue;
+    const ax = x[3 * i], az = x[3 * i + 2], bx = x[3 * i + 3], bz = x[3 * i + 5];
+    for (let gx = Math.floor(Math.min(ax, bx) / cell); gx <= Math.floor(Math.max(ax, bx) / cell); gx++)
+      for (let gz = Math.floor(Math.min(az, bz) / cell); gz <= Math.floor(Math.max(az, bz) / cell); gz++) {
+        const k = key(gx, gz);
+        const l = grid.get(k);
+        if (l) l.push(i);
+        else grid.set(k, [i]);
+      }
+  }
+  const seen = new Set<number>();
+  let crossings = 0;
+  const cr = (ax: number, az: number, bx: number, bz: number, cx: number, cz: number) => (bx - ax) * (cz - az) - (bz - az) * (cx - ax);
+  for (const l of grid.values()) {
+    for (let p = 0; p < l.length; p++)
+      for (let q = p + 1; q < l.length; q++) {
+        const i = Math.min(l[p], l[q]), j = Math.max(l[p], l[q]);
+        if (j - i < 2) continue;
+        const id = i * 100000 + j;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const ax = x[3 * i], az = x[3 * i + 2], bx = x[3 * i + 3], bz = x[3 * i + 5];
+        const cx = x[3 * j], cz = x[3 * j + 2], dx = x[3 * j + 3], dz = x[3 * j + 5];
+        const d1 = cr(ax, az, bx, bz, cx, cz), d2 = cr(ax, az, bx, bz, dx, dz), d3 = cr(cx, cz, dx, dz, ax, az), d4 = cr(cx, cz, dx, dz, bx, bz);
+        if (d1 * d2 < 0 && d3 * d4 < 0) crossings++;
+      }
+  }
+  let minR = Infinity;
+  for (let i = i0 + span; i + span <= i1; i++) {
+    if (!on(i - span) || !on(i + span - 1)) continue;
+    const a = [x[3 * (i - span)], x[3 * (i - span) + 2]], b = [x[3 * i], x[3 * i + 2]], c = [x[3 * (i + span)], x[3 * (i + span) + 2]];
+    const ab = Math.hypot(b[0] - a[0], b[1] - a[1]), bc = Math.hypot(c[0] - b[0], c[1] - b[1]), ca = Math.hypot(a[0] - c[0], a[1] - c[1]);
+    const area2 = Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
+    if (area2 > 1e-12) minR = Math.min(minR, (ab * bc * ca) / (2 * area2));
+  }
+  return { crossings, minR };
+}
+
 // ---------------------------------------------------------------- the shot
 
 const LEFT = 0, RIGHT = 1;
@@ -398,6 +454,12 @@ export const throwShot: ShotDef = {
       return m;
     };
     const arm = (t: number, side: 0 | 1) => poseAt(t).body.arms?.[side].report;
+    let curlCache = { t: -1, v: { crossings: 0, minR: 9 } };
+    const curlsAt = (r: Rod, t: number) => {
+      if (curlCache.t >= 0 && t - curlCache.t < 0.24 && t < T.end - 0.01) return curlCache.v;
+      curlCache = { t, v: floorCurls(r.x, ring.cable[0], ring.cable[1]) };
+      return curlCache.v;
+    };
     return {
       rod,
       script,
@@ -409,6 +471,10 @@ export const throwShot: ShotDef = {
         writhe: (r) => r.writhe(ring.cable[0], ring.cable[1]),
         low: lowest,
         inRing: () => inRing.length,
+        // the cable on the floor: its curls (self-crossings of the floor plan) and tightest bend (m),
+        // every quarter second (and at the end)
+        curls: (r, t) => curlsAt(r, t).crossings,
+        minBend: (r, t) => Math.min(9, curlsAt(r, t).minR),
         inHand: () => inHand.length,
         ikL: (_, t) => (arm(t, 0)?.posError ?? 0) * 1000,
         ikR: (_, t) => (arm(t, 1)?.posError ?? 0) * 1000,
