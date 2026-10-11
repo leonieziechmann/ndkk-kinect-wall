@@ -7,6 +7,7 @@ mod blasen_platzen;
 pub mod common;
 mod fluid_simulation;
 mod llg_sakura;
+mod leonie_ziechmann;
 mod modern_events;
 mod pixel_jump_run;
 mod pixel_spiegel;
@@ -22,5 +23,6 @@ pub fn registry() -> Vec<&'static SceneDef> {
     v.push(&pixel_jump_run::DEF);
     v.push(&blasen_platzen::DEF);
     v.push(&llg_sakura::DEF);
+    v.push(&leonie_ziechmann::DEF);
     v
 }
