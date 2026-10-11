@@ -1,10 +1,10 @@
 // Stage 1, item 3: a short cable laid out again, done right. Ilse sits in her wheelchair at the FOH
-// desk with a short over-under ring of a black charging cable (CHARGING preset, Ø 4 mm, 6 loops of
-// Ø 9 cm, 2 m with the plugs), holding it at its top between the thumb and index finger of her
+// desk with a short over-under ring of a black charging cable (CHARGING preset, Ø 4 mm, 4 loops of
+// Ø 9 cm, 1.45 m with the plugs), holding it at its top between the thumb and index finger of her
 // left hand, its face towards her; the start end runs through her fingers, its plug sticks out to
-// her left. The ring is closed with a velcro tie that lives on that end (8 cm from the plug). Her
-// right hand comes from above, pinches the tie's end and pulls it up out of its eyelet: the band
-// comes loose. The right hand goes round the ring to the other end, which hangs out of the ring
+// her left. The ring is closed with a velcro tie that lives on that end (9 cm from the plug). Her
+// right hand comes from above, pinches the tie's pull tab and pulls it up out of its eyelet: the
+// band comes loose. The right hand goes round the ring to the other end, which hangs out of the ring
 // below, and takes it. Both ends are outside the ring. The left hand opens but keeps the start end:
 // the loops slip out of the loose tie (it stays on the cable) and the ring hangs between the hands.
 // She pulls her hands apart: the loops open one after the other, the cable ends up hanging calm
@@ -29,7 +29,7 @@
 //
 // Coordinates: Ilse sits at the origin facing +z (her left is +x); the desk's top at DESK.height.
 
-import { Bundle, CHARGING, Frame, Pinch, Quat, Rod, V3, add, cross, dot, normalize, quatFromAxisAngle, quatRotate, scale, smooth, sub } from '../sim';
+import { Bundle, CHARGING, Frame, Pinch, Quat, Rod, V3, add, normalize, quatRotate, scale, smooth, sub } from '../sim';
 import { ILSE } from '../people/cast';
 import { Grip, HandRig, Rig, RigTrack, gripFrame, seated } from '../people/rig';
 import { handColliders } from '../people/colliders';

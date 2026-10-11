@@ -272,7 +272,6 @@ function* longCable(layer: Node) {
   const tieNode = Math.round(bake.track('tieNode', 0));
   const tau = createSignal(0);
   const t = () => throwTime(tau());
-  const slow = () => (tau() >= B_S_SLOW && tau() < B_S_REST ? 1 : 0);
 
   // ---------------------------------------------------------------- the world
   const pos = new Float32Array(3 * bake.n), d1 = new Float32Array(3 * bake.n), halo = new Float32Array(4 * nc);

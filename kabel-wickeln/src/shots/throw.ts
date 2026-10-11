@@ -442,8 +442,8 @@ export const throwShot: ShotDef = {
       if (!rh && t >= T.take) {
         rh = r.bundle({ frame: ringFrame, hand: RIGHT, blend: 0.12 });
         for (let k = BETWEEN + 1; k < ring.sLoops.length; k++) inRing.push(k);
-        // the front loops' tops (and the end tail's start, which runs with the last loop)
-        for (const j of frontSegs) rh.add(r.sNode[j], r.sNode[j + 1]);
+        // the front loops, whole (a ring flies as one), and the end tail hanging from it
+        rh.add(ring.sLoops[BETWEEN + 1][0], r.totalLength);
       }
       if (!split && t >= T.take + 0.05) {
         // the left hand lets the front loops go (and the one between the hands)
