@@ -17,8 +17,8 @@ import {
   V3, Quat, add, across, clamp, cross, dot, easeInOut, len, lerp, local, madd, mix3, norm, quatAxisAngle, quatCols, quatFromCols, quatMul, scale, slerp, smooth, sub, turn,
 } from './math';
 import { ArmPose, Body, Frame, HandPose, Pose, PersonSpec, UP, withUp, yawFrame } from './people';
-import { FIST_SLOPE, FIST_Z, GripShape, coilAround, fistAround, fistThumb, freeThumb, pinchAround } from './body/hand';
-import { ARM_JOINTS, ArmAngles, ArmIK, ArmSetup, ArmSolution, AxisGoal, HandTarget, armPose, projectToLimits, solveArm, toLocal } from './ik';
+import { FIST_SLOPE, FIST_Z, GripShape, coilAround, fistAround, fistThumb, freeThumb, pinchAround, thumbChain } from './body/hand';
+import { ARM_JOINTS, ArmAngles, ArmIK, ArmIKOptions, ArmSetup, ArmSolution, AxisGoal, HandTarget, armPose, evaluateArm, projectToLimits, solveArm, toLocal } from './ik';
 
 /** a grip frame: position on the cable axis and orientation (d1 to the hand, d3 along the cable) */
 export interface Grip {
@@ -65,10 +65,22 @@ export interface HandRig {
   wrap?: number;
   /** fist and free hand: thumb on the side of the index finger, 0 … 1 */
   pinch?: number;
-  /** pinch: the cable rolled between thumb and index finger about +d3 (rad, up to about ±π/2) */
+  /**
+   * pinch: the cable rolled between thumb and index finger about +d3 (rad, up to about ±π/2): the
+   * thumb slides along the index finger, the hand itself does not turn (whatever `free` is). The
+   * reached arms[i].grip is turned by it, arms[i].pads is not.
+   */
   roll?: number;
   /** pinch: the angle between the thumb and the cable (body/hand.ts PINCH_CROSS; 0 = the thumb lies along the cable) */
   cross?: number;
+  /**
+   * the thumb TIP should point this way (world direction; grips and free hands), e.g. towards the
+   * coil. Not the same as an AxisGoal with hand [0, 0, 1]: that is the thumb SIDE of the hand, which
+   * in a pinch is about 90° away from where the thumb tip points.
+   */
+  thumbTo?: V3;
+  /** how much thumbTo counts (default 0.3: a wish that gives way to the grip and to comfort) */
+  thumbWeight?: number;
   /**
    * grip: how freely the hand may turn about the cable (0 = exactly the grip frame, default; 1 = only
    * the cable's direction counts, the hand finds the most comfortable angle about it)
@@ -161,20 +173,24 @@ export function gripShape(spec: PersonSpec, side: number, h: HandRig): GripShape
   } else if (hold === 'coil') {
     g = coilAround(r);
     g.curl = g.curl.map((c) => c * (1 - 0.6 * open)) as GripShape['curl'];
-    if (h.thumbAlong === -1) g = { ...g, d3: scale(g.d3, -1), d1: g.d1 };
+    if (h.thumbAlong === -1) g = { ...g, d3: scale(g.d3, -1) };
   } else {
     const fist = fistAround(r);
     const b = Math.atan(FIST_SLOPE);
-    const thumb = fistThumb(fist, r, h.wrap ?? 0, h.pinch ?? 0);
+    const tip = fistThumb(fist, r, h.wrap ?? 0, h.pinch ?? 0);
+    // open fingers let go: the thumb lifts off too
+    const thumb = mix3(tip, add(tip, [0, -0.012, 0.01]), open);
+    const ch = thumbChain(thumb);
     g = {
       curl: fist.curl.map((c) => c * (1 - 0.75 * open)) as GripShape['curl'],
       spread: 0,
-      // open fingers let go: the thumb lifts off too
-      thumb: mix3(thumb, add(thumb, [0, -0.012, 0.01]), open),
+      thumb,
       p: [fist.gx, fist.gy, FIST_Z],
       // the cable crosses the hand along the slanted line of the knuckles
       d3: scale([Math.sin(b), 0, Math.cos(b)], h.thumbAlong ?? 1),
       d1: [0, -1, 0],
+      pads: [0, -1, 0],
+      thumbTip: norm(sub(ch[3], ch[2])),
     };
   }
   return { ...g, p: scale(g.p, q) };
@@ -287,9 +303,11 @@ function headOf(c: Core, look: V3 | undefined) {
 
 /**
  * Where a rig's eyes are and which way they look, without solving the arms (cheap: for a smoothed
- * first-person camera that samples the rig at several times). Same as body3d eyesOf(rigPose(…)).
+ * first-person camera that samples the rig at several times). Same as body3d eyesOf(rigPose(…)),
+ * including the upper body's help (Rig.reach).
  */
-export function eyesOfRig(spec: PersonSpec, g: Rig): { p: V3; f: V3; u: V3 } {
+export function eyesOfRig(spec: PersonSpec, rig: Rig): { p: V3; f: V3; u: V3 } {
+  const g = helped(spec, rig);
   const c = core(spec, g);
   const { head, headC } = headOf(c, g.look);
   return { p: madd(madd(headC, head.f, 0.09 * c.k), head.u, 0.035 * c.k), f: head.f, u: head.u };
@@ -337,9 +355,22 @@ function hangingAngles(B: PersonSpec['build'], swing: number): ArmAngles {
   return { clavElev: 0, clavProt: 0, flex: swing, abd: out, rot: -0.15, elbow: 0.22 + 0.9 * Math.max(0, swing), pron: 0.15, wflex: -0.08, wdev: -0.1 };
 }
 
-/** the IK state of a person for frame-by-frame solving (a bake): each arm starts from its last solution */
+/**
+ * The IK state of a person for frame-by-frame solving: each arm starts from its last solution
+ * (ik.ts ArmIK). dt = seconds between two rigPose calls with it (set it when the rate changes).
+ * For a choreography that is a function of time, prefer RigTrack: bake and scene then get exactly the
+ * same arms. RigIK is for rigs that depend on the simulation as it runs (a sim in the loop): store
+ * pose.body.arms[i].angles per frame in the bake and give them back as rigPose(…, fixed) in the scene.
+ */
 export class RigIK {
-  public readonly arms: [ArmIK, ArmIK] = [new ArmIK(), new ArmIK()];
+  public readonly arms: [ArmIK, ArmIK];
+
+  public constructor(
+    public dt = 1 / 60,
+    o: ArmIKOptions = {},
+  ) {
+    this.arms = [new ArmIK(o), new ArmIK(o)];
+  }
 
   public reset() {
     this.arms[0].reset();
@@ -347,7 +378,20 @@ export class RigIK {
   }
 }
 
-/** what a hand rig asks of its arm (ik.ts HandTarget) and the hand's shape */
+/** the thumb tip's direction of a free hand (hand frame) */
+function freeThumbTip(h: HandRig): V3 {
+  const c = clamp(h.curl ?? 0.25);
+  const p = clamp(h.pinch ?? 0);
+  const ch = thumbChain(freeThumb(c, p, lerp(c * 0.92, Math.max(c, 0.6), p)));
+  return norm(sub(ch[3], ch[2]));
+}
+
+/**
+ * What a hand rig asks of its arm (ik.ts HandTarget) and the hand's shape. The orientation goals, in
+ * this order (IkReport.axisErrors): a grip's cable direction d3, its d1 (the pads' frame: without a
+ * pinch's roll; weight 1 - free), the `prefer` wishes, thumbTo; a free hand's `prefer` wishes, dir,
+ * palm, thumbTo.
+ */
 function targetOf(spec: PersonSpec, side: -1 | 1, h: HandRig, s: ArmSetup, k: number): { target: HandTarget; shape: GripShape | null } {
   const elbow = h.elbow;
   const elbowWeight = h.elbowWeight;
@@ -357,14 +401,17 @@ function targetOf(spec: PersonSpec, side: -1 | 1, h: HandRig, s: ArmSetup, k: nu
     const free = clamp(h.free ?? 0);
     const axes: AxisGoal[] = [
       { hand: shape.d3, world: d3, weight: 1 },
-      { hand: shape.d1, world: d1, weight: Math.max(0.02, 1 - free) },
+      // the hand fits the grip with its pads; the roll only turns the cable between them
+      { hand: shape.pads, world: d1, weight: Math.max(0.02, 1 - free) },
       ...(h.prefer ?? []),
     ];
+    if (h.thumbTo) axes.push({ hand: shape.thumbTip, world: h.thumbTo, weight: h.thumbWeight ?? 0.3 });
     return { target: { p: h.grip.p, at: shape.p, axes, elbow, elbowWeight }, shape };
   }
   const axes: AxisGoal[] = [...(h.prefer ?? [])];
   if (h.dir) axes.push({ hand: [1, 0, 0], world: h.dir, weight: 1 });
   if (h.palm) axes.push({ hand: [0, 1, 0], world: h.palm, weight: h.dir ? 1 : 0.6 });
+  if (h.thumbTo) axes.push({ hand: freeThumbTip(h), world: h.thumbTo, weight: h.thumbWeight ?? 0.3 });
   // no wrist: the hand hangs half an arm below the shoulder
   const p = h.wrist ?? add(s.sc, add(scale(s.U, -0.5 * k), scale(s.L, 0.16 * k)));
   return { target: { p, axes, elbow, elbowWeight }, shape: null };
@@ -383,19 +430,19 @@ function solveSide(spec: PersonSpec, g: Rig, c: Core, i: 0 | 1, ik?: RigIK, fixe
     return { hand, sol, arm: { angles: sol.angles, report: sol.report, sc: s.sc, forearm: sol.forearm } };
   }
   const { target, shape } = targetOf(spec, side, h, s, c.k);
-  let sol: ArmSolution;
-  if (fixed) {
-    // given angles: how far the hand is from what the rig asks
-    sol = armPose(s, fixed, target.at);
-    sol.report.posError = len(sub(sol.point, target.p));
-    sol.report.reached = sol.report.posError < 0.003;
-  } else sol = ik ? ik.arms[i].solve(s, target) : solveArm(s, target);
+  // given angles (RigTrack): only measured against what the rig asks, with the full report
+  const sol = fixed ? evaluateArm(s, target, fixed) : ik ? ik.arms[i].solve(s, target, ik.dt) : solveArm(s, target);
   const arm: ArmPose = { angles: sol.angles, report: sol.report, sc: s.sc, forearm: sol.forearm };
   if (shape) {
-    // the grip frame really held: the reached point, the shape's axes in the reached hand
+    // the frames really held: the reached point, the shape's axes in the reached hand (grip: the
+    // cable's, turned by a pinch's roll; pads: fixed in the hand)
     const d3 = handToWorld(sol, shape.d3);
-    const d1 = across(handToWorld(sol, shape.d1), d3);
-    arm.grip = { p: sol.point, q: quatFromCols(d1, cross(d3, d1), d3) };
+    const frame = (v: V3) => {
+      const d1 = across(handToWorld(sol, v), d3);
+      return { p: sol.point, q: quatFromCols(d1, cross(d3, d1), d3) };
+    };
+    arm.grip = frame(shape.d1);
+    arm.pads = frame(shape.pads);
     return { hand: holdingHand(sol, shape, q), arm, sol };
   }
   return { hand: freeHand(q, sol.wrist, sol.hand.fd, sol.hand.palm, h.curl ?? 0.25, h.pinch ?? 0), arm, sol };
@@ -522,7 +569,7 @@ export function rigPose(spec: PersonSpec, rig: Rig, ik?: RigIK, fixed?: [ArmAngl
  */
 export class RigTrack {
   private readonly frames: [ArmAngles | null, ArmAngles | null][] = [];
-  private readonly ik = new RigIK();
+  private readonly ik: RigIK;
 
   public constructor(
     public readonly spec: PersonSpec,
@@ -531,7 +578,9 @@ export class RigTrack {
     public readonly t0 = 0,
     /** frames per second of the solve */
     public readonly fps = 60,
-  ) {}
+  ) {
+    this.ik = new RigIK(1 / fps);
+  }
 
   /** the arm angles of frame f (solving the frames before it first, once) */
   public angles(f: number): [ArmAngles | null, ArmAngles | null] {

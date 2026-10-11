@@ -205,8 +205,9 @@ export function thumbClearance(tip: V3, dir: V3 | undefined, a: V3, d: V3, r: nu
 
 /**
  * The point a fraction u of the way from p to q around the line (a, d): along the line and in
- * distance from it linearly, round it on the arc that passes the side of `via` (default: the shorter
- * arc). A thumb tip moving this way (via its base) goes round a held cable instead of through it.
+ * distance from it linearly, round it on the shorter arc, or with `via`, on the arc that keeps off
+ * the side facing away from via. A thumb tip moving this way (via its base) goes round a held cable
+ * instead of through it.
  */
 export function aroundAxis(p: V3, q: V3, u: number, a: V3, d: V3, via?: V3): V3 {
   const e1 = across([1, 0, 0], d);
@@ -221,10 +222,10 @@ export function aroundAxis(p: V3, q: V3, u: number, a: V3, d: V3, via?: V3): V3 
   const wrap = (x: number) => x - 2 * Math.PI * Math.round(x / (2 * Math.PI));
   let dphi = wrap(B.phi - A.phi);
   if (via) {
-    // the arc from A that sweeps over via's angle
-    const v = wrap(cyl(via).phi - A.phi);
+    // not the arc over the side facing away from via
+    const v = wrap(cyl(via).phi + Math.PI - A.phi);
     const inside = dphi >= 0 ? v >= 0 && v <= dphi : v <= 0 && v >= dphi;
-    if (!inside) dphi -= Math.sign(dphi || 1) * 2 * Math.PI;
+    if (inside) dphi -= Math.sign(dphi || 1) * 2 * Math.PI;
   }
   const s = lerp(A.s, B.s, u), rho = lerp(A.rho, B.rho, u), phi = A.phi + dphi * u;
   return madd(madd(madd(a, d, s), e1, rho * Math.cos(phi)), e2, rho * Math.sin(phi));
@@ -263,14 +264,31 @@ export function clearThumb(tip: V3, a: V3, d: V3, r: number, margin = 0.0003): V
 /**
  * The thumb tip of a fist around a cable of radius r (size 1): lying along the cable (wrap 0) …
  * wrapped over the fingers (wrap 1), and from there on to the side of the index finger (pinch 1).
- * The tip moves round the cable, never through it, and the whole thumb stays outside it.
+ * The tip moves round the cable on the side of the thumb's base, never through it, and the whole
+ * thumb stays outside it. Round a thick bundle the thumb cannot reach over the fingers: it wraps as
+ * far as it can without cutting in and stops there (smoothly: less the thicker the bundle).
  */
 export function fistThumb(fist: Fist, r: number, wrap: number, pinch: number): V3 {
   const tt = thumbTargets(fist, r);
   const ax = fistAxis(fist);
-  // round the cable on the side of the thumb's base (the other way the thumb would cross it)
-  const tip = aroundAxis(aroundAxis(tt.along, tt.wrap, clamp(wrap), ax.p, ax.d, THUMB.base), tt.pinch, clamp(pinch), ax.p, ax.d, THUMB.base);
-  return clearThumb(tip, ax.p, ax.d, r);
+  const B = THUMB.base;
+  const along = clearThumb(tt.along, ax.p, ax.d, r);
+  const at = (k: number) => aroundAxis(aroundAxis(along, tt.wrap, clamp(wrap) * k, ax.p, ax.d, B), tt.pinch, clamp(pinch) * k, ax.p, ax.d, B);
+  const ok = (k: number) => thumbClearance(at(k), undefined, ax.p, ax.d, r) >= 0;
+  // along the way until the thumb would touch the cable: the first blocked step, then bisect
+  const N = 24;
+  for (let i = 1; i <= N; i++) {
+    if (ok(i / N)) continue;
+    let lo = (i - 1) / N;
+    let hi = i / N;
+    for (let n = 0; n < 10; n++) {
+      const mid = (lo + hi) / 2;
+      if (ok(mid)) lo = mid;
+      else hi = mid;
+    }
+    return at(lo);
+  }
+  return at(1);
 }
 
 /**
@@ -363,8 +381,15 @@ export interface GripShape {
   p: V3;
   /** the axis direction (the grip frame's d3, towards where the thumb points) */
   d3: V3;
-  /** from the axis towards the hand (the grip frame's d1: to the palm in a fist, to the index finger in a pinch) */
+  /**
+   * from the axis towards the hand (the grip frame's d1: to the palm in a fist, to the index finger
+   * in a pinch); a pinch's d1 is turned by its roll about d3 (the cable's frame)
+   */
   d1: V3;
+  /** d1 without a pinch's roll (fixed in the hand: the pads' frame); fist and coil: d1 */
+  pads: V3;
+  /** the direction the thumb tip points (its last bone, hand frame, unit): for HandRig.thumbTo */
+  thumbTip: V3;
 }
 
 /** index finger curl of the pinch; the other fingers curl loosely, more towards the little finger */
@@ -376,19 +401,24 @@ export const PINCH_ROLL_MAX = Math.PI / 2;
 /** how far an open pinch lifts the thumb off the cable (size 1, m) */
 const PINCH_LIFT = 0.012;
 
-/** default angle between the thumb and the pinched cable: the cable crosses the thumb pad and leaves out of the palm side */
-export const PINCH_CROSS = 1.0;
+/**
+ * Default angle between the thumb and the pinched cable (0.3 rad ≈ 17°): the cable runs nearly
+ * along the thumb and leaves past the thumb tip, a little towards the palm side. So the thumb tip
+ * points where the cable goes: towards the coil when d3 points there ("der Daumen startet immer
+ * Richtung Kabelwicklung", the user's videos A 3.0/4.0, B 2.3). Larger crossings (the first version
+ * used 1 rad) cock the wrist back in the coiling poses.
+ */
+export const PINCH_CROSS = 0.3;
 
 /**
  * A cable of radius r (size-1 units) pinched between the thumb pad and the thumb side of the index
  * finger's middle bone (a lateral pinch). The other fingers curl loosely below and guide. The cable
- * lies across the thumb pad: `crossing` is its angle from the thumb's direction, turning towards the
- * palm side (0 = along the thumb, π/2 = straight out of the palm; default PINCH_CROSS, as in the
- * reference videos, where the cable leaves the pinch sideways and the fingers hang). roll (rad, up to
- * ±PINCH_ROLL_MAX): the thumb slides along its own length over the index finger and rolls the cable
- * about d3 (without slipping on the index finger: the thumb travels 2·r·roll, the cable axis
- * r·roll); d1 turns with it. open 0 … 1 lifts the thumb and loosens the index finger, so the cable can slide through; the
- * axis stays on the index finger.
+ * lies along the thumb pad: `crossing` is its angle from the thumb's direction, turning towards the
+ * palm side (0 = along the thumb, π/2 = straight out of the palm; default PINCH_CROSS). roll (rad, up
+ * to ±PINCH_ROLL_MAX): the thumb slides along its own length over the index finger and rolls the
+ * cable about d3 (without slipping on the index finger: the thumb travels 2·r·roll, the cable axis
+ * r·roll); d1 turns with it, `pads` does not. open 0 … 1 lifts the thumb and loosens the index
+ * finger, so the cable can slide through; the axis stays on the index finger.
  */
 export function pinchAround(r: number, roll = 0, open = 0, crossing = PINCH_CROSS): GripShape {
   const o = clamp(open);
@@ -418,7 +448,8 @@ export function pinchAround(r: number, roll = 0, open = 0, crossing = PINCH_CROS
   const slide = roll - PINCH_ROLL_MAX;
   const p = madd(axis0, n, r * slide);
   const thumb = madd(madd(madd(madd(axis0, side, pad + PINCH_LIFT * o), td, 0.008), n, 2 * r * slide), [0, -1, 0], 0.004 * o);
-  return { curl, spread: 0, thumb, thumbNail: side, p, d3, d1: turn(scale(side, -1), d3, roll) };
+  const ch = thumbChain(thumb);
+  return { curl, spread: 0, thumb, thumbNail: side, p, d3, d1: turn(scale(side, -1), d3, roll), pads: scale(side, -1), thumbTip: norm(sub(ch[3], ch[2])) };
 }
 
 // ---------------------------------------------------------------- holding a coil
@@ -470,7 +501,7 @@ export function coilAround(R: number): GripShape {
     const c = place(0.5 - i * 0.05);
     if (c.clear > best.clear) best = c;
   }
-  return { curl: fist.curl, spread: 0, thumb: best.tip, thumbDir: along, thumbNail: best.nail, p: [gxAt(fist, FIST_Z), fist.gy, FIST_Z], d3: along, d1: [0, -1, 0] };
+  return { curl: fist.curl, spread: 0, thumb: best.tip, thumbDir: along, thumbNail: best.nail, p: [gxAt(fist, FIST_Z), fist.gy, FIST_Z], d3: along, d1: [0, -1, 0], pads: [0, -1, 0], thumbTip: along };
 }
 
 export interface HandJoints {

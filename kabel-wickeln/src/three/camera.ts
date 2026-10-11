@@ -138,8 +138,9 @@ const lookTmp: V3 = [0, 0, 0];
  * The first-person camera of a person: the eyes at time t (eyesAt, e.g. people/rig.ts eyesOfRig of
  * the rig at t: position p and facing f), moved `back` against the horizontal facing and `up`,
  * looking at look(t); eye and look point are averaged over ±smooth s (deterministic: a pure function
- * of t). Sees the world and the own arms, not the own body (SELF_LAYER); use lib/kit.tsx viewLayers
- * 'pov' instead when a split screen has its own layers.
+ * of t). It does not touch the camera's layers: set them once, with lib/kit.tsx viewLayers(cam,
+ * 'pov') in a split screen, or cam.layers.disable(SELF_LAYER) elsewhere, so the camera sees the own
+ * arms but not the own body (whose shadow stays on the floor).
  */
 export function povFollow(
   cam: THREE.PerspectiveCamera,
@@ -175,8 +176,6 @@ export function povFollow(
   cam.up.set(0, 1, 0);
   cam.lookAt(lookTmp[0], lookTmp[1], lookTmp[2]);
   setFov(cam, o.fov ?? 58);
-  cam.layers.enableAll();
-  cam.layers.disable(SELF_LAYER);
   return cam;
 }
 
