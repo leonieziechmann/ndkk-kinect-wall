@@ -630,6 +630,27 @@ impl OutputState {
             }
             return;
         }
+        // a scene this output does not have: the show goes on as if the entry were switched off
+        if let Some(e) = &entry
+            && self.find(&e.scene).is_none()
+        {
+            self.push_error(&format!("Szene {}", e.scene), "gibt es in der Bevy-Ausgabe (noch) nicht");
+            if e.id != "adhoc" {
+                let mut id = e.id.clone();
+                for _ in 0..self.show.entries.len() {
+                    let Some(n) = step_entry(&self.show, Some(&id), 1).cloned() else { break };
+                    if n.id == e.id {
+                        break;
+                    }
+                    if self.find(&n.scene).is_some() {
+                        self.play_entry(Some(n), how, now);
+                        return;
+                    }
+                    id = n.id;
+                }
+            }
+            return;
+        }
         self.entry = entry.clone();
         self.entry_removed = false;
         self.started_at = now;
@@ -658,7 +679,6 @@ impl OutputState {
             return;
         }
         let Some(def) = self.find(&entry.scene) else {
-            self.push_error(&format!("Szene {}", entry.scene), "gibt es in der Bevy-Ausgabe (noch) nicht");
             return;
         };
         if how == Transition::Black && self.current.is_some() {
