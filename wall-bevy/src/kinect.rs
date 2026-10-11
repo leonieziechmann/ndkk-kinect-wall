@@ -354,7 +354,9 @@ impl KinectData {
         self.update_exact();
     }
 
-    fn drain(&mut self, filter: &mut dyn FnMut(Arc<PersonsResult>, bool) -> Arc<PersonsResult>) {
+    /// Takes the hub thread's messages. Every display frame, also those without a scene frame
+    /// (render cap, warm-up), so the queue never backs up and the state stays current.
+    pub fn drain(&mut self, filter: &mut dyn FnMut(Arc<PersonsResult>, bool) -> Arc<PersonsResult>) {
         while let Ok(e) = self.client.events.try_recv() {
             match e {
                 HubEvent::Open => self.connected = true,

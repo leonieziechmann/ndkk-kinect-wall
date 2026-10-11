@@ -788,6 +788,12 @@ fn output_frame(
     st.take_docs(now);
     st.take_bus(now, &mut exit);
 
+    // ----- the hub's messages (every display frame) -----
+    {
+        let wall = &mut st.page_wall;
+        st.kinect.drain(&mut |r: Arc<PersonsResult>, exact: bool| wall.filter_persons(r, exact));
+    }
+
     // ----- warm-up: every scene once, so no switch ever compiles a shader -----
     if !st.warmed {
         st.warm_up(&gpu, &kgpu, now);
@@ -1173,6 +1179,13 @@ impl OutputState {
             info!("alle Szenen vorbereitet ({:.1} s)", (mono_ms() - self.started) / 1000.0);
             drop(warm);
             self.warmed = true;
+            if self.cfg.shots.is_some() {
+                // test mode: the seconds, shots and frame times count from here
+                self.started = now;
+                self.shots_next = 0.0;
+                self.frame_log.clear();
+                self.late = 0;
+            }
             self.black = Fade { from: 0.0, to: 0.0, start: now, ms: 0.0, curve: ease };
             self.start_show(now);
         } else {
@@ -1420,6 +1433,7 @@ impl OutputState {
         }
         if let Some(dir) = &self.cfg.shots
             && self.warmed
+            && self.current.is_some()
             && now - self.started >= self.shots_next
         {
             self.shots_next = now - self.started + self.cfg.shot_every * 1000.0;
@@ -1599,7 +1613,9 @@ impl OutputState {
             return;
         }
         if self.readback.busy() > 0 {
-            self.readback.after_submit(self.gpu.as_ref().unwrap_or_else(|| unreachable!()));
+            if let Some(gpu) = self.gpu.as_ref() {
+                self.readback.after_submit(gpu);
+            }
             return;
         }
         let mut v = self.frame_log.clone();

@@ -2,9 +2,10 @@
 //! a room (floor, back wall) and up to four figures walking, waving, jumping, with masks, depth and
 //! skeletons as the hub's person tracking sends them. For testing the output without a Kinect.
 //!
-//!   fake-hub [--bind 127.0.0.1:8099] [--persons 3] [--fps 30] [--jitter 6]
+//!   fake-hub [--bind 127.0.0.1:8099] [--persons 3] [--fps 30] [--jitter 6] [--freeze 4.2]
 //!
-//! --jitter adds random delay (ms) to every frame, like a busy network or hub.
+//! --jitter adds random delay (ms) to every frame, like a busy network or hub; --freeze shows the
+//! moment t (s) in every frame (the same picture for comparisons).
 
 use std::io::ErrorKind;
 use std::net::{TcpListener, TcpStream};
@@ -21,6 +22,7 @@ const F: f32 = 365.5;
 const CX: f32 = 256.0;
 const CY: f32 = 206.0;
 const SENSOR_H: f32 = 0.85;
+static FROZEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn now_us() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as u64).unwrap_or(0)
@@ -115,7 +117,7 @@ fn render(seq: u32, t: f32, persons: usize) -> Frame {
             if ry > 0.0 {
                 z = z.min(SENSOR_H / ry);
             }
-            let noise = (((u * 7 + v * 13 + seq as usize * 3) % 17) as f32 - 8.0) * 2.0;
+            let noise = (((u * 7 + v * 13 + if FROZEN.load(std::sync::atomic::Ordering::Relaxed) { 0 } else { seq as usize * 3 }) % 17) as f32 - 8.0) * 2.0;
             depth[v * W + u] = if rx.abs() > 1.2 { 0 } else { (z * 1000.0 + noise).clamp(500.0, 8000.0) as u16 };
         }
     }
@@ -342,6 +344,7 @@ fn main() {
     let mut persons = 3usize;
     let mut fps = 30.0_f32;
     let mut jitter = 0.0_f32;
+    let mut freeze: Option<f32> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -349,12 +352,14 @@ fn main() {
             "--persons" => persons = args.next().and_then(|v| v.parse().ok()).unwrap_or(persons).min(4),
             "--fps" => fps = args.next().and_then(|v| v.parse().ok()).unwrap_or(fps),
             "--jitter" => jitter = args.next().and_then(|v| v.parse().ok()).unwrap_or(jitter),
+            "--freeze" => freeze = args.next().and_then(|v| v.parse().ok()),
             _ => {
-                eprintln!("fake-hub [--bind 127.0.0.1:8099] [--persons 3] [--fps 30] [--jitter ms]");
+                eprintln!("fake-hub [--bind 127.0.0.1:8099] [--persons 3] [--fps 30] [--jitter ms] [--freeze t]");
                 return;
             }
         }
     }
+    FROZEN.store(freeze.is_some(), std::sync::atomic::Ordering::Relaxed);
     let shared: Shared = Arc::new(Mutex::new(None));
     let s2 = shared.clone();
     std::thread::spawn(move || {
@@ -363,7 +368,7 @@ fn main() {
         let mut next = Instant::now();
         let mut seq = 0u32;
         loop {
-            let f = render(seq, start.elapsed().as_secs_f32(), persons);
+            let f = render(seq, freeze.unwrap_or_else(|| start.elapsed().as_secs_f32()), persons);
             if let Ok(mut g) = s2.lock() {
                 *g = Some(Arc::new(f));
             }

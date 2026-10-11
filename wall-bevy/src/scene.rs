@@ -108,3 +108,14 @@ impl FrameCtx<'_> {
         self.kinect.view.clone()
     }
 }
+
+impl FrameCtx<'_> {
+    /// ctx.kinectToScreen(u, v) of a wall scene: depth image pixel -> LED pixels, as kinectUv()
+    /// shows the camera image on the wall (None if its ray does not reach image.distance).
+    pub fn kinect_to_screen(&self, u: f32, v: f32) -> Option<[f32; 2]> {
+        let rays = self.kinect.rays();
+        let [x, y] = self.wall.image_to_wall(u, v, Some(&rays))?;
+        let [uu, vv] = self.wall.uv(x, y);
+        Some([uu * self.width as f32, vv * self.height as f32])
+    }
+}
