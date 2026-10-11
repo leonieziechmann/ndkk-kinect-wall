@@ -53,7 +53,7 @@ Register it in `src/scenes/mod.rs` (`v.push(&yourscene::DEF)` in `registry()`).
 | `localStorage.getItem/setItem(key, …)` | `crate::store::get(key)` / `crate::store::set(key, value)` (same key; kept in `web/.cache/wall/bevy-store.json`, written by a thread of its own) |
 | `ctx.scene` (name, for labels) | `ctx.name` in `make` / your `DEF.name` |
 | `ctx.wall.pointer` (mouse on the preview page), `ctx.params.mouse`, `ctx.on(window, 'pointerdown'/'keydown', …)` | none in the output: no pointer, no keyboard (the LED wall has no mouse). Behave as with `pointer.inside == false`; audio needs no unlock. Keep the param itself (show entries may carry it). |
-| DOM overlays (`document.*`, HTML elements on top of the canvas) | draw them into the LED image (Canvas → texture) if the wall showed them; leave out what only the dev page showed |
+| DOM overlays (`ctx.dom`, HTML elements on top of the canvas) | the output shows them on the wall: draw them (`scenes::common::overlay::TextOverlay` for text labels); leave out what only the dev page showed |
 | three.js (`three/webgpu`, TSL, BloomNode) | no three.js here: write the same scene with wgpu directly (meshes as vertex buffers, a camera matrix from the same numbers, bloom as a few blur passes); match the look at the LED resolution |
 
 ### ctx.wall (WallMap)
@@ -79,7 +79,7 @@ Pixel layers the scenes keep as `Uint8ClampedArray`/`Float32Array` → a `Vec<u8
 
 ### Shared helpers
 
-`scenes::common::field::BodyField` (field.js), `scenes::common::qr::encode_qr(text, 'M', min_version)` (qr.js), `scenes::common::rand`.
+`scenes::common::field::BodyField` (field.js), `scenes::common::qr::encode_qr(text, 'M', min_version)` (qr.js, with its mask choice), `scenes::common::rand`, `scenes::common::overlay::TextOverlay` (HTML labels over the scene: font, letter-spacing, padding, rounded background, text-shadow glow; painted once, cached, blended per frame; see person-mask in `shader_scenes.rs`), `crate::store` (localStorage).
 
 ## Rules
 
