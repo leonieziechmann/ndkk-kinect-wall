@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use crossbeam_channel::{Receiver, Sender};
 
@@ -33,6 +33,8 @@ pub struct Readback {
     small: Option<(u32, u32, wgpu::Texture, wgpu::BindGroup)>,
     blit: Option<(wgpu::RenderPipeline, wgpu::BindGroupLayout)>,
     to_encoder: Sender<(Purpose, u32, u32, Vec<u8>)>,
+    /// pictures handed to the encoder thread and not written yet
+    encoding: Arc<AtomicUsize>,
     /// finished previews (data URL, w, h)
     pub previews: Receiver<(String, u32, u32)>,
 }
@@ -49,12 +51,15 @@ impl Readback {
     pub fn new() -> Self {
         let (tx, rx) = crossbeam_channel::bounded::<(Purpose, u32, u32, Vec<u8>)>(8);
         let (ptx, prx) = crossbeam_channel::bounded(4);
-        let _ = std::thread::Builder::new().name("preview-encode".into()).spawn(move || encoder(rx, ptx));
-        Self { pending: Vec::new(), small: None, blit: None, to_encoder: tx, previews: prx }
+        let encoding = Arc::new(AtomicUsize::new(0));
+        let enc = encoding.clone();
+        let _ = std::thread::Builder::new().name("preview-encode".into()).spawn(move || encoder(rx, ptx, enc));
+        Self { pending: Vec::new(), small: None, blit: None, to_encoder: tx, encoding, previews: prx }
     }
 
+    /// Copies still on the GPU or in the encoder (a test waits for its last PNG).
     pub fn busy(&self) -> usize {
-        self.pending.len()
+        self.pending.len() + self.encoding.load(Ordering::Acquire)
     }
 
     /// Copies `tex` (rgba8unorm) to a buffer in `enc`; for previews scaled down to at most 640 px wide.
@@ -169,7 +174,10 @@ impl Readback {
                             }
                         }
                         p.buf.unmap();
-                        let _ = self.to_encoder.try_send((p.purpose, p.w, p.h, out));
+                        self.encoding.fetch_add(1, Ordering::AcqRel);
+                        if self.to_encoder.try_send((p.purpose, p.w, p.h, out)).is_err() {
+                            self.encoding.fetch_sub(1, Ordering::AcqRel);
+                        }
                     }
                 }
             }
@@ -177,22 +185,27 @@ impl Readback {
     }
 }
 
-fn encoder(rx: Receiver<(Purpose, u32, u32, Vec<u8>)>, previews: Sender<(String, u32, u32)>) {
-    use base64::Engine;
+fn encoder(rx: Receiver<(Purpose, u32, u32, Vec<u8>)>, previews: Sender<(String, u32, u32)>, encoding: Arc<AtomicUsize>) {
     while let Ok((purpose, w, h, rgba)) = rx.recv() {
-        match purpose {
-            Purpose::Preview => {
-                let mut jpeg = Vec::new();
-                let enc = jpeg_encoder::Encoder::new(&mut jpeg, 72);
-                if enc.encode(&rgba, w as u16, h as u16, jpeg_encoder::ColorType::Rgba).is_ok() {
-                    let url = format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(&jpeg));
-                    let _ = previews.try_send((url, w, h));
-                }
+        encode(purpose, w, h, &rgba, &previews);
+        encoding.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn encode(purpose: Purpose, w: u32, h: u32, rgba: &[u8], previews: &Sender<(String, u32, u32)>) {
+    use base64::Engine;
+    match purpose {
+        Purpose::Preview => {
+            let mut jpeg = Vec::new();
+            let enc = jpeg_encoder::Encoder::new(&mut jpeg, 72);
+            if enc.encode(rgba, w as u16, h as u16, jpeg_encoder::ColorType::Rgba).is_ok() {
+                let url = format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(&jpeg));
+                let _ = previews.try_send((url, w, h));
             }
-            Purpose::Shot(path) => {
-                if let Err(e) = write_png(&path, w, h, &rgba) {
-                    bevy::log::warn!("Bild {}: {e}", path.display());
-                }
+        }
+        Purpose::Shot(path) => {
+            if let Err(e) = write_png(&path, w, h, rgba) {
+                bevy::log::warn!("Bild {}: {e}", path.display());
             }
         }
     }

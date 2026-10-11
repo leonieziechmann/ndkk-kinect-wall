@@ -1112,7 +1112,9 @@ impl OutputState {
         if let Some(name) = self.cfg.scene.clone() {
             let mut params = serde_json::Map::new();
             for (k, v) in &self.cfg.params {
-                let val = if let Ok(n) = v.parse::<f64>() {
+                let val = if let Ok(n) = v.parse::<i64>() {
+                    json!(n)
+                } else if let Ok(n) = v.parse::<f64>() {
                     json!(n)
                 } else if v == "true" || v == "false" {
                     json!(v == "true")

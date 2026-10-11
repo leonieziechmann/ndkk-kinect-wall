@@ -26,13 +26,15 @@ pub struct ParamSpec {
 }
 
 impl ParamSpec {
-    pub fn accepts(&self, v: &Value) -> bool {
+    /// The value as this param keeps it, or None if it does not fit: numbers as f64, a select's
+    /// own option value (numbers compared by value, as JS does: 4 and 4.0 are the same option).
+    pub fn canonical(&self, v: &Value) -> Option<Value> {
         match &self.kind {
-            Kind::Number { .. } => v.as_f64().is_some_and(f64::is_finite),
-            Kind::Bool => v.is_boolean(),
-            Kind::Color => v.as_str().is_some_and(is_color),
-            Kind::Select(opts) => opts.iter().any(|(_, o)| o == v),
-            Kind::Text => v.is_string(),
+            Kind::Number { .. } => v.as_f64().filter(|x| x.is_finite()).map(|x| json!(x)),
+            Kind::Bool => v.is_boolean().then(|| v.clone()),
+            Kind::Color => v.as_str().filter(|s| is_color(s)).map(|_| v.clone()),
+            Kind::Select(opts) => opts.iter().find(|(_, o)| o == v || (o.is_number() && o.as_f64() == v.as_f64())).map(|(_, o)| o.clone()),
+            Kind::Text => v.is_string().then(|| v.clone()),
         }
     }
 }
@@ -81,7 +83,7 @@ impl Params {
     pub fn resolve(specs: Arc<Vec<ParamSpec>>, overrides: &Value) -> Self {
         let mut values = HashMap::new();
         for p in specs.iter() {
-            let v = overrides.get(&p.key).filter(|v| p.accepts(v)).cloned().unwrap_or_else(|| p.default.clone());
+            let v = overrides.get(&p.key).and_then(|v| p.canonical(v)).unwrap_or_else(|| p.canonical(&p.default).unwrap_or_else(|| p.default.clone()));
             values.insert(p.key.clone(), v);
         }
         Self { specs, values }
