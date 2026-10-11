@@ -6,6 +6,7 @@ use crate::scene::SceneDef;
 pub mod common;
 mod fluid_simulation;
 mod modern_events;
+mod pixel_jump_run;
 mod pixel_spiegel;
 mod shader_scenes;
 
@@ -16,5 +17,6 @@ pub fn registry() -> Vec<&'static SceneDef> {
     v.push(&pixel_spiegel::DEF);
     v.push(&fluid_simulation::DEF);
     v.push(&modern_events::DEF);
+    v.push(&pixel_jump_run::DEF);
     v
 }
