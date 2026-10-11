@@ -36,9 +36,10 @@ export type { TieShape };
 /**
  * The ring: 16 loops over-under of 88 cm (Ø 27 cm), the start end 40 cm, the end tail 50 cm: 15 m.
  * The preset's 7.5 mm segments: with 1.25 cm ones the pressed stack lost its alternation (strands
- * passed through each other) and pulling it apart left 1.8 turns.
+ * passed through each other) and pulling it apart left 1.8 turns. Pressed to 6.4 mm a layer (one
+ * cable diameter): pressed harder, sixteen layers sort themselves out of order.
  */
-export const LONG_RING: RingSpec = { cable: XLR, loop: 0.88, pattern: 'ou'.repeat(8), lead: 0.4, tail: 0.5, spacing: 0.016, press: 0.85, pressTime: 3 };
+export const LONG_RING: RingSpec = { cable: XLR, loop: 0.88, pattern: 'ou'.repeat(8), lead: 0.4, tail: 0.5, spacing: 0.016, press: 0.6, pressTime: 3 };
 /** the loops that stay in his left hand (the first ones, next to the start end) */
 export const HAND_LOOPS = 3;
 /** the loop that hangs between his hands while he swings (the first one the right hand does not hold) */
@@ -50,47 +51,60 @@ export const TIE_K: TieSpec = { length: 0.3, width: 0.02, thickness: 0.0016, s: 
 export const KOFI_AT: [number, number] = [0, 0];
 export const KOFI_YAW = Math.PI / 2;
 /** where the mic stand stands */
-export const MIC_AT: V3 = [11.6, 0, 0.42];
+export const MIC_AT: V3 = [12.2, 0, 0.62];
 /** drawn radius of the cable in the wide view */
 export const THROW_WIDE_RADIUS = 0.006;
 
 /** the ring as the factory made it, turned: its stack along +x (forward), the start end to his left (-z) */
 const QRING: Quat = quatFromAxisAngle(0, 1, 0, Math.PI / 2);
 /** the middle of the bunch at the ring's top, in his left hand */
-const HOLD: V3 = [0.4, 1.0, -0.1];
-
-/** shot times (s) */
-export const THROW_T = {
-  /** the right hand to the tie's tab, pinches it, pulls it out of the eyelet, lets go */
-  reach: 0.3, pinch: 0.85, unfold: 1.25, letTie: 1.4,
-  /** the right hand closes on the front loops; draws them off the left hand to his right (the band's loops leave it) */
-  take: 2.0, split: 2.7,
-  /** swings back */
-  back: 3.4,
-  /** swings forward and lets go */
-  release: 3.4 + 0.21,
-  /** the ring lands (computed from the flight; here for the timeline) */
-  land: 5.2,
-  /** the left hand lets the rest run out after it */
-  rest0: 5.7, rest1: 6.9,
-  end: 8.0,
-};
-const T = THROW_T;
+const HOLD: V3 = [0.4, 1.0, -0.06];
 
 // ---------------------------------------------------------------- the swing and the flight
 
-/** the right shoulder (the swing's centre) and the arm's reach to the grip, the plane of the swing (z) */
-const SWING = { c: [0.0, 1.4, 0.4] as V3, r: 0.62, back: (-55 * Math.PI) / 180, rel: (45 * Math.PI) / 180, follow: (75 * Math.PI) / 180 };
-/** speed at the release (m/s) */
-const V_REL = 10.5;
-/** angular speed at the release; the forward swing accelerates evenly from rest */
+/**
+ * The swing: the grip on an arc round his right shoulder, in a plane 19 cm out to his right (the
+ * ring clears his thigh), from 30° behind the vertical (as far back as the shoulder goes without
+ * strain, IK probes) through the bottom to the release at 33° in front (a flat throw, along the
+ * stage), then the follow-through.
+ * Its angular speed grows evenly from rest to the release speed, then falls evenly to rest.
+ */
+const SWING = { c: [0.03, 1.42, 0.4] as V3, r: 0.52, back: (-30 * Math.PI) / 180, rel: (33 * Math.PI) / 180, follow: (90 * Math.PI) / 180 };
+/** speed at the release (m/s): the ring flies about 12 m */
+const V_REL = 11;
 const W_REL = V_REL / SWING.r;
 const SWING_TIME = (2 * (SWING.rel - SWING.back)) / W_REL;
-/** the follow-through decelerates evenly to rest */
 const FOLLOW_TIME = (2 * (SWING.follow - SWING.rel)) / W_REL;
 /** horizontal drag of the flying ring (the cable it pulls out), 1/s */
 const DRAG = 0.15;
 const G = 9.81;
+/** the ring touches the floor when its grip point is this high */
+const LAND_Y = 0.32;
+const BACK_AT = 3.7;
+const REL_AT = BACK_AT + SWING_TIME;
+/** flight time to the floor */
+const FLIGHT = (() => {
+  const y0 = SWING.c[1] - SWING.r * Math.cos(SWING.rel), vy = V_REL * Math.sin(SWING.rel);
+  return (vy + Math.sqrt(vy * vy + 2 * G * (y0 - LAND_Y))) / G;
+})();
+
+/** shot times (s) */
+export const THROW_T = {
+  /** the right hand to the tie's tab, pinches it, pulls it out of the eyelet, lets go */
+  reach: 0.3, pinch: 1.0, unfold: 1.4, letTie: 1.55,
+  /** the right hand closes on the front loops; draws them off the left hand to his right (the band's loops leave it) */
+  take: 2.4, split: 3.1,
+  /** swung back */
+  back: BACK_AT,
+  /** swings forward and lets go */
+  release: REL_AT,
+  /** the ring lands */
+  land: REL_AT + FLIGHT,
+  /** the left hand lets the rest run out after it */
+  rest0: REL_AT + FLIGHT + 0.5, rest1: REL_AT + FLIGHT + 1.7,
+  end: REL_AT + FLIGHT + 2.9,
+};
+const T = THROW_T;
 
 const onArc = (phi: number): V3 => [SWING.c[0] + SWING.r * Math.sin(phi), SWING.c[1] - SWING.r * Math.cos(phi), SWING.c[2]];
 /** the swing angle at time t (forward swing and follow-through; before it, the back position) */
@@ -179,22 +193,40 @@ const mixGrip = (a: Grip, b: Grip, u: number): Grip => ({ p: lerpV(a.p, b.p, u),
 const LEFT_GRIP = gripFrame(HOLD, [0, 0, 1], [0, 1, 0]);
 /** where the left hand lets the rest run out: forward and down */
 const LEFT_REST: Grip = { p: [0.55, 0.85, -0.05], q: LEFT_GRIP.q };
-/** the right hand's coil grip frame (strands along -z, the palm towards +x) */
-const RIGHT_Q = gripFrame([0, 0, 0], [0, 0, -1], [1, 0, 0]).q;
-/** the right hand at rest, open, by his right thigh */
+/**
+ * The right hand's coil grip: the strands run along +z through it; on the swing arc at angle φ the
+ * palm side turns with the arm (from the strands to the palm: (-cos φ, -sin φ, 0)), the comfortable
+ * family the IK probes found along the whole arc. Taking the loops it is the one of φ = 0.
+ */
+const rightQ = (phi: number) => gripFrame([0, 0, 0], [0, 0, 1], [-Math.cos(phi), -Math.sin(phi), 0]).q;
+/** the split's side position counts as φ = 45° for the hand */
+const SIDE_PHI = Math.PI / 4;
+/** the right hand at rest, open, by his right thigh: at the start (as for the pinch it goes to), at the end (as the coil grip it comes from) */
 const REST_R: Grip = gripFrame([0.12, 0.86, 0.3], [1, 0, 0], [0, 0.7, -0.7]);
+const REST_END: V3 = [0.08, 0.88, 0.3];
 /** the bundle of front loops that the right hand holds: its radius in the hand */
 const BUNDLE_R = 0.016;
 
 /** where the right hand's grip is during the split and the swing (planned; the ring follows it exactly) */
 export function swingPoint(p: Plan, t: number): V3 {
+  return swingGrip(p, t).p;
+}
+/** the right hand's grip frame during the split and the swing (and the angle that turns the hand) */
+export function swingGrip(p: Plan, t: number): Grip {
   const take = v3(p, SLOTS.take);
   const side: V3 = [0.3, 0.95, SWING.c[2]];
-  if (t < T.take) return take;
-  if (t < T.split) return lerpV(take, side, ease(t, T.take + 0.05, T.split));
+  if (t < T.take) return { p: take, q: rightQ(0) };
+  if (t < T.split) {
+    const u = ease(t, T.take + 0.05, T.split);
+    return { p: lerpV(take, side, u), q: rightQ(SIDE_PHI * u) };
+  }
   const t0 = T.release - SWING_TIME;
-  if (t < t0) return lerpV(side, onArc(SWING.back), ease(t, T.split, t0));
-  return onArc(swingPhi(t));
+  if (t < t0) {
+    const u = ease(t, T.split, t0);
+    return { p: lerpV(side, onArc(SWING.back), u), q: rightQ(SIDE_PHI + (SWING.back - SIDE_PHI) * u) };
+  }
+  const phi = swingPhi(t);
+  return { p: onArc(phi), q: rightQ(phi) };
 }
 
 /**
@@ -208,7 +240,7 @@ export function throwRig(p: Plan) {
   };
   const PINCH = { hold: 'pinch' as const, radius: TIE_K.thickness / 2 };
   const right = (t: number): HandRig => {
-    if (t < T.reach) return { grip: REST_R, ...PINCH, open: 1, free: 0.6 };
+    if (t < T.reach) return { grip: REST_R, ...PINCH, open: 1, free: 1 };
     // in front of the ring, to the tab (from in front and a little below), pinch, out of the eyelet, let go
     const g0 = tieGrip(T.pinch), near: Grip = { p: add(g0.p, [0.07, -0.03, 0.05]), q: g0.q };
     const tm = (T.reach + T.pinch) / 2;
@@ -216,17 +248,19 @@ export function throwRig(p: Plan) {
     if (t < T.pinch) return { grip: mixGrip(near, g0, ease(t, tm, T.pinch - 0.05)), ...PINCH, open: 1 - ease(t, T.pinch - 0.2, T.pinch), free: 0.4 };
     if (t < T.letTie) return { grip: tieGrip(t), ...PINCH, open: ease(t, T.unfold, T.letTie), free: 0.4 };
     // to the front loops (from in front: well clear of the band), closing round them
-    const take: Grip = { p: v3(p, SLOTS.take), q: RIGHT_Q };
-    const pre: Grip = { p: add(take.p, [0.08, 0.04, 0.03]), q: RIGHT_Q };
+    const take: Grip = { p: v3(p, SLOTS.take), q: rightQ(0) };
+    const pre: Grip = { p: add(take.p, [0.08, 0.04, 0.03]), q: take.q };
     const COIL = { hold: 'coil' as const, radius: BUNDLE_R };
-    if (t < T.take - 0.3) return { grip: mixGrip(tieGrip(T.letTie), pre, ease(t, T.letTie, T.take - 0.3)), ...PINCH, open: 1, free: 0.6 };
-    if (t < T.take) return { grip: mixGrip(pre, take, ease(t, T.take - 0.3, T.take - 0.05)), ...COIL, open: 1 - ease(t, T.take - 0.15, T.take), free: 0.6 };
+    // (open, the hand turns freely about the strands' direction on the way: the IK finds the easy roll)
+    if (t < T.take - 0.45) return { grip: mixGrip(tieGrip(T.letTie), pre, ease(t, T.letTie, T.take - 0.45)), ...COIL, open: 1, free: 1 };
+    if (t < T.take) return { grip: mixGrip(pre, take, ease(t, T.take - 0.45, T.take - 0.05)), ...COIL, open: 1 - ease(t, T.take - 0.15, T.take), free: 1 - 0.4 * ease(t, T.take - 0.45, T.take - 0.1) };
     // the split, the swing; after the release it opens
     const open = ease(t, T.release - 0.02, T.release + 0.08);
-    if (t < T.release + FOLLOW_TIME + 0.05) return { grip: { p: swingPoint(p, t), q: RIGHT_Q }, ...COIL, open, free: 0.7 };
+    if (t < T.release + FOLLOW_TIME + 0.05) return { grip: swingGrip(p, t), ...COIL, open, free: 0.7 };
     // then back down by his side
-    const end: Grip = { p: onArc(SWING.follow), q: RIGHT_Q };
-    return { grip: mixGrip(end, REST_R, ease(t, T.release + FOLLOW_TIME + 0.05, T.release + 1.2)), ...COIL, open: 1, free: 0.7 };
+    const end: Grip = { p: onArc(SWING.follow), q: rightQ(SWING.follow) };
+    const u = ease(t, T.release + FOLLOW_TIME + 0.05, T.release + 1.3);
+    return { grip: { p: lerpV(end.p, REST_END, u), q: rightQ(SWING.follow + (-0.05 - SWING.follow) * u) }, ...COIL, open: 1, free: 0.7 };
   };
   const left = (t: number): HandRig => {
     // all loops in the hook of the fingers; open a little while the front loops slide out; then
@@ -327,9 +361,9 @@ export const throwShot: ShotDef = {
       return s < ring.sLoops[0][0] ? -1 : ring.sLoops.length;
     };
     const topY = top(0)[1];
-    // the right hand's take: the top of the front loops, 8.5 cm to his right of the bunch's middle
+    // the right hand's take: the top of the front loops, 8 cm to his right of the bunch's middle
     const frontSegs: number[] = [];
-    const tk = top(-0.085);
+    const tk = top(-0.08);
     for (let j = 0; j < rod.ns; j++) {
       const k = loopOf(j);
       if (k <= BETWEEN || k >= ring.sLoops.length) continue;
@@ -425,7 +459,7 @@ export const throwShot: ShotDef = {
         while (inRing.length) {
           const k = inRing[0];
           const free = ring.sLoops[k][0] - leftEnd();
-          if (free > 1.06 * D + 0.35) break;
+          if (free > 1.1 * D + 0.5) break;
           rh.release(ring.sLoops[k][0], ring.sLoops[k][1], 0.05);
           inRing.shift();
         }
@@ -440,8 +474,8 @@ export const throwShot: ShotDef = {
         if (!inRing.length && inHand.length) {
           const tail = P(r.n - 1);
           const D2 = len(sub(tail, hand));
-          const free2 = ring.sCable[1] - ring.sLoops[inHand[0]][0];
-          if (free2 < 1.04 * D2 + 0.3 || t > T.rest0 + 0.25 * (HAND_LOOPS - inHand.length)) {
+          const free2 = ring.sCable[1] - ring.sLoops[inHand[0]][1];
+          if (free2 < 1.06 * D2 + 0.4 || t > T.rest0 + 0.35 * (HAND_LOOPS - inHand.length)) {
             const k = inHand.shift() as number;
             lh.release(ring.sLoops[k][0], ring.sLoops[k][1], 0.05);
           }

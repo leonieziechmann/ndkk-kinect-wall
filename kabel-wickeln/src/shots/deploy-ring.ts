@@ -47,7 +47,7 @@ export interface RingSpec {
   tail: number;
   /** layer distance of the loops while laid out (≥ 2 cable diameters: the woven layer lies half way) */
   spacing: number;
-  /** pressing: how far the loops are pulled toward the middle of the stack (0 none … 1 all) */
+  /** pressing: how far the loops are pulled toward the first one (0 none … 1 all; the stack closes up behind it, against the start end) */
   press?: number;
   /** seconds of pressing (default 3) */
   pressTime?: number;
