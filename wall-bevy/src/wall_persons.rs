@@ -89,6 +89,7 @@ fn clear(@builtin(global_invocation_id) id: vec3u) {{
 pub struct WallPersons {
     pipes: [wgpu::ComputePipeline; 3],
     group: wgpu::BindGroup,
+    #[allow(dead_code)]
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
     pub w: u32,

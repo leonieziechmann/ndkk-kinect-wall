@@ -66,7 +66,7 @@ fn skeleton(i: usize, t: f32) -> [V3; 17] {
     let wave = (t * (3.0 + fi)).sin();
     let step = (t * 4.0 * speed * 3.0).sin();
     let p = |dx: f32, up: f32, dz: f32| v3(x + dx * s, base - up * s, z + dz * s);
-    let arm_up = if i % 2 == 0 { 0.45 + 0.35 * wave } else { 0.1 };
+    let arm_up = if i.is_multiple_of(2) { 0.45 + 0.35 * wave } else { 0.1 };
     [
         p(0.0, 1.62, -0.08),                         // nose
         p(-0.03, 1.66, -0.06),                       // left eye

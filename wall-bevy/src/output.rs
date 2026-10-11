@@ -109,9 +109,6 @@ impl Fade {
         self.start = now;
         self.ms = ms;
     }
-    fn done(&self, now: f64) -> bool {
-        now - self.start >= self.ms
-    }
 }
 
 // ---------- scene instances ----------
@@ -129,6 +126,8 @@ struct Instance {
     overrides: Value,
     wall: WallMap,
     wall_buf: wgpu::Buffer,
+    /// the instance's picture (drawn through `view`)
+    #[allow(dead_code)]
     target: wgpu::Texture,
     view: wgpu::TextureView,
     started: f64,
@@ -192,10 +191,10 @@ enum BlackStep {
 struct OutGpu {
     led_tex: wgpu::Texture,
     led_view: wgpu::TextureView,
+    #[allow(dead_code)]
     stage: wgpu::Texture,
     stage_view: wgpu::TextureView,
     overlay: wgpu::Texture,
-    overlay_view: wgpu::TextureView,
     layer_pipe: wgpu::RenderPipeline,
     overlay_pipe: wgpu::RenderPipeline,
     final_pipe: wgpu::RenderPipeline,
@@ -276,7 +275,7 @@ impl OutGpu {
             layout: &over_bgl,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&overlay_view) }],
         });
-        Ok(Self { led_tex, led_view, stage, stage_view, overlay, overlay_view, layer_pipe, overlay_pipe, final_pipe, layer_bgl, final_group, overlay_group, final_buf, led })
+        Ok(Self { led_tex, led_view, stage, stage_view, overlay, layer_pipe, overlay_pipe, final_pipe, layer_bgl, final_group, overlay_group, final_buf, led })
     }
 }
 
@@ -312,7 +311,6 @@ pub struct OutputState {
     wizard: Option<Value>,
     wizard_at: f64,
     canvas: Canvas,
-    overlay_shown: bool,
     waiting: Option<&'static str>,
     wait_left: f64,
     wait_limit: f64,
@@ -412,7 +410,6 @@ fn new_state(cfg: Config) -> OutputState {
         wizard: None,
         wizard_at: 0.0,
         canvas: Canvas::new(1, 1),
-        overlay_shown: false,
         waiting: None,
         wait_left: 0.0,
         wait_limit: 0.0,
@@ -589,12 +586,14 @@ impl OutputState {
             shown: false,
             layer: None,
         };
-        if let Some(old) = self.current.take() {
-            if p.transition == Transition::Cross && p.fade > 0.0 {
-                inst.opacity = Fade { from: 0.0, to: 1.0, start: now, ms: p.fade * 1000.0, curve: ease_in_out };
-                self.leaving.push(Leaving { inst: old, until: now + p.fade * 1000.0 + 100.0 });
-            }
-            // a cut: the old one is simply dropped (its GPU resources go with it)
+        // a crossfade keeps the old one until the fade is over; a cut simply drops it (its GPU
+        // resources go with it)
+        if let Some(old) = self.current.take()
+            && p.transition == Transition::Cross
+            && p.fade > 0.0
+        {
+            inst.opacity = Fade { from: 0.0, to: 1.0, start: now, ms: p.fade * 1000.0, curve: ease_in_out };
+            self.leaving.push(Leaving { inst: old, until: now + p.fade * 1000.0 + 100.0 });
         }
         self.title = def.title.to_string();
         self.current = Some(inst);

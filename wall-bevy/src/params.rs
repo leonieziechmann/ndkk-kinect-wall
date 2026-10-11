@@ -7,6 +7,9 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
+// min/max and the labels are the scenes' declarations (as in the browser); the control center
+// shows them from the browser scenes, the output itself does not read them
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub enum Kind {
     Number { min: f64, max: f64, step: f64 },
@@ -17,6 +20,7 @@ pub enum Kind {
     Text,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct ParamSpec {
     pub key: String,
@@ -89,6 +93,7 @@ impl Params {
         Self { specs, values }
     }
 
+    #[allow(dead_code)]
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.values.get(key)
     }
@@ -143,6 +148,7 @@ impl Params {
     }
 
     /// JSON of all values (telemetry).
+    #[allow(dead_code)]
     pub fn to_json(&self) -> Value {
         Value::Object(self.values.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
     }

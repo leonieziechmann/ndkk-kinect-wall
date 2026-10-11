@@ -133,6 +133,7 @@ pub fn exp_ramp(t: f32, t0: f32, a: f32, t1: f32, b: f32) -> f32 {
     a * (b / a).powf((t - t0) / (t1 - t0))
 }
 
+#[allow(dead_code)]
 pub fn lin_ramp(t: f32, t0: f32, a: f32, t1: f32, b: f32) -> f32 {
     if t <= t0 {
         return a;
@@ -173,10 +174,12 @@ pub fn noise(i: usize, seed: u32) -> f32 {
 
 /// A one-pole lowpass state (for filtered noise).
 #[derive(Default, Clone, Copy)]
+#[allow(dead_code)]
 pub struct OnePole {
     y: f32,
 }
 
+#[allow(dead_code)]
 impl OnePole {
     pub fn lowpass(&mut self, x: f32, cutoff: f32) -> f32 {
         let a = 1.0 - (-std::f32::consts::TAU * cutoff / RATE as f32).exp();

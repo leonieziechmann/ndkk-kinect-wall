@@ -89,8 +89,10 @@ pub struct FrameCtx<'a> {
     pub frame: u64,
     pub params: &'a Params,
     pub kinect: &'a mut KinectData,
+    #[allow(dead_code)]
     pub kgpu: &'a KinectGpu,
     pub wall: &'a mut WallMap,
+    #[allow(dead_code)]
     pub wall_buf: &'a wgpu::Buffer,
     pub x_sign: f32,
     /// the HUD / telemetry status line
@@ -104,6 +106,7 @@ pub struct FrameCtx<'a> {
 
 impl FrameCtx<'_> {
     /// ctx.persons: the visible persons and the rest of the view.
+    #[allow(dead_code)]
     pub fn persons(&self) -> Arc<PersonsView> {
         self.kinect.view.clone()
     }

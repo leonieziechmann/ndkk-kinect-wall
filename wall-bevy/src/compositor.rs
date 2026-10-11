@@ -25,6 +25,7 @@ pub struct OutputImage {
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+#[allow(clippy::enum_variant_names)] // the setup's output.fit: pixel, stretch, fit
 pub enum Fit {
     #[default]
     Pixel,

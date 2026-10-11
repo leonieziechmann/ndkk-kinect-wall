@@ -231,16 +231,6 @@ pub fn begin_pass<'a>(enc: &'a mut wgpu::CommandEncoder, label: &str, view: &wgp
     })
 }
 
-/// Float slice as bytes.
-pub fn f32_bytes(v: &[f32]) -> &[u8] {
-    bytemuck::cast_slice(v)
-}
-
-/// Bind group entries helper: (binding, resource).
-pub fn entries<'a>(list: &[(u32, wgpu::BindingResource<'a>)]) -> Vec<wgpu::BindGroupEntry<'a>> {
-    list.iter().map(|(b, r)| wgpu::BindGroupEntry { binding: *b, resource: r.clone() }).collect()
-}
-
 /// Layout entry shorthands (visibility given by the caller).
 pub mod layout {
     pub fn uniform(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {

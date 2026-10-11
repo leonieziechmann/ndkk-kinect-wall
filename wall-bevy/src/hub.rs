@@ -238,7 +238,7 @@ fn run(url: &str, ev: &Sender<HubEvent>, cmd: &Receiver<HubCommand>, streams: &m
     };
     let mut retry = Duration::from_millis(250);
     loop {
-        match connect(&url) {
+        match connect(url) {
             Ok(mut ws) => {
                 retry = Duration::from_millis(250);
                 st.best_rtt = f64::INFINITY;
@@ -430,8 +430,8 @@ impl State {
                 {
                     let (mmv, mv) = (Arc::get_mut(&mut mm), Arc::get_mut(&mut m));
                     let (Some(mmv), Some(mv)) = (mmv, mv) else { return };
-                    for (i, c) in payload.chunks_exact(2).take(N).enumerate() {
-                        let v = u16::from_le_bytes([c[0], c[1]]);
+                    for (i, c) in payload.as_chunks::<2>().0.iter().take(N).enumerate() {
+                        let v = u16::from_le_bytes(*c);
                         mmv[i] = v;
                         mv[i] = f32::from(v) * 0.001;
                     }
@@ -457,7 +457,7 @@ impl State {
                 if n != N || payload.len() < N * 8 {
                     return;
                 }
-                let lut: Vec<f32> = payload.chunks_exact(4).take(N * 2).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                let lut: Vec<f32> = payload.as_chunks::<4>().0.iter().take(N * 2).map(|c| f32::from_le_bytes(*c)).collect();
                 self.send(HubEvent::Lut(Arc::new(lut)));
             }
             _ => {}
@@ -480,7 +480,7 @@ impl State {
                 return;
             };
             let mut at = 0usize;
-            for r in rle.chunks_exact(3) {
+            for r in rle.as_chunks::<3>().0 {
                 if at >= N {
                     break;
                 }

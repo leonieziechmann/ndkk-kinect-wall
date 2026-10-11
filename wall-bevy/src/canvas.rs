@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 use parking_lot::Mutex;
-use tiny_skia::{FillRule, LineCap, Paint, PathBuilder, Pixmap, Rect, Shader, Stroke, StrokeDash, Transform};
+use tiny_skia::{FillRule, LineCap, Paint, PathBuilder, Pixmap, Rect, Stroke, StrokeDash, Transform};
 
 pub use tiny_skia::Color as SkColor;
 
@@ -70,6 +70,8 @@ impl Font {
     }
 }
 
+// Canvas 2D's textAlign / textBaseline: the whole API for the scene ports, used or not
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Align {
     Left,
@@ -77,6 +79,7 @@ pub enum Align {
     Right,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Baseline {
     Top,
@@ -228,6 +231,7 @@ impl Rgba {
         let c = crate::persons::hex_rgb(s);
         Rgba(c[0], c[1], c[2], 1.0)
     }
+    #[allow(dead_code)]
     pub fn rgb(c: [f32; 3]) -> Self {
         Rgba(c[0], c[1], c[2], 1.0)
     }
@@ -455,4 +459,3 @@ impl Canvas {
     }
 }
 
-pub const SHADER_SOLID: fn(SkColor) -> Shader<'static> = Shader::SolidColor;

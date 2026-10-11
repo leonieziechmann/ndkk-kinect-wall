@@ -159,7 +159,7 @@ impl KinectGpu {
             d.fill(0.0);
             for p in &k.view.all {
                 let s = p.slot as usize;
-                if s < 1 || s > MAX_PERSONS {
+                if !(1..=MAX_PERSONS).contains(&s) {
                     continue;
                 }
                 for jj in 0..NPOINTS {

@@ -1057,6 +1057,8 @@ const LZ: usize = 2;
 const LIX: usize = 3;
 const LIY: usize = 4;
 
+// the API of wall.js for the scene ports, used or not
+#[allow(dead_code)]
 impl WallMap {
     pub fn new(setup: Setup, projection: Option<Profile>) -> Self {
         let room = manual_room(0.85, 0.0);

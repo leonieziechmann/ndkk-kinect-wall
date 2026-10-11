@@ -36,6 +36,7 @@ impl Rng {
     }
 
     /// a..b
+    #[allow(dead_code)]
     pub fn range(&mut self, a: f32, b: f32) -> f32 {
         a + (b - a) * self.f32()
     }
@@ -46,11 +47,13 @@ impl Rng {
     }
 
     /// true with probability p
+    #[allow(dead_code)]
     pub fn chance(&mut self, p: f32) -> bool {
         self.f32() < p
     }
 
     /// an element of a slice
+    #[allow(dead_code)]
     pub fn pick<'a, T>(&mut self, v: &'a [T]) -> Option<&'a T> {
         if v.is_empty() { None } else { v.get(self.int(v.len())) }
     }
@@ -61,6 +64,7 @@ thread_local! {
 }
 
 /// Math.random(): 0..1 from the thread's generator.
+#[allow(dead_code)]
 pub fn random() -> f32 {
     STATE.with(|s| {
         let mut r = Rng(s.get());

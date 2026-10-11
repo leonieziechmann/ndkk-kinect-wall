@@ -204,7 +204,7 @@ impl BodyField {
                     if x + R < wi {
                         acc += src[(row + x + R) as usize];
                     }
-                    if x - R - 1 >= 0 {
+                    if x - R > 0 {
                         acc -= src[(row + x - R - 1) as usize];
                     }
                     if x >= 0 {
@@ -221,7 +221,7 @@ impl BodyField {
                     ax += self.tx[((y + R) * wi + x) as usize];
                     ay += self.ty[((y + R) * wi + x) as usize];
                 }
-                if y - R - 1 >= 0 {
+                if y - R > 0 {
                     ax -= self.tx[((y - R - 1) * wi + x) as usize];
                     ay -= self.ty[((y - R - 1) * wi + x) as usize];
                 }

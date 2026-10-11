@@ -129,5 +129,3 @@ pub fn step_entry<'a>(show: &'a Show, id: Option<&str>, dir: i32) -> Option<&'a 
     None
 }
 
-/// Test images of the output (wall-show.js PATTERNS)
-pub const PATTERNS: &[&str] = &["grid", "people", "bars", "ramp", "sweep", "white", "red", "green", "blue"];

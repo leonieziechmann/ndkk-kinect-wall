@@ -16,6 +16,8 @@ use crate::hub::{connect_ws, mono_ms, send_json};
 pub struct BusMsg {
     pub kind: String,
     pub data: Value,
+    /// the sender's page id
+    #[allow(dead_code)]
     pub from: String,
 }
 
@@ -34,6 +36,8 @@ struct Out {
 }
 
 pub struct Bus {
+    /// this output's page id on the bus
+    #[allow(dead_code)]
     pub id: String,
     pub incoming: Receiver<BusIn>,
     out: Sender<Out>,

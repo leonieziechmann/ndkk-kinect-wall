@@ -47,6 +47,14 @@ qrcodegen = "1.8"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
+[lints.clippy]
+# the scenes mirror the browser's JS: its signatures and names (from_world, from_room, ...)
+too_many_arguments = "allow"
+wrong_self_convention = "allow"
+type_complexity = "allow"
+# !(a > b) on purpose: false for NaN, as in the JS it was ported from
+neg_cmp_op_on_partial_ord = "allow"
+
 # dev: the scenes run fast enough to judge them (deps optimized), links stay quick and small
 [profile.dev]
 opt-level = 1
