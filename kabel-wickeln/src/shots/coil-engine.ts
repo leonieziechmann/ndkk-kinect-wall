@@ -34,6 +34,8 @@ import type { ShotBuild } from './types';
 const DT = 1 / 60;
 const UP: V3 = [0, 1, 0];
 const RC = XLR.od / 2;
+/** COIL_TRACE=n: log the pinch every n frames (bake log) */
+const TRACE = Number((globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.COIL_TRACE ?? 0);
 
 // ------------------------------------------------------------------ small vector helpers
 
@@ -322,6 +324,7 @@ export class CoilController {
   private readonly crossDone = new Set<number>();
   /** the cable's direction at the pads (towards the coil) and how far the pads are off it, read every frame */
   private spanDir: V3 | null = null;
+  private tanDir: V3 | null = null;
   private padsErr: V3 = [0, 0, 0];
   /** the coil's Lk at shot time 0 (the plug strand only) */
   coilLk0: number | null = null;
@@ -429,7 +432,9 @@ export class CoilController {
       p = add(p, this.padsErr);
       const out = ramp(t, b.tSlide, b.tOut);
       const d0 = quatRotate(m.q0, [0, 0, 1]);
-      const d3 = this.spanDir ? normalize(lerpV(d0, this.spanDir, ramp(t, b.tSlide, b.tSlide + 0.25))) : d0;
+      // the pads go with the cable: its direction where it runs through them (85 %), a little towards the span
+      const along = this.tanDir && this.spanDir ? normalize(lerpV(this.spanDir, this.tanDir, 0.85)) : d0;
+      const d3 = normalize(lerpV(d0, along, ramp(t, b.tSlide, b.tSlide + 0.25)));
       const open = 0.3 * (1 - ramp(t, b.tOut - 0.2, b.tOut));
       const roll = this.prevRoll(i) * (1 - ramp(t, b.tSlide, b.tSlide + 0.4));
       return { rig: this.pinchRig(p, d3, { open, cross: 0.3 + 0.9 * out, out, roll }), turn: 0 };
@@ -706,9 +711,17 @@ export class CoilController {
       const c = rod.pointAt(pin.s), ahead = rod.pointAt(Math.max(0, pin.s - 0.1));
       this.spanDir = normalize(sub(ahead, c));
       const tg = mul(rod.tangentAt(pin.s), -1), d = sub(c, arms[1].grip!.p);
+      this.tanDir = tg;
       this.padsErr = madd(d, tg, -dot(d, tg));
     }
     const i = loopAt(this.bs, tn);
+    if (TRACE && Math.round(t * 60) % TRACE === 0) {
+      const gp = arms[1].grip!, d3 = quatRotate(gp.q, [0, 0, 1]), tg = rod.tangentAt(pin.s);
+      const ang = (Math.acos(Math.min(1, Math.abs(dot(d3, tg)))) * 180) / Math.PI;
+      const dist = lenV(sub(rod.pointAt(pin.s), gp.p));
+      const r = arms[1].report;
+      this.log.push(`  trace t ${t.toFixed(3)} s ${pin.s.toFixed(3)} ${pin.state} lvl ${pin.level().toFixed(2)} pads→cable ${(dist * 1000).toFixed(1)} mm ${ang.toFixed(0)}° slip ${pin.slip.toFixed(2)} F ${pin.force.toFixed(2)} ik ${(r.posError * 1000).toFixed(1)} mm ${r.atLimit.join(',')} p ${gp.p.map((x) => x.toFixed(3)).join(',')}`);
+    }
     if (i < 0) return;
     const b = this.bs[i];
     if (!this.memo || this.memo.k !== b.k) {
@@ -721,7 +734,8 @@ export class CoilController {
     const edge = this.sEdge[b.k - 1];
     // hold as soon as a loop's worth has passed through the pads (or at the hip at the latest)
     const sHold = edge + this.plan.loopLength + GEOM.gap;
-    if (!m.held && tn >= b.tSlide && (pin.s >= sHold || tn >= b.tOut)) {
+    // (the pads close over 0.2 s: the cable still runs on a little meanwhile)
+    if (!m.held && tn >= b.tSlide && (pin.s + 0.1 * Math.max(0, pin.slip) >= sHold || tn >= b.tOut)) {
       pin.set('held', 0.2);
       m.held = true;
       if (tn < b.tOut - 0.1) {
@@ -861,21 +875,11 @@ export class CoilController {
       const nearMeet = Math.abs(t - b.tMeet) < 0.35 || (i > 0 && Math.abs(t - this.bs[i - 1].tMeet) < 0.35);
       if (!nearMeet && this.leftOpen > this.openMax.v) this.openMax = { v: this.leftOpen, where: `t ${t.toFixed(2)}` };
       // the forearm through the forming under loop
-      if (b.kind === 'under' && t >= b.tTurned && t <= b.t1 + 0.3) {
-        const res = this.results.find((x) => x.k === b.k);
-        const through = this.wristThrough(b.k);
-        if (through) {
-          if (res) res.wristIn += DT;
-          else this.pendingWrist = { k: b.k, s: (this.pendingWrist?.k === b.k ? this.pendingWrist.s : 0) + DT };
-        }
-      }
+      if (b.kind === 'under' && t >= b.tTurned && t <= b.t1 + 0.3 && this.wristThrough(b.k)) this.wristTime.set(b.k, (this.wristTime.get(b.k) ?? 0) + DT);
     }
     for (const res of this.results) {
       const b = this.bs[res.k - 1];
-      if (this.pendingWrist && this.pendingWrist.k === res.k) {
-        res.wristIn += this.pendingWrist.s;
-        this.pendingWrist = null;
-      }
+      res.wristIn = this.wristTime.get(res.k) ?? 0;
       if (!res.crossDepth.length && !this.crossDone.has(res.k) && t >= b.t1 + 0.1) {
         this.crossDone.add(res.k);
         res.crossDepth = this.crossings(res.k);
@@ -891,7 +895,7 @@ export class CoilController {
       }
     }
   }
-  private pendingWrist: { k: number; s: number } | null = null;
+  private readonly wristTime = new Map<number, number>();
 
   /** where the plug is relative to the finished coil: outside every loop seen along N, or behind the first */
   private plugCheck(): { ok: boolean; text: string } {

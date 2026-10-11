@@ -105,7 +105,7 @@ export function* part(layer: Node) {
     arrow: (): number | null => {
       // the first "unter" loop: while the hand turns over, and as it turns back on the way
       const tt = t(), b = B[1];
-      if (tt < b.tHeld - 0.05 || tt > b.tSpread) return null;
+      if (tt < b.tHeld - 0.05 || tt > b.tAbove) return null;
       return cw.replay.at(tt).turn;
     },
     tie: () => {

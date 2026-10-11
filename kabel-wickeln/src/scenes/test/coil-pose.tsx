@@ -58,13 +58,14 @@ interface Variant {
   palm: [number, number, number];
   thumb: 1 | -1;
   at: V3;
+  r: number;
 }
 
 const VARIANTS: Variant[] = [
-  { name: 'Haken: Handfläche oben/innen, Daumen nach außen', nAngle: 40, sUp: 20, palm: [-0.4, -0.9, 0], thumb: 1, at: [-0.15, 0.9, -0.27] },
-  { name: 'Faust seitlich: Handfläche zur Mitte, Daumen oben nach außen', nAngle: 45, sUp: 25, palm: [-0.9, -0.2, 0], thumb: 1, at: [-0.15, 0.9, -0.27] },
-  { name: 'Faust von oben: Handrücken vorn, Daumen zur Mitte', nAngle: 40, sUp: 20, palm: [-0.5, 0.85, 0], thumb: -1, at: [-0.15, 0.9, -0.27] },
-  { name: 'Faust seitlich, Achse steiler nach vorn', nAngle: 55, sUp: 30, palm: [-0.9, -0.3, 0], thumb: 1, at: [-0.15, 0.9, -0.27] },
+  { name: 'Haken: Handfläche unten/hinten, R 16', nAngle: 45, sUp: 12, palm: [-0.4, -0.9, 0], thumb: 1, at: [-0.15, 0.9, -0.27], r: 0.016 },
+  { name: 'Haken: Handfläche unten/hinten, R 11', nAngle: 45, sUp: 12, palm: [-0.4, -0.9, 0], thumb: 1, at: [-0.15, 0.9, -0.27], r: 0.011 },
+  { name: 'Handfläche hinten, R 11', nAngle: 45, sUp: 12, palm: [-0.9, -0.2, 0], thumb: 1, at: [-0.15, 0.9, -0.27], r: 0.011 },
+  { name: 'Handfläche hinten oben, R 12', nAngle: 45, sUp: 12, palm: [-0.7, 0.5, 0], thumb: 1, at: [-0.15, 0.9, -0.27], r: 0.012 },
 ];
 
 function geom(v: Variant) {
@@ -83,7 +84,7 @@ export default makeScene2D(function* (view) {
   const poses = VARIANTS.map((v) => {
     const { N, A, S } = geom(v);
     const toPalm = norm([N[0] * v.palm[0] + A[0] * v.palm[2], v.palm[1], N[2] * v.palm[0] + A[2] * v.palm[2]]);
-    const left: HandRig = { grip: gripFrame(v.at, S, toPalm), hold: 'coil', radius: 0.016, thumbAlong: v.thumb, open: 0, free: 0.3 };
+    const left: HandRig = { grip: gripFrame(v.at, S, toPalm), hold: 'coil', radius: v.r, thumbAlong: v.thumb, open: 0, free: 0.3 };
     // the right pads at the fist's medial end + 3.5 cm, the cable past the thumb tip running into the fist
     const pads = madd(v.at, S, -0.045 - 0.035);
     const right: HandRig = { grip: gripFrame(pads, S, [0, 0, 1]), hold: 'pinch', radius: R, cross: 0.3, free: 1, thumbTo: S, thumbWeight: 0.2 };
@@ -105,7 +106,7 @@ export default makeScene2D(function* (view) {
   function loop(k: number): V3[] {
     const P = poses[vi()];
     const g = P.pose.body.arms![0].grip!;
-    const top = madd(g.p, P.N, -0.02 + 0.007 * k);
+    const top = madd(g.p, P.N, -0.012 + 0.005 * k);
     const h = cross(P.N, [0, 1, 0]);
     const across = norm([h[0], 0, h[2]]);
     const r = 0.105;

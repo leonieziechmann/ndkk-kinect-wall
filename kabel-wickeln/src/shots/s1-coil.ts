@@ -1,12 +1,14 @@
 // Stage 1: Noor coils the 5 m XLR over and under into her left hand (coil-engine.ts drives her arms
 // and the simulated cable together; the technique is described in coiling.ts). The first two loops
 // slowly for teaching (über, unter), then four at her natural pace; afterwards the coil hangs
-// still in her left hand for the strap.
+// still in her left hand, the cable's end in her right, for the strap.
 //
-// The bake prints its checks at the end (over/under, roundness, loop lengths, the pull-apart
-// twist, hands, IK) and fails loudly in the summary: "COIL CHECKS FAILED".
+// The bake prints its checks at the end (over/under, roundness, loop lengths, the forearm through
+// the under loops, hands, kinks, speeds, the plug, IK) and fails loudly in the summary: "COIL
+// CHECKS FAILED".
 //
-// coil-dev is the first two loops only, for quick experiments (npm run bake -- --jobs 1 coil-dev).
+// coil-dev is the first two loops only (über, unter), coil-dev-oo the same twice über (the twist
+// comparison), coil-dev1 one über loop: quick experiments (npm run bake -- --jobs 1 coil-dev).
 
 import { XLR } from '../sim';
 import { CoilController } from './coil-engine';
@@ -15,19 +17,21 @@ import type { ShotDef } from './types';
 
 const KINDS: LoopKind[] = ['over', 'under', 'over', 'under', 'over', 'under'];
 
-/** stage 1: two slow loops, four at the natural pace */
+/** stage 1: two slow loops, four at the natural pace; 5 m in six loops leaves ~18 cm and the plug in the right hand */
 export const COIL1: CoilPlan = {
   kinds: KINDS,
   paces: KINDS.map((_, i) => (i < 2 ? TEACH : NATURAL)),
   start: 0.6,
-  loopLength: 0.74,
+  loopLength: 0.77,
 };
 
 /** how long the coil hangs still after the last loop (the strap closes in the scene) */
 export const COIL1_TAIL = 3.2;
 
-function coilShotOf(id: string, plan: CoilPlan, tail: number): ShotDef & { controller: () => CoilController | null } {
-  let last: CoilController | null = null;
+/** the controller of the last bake of each shot in this process (for test scripts) */
+export const lastController = new Map<string, CoilController>();
+
+function coilShotOf(id: string, plan: CoilPlan, tail: number): ShotDef {
   const probe = new CoilController(plan);
   const duration = probe.tDone + tail;
   return {
@@ -35,9 +39,9 @@ function coilShotOf(id: string, plan: CoilPlan, tail: number): ShotDef & { contr
     duration,
     substeps: XLR.substeps,
     iterations: XLR.iterations,
-    controller: () => last,
     build() {
-      const ctl = (last = new CoilController(plan));
+      const ctl = new CoilController(plan);
+      lastController.set(id, ctl);
       const b = ctl.build();
       let printed = false;
       return {
@@ -65,4 +69,7 @@ export const coilDev = coilShotOf('coil-dev', { ...COIL1, kinds: KINDS.slice(0, 
 /** two loops the same way (over, over): the comparison for the twist checks */
 export const coilDevSame = coilShotOf('coil-dev-oo', { ...COIL1, kinds: ['over', 'over'], paces: [TEACH, TEACH] }, 1.2);
 
-export const COIL_SHOTS: ShotDef[] = [coilShot, coilDev, coilDevSame];
+/** one over loop, for quick experiments */
+export const coilDev1 = coilShotOf('coil-dev1', { ...COIL1, kinds: ['over'], paces: [TEACH] }, 1.0);
+
+export const COIL_SHOTS: ShotDef[] = [coilShot, coilDev, coilDevSame, coilDev1];

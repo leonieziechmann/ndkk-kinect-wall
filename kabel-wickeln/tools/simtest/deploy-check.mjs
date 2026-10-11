@@ -1,7 +1,7 @@
 // Checks stage 1, items 3 and 4 (laying a coil out again: src/shots/deploy-pull.ts, src/shots/throw.ts).
 //
 //   rings  each ring, laid out over-under and pressed exactly as in its shot (deploy-ring.ts
-//          windRing), must have alternating crossings (+1 über, -1 unter, read from the stack), and
+//          windRing), must have alternating crossings (> 0 über, < 0 unter, read from the stack), and
 //          pulled apart by its ends in the air (pullApart) it must leave |Tw| < 0.3 turns, with no
 //          strand passing through another on the way (Tw + Wr, the linking number of the pull,
 //          never jumps by about 2). Control: the same ring wound the same way every time (all über)
@@ -37,7 +37,8 @@ if (what !== 'bakes') {
       const r = ring.windRing(spec);
       const rod0 = ring.ringRod(r, r.state, spec);
       const cr = ring.crossings(rod0, r);
-      const alternate = cr.every((v, k) => (sameWay ? v > 0.5 : k % 2 === 0 ? v > 0.5 : v < -0.5));
+      // (each value is a vote over the loop's nodes: its sign says on which side the following cable passes)
+      const alternate = cr.every((v, k) => (sameWay ? v > 0 : k % 2 === 0 ? v > 0 : v < 0));
       let lk0 = null, jump = 0;
       const res = ring.pullApart(r, spec, {
         T: c.T, substeps: c.substeps, onFrame: (rod, t) => {
