@@ -1,14 +1,15 @@
-// Placeholder for stage 1 (Der Überblick); replaced by the real scene.
+// Stage 1: plays its parts (src/scenes/parts) one after the other, then the stop card.
 
-import { Txt, makeScene2D } from '@motion-canvas/2d';
-import { waitFor } from '@motion-canvas/core';
-import { C, FONT } from '../lib/theme';
-import { StageBar, begin, stopCard } from '../lib/ui';
+import { Node, makeScene2D } from '@motion-canvas/2d';
+import { begin, stopCard } from '../lib/ui';
+import { part as p1_coil } from './parts/p1-coil';
+import { part as p1_deploy } from './parts/p1-deploy';
 
 export default makeScene2D(function* (view) {
   yield* begin(view);
-  view.add(<StageBar current={1} />);
-  view.add(<Txt text={'Der Überblick (in Arbeit)'} fontFamily={FONT} fontWeight={700} fontSize={60} fill={C.text} />);
-  yield* waitFor(2);
+  const layer = new Node({});
+  view.add(layer);
+  yield* p1_coil(layer);
+  yield* p1_deploy(layer);
   yield* stopCard(view, 1);
 });

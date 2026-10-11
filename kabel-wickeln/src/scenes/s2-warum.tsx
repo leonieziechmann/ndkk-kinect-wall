@@ -1,14 +1,14 @@
-// Placeholder for stage 2 (Warum das funktioniert); replaced by the real scene.
+// Stage 2: plays its parts (src/scenes/parts) one after the other, then the stop card.
 
-import { Txt, makeScene2D } from '@motion-canvas/2d';
-import { waitFor } from '@motion-canvas/core';
-import { C, FONT } from '../lib/theme';
-import { StageBar, begin, stopCard } from '../lib/ui';
+import { Node, makeScene2D } from '@motion-canvas/2d';
+import { begin, cardOut, stopCard } from '../lib/ui';
+import { part as p2_why } from './parts/p2-why';
 
 export default makeScene2D(function* (view) {
   yield* begin(view);
-  view.add(<StageBar current={2} />);
-  view.add(<Txt text={'Warum das funktioniert (in Arbeit)'} fontFamily={FONT} fontWeight={700} fontSize={60} fill={C.text} />);
-  yield* waitFor(2);
+  const layer = new Node({});
+  view.add(layer);
+  yield* cardOut(view, 1);
+  yield* p2_why(layer);
   yield* stopCard(view, 2);
 });

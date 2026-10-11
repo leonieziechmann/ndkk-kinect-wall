@@ -10,7 +10,7 @@
 //
 // Pixel layout: the picture is 1920 × 1080 with (0, 0) in the middle.
 
-import { Node, Rect, Txt, View2D } from '@motion-canvas/2d';
+import { Node, Rect, Txt } from '@motion-canvas/2d';
 import { SignalValue, SimpleSignal, ThreadGenerator, createSignal, easeInOutCubic, linear, waitFor } from '@motion-canvas/core';
 import * as THREE from 'three';
 import { Person3D } from '../people/body3d';
@@ -45,7 +45,7 @@ export function PanelTitle(props: { text: string; x: number; y?: number }) {
 }
 
 /** the split screen: own view (POV) left, outside view right, with their titles */
-export function splitScreen(view: View2D, world: World3D, povCam: THREE.Camera, extCam: THREE.Camera, ratio = 0.55): Split {
+export function splitScreen(view: Node, world: World3D, povCam: THREE.Camera, extCam: THREE.Camera, ratio = 0.55): Split {
   const wL = Math.round((1920 - 3 * GAP) * ratio);
   const wR = 1920 - 3 * GAP - wL;
   const xL = -960 + GAP;
@@ -57,7 +57,7 @@ export function splitScreen(view: View2D, world: World3D, povCam: THREE.Camera, 
 }
 
 /** one view over the whole width (above the caption band, or the whole picture with `full`) */
-export function fullView(view: View2D, world: World3D, cam: THREE.Camera, full = false): ThreeView {
+export function fullView(view: Node, world: World3D, cam: THREE.Camera, full = false): ThreeView {
   const v = full ? (
     <ThreeView world={world} camera={cam} width={1920} height={1080} />
   ) : (
@@ -75,7 +75,7 @@ export const readTime = (text: string) => text.length / 12 + 1;
 export class Captions {
   public readonly node: Txt;
 
-  public constructor(view: View2D, y = CAPTION_Y, size = 46) {
+  public constructor(view: Node, y = CAPTION_Y, size = 46) {
     this.node = (<Txt y={y} text={''} fontFamily={FONT} fontWeight={600} fontSize={size} fill={C.text} opacity={0} />) as Txt;
     view.add(this.node);
   }
@@ -153,7 +153,7 @@ export function viewLayers(cam: THREE.Camera, which: 'pov' | 'ext') {
 // ----------------------------------------------------------------------------------- bits
 
 /** a tally of loop kinds at the top right of a panel: ü (blue) / u (orange), lit when placed */
-export function tally(view: View2D, kinds: ('over' | 'under')[], placed: (k: number) => number, x = 960 - GAP - 24, y = TOP + 24) {
+export function tally(view: Node, kinds: ('over' | 'under')[], placed: (k: number) => number, x = 960 - GAP - 24, y = TOP + 24) {
   const box = (<Rect x={x} y={y} offset={[1, -1]} padding={[10, 22]} radius={40} fill={C.plate} layout gap={14} />) as Rect;
   kinds.forEach((k, i) =>
     box.add(<Txt text={k === 'over' ? 'ü' : 'u'} fontFamily={FONT} fontWeight={800} fontSize={40} fill={k === 'over' ? OVER : UNDER} opacity={() => 0.15 + 0.85 * placed(i)} />),
@@ -163,7 +163,7 @@ export function tally(view: View2D, kinds: ('over' | 'under')[], placed: (k: num
 }
 
 /** the "Zeitlupe" badge, top centre of a panel */
-export function slowBadge(view: View2D, visible: SignalValue<number>, x = 0, y = TOP + 24) {
+export function slowBadge(view: Node, visible: SignalValue<number>, x = 0, y = TOP + 24) {
   const n = (
     <Rect x={x} y={y} offset={[0, -1]} padding={[8, 20]} radius={30} fill={C.text} opacity={visible} layout>
       <Txt text={'Zeitlupe'} fontFamily={FONT} fontWeight={700} fontSize={28} fill={'#fff'} />

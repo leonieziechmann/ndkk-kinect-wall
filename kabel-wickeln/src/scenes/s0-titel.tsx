@@ -1,13 +1,12 @@
-// Placeholder for stage 0 (Kabel richtig aufwickeln); replaced by the real scene.
+// Stage 0: plays its parts (src/scenes/parts) one after the other.
 
-import { Txt, makeScene2D } from '@motion-canvas/2d';
-import { waitFor } from '@motion-canvas/core';
-import { C, FONT } from '../lib/theme';
-import { StageBar, begin } from '../lib/ui';
+import { Node, makeScene2D } from '@motion-canvas/2d';
+import { begin } from '../lib/ui';
+import { part as p0_title } from './parts/p0-title';
 
 export default makeScene2D(function* (view) {
   yield* begin(view);
-  view.add(<StageBar current={0} />);
-  view.add(<Txt text={'Kabel richtig aufwickeln (in Arbeit)'} fontFamily={FONT} fontWeight={700} fontSize={60} fill={C.text} />);
-  yield* waitFor(2);
+  const layer = new Node({});
+  view.add(layer);
+  yield* p0_title(layer);
 });

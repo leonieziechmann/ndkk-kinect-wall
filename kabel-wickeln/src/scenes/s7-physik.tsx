@@ -1,14 +1,14 @@
-// Placeholder for stage 7 (Für Neugierige: die Physik); replaced by the real scene.
+// Stage 7: plays its parts (src/scenes/parts) one after the other, then the stop card.
 
-import { Txt, makeScene2D } from '@motion-canvas/2d';
-import { waitFor } from '@motion-canvas/core';
-import { C, FONT } from '../lib/theme';
-import { StageBar, begin, stopCard } from '../lib/ui';
+import { Node, makeScene2D } from '@motion-canvas/2d';
+import { begin, cardOut, stopCard } from '../lib/ui';
+import { part as p7_physics } from './parts/p7-physics';
 
 export default makeScene2D(function* (view) {
   yield* begin(view);
-  view.add(<StageBar current={7} />);
-  view.add(<Txt text={'Für Neugierige: die Physik (in Arbeit)'} fontFamily={FONT} fontWeight={700} fontSize={60} fill={C.text} />);
-  yield* waitFor(2);
+  const layer = new Node({});
+  view.add(layer);
+  yield* cardOut(view, 6);
+  yield* p7_physics(layer);
   yield* stopCard(view, 7);
 });
