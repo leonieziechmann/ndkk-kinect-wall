@@ -8,7 +8,7 @@
 //! (the running scene keeps playing; its pipelines are compiled once at the start, warm-up), JPEG
 //! previews in a thread. A scene that fails is retried and skipped, never ending the show.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
@@ -345,6 +345,17 @@ pub struct OutputState {
     frame_log: Vec<f64>,
     /// test mode: frames over 50 ms (s since the start, ms, what played)
     slow_log: Vec<(f64, f64, String)>,
+    /// test mode: the output's own CPU time per frame, without the GPU driver's submits
+    /// (everything but waiting for the display; a CPU renderer such as lavapipe draws in them)
+    cpu_log: Vec<f64>,
+    /// test mode: the time in the GPU driver's submits per frame
+    submit_log: Vec<f64>,
+    /// test mode: the CPU times by the scene that played (the incoming one during a fade)
+    cpu_by_scene: HashMap<&'static str, Vec<f64>>,
+    /// this frame's time in the submits so far
+    submit_ms: f64,
+    /// test mode: frames whose CPU time was over 8 ms (s since the start, ms, what played)
+    slow_cpu: Vec<(f64, f64, String)>,
     started: f64,
     warm: Option<Vec<Instance>>,
     /// warm-up setups still running (collected without waiting: the window keeps answering)
@@ -441,6 +452,11 @@ fn new_state(cfg: Config) -> OutputState {
         shot_no: 0,
         frame_log: Vec::new(),
         slow_log: Vec::new(),
+        cpu_log: Vec::new(),
+        submit_log: Vec::new(),
+        cpu_by_scene: HashMap::new(),
+        submit_ms: 0.0,
+        slow_cpu: Vec::new(),
         started: now,
         warm: None,
         warm_jobs: Vec::new(),
@@ -788,6 +804,7 @@ fn output_frame(
     };
     let st: &mut OutputState = &mut st;
     let now = mono_ms();
+    st.submit_ms = 0.0;
     // the GPU (again after a device loss)
     if let (Some(device), Some(queue)) = (device.as_ref(), queue.as_ref())
         && (st.gpu.is_none() || device.is_changed())
@@ -827,12 +844,7 @@ fn output_frame(
         }
         st.frame_log.push(dt_ms);
         if st.cfg.shots.is_some() && st.warmed && dt_ms > 50.0 && st.slow_log.len() < 5000 {
-            let what = format!(
-                "{}{}{}",
-                st.current.as_ref().map_or("-", |c| c.def.name),
-                if st.pending.is_some() { " +setup" } else { "" },
-                if st.leaving.is_empty() { "" } else { " +fade" }
-            );
+            let what = st.playing(false);
             st.slow_log.push(((now - st.started) / 1000.0, dt_ms, what));
         }
     }
@@ -927,6 +939,18 @@ fn output_frame(
     let target = if cap > 0.0 { cap.min(1000.0 / refresh) } else { 1000.0 / refresh };
     let fps = st.fps;
     st.kinect.report_render(fps, target.round(), name);
+    if st.cfg.shots.is_some() {
+        let cpu_ms = mono_ms() - now - st.submit_ms;
+        let submit_ms = st.submit_ms;
+        st.submit_log.push(submit_ms);
+        st.cpu_log.push(cpu_ms);
+        let scene = st.current.as_ref().map_or("-", |c| c.def.name);
+        st.cpu_by_scene.entry(scene).or_default().push(cpu_ms);
+        if cpu_ms > 8.0 && st.slow_cpu.len() < 5000 {
+            let what = st.playing(first);
+            st.slow_cpu.push(((now - st.started) / 1000.0, cpu_ms, what));
+        }
+    }
     st.shots(now, &mut exit);
 }
 
@@ -1304,6 +1328,10 @@ impl OutputState {
                 self.shots_next = 0.0;
                 self.frame_log.clear();
                 self.slow_log.clear();
+                self.cpu_log.clear();
+                self.submit_log.clear();
+                self.cpu_by_scene.clear();
+                self.slow_cpu.clear();
                 self.late = 0;
             }
             self.black = Fade { from: 0.0, to: 0.0, start: now, ms: 0.0, curve: ease };
@@ -1421,7 +1449,9 @@ impl OutputState {
             inst.frame += 1;
             let failure = match (r, err) {
                 (Ok(Ok(())), None) => {
+                    let t0 = mono_ms();
                     let (_, err) = gpu.scoped(|| gpu.queue.submit([enc.finish()]));
+                    self.submit_ms += mono_ms() - t0;
                     err
                 }
                 (Ok(Err(e)), _) | (_, Some(e)) => Some(e),
@@ -1562,7 +1592,9 @@ impl OutputState {
             self.readback.request(gpu, &mut enc, &o.led_tex, &o.led_view, Purpose::Shot(dir.join(format!("{name}-{:03}.png", self.shot_no))));
         }
         let led_view = o.led_view.clone();
+        let t0 = mono_ms();
         let (_, err) = gpu.scoped(|| gpu.queue.submit([enc.finish()]));
+        self.submit_ms += mono_ms() - t0;
         if let Some(e) = err {
             self.push_error("Ausgabe", &e);
         }
@@ -1732,6 +1764,17 @@ impl OutputState {
         bus.send("telemetry", data, Some("control"));
     }
 
+    /// Test mode: what plays, for the frame logs ("name +setup +fade +first").
+    fn playing(&self, first: bool) -> String {
+        format!(
+            "{}{}{}{}",
+            self.current.as_ref().map_or("-", |c| c.def.name),
+            if self.pending.is_some() { " +setup" } else { "" },
+            if self.leaving.is_empty() { "" } else { " +fade" },
+            if first { " +first" } else { "" }
+        )
+    }
+
     /// Test mode: stops after --seconds and writes the frame times.
     fn shots(&mut self, now: f64, exit: &mut MessageWriter<AppExit>) {
         let (Some(dir), Some(secs)) = (&self.cfg.shots, self.cfg.seconds) else { return };
@@ -1749,16 +1792,33 @@ impl OutputState {
         let q = |p: f64| if v.is_empty() { 0.0 } else { v[((p * (v.len() - 1) as f64).round()) as usize] };
         let errors: Vec<String> = self.errors.iter().map(|e| format!("{}: {}", e.where_, e.message)).collect();
         // the 25 longest frames, when and during what
-        let mut slow = self.slow_log.clone();
-        slow.sort_by(|a, b| b.1.total_cmp(&a.1));
-        slow.truncate(25);
-        let slow: Vec<Value> = slow.iter().map(|(t, ms, what)| json!({ "t": (t * 10.0).round() / 10.0, "ms": ms.round(), "scene": what })).collect();
+        let longest = |log: &[(f64, f64, String)]| -> Vec<Value> {
+            let mut v = log.to_vec();
+            v.sort_by(|a, b| b.1.total_cmp(&a.1));
+            v.truncate(25);
+            v.iter().map(|(t, ms, what)| json!({ "t": (t * 10.0).round() / 10.0, "ms": (ms * 10.0).round() / 10.0, "scene": what })).collect()
+        };
+        let slow = longest(&self.slow_log);
+        let slow_cpu = longest(&self.slow_cpu);
+        let quantiles = |log: &[f64]| -> Value {
+            let mut c = log.to_vec();
+            c.sort_by(f64::total_cmp);
+            let q = |p: f64| if c.is_empty() { 0.0 } else { (c[((p * (c.len() - 1) as f64).round()) as usize] * 100.0).round() / 100.0 };
+            json!({ "p50": q(0.5), "p95": q(0.95), "p99": q(0.99), "max": q(1.0) })
+        };
+        let cpu = quantiles(&self.cpu_log);
+        let submit = quantiles(&self.submit_log);
+        let cpu_by_scene: serde_json::Map<String, Value> = self.cpu_by_scene.iter().map(|(name, log)| ((*name).to_string(), quantiles(log))).collect();
         let report = json!({
             "frames": v.len(), "fps": if v.is_empty() { 0.0 } else { 1000.0 * v.len() as f64 / v.iter().sum::<f64>() },
             "p50": q(0.5), "p95": q(0.95), "p99": q(0.99), "max": q(1.0), "late": self.late,
             "kinectFps": self.kinect.fps, "persons": self.kinect.view.len(), "results": self.kinect.results, "playDelay": self.kinect.play_delay(),
             "errors": errors,
             "slow": slow,
+            "cpu": cpu,
+            "submit": submit,
+            "cpuByScene": cpu_by_scene,
+            "slowCpu": slow_cpu,
         });
         let _ = std::fs::create_dir_all(dir);
         let _ = std::fs::write(dir.join("frames.json"), serde_json::to_string_pretty(&report).unwrap_or_default());

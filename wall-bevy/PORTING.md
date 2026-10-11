@@ -102,6 +102,10 @@ DISPLAY=:99 XDG_RUNTIME_DIR=/tmp/xdg WGPU_BACKEND=vulkan VK_ICD_FILENAMES=/usr/s
 ```
 
 Look at the PNGs (Read tool). The renderer is a CPU emulation (lavapipe): slow, so judge looks, not fps.
+What does carry over to the real machine is the output's own CPU time per frame: `frames.json` has it
+as `cpu` (p50/p95/p99/max in ms, without the time in the GPU driver's submits, where lavapipe draws:
+that is `submit`), per scene as `cpuByScene`, and the frames over 8 ms with time and scene as `slowCpu`
+(`+first` = a new scene's first frame). Keep your scene's p95 low (most scenes: 1–5 ms on this machine).
 A reference picture of the browser scene from the same fake hub (headless Chromium, WebGPU in SwiftShader):
 `node <scratch>/ref/ref.mjs http://127.0.0.1:5199 <name> 8099 8 /tmp/ref-<name>.png` (a Vite dev server of the main
 checkout runs on 5199). Scenes that use `wallPerson()` render black there (SwiftShader limitation), the others

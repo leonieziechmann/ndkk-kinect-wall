@@ -113,7 +113,10 @@ cargo build
 `fake_hub` spricht das Hub-Protokoll mit Tiefe, IR, Personen-Masken und Skeletten; `--freeze 4.2`
 zeigt immer denselben Augenblick (für Bildvergleiche). Echte Aufnahmen spielt der Replay-Hub ab
 (siehe `CLAUDE.md`). `--shots` schreibt PNGs und `frames.json`: Bildrate, Bildzeiten (p50, p95, p99,
-längstes Bild), verspätete Bilder, die längsten Bilder über 50 ms mit Zeitpunkt und Szene, Fehler.
+längstes Bild), verspätete Bilder, die längsten Bilder über 50 ms mit Zeitpunkt und Szene, Fehler,
+und die eigene CPU-Zeit der Ausgabe je Bild (`cpu`, je Szene `cpuByScene`, Bilder über 8 ms
+`slowCpu`), getrennt von der Zeit im Grafiktreiber (`submit`). Auf einem Rechner ohne GPU (lavapipe)
+zeichnet der Treiber dort auf der CPU; die eigene CPU-Zeit gilt auch für die echte Maschine.
 
 ## Aufbau
 
