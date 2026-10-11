@@ -57,7 +57,7 @@ Es darf nur **eine** Ausgabe laufen: entweder das Browser-Fenster `/wall/` oder 
 | `--vsync fifo\|mailbox\|immediate` | Darstellung; Standard `fifo` (gleichmäßig, nie Risse) |
 | `--web DIR`, `--dev URL` | `web/`-Ordner bzw. Dev-Server von Hand |
 | `--mute`, `--no-bus` | ohne Ton, ohne Steuerzentrale |
-| `--shots DIR --seconds S [--shot-every T]` | Test: S Sekunden spielen, Bilder und Bildzeiten nach DIR |
+| `--shots DIR --seconds S [--shot-every T]` | Test: S Sekunden spielen, Bilder und Bildzeiten nach DIR (als Fenster in LED-Größe; mit `--monitor`/`--screen` randlos auf dem Bildschirm) |
 | `--list-scenes` | alle Szenen-Deklarationen als JSON ausgeben und beenden |
 
 ## Was es gegen Ruckler tut
@@ -80,6 +80,9 @@ Es darf nur **eine** Ausgabe laufen: entweder das Browser-Fenster `/wall/` oder 
   Szene mit Fehlern wird nach 2 s neu versucht und nach drei Fehlern in 30 s übersprungen. Ein
   verlorenes GPU-Gerät wird neu aufgebaut. Unter Windows läuft die Ausgabe mit Priorität „höher als
   normal“ und ohne Energiespar-Drosselung (wie Hub und Kiosk-Browser in `start-wand`).
+- **Wenig CPU neben der Show:** Bevys eigene Systeme laufen ohne Thread-Pool (sie sind winzig; der
+  Pool kostete nur das Wecken seiner Threads, gemessen rund 10 % eines Kerns). Die CPU bleibt für Hub,
+  Tiefenberechnung und Posenmodell. `WALL_EXECUTOR=multi` schaltet Bevys Standard zum Vergleich ein.
 
 ## Szenen
 
@@ -117,6 +120,27 @@ längstes Bild), verspätete Bilder, die längsten Bilder über 50 ms mit Zeitpu
 und die eigene CPU-Zeit der Ausgabe je Bild (`cpu`, je Szene `cpuByScene`, Bilder über 8 ms
 `slowCpu`), getrennt von der Zeit im Grafiktreiber (`submit`). Auf einem Rechner ohne GPU (lavapipe)
 zeichnet der Treiber dort auf der CPU; die eigene CPU-Zeit gilt auch für die echte Maschine.
+`frames.csv` hat jedes Bild einzeln (Zeit, Abstand, CPU-Zeit, Treiberzeit, Szene, ob die Szene
+gezeichnet hat, Überblendung, Einrichten, erstes Bild).
+
+## Vergleich mit der Browser-Ausgabe
+
+`bench/compare.mjs` misst beide Ausgaben nacheinander auf diesem Rechner, mit derselben Show, demselben
+Hub und auf demselben Bildschirm: Bildrate und Bildabstände der Szene, Ruckler, Arbeit je Bild im
+Hauptthread, CPU aller Prozesse der Ausgabe, Speicher, unter Windows auch die GPU-Last je Prozess und
+die CPU der ganzen Maschine. Die Browser-Ausgabe läuft dabei mit den Flags des Kiosk-Fensters.
+
+```
+start-wand.cmd -NoWall                                   # Hub, Dev-Server, Steuerzentrale, keine Ausgabe
+node wall-bevy\bench\compare.mjs                          # die aktuelle Show, je Ausgabe 60 s
+node wall-bevy\bench\compare.mjs --scenes space-invaders,fruit-ninja --seconds 30
+```
+
+Es darf keine andere Ausgabe laufen, und während der Messung sollte niemand den Rechner benutzen. Ohne
+`--scenes` spielen beide die Show, wie sie ist; mit `--scenes` wird jede Szene allein gemessen (die
+Show wird dafür kurz ersetzt und danach zurückgeschrieben). Die Ausgabe geht auf den Bildschirm aus dem
+Wand-Setup (oder `--screen x,y,b,h`). Ergebnisse: Tabelle im Terminal, alle Zahlen in
+`web/.cache/bench/`.
 
 ## Aufbau
 

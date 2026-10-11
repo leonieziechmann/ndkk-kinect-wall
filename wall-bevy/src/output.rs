@@ -356,6 +356,8 @@ pub struct OutputState {
     submit_ms: f64,
     /// test mode: frames whose CPU time was over 8 ms (s since the start, ms, what played)
     slow_cpu: Vec<(f64, f64, String)>,
+    /// test mode: every frame, for frames.csv
+    frame_rows: Vec<FrameRow>,
     started: f64,
     warm: Option<Vec<Instance>>,
     /// warm-up setups still running (collected without waiting: the window keeps answering)
@@ -457,6 +459,7 @@ fn new_state(cfg: Config) -> OutputState {
         cpu_by_scene: HashMap::new(),
         submit_ms: 0.0,
         slow_cpu: Vec::new(),
+        frame_rows: Vec::new(),
         started: now,
         warm: None,
         warm_jobs: Vec::new(),
@@ -950,8 +953,27 @@ fn output_frame(
             let what = st.playing(first);
             st.slow_cpu.push(((now - st.started) / 1000.0, cpu_ms, what));
         }
+        let row = FrameRow { t: now - st.started, dt: dt_ms, cpu: cpu_ms, submit: submit_ms, scene, rendered: render_scenes, fade: !st.leaving.is_empty(), setup: st.pending.is_some(), first };
+        st.frame_rows.push(row);
     }
     st.shots(now, &mut exit);
+}
+
+/// Test mode: one frame of frames.csv.
+struct FrameRow {
+    /// ms since the start (after the warm-up)
+    t: f64,
+    /// ms since the previous frame
+    dt: f64,
+    /// the output's own CPU time and the time in the GPU driver's submits (ms)
+    cpu: f64,
+    submit: f64,
+    scene: &'static str,
+    /// the scenes rendered in this frame (not skipped by a frame rate cap)
+    rendered: bool,
+    fade: bool,
+    setup: bool,
+    first: bool,
 }
 
 /// The screen the window is on and the window, as the browser's telemetry has them (CSS pixels:
@@ -1332,6 +1354,7 @@ impl OutputState {
                 self.submit_log.clear();
                 self.cpu_by_scene.clear();
                 self.slow_cpu.clear();
+                self.frame_rows.clear();
                 self.late = 0;
             }
             self.black = Fade { from: 0.0, to: 0.0, start: now, ms: 0.0, curve: ease };
@@ -1822,6 +1845,11 @@ impl OutputState {
         });
         let _ = std::fs::create_dir_all(dir);
         let _ = std::fs::write(dir.join("frames.json"), serde_json::to_string_pretty(&report).unwrap_or_default());
+        let mut csv = String::from("t_ms,dt_ms,cpu_ms,submit_ms,scene,rendered,fade,setup,first\n");
+        for r in &self.frame_rows {
+            csv.push_str(&format!("{:.3},{:.3},{:.3},{:.3},{},{},{},{},{}\n", r.t, r.dt, r.cpu, r.submit, r.scene, u8::from(r.rendered), u8::from(r.fade), u8::from(r.setup), u8::from(r.first)));
+        }
+        let _ = std::fs::write(dir.join("frames.csv"), csv);
         info!("Test fertig: {report}");
         exit.write(AppExit::Success);
     }

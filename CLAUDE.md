@@ -21,7 +21,7 @@ The scenes run on a 6 × 2 m LED wall (1008 × 336). One shared core handles it:
 
 ## Native output: `wall-bevy/`
 
-`wall-bevy/` is the output window `/wall/` as a native app (Rust, Bevy 0.20, wgpu), built for a picture that never stutters: the same show, scenes (same names and params), projections and control center. The scenes of `web/scenes/` have Rust ports in `wall-bevy/src/scenes/` (same names; the show skips a scene without one); a port does not follow changes of its browser scene by itself, so say so when you change a scene that has one (`wall-bevy/PORTING.md` says how to port). Build: `cd wall-bevy && cargo build --release` (Rust 1.97 or newer: `rustup update`). Test without the Kinect: `fake_hub` and `--shots` (`wall-bevy/README.md`).
+`wall-bevy/` is the output window `/wall/` as a native app (Rust, Bevy 0.20, wgpu), built for a picture that never stutters: the same show, scenes (same names and params), projections and control center. The scenes of `web/scenes/` have Rust ports in `wall-bevy/src/scenes/` (same names; the show skips a scene without one); a port does not follow changes of its browser scene by itself, so say so when you change a scene that has one (`wall-bevy/PORTING.md` says how to port). Build: `cd wall-bevy && cargo build --release` (Rust 1.97 or newer: `rustup update`). Test without the Kinect: `fake_hub` and `--shots` (`wall-bevy/README.md`). Compare both outputs on this machine (frame times, stutters, CPU, GPU, memory): `node wall-bevy/bench/compare.mjs` while no output runs (e.g. after `start-wand.cmd -NoWall`).
 
 ## Show launcher: `start-wand.cmd`
 

@@ -111,10 +111,38 @@ fn main() {
                 .disable::<PipelinedRenderingPlugin>(),
         )
         .insert_resource(cfg)
-        .add_plugins((compositor::CompositorPlugin, output::OutputPlugin))
+        .add_plugins((compositor::CompositorPlugin, output::OutputPlugin, SingleThreaded))
         .add_systems(Startup, (spawn_camera, output::init_output, platform_tune))
         .add_systems(Update, place_window)
         .run();
+}
+
+/// Every schedule of the app and of the render world with the single-threaded executor: Bevy's own
+/// systems here are tiny and the scenes run in the output's one system, so the thread pool only
+/// cost CPU for waking its threads (about 10 % of a core, measured), no time. WALL_EXECUTOR=multi:
+/// Bevy's default (for comparisons).
+struct SingleThreaded;
+
+impl Plugin for SingleThreaded {
+    fn build(&self, _app: &mut App) {}
+
+    fn cleanup(&self, app: &mut App) {
+        if std::env::var("WALL_EXECUTOR").as_deref() == Ok("multi") {
+            return;
+        }
+        fn set(world: &mut World) -> usize {
+            let Some(mut schedules) = world.get_resource_mut::<Schedules>() else { return 0 };
+            let mut n = 0;
+            for (_, schedule) in schedules.iter_mut() {
+                schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+                n += 1;
+            }
+            n
+        }
+        let main = set(app.world_mut());
+        let render = app.get_sub_app_mut(bevy::render::RenderApp).map_or(0, |sub| set(sub.world_mut()));
+        debug!("Executor: single-threaded ({main} + {render} Schedules)");
+    }
 }
 
 fn platform_tune() {
@@ -146,7 +174,8 @@ fn place_window(
     let Ok(mut window) = windows.single_mut() else {
         return;
     };
-    if cfg.windowed || cfg.shots.is_some() {
+    // a test (--shots) stays a window of the LED size, unless a screen is asked for (benchmarks)
+    if cfg.windowed || (cfg.shots.is_some() && cfg.monitor.is_none() && cfg.screen.is_none()) {
         return;
     }
     let list: Vec<_> = monitors.iter().collect();
