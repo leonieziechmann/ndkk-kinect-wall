@@ -359,7 +359,8 @@ export default makeScene2D(function* (view) {
         const sag = Math.max(0.06, 0.32 - 0.3 * Math.hypot(p[0] - left.grip.p[0], p[2] - left.grip.p[2]));
         sweepCable.set(bezier(p, madd(madd(p, d3, 0.12), [0, -1, 0], sag), madd(left.grip.p, [0.1, -0.05, 0], -sag), left.grip.p, 24));
         const back = madd(p, d3, -0.06);
-        sweepTail.set([madd(p, d3, 0.01), p, back, madd(back, [0, -1, 0], 0.1), [back[0], 0.3, back[2]], [back[0] + 0.02, 0.006, back[2] - 0.08], [back[0] + 0.15, 0.004, back[2] - 0.5]]);
+        // down to the floor and lying there in a curve off to the right
+        sweepTail.set([madd(p, d3, 0.01), p, back, madd(back, [0, -1, 0], 0.1), [back[0], 0.3, back[2]], [back[0] + 0.02, 0.006, back[2] - 0.06], [back[0] + 0.2, 0.004, back[2] - 0.2], [back[0] + 0.45, 0.004, back[2] - 0.15]]);
         loopsOf(left, 4, 0.012).forEach((pts, k) => sweepLoops[k].set(pts));
       }
       orbit(sweepCam, { target: [0.02, 0.98, -0.2], yaw: Math.PI - 0.55, pitch: 0.12, dist: 2.6, fov: 30 });

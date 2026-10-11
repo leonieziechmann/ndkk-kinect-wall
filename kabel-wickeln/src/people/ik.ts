@@ -1003,7 +1003,9 @@ export class ArmIK {
       // the better arm moves with the target; follow it
       this.goal = solveArm(s, target, { prev: this.goal, maxIter }).angles;
     }
-    const sol = solveArm(s, target, { prev: this.last, maxIter, maxStep: this.goal ? this.migrate : this.maxStep, toward: this.goal });
+    // the pull towards the better arm grows while moving over, so it gets past awkward poses in between
+    const pull = Math.min(40, 3 + this.moving);
+    const sol = solveArm(s, target, { prev: this.last, maxIter, maxStep: this.goal ? this.migrate : this.maxStep, toward: this.goal, towardWeight: pull });
     if (this.goal) {
       this.moving++;
       if (distance(sol.angles, this.goal) < 0.03 || this.moving > 120) {
