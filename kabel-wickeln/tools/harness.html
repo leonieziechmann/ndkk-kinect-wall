@@ -4,8 +4,14 @@
   <body style="margin: 0; background: #000">
     <script type="module">
       // Loads the project without the editor, for tools/render.mjs (stills and the whole video).
+      // ?project=test loads the test project (model sheets, render tests).
       import { PlaybackState, Renderer } from '@motion-canvas/core';
-      const { default: project } = await import('/src/project.ts?project');
+      const q = new URLSearchParams(location.search);
+      const projects = {
+        project: () => import('/src/project.ts?project'),
+        test: () => import('/src/test.ts?project'),
+      };
+      const { default: project } = await projects[q.get('project') ?? 'project']();
       window.__mc = { project, PlaybackState, Renderer };
     </script>
   </body>

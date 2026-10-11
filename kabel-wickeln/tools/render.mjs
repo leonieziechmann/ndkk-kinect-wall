@@ -4,6 +4,7 @@
 //   npm run render                       the whole video → output/kabel-wickeln.mp4, with chapters
 //   npm run render -- --fps 30           the same with 30 fps (half the time)
 //   npm run stills -- 3 12.5 40          single frames (seconds) → output/stills/*.jpg
+//   npm run stills -- --project test 2   frames of the test project (model sheets, render tests)
 //
 // Options: --fps N, --scale S (resolution factor), --from S --to S (seconds), --out DIR (stills).
 // The browser: CHROME_PATH, else Chrome/Edge/Chromium from the usual places.
@@ -32,6 +33,8 @@ const scale = Number(opt('scale', mode === 'stills' ? 0.5 : 1));
 const from = Number(opt('from', 0));
 const to = Number(opt('to', 1e9));
 const outDir = path.resolve(root, opt('out', 'output/stills'));
+/** `--project test` renders the test project (model sheets, render tests) */
+const project = opt('project', 'project');
 const times = args.slice(1).filter((a, i, all) => !a.startsWith('--') && !(all[i - 1] ?? '').startsWith('--')).map(Number);
 
 function findBrowser() {
@@ -101,7 +104,8 @@ const browser = await puppeteer.launch({
   executablePath: exe,
   headless: true,
   protocolTimeout: 0,
-  args: ['--no-sandbox', '--disable-dev-shm-usage', '--force-device-scale-factor=1', '--disable-background-timer-throttling', '--disable-renderer-backgrounding'],
+  // software WebGL (SwiftShader) must be allowed explicitly where there is no GPU
+  args: ['--no-sandbox', '--disable-dev-shm-usage', '--force-device-scale-factor=1', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--enable-unsafe-swiftshader'],
 });
 let failed = false;
 try {
@@ -115,7 +119,7 @@ try {
     failed = true;
     console.error('page error:', e.message);
   });
-  await page.goto(new URL('tools/harness.html', base).href);
+  await page.goto(new URL(`tools/harness.html?project=${project}`, base).href);
   await page.waitForFunction(() => window.__mc, { timeout: 120000 });
 
   if (mode === 'stills') {

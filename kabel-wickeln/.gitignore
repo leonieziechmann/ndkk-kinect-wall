@@ -2,3 +2,5 @@ node_modules/
 # gerenderte Videos und Einzelbilder
 output/
 dist/
+# baked cable simulations: recreated by npm run bake
+bakes/
