@@ -330,7 +330,10 @@ impl Canvas {
         let baseline_y = match baseline {
             Baseline::Alphabetic => y,
             Baseline::Top => y + 0.8 * s,
-            Baseline::Middle => y + 0.3 * s,
+            // Canvas 2D: (ascent - descent) / 2 below y, from the font's metrics. The layout centers
+            // ascent + descent in a line of 1.25 size, so the baseline lies 0.625 size + that below
+            // the line's top (base - pad)
+            Baseline::Middle => y + (base as f32 - (s * 0.5).ceil()) - 0.625 * s,
             Baseline::Bottom => y - 0.2 * s,
         };
         let top = baseline_y - base as f32;

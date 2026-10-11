@@ -220,7 +220,8 @@ const BLIT_WGSL: &str = r"
 struct Feedback {
     w: u32,
     h: u32,
-    textures: [wgpu::Texture; 2],
+    _textures: [wgpu::Texture; 2],
+    views: [wgpu::TextureView; 2],
     groups: [wgpu::BindGroup; 2],
     blits: [wgpu::BindGroup; 2],
     current: usize,
@@ -243,6 +244,8 @@ pub struct ShaderPass {
     plain: wgpu::BindGroup,
     feedback: Option<Feedback>,
     want_feedback: bool,
+    /// the param uniform of a frame, reused
+    scratch: Vec<f32>,
     gpu: Gpu,
 }
 
@@ -348,9 +351,14 @@ impl ShaderPass {
             plain: gpu.device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &gpu.bind_group_layout("empty", &[]), entries: &[] }),
             feedback: None,
             want_feedback: feedback,
+            scratch: vec![0.0; layout.size / 4],
             gpu: gpu.clone(),
         };
         pass.plain = pass.group(&pass.black.clone());
+        // the feedback pair now, in the setup thread: not in the first frame (a hitch)
+        if feedback {
+            pass.ensure_feedback(led[0], led[1]);
+        }
         Ok(pass)
     }
 
@@ -394,16 +402,17 @@ impl ShaderPass {
             })
         };
         let blits = [mk(&v[0]), mk(&v[1])];
-        self.feedback = Some(Feedback { w, h, textures: t, groups, blits, current: 0 });
+        self.feedback = Some(Feedback { w, h, _textures: t, views: v, groups, blits, current: 0 });
     }
 
     /// The uniforms of this frame (F and P).
-    fn write_uniforms(&self, ctx: &FrameCtx) {
+    fn write_uniforms(&mut self, ctx: &FrameCtx) {
         let age = if ctx.kinect.depth.is_some() { (ctx.kinect.depth_age_ms() / 1000.0).min(60.0) as f32 } else { 60.0 };
         let has = if ctx.kinect.depth.is_some() { 1.0 } else { 0.0 };
         let f = [ctx.width as f32, ctx.height as f32, ctx.time, ctx.dt, 0.0, 0.0, 0.0, 0.0, ctx.x_sign, ctx.frame as f32, age, has];
         self.gpu.queue.write_buffer(&self.frame_buf, 0, bytemuck::cast_slice(&f));
-        let mut p = vec![0.0_f32; self.param_size / 4];
+        let p = &mut self.scratch;
+        p.resize(self.param_size / 4, 0.0);
         for (at, spec) in &self.writers {
             let v = ctx.params.shader_value(spec);
             match spec.kind {
@@ -411,7 +420,7 @@ impl ShaderPass {
                 _ => p[*at] = v[0],
             }
         }
-        self.gpu.queue.write_buffer(&self.param_buf, 0, bytemuck::cast_slice(&p));
+        self.gpu.queue.write_buffer(&self.param_buf, 0, bytemuck::cast_slice(p));
     }
 
     /// Draws one frame into ctx.target (call it from frame()).
@@ -432,8 +441,7 @@ impl ShaderPass {
                 return;
             };
             let cur = fb.current;
-            let view = fb.textures[cur].create_view(&Default::default());
-            draw(ctx.encoder, &view, &self.pipeline, &fb.groups[cur]);
+            draw(ctx.encoder, &fb.views[cur], &self.pipeline, &fb.groups[cur]);
             draw(ctx.encoder, ctx.target, blit, &fb.blits[cur]);
             fb.current = 1 - cur;
         } else {
