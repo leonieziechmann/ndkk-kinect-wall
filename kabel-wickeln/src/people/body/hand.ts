@@ -46,6 +46,28 @@ export const THUMB = {
 
 /** half thickness of the palm at the knuckles (the cable rests on the palm at this height) */
 export const PALM_T = 0.015;
+
+/**
+ * The palm's cross-sections from the wrist to the knuckles (body/styles.ts builds the palm from
+ * them, colliders.ts its capsules): along fd, half width, palm side and back side thickness from the
+ * middle plane, offset towards the thumb (size 1, m). The ring's centre sits at (palm - back)/2 - 0.001.
+ */
+export const PALM_RINGS: [number, number, number, number, number][] = [
+  [0, 0.027, 0.02, 0.016, -0.002],
+  [0.03, 0.036, 0.021, 0.015, 0],
+  [0.06, 0.04, 0.019, 0.014, -0.002],
+  [0.08, 0.041, 0.016, 0.0135, -0.002],
+  [0.093, 0.036, 0.013, 0.011, -0.002],
+];
+
+/** the palm surface's height (along palm, size 1) at x along the fingers, in the middle of the hand */
+export function palmSurface(x: number): number {
+  const R = PALM_RINGS;
+  let i = 0;
+  while (i < R.length - 2 && x > R[i + 1][0]) i++;
+  const u = clamp((x - R[i][0]) / (R[i + 1][0] - R[i][0]));
+  return R[i][2] + (R[i + 1][2] - R[i][2]) * u - 0.001;
+}
 /** across-centre of the fist (between middle and ring finger) */
 export const FIST_Z = -0.003;
 /** joint angles of a full fist: knuckle, middle joint, end joint */
@@ -105,7 +127,9 @@ const gxAt = (f: Fist, z: number) => f.gx + FIST_SLOPE * (z - FIST_Z);
 /** a fist around a cable of radius r (size-1 units): where the cable lies and how far each finger curls */
 export function fistAround(r: number): Fist {
   const mid = FINGERS[1];
-  const fist: Fist = { gx: mid.kx - (mid.r0 + r + 0.003) - FIST_SLOPE * (mid.kz - FIST_Z), gy: PALM_T + r, curl: [1, 1, 1, 1] };
+  // the cable rests on the palm (a thick bundle lies further back, where the palm is thicker)
+  const gx = mid.kx - (mid.r0 + r + 0.003) - FIST_SLOPE * (mid.kz - FIST_Z);
+  const fist: Fist = { gx, gy: Math.max(PALM_T, palmSurface(gx)) + r, curl: [1, 1, 1, 1] };
   FINGERS.forEach((f, i) => {
     const gx = gxAt(fist, f.kz);
     const gy = fist.gy;

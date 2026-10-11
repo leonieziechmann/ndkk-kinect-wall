@@ -983,10 +983,3 @@ export class ArmIK {
     return this.last;
   }
 }
-
-/** a joint angle's limits as a description (deg), for reports and test sheets */
-export function limitText(j: ArmJoint): string {
-  if (j === 'flex' || j === 'abd') return 'shoulder cone';
-  const r = ARM_LIMITS[j];
-  return `${Math.round(r.min / DEG)}..${Math.round(r.max / DEG)}°`;
-}

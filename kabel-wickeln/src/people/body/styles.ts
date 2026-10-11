@@ -12,7 +12,7 @@
 
 import { RGB, V3, across, add, clamp, cross, dot, hexRgb, lerp, local, madd, mix3, norm, scale, smooth, sub } from '../math';
 import type { Frame, HandPose, PersonSpec, Pose } from '../people';
-import { FINGERS, THUMB, handJoints } from './hand';
+import { FINGERS, PALM_RINGS, THUMB, handJoints } from './hand';
 import { MAT, MAT_COUNT, MatName, Mesh, Ring, SELF, ellipsoid, facing, loft, orientRings, tubeRings } from './mesh';
 
 /** sides per loft */
@@ -725,11 +725,7 @@ function hand(m: Mesh, h: HandPose, side: number, fa: V3, wristR: number, spec: 
   const R = (x: number, wide: number, palmT: number, backT: number, z = -0.002): Ring => ({ c: at(x, (palmT - backT) / 2 - 0.001, z), x: w, y: palm, rx: wide * q * thick, ry: ((palmT + backT) / 2) * q * thick, p: 2.4 });
   const rings: Ring[] = [
     { c: madd(h.wrist, fa, -0.014 * q), x: fx, y: fy, rx: wristR, ry: wristR * 0.8 },
-    R(0, 0.027, 0.02, 0.016),
-    R(0.03, 0.036, 0.021, 0.015, 0.0),
-    R(0.06, 0.04, 0.019, 0.014),
-    R(0.08, 0.041, 0.016, 0.0135),
-    R(0.093, 0.036, 0.013, 0.011),
+    ...PALM_RINGS.map(([x, wide, palmT, backT, z]) => R(x, wide, palmT, backT, z)),
   ];
   loft(m, rings, D.palm, (j, i) => (j === 0 ? skinOr : palmSide(facing(i, D.palm, 0, 1))), 2.4, 0.4);
   if (gloved) {

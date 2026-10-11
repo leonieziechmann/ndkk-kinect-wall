@@ -11,9 +11,10 @@
 //   - bendDamping / twistDamping: Kelvin-Voigt material damping, a viscous moment τ·EI·dκ/dt per
 //     joint, solved implicitly inside the direct solve (XPBD damping, Macklin et al. 2016, eq. 26:
 //     row scaled by 1/(1+γ), γ = τ/h), so it is unconditionally stable and acts on the whole chain
-//   - plastic: hysteresis / plastic memory. Beyond an elastic range (yield curvature) the rest
-//     curvature flows toward the current one, so a bend the hands give the cable stays; capped at
-//     a largest memorised curvature
+//   - plastic: friction between the strands (stick-slip hysteresis, plastic memory). A second,
+//     stiff bending element in parallel whose rest shape is the memorised bend: it holds a gentle
+//     bend near that shape stiffly (round loops keep their shape), slips beyond a yield curvature
+//     (the memory follows: a bend the hands give the cable stays) and creeps slowly
 // Hands (src/sim/grips.ts): pinches (thumb and index pads: held, loose and sliding, rolling) and
 // bundles (a coil in a hand) are attachments to kinematic hand frames. Each one is projected
 // before the direct solve and makes the bodies it holds heavier in the directions it holds them
@@ -94,28 +95,30 @@ export interface RodOptions {
 }
 
 /**
- * Plastic memory (viscoplastic, per joint, applied every substep). Let e = κ − κ0 be the elastic
- * bending (current minus rest curvature, as a vector in the cross-section). While |e| ≤ yield the
- * bend is elastic and springs back (apart from a slow creep). Beyond it the rest curvature κ0
- * flows toward κ at `rate` until |e| = yield again:
- *   dκ0/dt = rate · (|e| − yield)/|e| · e   (|e| > yield)   +   creep · e
- * |κ0| is capped at maxCurvature, so a tight kink is never memorised in full. Twist works the same
- * way with twistYield / twistRate / maxTwist (no twist memory when twistYield is null).
+ * Friction between the strands of a stranded cable (stick-slip hysteresis, plastic memory), per
+ * joint, in bending. The joint has two bending elements in parallel:
+ *   - the elastic one, stiffness EI, toward the natural rest shape κn (straight, or the coil memory
+ *     a used cable has): the strands sliding freely
+ *   - the friction one, stiffness frictionEI, toward the memorised bend κf: the strands stuck
+ * Together they act as one element of stiffness EI + frictionEI toward the weighted rest
+ * (EI κn + frictionEI κf) / (EI + frictionEI), exact for the quadratic bending energy. Every
+ * substep, with e = κ − κf (the current bend minus the memory, a vector in the cross-section):
+ *   |e| > yield: the strands slip, κf follows κ at `rate` until |e| = yield
+ *   always:      κf creeps toward κ at `creep` (the stuck strands relax)
+ * So a gentle bend near the memorised shape is stiff (a loop the hands formed stays round), a tight
+ * bend is soft (the cable drapes over a finger), and a bend the hands give the cable stays when
+ * they let go, slowly sagging under gravity. Twist stays elastic. The friction memory starts as
+ * the rod's initial shape; setRestFromCurrent sets it too.
  */
 export interface Plasticity {
-  /** elastic bending range [1/m] */
+  /** bending stiffness of the stuck strands [N m²] (adds to EI near the memorised bend) */
+  frictionEI: number;
+  /** slip range [1/m]: a bend that departs further from the memorised one makes the strands slip */
   yieldCurvature: number;
-  /** flow rate beyond the yield [1/s] */
+  /** slip rate beyond the yield [1/s] (large: ideal Coulomb friction) */
   rate: number;
-  /** creep rate below the yield [1/s] (default 0) */
+  /** creep of the memory toward the current bend [1/s] (default 0) */
   creep?: number;
-  /** largest memorised curvature [1/m] */
-  maxCurvature: number;
-  /** elastic twist range [rad/m], null or left out = twist is elastic */
-  twistYield?: number | null;
-  twistRate?: number;
-  /** largest memorised twist [rad/m] */
-  maxTwist?: number;
 }
 
 export const ROD_DEFAULTS: RodOptions = {
@@ -215,6 +218,9 @@ export interface RodState {
   v: Float64Array;
   om: Float64Array;
   rest: Float64Array;
+  /** with friction memory: the natural rest (4 per joint) and the memorised bend (2 per joint) */
+  restNat?: Float64Array;
+  restFric?: Float64Array;
   /** joint compliances (bending about d1, about d2, twist) */
   alpha1: Float64Array;
   alpha2: Float64Array;
@@ -300,8 +306,14 @@ export class Rod {
   readonly d3: Float64Array;
   /** node positions (output) */
   readonly x: Float64Array;
-  /** rest Darboux quaternions per joint */
+  /** rest Darboux quaternions per joint (with friction memory: the weighted rest of both elements) */
   readonly rest: Float64Array;
+  /** friction memory (opts.plastic): the elastic element's natural rest (4 per joint), the memorised bend Im(Ω) (2 per joint) */
+  readonly restNat: Float64Array;
+  readonly restFric: Float64Array;
+  /** weight of the friction element per joint in the bend rows about d1 and d2 */
+  private readonly phi1: Float64Array;
+  private readonly phi2: Float64Array;
   /** compliances per joint: bending about d1, about d2, twist */
   private readonly alpha1: Float64Array;
   private readonly alpha2: Float64Array;
@@ -417,6 +429,10 @@ export class Rod {
     this.d3 = new Float64Array(3 * ns);
     this.x = new Float64Array(3 * n);
     this.rest = new Float64Array(4 * nj);
+    this.restNat = new Float64Array(4 * nj);
+    this.restFric = new Float64Array(2 * nj);
+    this.phi1 = new Float64Array(nj);
+    this.phi2 = new Float64Array(nj);
     this.alpha1 = new Float64Array(nj);
     this.alpha2 = new Float64Array(nj);
     this.alphaT = new Float64Array(nj);
@@ -439,6 +455,7 @@ export class Rod {
     const rod = new Rod(points.length - 1, ro);
     rod.initFromPoints(points, up, twist);
     rod.initMass();
+    rod.fricFromCurrent();
     if (restFromShape) rod.setRestFromCurrent();
     else rod.setRestStraight();
     const o = rod.opts;
@@ -463,9 +480,12 @@ export class Rod {
     rod.v.set(s.v);
     rod.om.set(s.om);
     rod.rest.set(s.rest);
+    if (s.restNat) rod.restNat.set(s.restNat);
+    if (s.restFric) rod.restFric.set(s.restFric);
     rod.alpha1.set(s.alpha1);
     rod.alpha2.set(s.alpha2);
     rod.alphaT.set(s.alphaT);
+    rod.phiFromStiffness();
     rod.time = s.time;
     rod.cp.set(rod.c);
     rod.qp.set(rod.q);
@@ -478,7 +498,7 @@ export class Rod {
     const o = this.opts;
     return {
       opts: { ...o, gravity: [...o.gravity] as V3 }, time: this.time,
-      L: this.L.slice(), c: this.c.slice(), q: this.q.slice(), v: this.v.slice(), om: this.om.slice(), rest: this.rest.slice(),
+      L: this.L.slice(), c: this.c.slice(), q: this.q.slice(), v: this.v.slice(), om: this.om.slice(), rest: this.rest.slice(), restNat: this.restNat.slice(), restFric: this.restFric.slice(),
       alpha1: this.alpha1.slice(), alpha2: this.alpha2.slice(), alphaT: this.alphaT.slice(),
     };
   }
@@ -562,22 +582,71 @@ export class Rod {
    */
   setStiffness(s: Stiffness) {
     const e1 = s.EI1 ?? s.EI, e2 = s.EI2 ?? s.EI, gj = s.GJ;
-    const { L } = this;
+    const { L } = this, ef = this.frictionEI();
     for (let k = 0; k < this.nj; k++) {
       const l = (L[k] + L[k + 1]) / 2;
-      // E = 1/2 (EI / l) θ², C ≈ θ / 2
-      if (e1 !== undefined) this.alpha1[k] = l / (4 * (typeof e1 === 'function' ? e1(k) : e1));
-      if (e2 !== undefined) this.alpha2[k] = l / (4 * (typeof e2 === 'function' ? e2(k) : e2));
+      // E = 1/2 (EI / l) θ², C ≈ θ / 2 (with friction memory the stuck strands add their stiffness)
+      if (e1 !== undefined) this.alpha1[k] = l / (4 * ((typeof e1 === 'function' ? e1(k) : e1) + ef));
+      if (e2 !== undefined) this.alpha2[k] = l / (4 * ((typeof e2 === 'function' ? e2(k) : e2) + ef));
       if (gj !== undefined) this.alphaT[k] = l / (4 * (typeof gj === 'function' ? gj(k) : gj));
     }
     if (s.EI !== undefined) this.opts.EI = s.EI;
     if (e1 !== undefined) this.opts.EI1 = e1;
     if (e2 !== undefined) this.opts.EI2 = e2;
     if (gj !== undefined) this.opts.GJ = gj;
+    this.phiFromStiffness();
+  }
+
+  /** stiffness of the friction element (0 without friction memory) */
+  private frictionEI() {
+    const P = this.opts.plastic;
+    return P && P.frictionEI > 0 ? P.frictionEI : 0;
+  }
+
+  /** the friction element's weight per joint from the compliances (α = l / 4(EI + EIf)), then the weighted rest */
+  private phiFromStiffness() {
+    const ef = this.frictionEI(), L = this.L;
+    if (ef === 0) return;
+    for (let k = 0; k < this.nj; k++) {
+      const l = (L[k] + L[k + 1]) / 2;
+      this.phi1[k] = (4 * ef * this.alpha1[k]) / l;
+      this.phi2[k] = (4 * ef * this.alpha2[k]) / l;
+    }
+    for (let k = 0; k < this.nj; k++) this.weightRest(k);
+  }
+
+  /** with friction memory: rest = the weighted rest of both elements at joint k */
+  private weightRest(k: number) {
+    const a4 = 4 * k, n = this.restNat, f = this.restFric;
+    const p1 = this.phi1[k], p2 = this.phi2[k];
+    const x = n[a4] * (1 - p1) + f[2 * k] * p1, y = n[a4 + 1] * (1 - p2) + f[2 * k + 1] * p2, z = n[a4 + 2];
+    this.rest[a4] = x; this.rest[a4 + 1] = y; this.rest[a4 + 2] = z; this.rest[a4 + 3] = Math.sqrt(Math.max(0, 1 - x * x - y * y - z * z));
+  }
+
+  /** the friction memory becomes the current bend (joints from..to), blended by amount */
+  private fricFromCurrent(from = 0, to = this.nj - 1, amount = 1) {
+    for (let k = Math.max(0, from); k <= Math.min(this.nj - 1, to); k++) {
+      const cur = quatMul(quatConj(this.segQuat(k)), this.segQuat(k + 1));
+      const sg = cur[3] < 0 ? -1 : 1;
+      this.restFric[2 * k] += (sg * cur[0] - this.restFric[2 * k]) * amount;
+      this.restFric[2 * k + 1] += (sg * cur[1] - this.restFric[2 * k + 1]) * amount;
+    }
+  }
+
+  /** where the rest setters write: the natural rest (friction memory on) or the rest itself */
+  private restTarget() {
+    return this.frictionEI() > 0 ? this.restNat : this.rest;
+  }
+
+  /** after the natural rest changed: the weighted rest */
+  private restChanged() {
+    if (this.frictionEI() > 0) for (let k = 0; k < this.nj; k++) this.weightRest(k);
   }
 
   setRestStraight() {
-    for (let k = 0; k < this.nj; k++) this.rest.set([0, 0, 0, 1], 4 * k);
+    const R = this.restTarget();
+    for (let k = 0; k < this.nj; k++) R.set([0, 0, 0, 1], 4 * k);
+    this.restChanged();
   }
 
   /**
@@ -586,11 +655,18 @@ export class Rod {
    * e.g. a loop pulled tight keeps a kink.
    */
   setRestFromCurrent(from = 0, to = this.nj - 1, amount = 1) {
+    const R = this.restTarget();
     for (let k = Math.max(0, from); k <= Math.min(this.nj - 1, to); k++) {
       const cur = quatMul(quatConj(this.segQuat(k)), this.segQuat(k + 1));
-      const r: Quat = [this.rest[4 * k], this.rest[4 * k + 1], this.rest[4 * k + 2], this.rest[4 * k + 3]];
-      this.rest.set(amount >= 1 ? cur : quatSlerp(r, cur, amount), 4 * k);
+      const r: Quat = [R[4 * k], R[4 * k + 1], R[4 * k + 2], R[4 * k + 3]];
+      R.set(amount >= 1 ? cur : quatSlerp(r, cur, amount), 4 * k);
     }
+    if (this.frictionEI() > 0) {
+      // (the natural rest with w ≥ 0, as the weighting assumes)
+      for (let k = 0; k < this.nj; k++) if (R[4 * k + 3] < 0) for (let i = 0; i < 4; i++) R[4 * k + i] = -R[4 * k + i];
+      this.fricFromCurrent(from, to, amount);
+    }
+    this.restChanged();
   }
 
   /**
@@ -598,23 +674,27 @@ export class Rod {
    * k1: bending about d1 (curls in the d2-d3 plane), k2: about d2, tau: twist about d3.
    */
   setRestCurvature(fn: V3 | ((k: number, s: number) => V3)) {
+    const R = this.restTarget();
     let s = 0;
     for (let k = 0; k < this.nj; k++) {
       const l = (this.L[k] + this.L[k + 1]) / 2;
       s += this.L[k];
       const [k1, k2, tau] = typeof fn === 'function' ? fn(k, s) : fn;
       const ang = Math.hypot(k1, k2, tau) * l;
-      this.rest.set(ang < 1e-12 ? [0, 0, 0, 1] : quatFromAxisAngle(k1, k2, tau, ang), 4 * k);
+      R.set(ang < 1e-12 ? [0, 0, 0, 1] : quatFromAxisAngle(k1, k2, tau, ang), 4 * k);
     }
+    this.restChanged();
   }
 
-  /** rest <- slerp(rest, other, a): partial memory, or memory fading. */
+  /** rest <- slerp(rest, other, a) (the natural rest with friction memory): partial memory, or memory fading. */
   blendRest(other: Float64Array, a: number) {
+    const R = this.restTarget();
     for (let k = 0; k < this.nj; k++) {
-      const r: Quat = [this.rest[4 * k], this.rest[4 * k + 1], this.rest[4 * k + 2], this.rest[4 * k + 3]];
+      const r: Quat = [R[4 * k], R[4 * k + 1], R[4 * k + 2], R[4 * k + 3]];
       const o: Quat = [other[4 * k], other[4 * k + 1], other[4 * k + 2], other[4 * k + 3]];
-      this.rest.set(quatSlerp(r, o, a), 4 * k);
+      R.set(quatSlerp(r, o, a), 4 * k);
     }
+    this.restChanged();
   }
 
   // ------------------------------------------------------------------ grips
@@ -985,39 +1065,22 @@ export class Rod {
     this.kinDirty = true;
   }
 
-  /** Plastic memory: the rest shape flows toward the current one beyond the elastic range (see Plasticity). */
+  /** Friction memory: slip beyond the yield, creep below it (see Plasticity). */
   private plasticFlow(h: number, P: Plasticity) {
-    const { nj, C, rest, L } = this;
+    if (!(P.frictionEI > 0)) return;
+    const { nj, C, rest, L, restFric } = this;
     const fy = 1 - Math.exp(-h * P.rate), fc = P.creep ? 1 - Math.exp(-h * P.creep) : 0;
-    const tw = P.twistYield !== null && P.twistYield !== undefined;
-    const fty = tw ? 1 - Math.exp(-h * (P.twistRate ?? P.rate)) : 0;
     for (let k = 0; k < nj; k++) {
       const l = (L[k] + L[k + 1]) / 2, k6 = 6 * k, a4 = 4 * k;
-      // the rows hold Im(ω) - Im(Ω0) ≈ (κ - κ0) l / 2 (half angles)
-      const e1 = C[k6 + 3], e2 = C[k6 + 4];
-      const e = Math.hypot(e1, e2), ey = 0.5 * P.yieldCurvature * l;
-      let rx = rest[a4], ry = rest[a4 + 1], rz = rest[a4 + 2];
+      // the rows hold Im(ω) - Im(rest), so the current bend is C + rest (half angles ≈ κ l / 2)
+      const ex = C[k6 + 3] + rest[a4] - restFric[2 * k], ey = C[k6 + 4] + rest[a4 + 1] - restFric[2 * k + 1];
+      const e = Math.hypot(ex, ey), y = 0.5 * P.yieldCurvature * l;
       let f = fc;
-      if (e > ey) f += fy * (1 - ey / e);
-      let changed = false;
-      if (f > 0 && e > 0) {
-        rx += f * e1; ry += f * e2;
-        const m = Math.hypot(rx, ry), mm = 0.5 * P.maxCurvature * l;
-        if (m > mm) { rx *= mm / m; ry *= mm / m; }
-        changed = true;
-      }
-      if (tw) {
-        const et = C[k6 + 5], ety = 0.5 * (P.twistYield as number) * l;
-        if (Math.abs(et) > ety) {
-          rz += fty * (et - Math.sign(et) * ety);
-          const mt = 0.5 * (P.maxTwist ?? Infinity) * l;
-          if (Math.abs(rz) > mt) rz = Math.sign(rz) * mt;
-          changed = true;
-        }
-      }
-      if (!changed) continue;
-      const w2 = 1 - rx * rx - ry * ry - rz * rz;
-      rest[a4] = rx; rest[a4 + 1] = ry; rest[a4 + 2] = rz; rest[a4 + 3] = Math.sqrt(Math.max(0, w2));
+      if (e > y) f += fy * (1 - y / e);
+      if (f <= 0) continue;
+      restFric[2 * k] += f * ex;
+      restFric[2 * k + 1] += f * ey;
+      this.weightRest(k);
     }
   }
 

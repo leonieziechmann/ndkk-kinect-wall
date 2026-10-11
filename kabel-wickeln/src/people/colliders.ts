@@ -14,20 +14,20 @@
 //   - Grip frames (rig.ts Grip, pose.body.arms[i].grip): p on the cable axis in the middle of the
 //     hold; columns of q: d1 from the cable axis towards the hand (to the palm in a fist or a coil
 //     grip, to the index finger in a pinch), d2 = d3 × d1, d3 along the cable towards where the thumb
-//     points. In a pinch the cable touches the index finger's capsule and the thumb's last capsule
-//     at p (closed pinch; `open` lifts the thumb off). d3 is the thumb's direction, not the rod's node
+//     points. In a pinch the cable touches the index finger's middle capsule and the thumb's last
+//     capsule at p (both marked pad; closed pinch, `open` lifts the thumb off). d3 is the thumb's direction, not the rod's node
 //     order: a simulation whose held segment runs the other way uses (d1, -d2, -d3).
 
 import type { Capsule as SimCapsule } from '../sim/rod';
 import { V3, madd } from './math';
 import type { HandPose, Pose } from './people';
-import { FINGERS, THUMB, handJoints } from './body/hand';
+import { FINGERS, THUMB, handJoints, palmSurface } from './body/hand';
 
 export type HandPart = 'palm' | 'thumb' | 'index' | 'middle' | 'ring' | 'little' | 'forearm';
 
 export interface HandCapsule extends SimCapsule {
   part: HandPart;
-  /** the last bone of the thumb or the index finger: the pads that pinch */
+  /** what pinches: the thumb's last bone and the index finger's middle bone */
   pad?: boolean;
 }
 
@@ -56,19 +56,28 @@ export function handCapsules(h: HandPose, side: number, gloved = false, o: Colli
     if (o.mu !== undefined) c.mu = o.mu;
     out.push(c);
   };
-  // the palm: three capsules along the fingers, side by side across the hand (styles.ts palm rings:
-  // ≈ 8 cm wide, 3.5 cm thick, its middle 2 mm out of the palm)
+  // the palm (body/hand.ts PALM_RINGS): three lanes side by side across the hand, each in two
+  // pieces (the thick middle of the hand, the thinner part up to the knuckles); the palm side of
+  // each capsule is where the palm's surface is
   const at = (x: number, y: number, z: number): V3 => madd(madd(madd(h.wrist, h.fd, x * q), h.palm, y * q), hj.w, z * q);
-  for (const z of [-0.022, 0, 0.022]) add(at(0.008, 0.002, z), at(0.078, 0.001, z * 1.1), 0.0165, 'palm');
+  const pieces: [number, number, number][] = [[0.006, 0.05, 0.017], [0.05, 0.086, 0.0142]];
+  for (const z of [-0.022, 0, 0.022]) {
+    for (const [x0, x1, r] of pieces) {
+      // the capsule's centre so that its palm side lies on the palm surface at its far end
+      const y = palmSurface(x1) - r;
+      add(at(x0, y, z), at(x1, y, z), r, 'palm');
+    }
+  }
   // fingers
   const names: HandPart[] = ['index', 'middle', 'ring', 'little'];
   hj.fingers.forEach((f, i) => {
     const d = FINGERS[i];
     const [K, J1, J2, T] = f.p;
     if (i === 0) {
+      // a pinched cable lies on the side of the middle bone
       add(K, J1, d.r0, 'index');
-      add(J1, J2, (d.r0 + d.r1) / 2, 'index');
-      add(J2, T, d.r1, 'index', true);
+      add(J1, J2, (d.r0 + d.r1) / 2, 'index', true);
+      add(J2, T, d.r1, 'index');
     } else {
       add(K, J1, d.r0, names[i]);
       add(J1, T, (d.r0 + d.r1) / 2, names[i]);

@@ -300,7 +300,7 @@ export function eyesOfRig(spec: PersonSpec, g: Rig): { p: V3; f: V3; u: V3 } {
  * sternum, the clavicle out to the shoulder joint (lateral, a little back and up), the bone lengths
  * and the torso the arm keeps out of.
  */
-export function armSetup(spec: PersonSpec, c: Pick<Core, 'k' | 'neck' | 'chest' | 'pelvis'>, side: -1 | 1, offset: V3 = [0, 0, 0]): ArmSetup {
+export function armSetup(spec: PersonSpec, c: { k: number; neck: V3; chest: Frame; pelvis: V3 }, side: -1 | 1, offset: V3 = [0, 0, 0]): ArmSetup {
   const B = spec.build;
   const { k, neck, chest } = c;
   const shW = 0.19 * k * B.shoulders;
@@ -321,6 +321,14 @@ export function armSetup(spec: PersonSpec, c: Pick<Core, 'k' | 'neck' | 'chest' 
   s.torso.a = toLocal(s, sub(madd(c.pelvis, chest.u, -0.05 * k), sc));
   s.torso.b = toLocal(s, sub(neck, sc));
   return s;
+}
+
+/**
+ * The arm setup of a solved pose (side -1 left, +1 right), to call ik.ts solveArm / armPose directly
+ * (e.g. to try a target against the torso of this frame). Ignores Rig.shoulders.
+ */
+export function armSetupOf(pose: Pose, side: -1 | 1): ArmSetup {
+  return armSetup(pose.spec, { k: pose.body.k, neck: pose.joints[17], chest: pose.body.chest, pelvis: pose.joints[18] }, side);
 }
 
 /** the arm angles of a relaxed hanging arm, swinging forward by `swing` (rad) */
