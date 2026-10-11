@@ -252,7 +252,7 @@ export class CoilController {
   private readonly crossDone = new Set<number>();
   /** the cable's direction at the pads (towards the coil), read every frame */
   private cableDir: V3 | null = null;
-  private follow: V3 | null = null;
+  private padsErr: V3 | null = null;
   /** the coil's Lk at shot time 0 (the plug strand only) */
   coilLk0: number | null = null;
 
@@ -394,6 +394,9 @@ export class CoilController {
     let p: V3;
     if (t < b.tOut) {
       p = lerpV(m.p0, g.hip, ramp(t, b.tSlide, b.tOut));
+      // the fingers keep the cable between them: the hand follows where the cable really is across
+      // its length (read from the simulation), it only chooses how far along it slides
+      if (this.padsErr && t > b.tSlide) p = add(p, this.padsErr);
     }
     else if (t < tBack) p = lerpV(g.hip, slack, ramp(t, b.tOut, tBack));
     else if (t < b.tSpread) p = lerpV(slack, spread, ramp(t, tBack, b.tSpread));
@@ -632,8 +635,9 @@ export class CoilController {
     this.solve(-pre, true);
     this.coil = rod.bundle({ frame: this.pose.body.arms![0].grip!, hand: 0, blend: 0.01 });
     this.coil.add(this.plugStrand[0], this.plugStrand[1] + 0.004, 0.01);
-    // (a swivel: the cable turns between thumb and index as it wants, its twist runs on to the floor)
-    this.pin = rod.pinch({ frame: this.pose.body.arms![1].grip!, hand: 1, mode: 'held', blend: 0.01, rolls: false });
+    // (a swivel: the cable turns between thumb and index as it wants, its twist runs on to the floor;
+    // the curled fingers keep it through the bend where it hangs down from them while they slide)
+    this.pin = rod.pinch({ frame: this.pose.body.arms![1].grip!, hand: 1, mode: 'held', blend: 0.01, rolls: false, lostDistance: 0.02, lostAngle: (78 * Math.PI) / 180 });
     rod.setCapsules((tt) => this.capsAt(tt));
     const frames = Math.round(pre * 60);
     for (let f = 0; f < frames; f++) {
@@ -754,7 +758,9 @@ export class CoilController {
     // the cable's direction at the pads, towards the coil, and a point a little beyond them (the slide follows it)
     if (this.pin && this.pin.state !== 'free') {
       this.cableDir = mul(rod.tangentAt(this.pin.s), -1);
-      this.follow = rod.pointAt(this.pin.s + 0.006);
+      // how far the pads are off the cable, across it
+      const c = rod.pointAt(this.pin.s), at = this.pose.body.arms![1].grip!.p, d = sub(c, at);
+      this.padsErr = madd(d, this.cableDir, -dot(d, this.cableDir));
     }
     const i = loopAt(this.bs, tn);
     if (i < 0) return;

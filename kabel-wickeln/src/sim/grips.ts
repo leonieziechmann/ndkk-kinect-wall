@@ -184,6 +184,14 @@ export interface PinchSpec {
   maxGripDistance?: number;
   /** throw instead of warning (gripDistance, closing while moving, lost cable) */
   strict?: boolean;
+  /**
+   * A sliding pinch has lost the cable when the material nearest the pads is farther than this [m]
+   * (default 0.012) or crosses them at more than `lostAngle` [rad] (default 60°). Fingers that curl
+   * round the cable keep it through a sharper bend (a hand sliding along a cable that hangs down
+   * from it): raise them for such a grip.
+   */
+  lostDistance?: number;
+  lostAngle?: number;
 }
 
 /**
@@ -233,6 +241,8 @@ export class Pinch implements Attachment {
   // per substep
   private F: Frame = { p: [0, 0, 0], q: [0, 0, 0, 1] };
   private Fprev: Frame | null = null;
+  private readonly lostDist: number;
+  private readonly lostCos: number;
   private h = 0;
   private ax: V3 = [0, 0, 1];
   private e1: V3 = [1, 0, 0];
@@ -257,6 +267,8 @@ export class Pinch implements Attachment {
     this.blend = spec.blend ?? 0.12;
     this.rolls = spec.rolls ?? true;
     this.maxGripDistance = spec.maxGripDistance ?? 0.015;
+    this.lostDist = spec.lostDistance ?? LOST_DIST;
+    this.lostCos = spec.lostAngle !== undefined ? Math.cos(spec.lostAngle) : LOST_COS;
     this.strict = !!spec.strict;
     const r = spec.roll ?? 0;
     this.rollFn = typeof r === 'function' ? r : () => r;
@@ -531,7 +543,7 @@ export class Pinch implements Attachment {
       const cosA = Math.abs(cp.tangent[0] * ax[0] + cp.tangent[1] * ax[1] + cp.tangent[2] * ax[2]);
       // (only once the pads have closed: while they close they still turn the cable into line)
       const closed = this.lat > 0.9 && rod.time - this.t0 > this.blend;
-      if (closed && (cp.dist > LOST_DIST || cosA < LOST_COS)) {
+      if (closed && (cp.dist > this.lostDist || cosA < this.lostCos)) {
         this.lose(`the cable got away from a sliding pinch (${(cp.dist * 1000).toFixed(1)} mm, ${((Math.acos(Math.min(1, cosA)) * 180) / Math.PI).toFixed(0)}° off the pads, t ${rod.time.toFixed(3)} s): the hand moved too fast or across the cable`);
         this.slip = 0;
         return;

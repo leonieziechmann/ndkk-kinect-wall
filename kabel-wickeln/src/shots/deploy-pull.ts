@@ -434,7 +434,7 @@ export const deployPull: ShotDef = {
         const g = reached(t, 0);
         // (the pads held the whole bunch: the start end lies in it up to 2.5 cm from their middle)
         pinA = r.pinch({ frame: (tt) => reached(tt, 0), s: r.closestPoint(g.p, 0, ring.sLoops[0][0]).s, mode: 'held', hand: LEFT, blend: 0.3, rolls: false, maxGripDistance: 0.03 });
-        pads.release(-Infinity, Infinity, 0.4);
+        pads.release(-Infinity, Infinity, 0.08);
         dropped = true;
       }
     };
