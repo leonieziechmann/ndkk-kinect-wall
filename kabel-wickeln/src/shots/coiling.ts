@@ -138,11 +138,11 @@ export const GEOM = (() => {
     A,
     S,
     /** the left hand's grip point (the middle of the strands in the hand): resting in front of the left hip */
-    leftRest: [-0.17, 0.88, -0.27] as V3,
+    leftRest: [-0.17, 0.905, -0.27] as V3,
     /** out to the left while the right hand slides out */
-    leftOut: [-0.27, 0.87, -0.23] as V3,
+    leftOut: [-0.27, 0.895, -0.23] as V3,
     /** towards the midline to meet the right hand */
-    leftMeet: [-0.06, 0.89, -0.32] as V3,
+    leftMeet: [-0.06, 0.915, -0.32] as V3,
     /** the right hand at the hip, slid out */
     hip: [0.44, 0.81, -0.1] as V3,
     /** half the length of the strand in the left hand, along S [m] */
@@ -154,7 +154,7 @@ export const GEOM = (() => {
     /** the right hand's pads this far beyond the left hand's medial edge at the hand-over [m] */
     gap: 0.03,
     /** how far the forearm turns over for "under" [rad] (the IK reaches ~136°: rig.ts turnWithForearm) */
-    underTurn: 140 * D,
+    underTurn: 132 * D,
     /** the roll of the cable between thumb and index on the way back [rad]: over +, under − */
     roll: 0.6,
   };

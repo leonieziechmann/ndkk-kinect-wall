@@ -392,7 +392,9 @@ export class CoilController {
     const tAbove = b.tSpread + 0.6 * (b.tMeet - b.tSpread);
     let p: V3;
     if (t < b.tOut) {
-      p = lerpV(m.p0, g.hip, ramp(t, b.tSlide, b.tOut));
+      const u = ramp(t, b.tSlide, b.tOut);
+      // (lifting a little at first, clear of the loop's first leg that hangs from the left hand's edge)
+      p = madd(lerpV(m.p0, g.hip, u), UP, 0.035 * Math.sin(Math.PI * Math.min(1, 1.6 * u)));
     }
     else if (t < tBack) p = lerpV(g.hip, slack, ramp(t, b.tOut, tBack));
     else if (t < b.tSpread) p = lerpV(slack, spread, ramp(t, tBack, b.tSpread));
@@ -413,7 +415,7 @@ export class CoilController {
     // while the pads slide they follow the cable where it really runs through them (read from the
     // simulation): after a hand-over it hangs down from them and comes up into line as they go
     if (this.cableDir && t < b.tOut + 0.1) {
-      const u = 0.65 * (1 - ramp(t, b.tOut - 0.3, b.tOut + 0.1));
+      const u = 1 - ramp(t, b.tOut - 0.3, b.tOut + 0.1);
       if (dot(this.cableDir, along) > 0) along = normalize(lerpV(along, this.cableDir, u));
     }
     const d3 = normalize(lerpV(along, laying, w));
@@ -509,22 +511,24 @@ export class CoilController {
       if (t !== tc) {
         // the loop's own depth: the mean of its nodes along N
         tc = t;
-        let sum = 0;
-        for (let j = l0; j <= l1; j++) sum += rod.x[3 * j] * N[0] + rod.x[3 * j + 2] * N[2];
-        ref = sum / Math.max(1, l1 - l0 + 1) + side * 0.02;
+        let sum = 0, cnt = 0;
+        const m0 = l0 + Math.floor((l1 - l0) / 3), m1 = l1 - Math.floor((l1 - l0) / 3);
+        for (let j = m0; j <= m1; j++) { sum += rod.x[3 * j] * N[0] + rod.x[3 * j + 2] * N[2]; cnt++; }
+        ref = sum / Math.max(1, cnt) + side * 0.03;
       }
       const n3 = 3 * n, p: V3 = [rod.x[n3], rod.x[n3 + 1], rod.x[n3 + 2]];
       const q = madd(p, N, ref - dot(p, N));
-      // at the hand-over it hangs from the pads straight down through the new loop
+      // at the hand-over it hangs from the pads down through the new loop
       // (the first 10-20 cm beyond the pads hang as they want: the pads slide along them next)
       const w = ramp(t, b.tMeet - 0.25, b.tMeet) * ramp(rod.sNode[n] - sP, 0.1, 0.22);
       if (w <= 0) return q;
-      const xm = dot(this.exitPoint(b.k, t), A) - 0.03;
+      // (inside the loop: a little lateral of the edge where the loop's first leg goes down)
+      const xm = dot(this.exitPoint(b.k, t), A) + 0.035;
       return madd(q, A, w * (xm - dot(q, A)));
     };
     // (off before the next loop's slide: the pads run along this cable then)
     const t0 = b.tSpread - 0.15, t1 = b.t1 - 0.3;
-    m.cross = rod.addGuide({ nodes: [a, e], target, compliance: 0.08, weight: (t) => (t < t1 ? ramp(t, t0, t0 + 0.35) : 1 - ramp(t, t1, b.t1 - 0.02)) });
+    m.cross = rod.addGuide({ nodes: [a, e], target, compliance: 0.03, weight: (t) => (t < t1 ? ramp(t, t0, t0 + 0.35) : 1 - ramp(t, t1, b.t1 - 0.02)) });
   }
 
   /** the roll the last loop left on the cable (0 before the first) */
@@ -738,7 +742,9 @@ export class CoilController {
     const tn = t + DT;
     // the cable's direction at the pads, towards the coil, and a point a little beyond them (the slide follows it)
     if (this.pin && this.pin.state !== 'free') {
-      this.cableDir = mul(rod.tangentAt(this.pin.s), -1);
+      // (the pads lie along the chord of the bend the cable makes through them: half its turn on each side)
+      const before = rod.tangentAt(this.pin.s - 0.02), after = rod.tangentAt(this.pin.s + 0.025);
+      this.cableDir = normalize(mul(add(before, after), -1));
       this.follow = rod.pointAt(this.pin.s + 0.006);
     }
     const i = loopAt(this.bs, tn);

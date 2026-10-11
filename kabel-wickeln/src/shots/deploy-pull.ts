@@ -52,7 +52,7 @@ export const YAW = Math.PI;
  */
 export const SHORT_RING: RingSpec = { cable: CHARGING, loop: 0.29, pattern: 'ouou', lead: 0.07, tail: 0.22, spacing: 0.01, press: 0.5, pressTime: 3 };
 /** the velcro tie: band length, width, thickness; where it lives on the start end (m from the plug's tip) */
-export const TIE = { length: 0.18, width: 0.012, thickness: 0.0015, s: 0.082 };
+export const TIE = { length: 0.22, width: 0.012, thickness: 0.0015, s: 0.082 };
 
 /** the ring as the factory made it: its face looks at Ilse, the start end sticks out to her left */
 const QRING: Quat = [0, 0, 0, 1];
@@ -100,7 +100,7 @@ const put = (p: Plan, k: number, v: V3) => {
  * with LAG: the bake knows that past, the scene reads it back from the bake.
  */
 export type Ends = (which: 0 | 1, t: number) => Grip;
-export const LAG = 0.1;
+export const LAG = 4 / 60;
 
 // ---------------------------------------------------------------- the ring
 
@@ -246,8 +246,12 @@ export function pullRig(p: Plan, ends: Ends) {
 
   const right = (t: number): HandRig => {
     if (t < T.reach) return { grip: REST_R, ...PINCH, open: 1, free: 0.6 };
-    // from above to the tie's end, closing on it; up out of the eyelet; let go
-    if (t < T.pinch) return { grip: mixGrip(REST_R, tieGrip(T.pinch), ease(t, T.reach, T.pinch - 0.05)), ...PINCH, radius: TIE.thickness / 2, open: 1 - ease(t, T.pinch - 0.2, T.pinch), free: 0.4 };
+    // up past the ring on her right, then from above to the tie's end, closing on it; up out of the
+    // eyelet; let go. (The end sticks up 10 cm: the curled fingers below the pads stay clear of the loops.)
+    const above: Grip = { p: add(tieGrip(T.pinch).p, [-0.09, 0.05, -0.02]), q: tieGrip(T.pinch).q };
+    const tm = (T.reach + T.pinch) / 2;
+    if (t < tm) return { grip: mixGrip(REST_R, above, ease(t, T.reach, tm)), ...PINCH, radius: TIE.thickness / 2, open: 1, free: 0.4 };
+    if (t < T.pinch) return { grip: mixGrip(above, tieGrip(T.pinch), ease(t, tm, T.pinch - 0.05)), ...PINCH, radius: TIE.thickness / 2, open: 1 - ease(t, T.pinch - 0.2, T.pinch), free: 0.4 };
     if (t < T.letTie) return { grip: tieGrip(t), ...PINCH, radius: TIE.thickness / 2, open: ease(t, T.unfold, T.letTie), free: 0.4 };
     // round the ring, well clear of it, and down to the other end, following it, closing on it
     if (t < T.side) return { grip: mixGrip(tieGrip(T.letTie), side(), ease(t, T.letTie, T.side)), ...PINCH, open: 1, free: 0.6 };
@@ -256,7 +260,7 @@ export function pullRig(p: Plan, ends: Ends) {
       const u = ease(t, T.under, T.takeB - 0.1);
       return { grip: mixGrip(under(), end(t), u), ...PINCH, open: 1 - ease(t, T.takeB - 0.25, T.takeB), free: 0.6 };
     }
-    const held = end(T.takeB), out: Grip = { p: add(held.p, [-0.13, -0.03, 0]), q: held.q };
+    const held = end(T.takeB), out: Grip = { p: add(held.p, [-0.07, 0.02, 0]), q: held.q };
     const g = mixGrip(mixGrip(mixGrip(held, out, ease(t, T.takeB + 0.1, T.out)), PULL_R, ease(t, T.pull0, T.pull1)), LAY_R, ease(t, T.pull1, T.lay1));
     return { grip: g, ...PINCH, open: 0, free: 0.5 };
   };
@@ -405,13 +409,18 @@ export const deployPull: ShotDef = {
     for (let f = 0; f < 90; f++) rod.step(1 / 60, 40);
     rod.time = 0;
 
-    let pinB: Pinch | null = null;
+    // the ends are held in pinches that let the cable turn in the pads (rolls: false): the hands
+    // turn as they pull, but a pinch does not wring the cable
+    let pinB: Pinch | null = null, pinA: Pinch | null = null;
     let dropped = false;
     const script = (r: Rod, t: number) => {
-      if (!pinB && t >= T.takeB) pinB = r.pinch({ frame: (tt) => reached(tt, 1), s: sB, mode: 'held', hand: RIGHT, blend: 0.12 });
+      if (!pinB && t >= T.takeB) pinB = r.pinch({ frame: (tt) => reached(tt, 1), s: sB, mode: 'held', hand: RIGHT, blend: 0.12, rolls: false });
       if (!dropped && t >= T.drop) {
-        // the loops go, the start end stays between the pads
-        pads.release(ring.sLoops[0][0], Infinity, 0.4);
+        // the loops go; the start end stays between the pads (from now on as a pinch)
+        const g = reached(t, 0);
+        // (the pads held the whole bunch: the start end lies in it up to 2.5 cm from their middle)
+        pinA = r.pinch({ frame: (tt) => reached(tt, 0), s: r.closestPoint(g.p, 0, ring.sLoops[0][0]).s, mode: 'held', hand: LEFT, blend: 0.3, rolls: false, maxGripDistance: 0.03 });
+        pads.release(-Infinity, Infinity, 0.4);
         dropped = true;
       }
     };
@@ -436,6 +445,7 @@ export const deployPull: ShotDef = {
         ikR: (_, t) => (arm(t, 1)?.posError ?? 0) * 1000,
         axL: (_, t) => ((arm(t, 0)?.axisErrors[0] ?? 0) * 180) / Math.PI,
         axR: (_, t) => ((arm(t, 1)?.axisErrors[0] ?? 0) * 180) / Math.PI,
+        gripA: () => (pinA ? pinA.gripDistance : -1),
         gripB: () => (pinB ? pinB.gripDistance : -1),
       },
       vectors: {
