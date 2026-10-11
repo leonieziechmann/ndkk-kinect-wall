@@ -252,5 +252,5 @@ eigenen Pässen: `wall::draw::Draw` (`Draw::new` in `make`, je Bild `begin()`, z
   (`frames.json`: `cpu` ist die CPU-Zeit der Ausgabe je Bild, `cpuByScene` je Szene); siehe README.
   `cargo clippy --release --all-targets` soll ohne Warnungen durchlaufen.
 
-Die Beispielszene `scenes/hallo-wand` zeigt fast alles davon in 90 Zeilen: Skelette, Namensschilder,
+Die Beispielszene `scenes/hallo-wand` zeigt fast alles davon in 80 Zeilen: Skelette, Namensschilder,
 Funken von erhobenen Händen, Begrüßung mit Ton, Zähler, QR-Code und einen Titel, solange niemand da ist.
