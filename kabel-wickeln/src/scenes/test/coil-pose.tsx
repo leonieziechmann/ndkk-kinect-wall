@@ -1,0 +1,118 @@
+// Test scene for the coil's geometry (no simulation): Noor holding a coil of six loops in her left
+// hand, seen from her eyes, from her right side, from the front at hip height (like the user's
+// camera B) and from above in front (camera A). t 0-1: loops hung like rings on a rod that points
+// forward and out from the hand (each new loop further along it); t 1-2: loops lying along the
+// bundle in the hand (the IK test scene's illustration).
+// node tools/render.mjs stills --project test --scene coil-pose --out output/p1-coil/pose 0.5 1.5
+
+import { Rect, Txt, makeScene2D } from '@motion-canvas/2d';
+import { createSignal, linear } from '@motion-canvas/core';
+import * as THREE from 'three';
+import { fontsReady } from '../../lib/fonts';
+import { C, FONT } from '../../lib/theme';
+import { splitPerson, viewLayers } from '../../lib/kit';
+import { NOOR } from '../../people/cast';
+import { V3, cross, madd, norm, quatCols } from '../../people/math';
+import { HandRig, Rig, eyesOfRig, gripFrame, rigPose, stand } from '../../people/rig';
+import { CableMesh } from '../../three/cable';
+import { lookFrom, makeCamera } from '../../three/camera';
+import { Studio } from '../../three/studio';
+import { ThreeView, World3D } from '../../three/view';
+
+const R = 0.0032;
+const ROD = norm([-0.55, 0.2, -1]);
+const L0: V3 = [-0.17, 0.9, -0.27];
+
+class Curve {
+  public readonly mesh: CableMesh;
+  private readonly pos: Float32Array;
+  private readonly d1: Float32Array;
+  public constructor(private readonly n: number) {
+    this.mesh = new CableMesh({ maxNodes: n, radius: R, ground: null, sub: 3 });
+    this.pos = new Float32Array(3 * n);
+    this.d1 = new Float32Array(3 * n);
+  }
+  public set(pts: V3[]) {
+    const curve = new THREE.CatmullRomCurve3(pts.map((p) => new THREE.Vector3(...p)), true, 'centripetal');
+    const x = new THREE.Vector3(0, 1, 0);
+    for (let i = 0; i < this.n; i++) {
+      const u = i / (this.n - 1);
+      const p = curve.getPointAt(u), t = curve.getTangentAt(u);
+      x.addScaledVector(t, -x.dot(t));
+      if (x.lengthSq() < 1e-8) x.set(1, 0, 0);
+      x.normalize();
+      this.pos.set([p.x, p.y, p.z], 3 * i);
+      this.d1.set([x.x, x.y, x.z], 3 * i);
+    }
+    this.mesh.update(this.pos, this.d1, this.n);
+  }
+}
+
+export default makeScene2D(function* (view) {
+  view.fill(C.bg);
+  yield fontsReady();
+  const t = createSignal(0);
+  const model = () => (t() < 1 ? 0 : 1);
+  const left: HandRig = { grip: gripFrame(L0, ROD, norm([-0.87, -0.25, 0.5])), hold: 'coil', radius: 0.012, free: 0.5 };
+  const rig: Rig = { ...stand(NOOR, [0, 0], 0, { width: 0.3 }), lean: 0.05, look: [-0.05, 0.75, -0.4], hands: [left, null] };
+  const pose = rigPose(NOOR, rig);
+  const world = new World3D('test-coil-pose', update);
+  const scene = world.scene;
+  new Studio(scene, { focus: [0, 0.7, -0.2], focusRadius: 1.2 });
+  const noor = splitPerson(NOOR, pose);
+  scene.add(noor.person.group);
+  const loops = [0, 1, 2, 3, 4, 5].map(() => new Curve(90));
+  for (const l of loops) scene.add(l.mesh.group);
+
+  const g = pose.body.arms![0].grip!;
+  const [, , d3] = quatCols(g.q);
+  const hz = norm([d3[0], 0, d3[2]]);
+  const a = norm(cross(hz, [0, 1, 0]));
+  function ringsOnRod(k: number): V3[] {
+    const top = madd(g.p, d3, -0.012 + 0.007 * k);
+    const w = 0.105, h = 0.15;
+    const pts: V3[] = [];
+    for (let i = 0; i < 40; i++) {
+      const th = (i / 40) * Math.PI * 2;
+      pts.push(madd(madd(top, a, Math.sin(th) * w), [0, 1, 0], -(1 - Math.cos(th)) * h));
+    }
+    return pts;
+  }
+  function alongBundle(k: number): V3[] {
+    const [d1, d2] = quatCols(g.q);
+    const off = madd(madd(g.p, d1, ((k % 2) - 0.5) * 0.007), d2, (k / 5 - 0.5) * 0.014);
+    const pts: V3[] = [];
+    for (let i = 0; i < 40; i++) {
+      const th = (i / 40) * Math.PI * 2;
+      pts.push(madd(madd(off, d3, Math.sin(th) * 0.105), [0, 1, 0], -(1 - Math.cos(th)) * 0.15));
+    }
+    return pts;
+  }
+
+  const eyes = eyesOfRig(NOOR, rig).p;
+  const cams = [makeCamera(54), makeCamera(36), makeCamera(40), makeCamera(50)];
+  viewLayers(cams[0], 'pov');
+  for (const c of cams.slice(1)) viewLayers(c, 'ext');
+  const look: V3 = [-0.1, 0.78, -0.3];
+  lookFrom(cams[0], [eyes[0], eyes[1] + 0.04, eyes[2] + 0.02], look, 54);
+  lookFrom(cams[1], [0.75, 1.25, 0.25], [-0.05, 0.8, -0.25], 36);
+  lookFrom(cams[2], [0.0, 0.78, -1.5], [-0.05, 0.75, -0.2], 40);
+  lookFrom(cams[3], [0.0, 1.95, -0.75], [-0.05, 0.85, -0.2], 50);
+
+  function update() {
+    loops.forEach((l, k) => l.set(model() === 0 ? ringsOnRod(k) : alongBundle(k)));
+    scene.updateMatrixWorld();
+  }
+
+  const titles = ['Ich-Ansicht', 'Rechts, leicht hinten', 'Vorn, Hüfthöhe (B)', 'Vorn oben (A)'];
+  cams.forEach((c, i) => {
+    const w = 940, h = 520, x = (i % 2 - 0.5) * (w + 16), y = (Math.floor(i / 2) - 0.5) * (h + 16);
+    view.add(<ThreeView world={world} camera={c} x={x} y={y} width={w} height={h} radius={16} />);
+    view.add(
+      <Rect x={x - w / 2 + 12} y={y - h / 2 + 12} offset={[-1, -1]} layout padding={[4, 12]} radius={20} fill={'#ffffffe0'}>
+        <Txt text={() => `${titles[i]} · ${model() === 0 ? 'Ringe auf der Stange' : 'längs im Bündel'}`} fontFamily={FONT} fontWeight={700} fontSize={22} fill={C.text} />
+      </Rect>,
+    );
+  });
+  yield* t(2, 2, linear);
+});
