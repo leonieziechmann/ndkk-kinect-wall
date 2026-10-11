@@ -375,7 +375,13 @@ function solveSide(spec: PersonSpec, g: Rig, c: Core, i: 0 | 1, ik?: RigIK, fixe
     return { hand, sol, arm: { angles: sol.angles, report: sol.report, sc: s.sc, forearm: sol.forearm } };
   }
   const { target, shape } = targetOf(spec, side, h, s, c.k);
-  const sol = fixed ? armPose(s, fixed, target.at) : ik ? ik.arms[i].solve(s, target) : solveArm(s, target);
+  let sol: ArmSolution;
+  if (fixed) {
+    // given angles: how far the hand is from what the rig asks
+    sol = armPose(s, fixed, target.at);
+    sol.report.posError = len(sub(sol.point, target.p));
+    sol.report.reached = sol.report.posError < 0.003;
+  } else sol = ik ? ik.arms[i].solve(s, target) : solveArm(s, target);
   const arm: ArmPose = { angles: sol.angles, report: sol.report, sc: s.sc, forearm: sol.forearm };
   if (shape) {
     // the grip frame really held: the reached point, the shape's axes in the reached hand

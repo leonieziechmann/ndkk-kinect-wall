@@ -340,8 +340,8 @@ export default makeScene2D(function* (view) {
         const pose = rigPose(f.spec, twistRig(i));
         f.update(pose);
         const el = pose.joints[8], wr = pose.joints[10];
-        const mid = madd(el, sub(wr, el), 0.5);
-        twistCams[i].position.set(mid[0] + 0.32, mid[1] + 0.22, mid[2] - 0.42);
+        const mid = madd(el, sub(wr, el), 0.85);
+        twistCams[i].position.set(mid[0] + 0.42, mid[1] + 0.3, mid[2] - 0.52);
         twistCams[i].lookAt(mid[0], mid[1], mid[2]);
       });
       studio.focus([0, 1.0, -4.3], 1.6);
