@@ -9,8 +9,9 @@
 //
 // Grip frame (shared with the cable simulation): p on the cable axis in the middle of the hold,
 // columns of q: d1 from the cable axis towards the hand (the palm in a fist and a coil grip, the
-// index finger in a pinch), d2 = d3 × d1, d3 along the cable (where the thumb points). The frame the
-// hand really reaches is pose.body.arms[i].grip: the one to give the simulation.
+// index finger in a pinch), d2 = d3 × d1, d3 along the cable (a fist or coil: where the thumb points;
+// a pinch: where the cable leaves past the thumb tip). The frame the hand really reaches is
+// pose.body.arms[i].grip: the one to give the simulation.
 
 import {
   V3, Quat, add, across, clamp, cross, dot, easeInOut, len, lerp, local, madd, mix3, norm, quatAxisAngle, quatCols, quatFromCols, quatMul, scale, slerp, smooth, sub, turn,

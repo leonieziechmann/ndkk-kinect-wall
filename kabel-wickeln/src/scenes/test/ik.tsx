@@ -13,7 +13,8 @@
 //   4-...  the over-under sweep (ik-sweep.ts, solved with RigTrack): own view (only the arms, the
 //          body's shadow on the floor) and outside view; an illustrative cable (not simulated)
 //          through the grips the hands really reached
-// Stills: node tools/render.mjs stills --project test --scene ik --out output/ik <seconds>
+// Stills: node tools/render.mjs stills --project ik --out output/ik <seconds> (the project src/test-ik.ts
+// holds only this scene; it is in the test project too)
 
 import { Node, Rect, Txt, makeScene2D } from '@motion-canvas/2d';
 import { createSignal, linear } from '@motion-canvas/core';

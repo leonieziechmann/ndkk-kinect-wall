@@ -10,5 +10,5 @@ const ffmpeg = unwrap(ffmpegModule);
 
 export default defineConfig({
   // the video, and a test project with model sheets and render tests
-  plugins: [motionCanvas({ project: ['./src/project.ts', './src/test.ts'] }), ffmpeg()],
+  plugins: [motionCanvas({ project: ['./src/project.ts', './src/test.ts', './src/test-ik.ts'] }), ffmpeg()],
 });

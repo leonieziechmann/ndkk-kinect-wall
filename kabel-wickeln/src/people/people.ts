@@ -137,9 +137,10 @@ export interface ArmPose {
   forearm: { dir: V3; elbowAxis: V3; wristAxis: V3; pron: number };
   /**
    * The grip frame the hand really holds (grips only): p on the cable or bundle axis, columns
-   * d1 (to the palm, or to the index finger in a pinch), d2 = d3 × d1, d3 along the cable (where
-   * the thumb points). Includes a pinch's roll and the hand's freedom about the cable (HandRig.free):
-   * give this frame to the simulation.
+   * d1 (to the palm, or to the index finger in a pinch), d2 = d3 × d1, d3 along the cable (a fist or
+   * coil: where the thumb points; a pinch: where the cable leaves past the thumb tip). Includes a
+   * pinch's roll and the hand's freedom about the cable (HandRig.free): give this frame to the
+   * simulation.
    */
   grip?: { p: V3; q: [number, number, number, number] };
 }

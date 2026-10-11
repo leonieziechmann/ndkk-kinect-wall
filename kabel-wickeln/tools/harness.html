@@ -11,6 +11,7 @@
       const projects = {
         project: () => import('/src/project.ts?project'),
         test: () => import('/src/test.ts?project'),
+        ik: () => import('/src/test-ik.ts?project'),
       };
       const { default: project } = await projects[q.get('project') ?? 'project']();
       window.__mc = { project, PlaybackState, Renderer };

@@ -4,8 +4,8 @@
 // has none. Ported from erklaervideo/src/lib/body/styles.ts and extended: body shapes (Build), work
 // clothes (overshirt, open work jacket, lanyard with a crew pass), hair styles, a fitted sport hijab,
 // cap, beard, glasses, gloves (work gloves and fingerless rigger gloves with a light palm and a dark
-// back), painted nails, and the first-person split (the own head, torso and upper arms carry the
-// layer SELF).
+// back), painted nails, and the first-person split (everything but the arms carries the layer SELF;
+// the forearm twists with the pronation of the arm IK, pose.body.arms).
 //
 // A person always gives the same vertices and faces in the same order, whatever the pose, so a mesh
 // is built once and then refilled in place (buildBody(pose, mesh)).
@@ -608,9 +608,10 @@ function clothed(m: Mesh, p: Pose) {
   m.curLayer = 0;
 
   // ---- arms: from the shoulder joint (its dome is the round top of the shoulder) down to the wrist.
-  // The first-person view sees them from just below the shoulder (layer 0, a hidden cap closes the
-  // cut, at the edge of or outside its picture); the upper arm keeps the elbow's axis, the forearm twists from it to the wrist's radio-ulnar
-  // axis along its length (pronation) and flattens towards the wrist.
+  // The first-person view sees them from just below the shoulder (layer 0; a cap hidden inside the
+  // sleeve closes the cut, which lies at the edge of its picture or outside). The forearm's oval
+  // turns from the elbow's axis to the wrist's radio-ulnar axis along its length (pronation) and
+  // flattens towards the wrist.
   const sleeve = densify(top === 'tee' ? ARM_TEE : spec.pushed ? ARM_PUSHED : banded ? ARM_CUFF : ARM_LONG);
   const ak = k * B.limbs;
   s.arms.forEach((a, ai) => {
@@ -650,16 +651,15 @@ function clothed(m: Mesh, p: Pose) {
       (j) => (sleeve[j][0] < POV_CUT ? SELF : 0),
     );
     // the cap that closes the first-person view's cut, hidden inside the sleeve for everyone else
-    const cut = rings[sleeve.findIndex(([t]) => t >= POV_CUT)];
-    const cd = norm(up);
-    ellipsoid(m, cut.c, cut.x, cd, cut.y, cut.rx * 0.97, cut.rx * 0.35, cut.ry * 0.97, D.limb, 3, sleeve[sleeve.findIndex(([t]) => t >= POV_CUT)][2]);
+    const ci = sleeve.findIndex(([t]) => t >= POV_CUT);
+    const cut = rings[ci];
+    ellipsoid(m, cut.c, cut.x, norm(up), cut.y, cut.rx * 0.97, cut.rx * 0.35, cut.ry * 0.97, D.limb, 3, sleeve[ci][2]);
     hand(m, a.hand, a.sign, norm(fa), 0.026 * ak, spec);
   });
 
-  // ---- legs (only outside views see them: layer SELF): from inside the pelvis to the ankle (wide
-  // trousers down over the shoes), then the shoes
+  // ---- legs: from inside the pelvis to the ankle (wide trousers down over the shoes), then the
+  // shoes; only outside views see them (layer SELF)
   m.curLayer = SELF;
-  // ---- legs: from inside the pelvis to the ankle (wide trousers down over the shoes), then the shoes
   const wide = spec.pants === 'wide';
   const work = spec.pants === 'work';
   const lk = k * B.limbs ** 0.6;
