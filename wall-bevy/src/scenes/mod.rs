@@ -14,6 +14,7 @@ mod modern_events;
 mod neon_room;
 mod pixel_jump_run;
 mod pixel_spiegel;
+mod pointcloud;
 mod shader_scenes;
 
 /// Every scene this output can play.
@@ -30,5 +31,6 @@ pub fn registry() -> Vec<&'static SceneDef> {
     v.push(&live_exakt::DEF);
     v.push(&cyberspiegel::DEF);
     v.push(&neon_room::DEF);
+    v.push(&pointcloud::DEF);
     v
 }
