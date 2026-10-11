@@ -204,7 +204,7 @@ export interface IkReport {
   strained: string[];
   /** solver iterations used */
   iterations: number;
-  /** the total cost reached (position, orientation, comfort, strain …; lower is better, for comparing solutions) */
+  /** the cost of the pose (position, orientation, comfort, strain …; lower is better, comparable between solutions) */
   cost: number;
 }
 
@@ -491,6 +491,9 @@ interface Problem {
   elbow: V3 | null;
   elbowW: number;
   prev: Float64Array | null;
+  /** an attractor (raw angles) and its weight */
+  toward: Float64Array | null;
+  towardW: number;
   chain: Chain;
   res: Float64Array;
   /** the angles of the raw parameters being evaluated */
@@ -573,6 +576,7 @@ function residuals(pr: Problem, p: Float64Array): number {
   r[n++] = W.torso * insideTorso(pr.s, o.eff[0], o.eff[1], o.eff[2]);
   // stay with the previous frame
   if (pr.prev) for (let j = 0; j < NQ; j++) r[n++] = W.prev * (q[j] - pr.prev[j]);
+  if (pr.toward) for (let j = 0; j < NQ; j++) r[n++] = pr.towardW * (q[j] - pr.toward[j]);
   return n;
 }
 
@@ -848,6 +852,10 @@ export interface SolveOptions {
    * meanwhile, see the report); default: no limit
    */
   maxStep?: number;
+  /** pull towards these angles (ArmIK uses it to move the arm over to a clearly better solution) */
+  toward?: ArmAngles | null;
+  /** how strongly (per rad, default 3) */
+  towardWeight?: number;
 }
 
 /** iterations per start before the best start is finished */
@@ -870,8 +878,10 @@ export function solveArm(s: ArmSetup, target: HandTarget, o: SolveOptions = {}):
     elbow: target.elbow ? toLocal(s, norm(target.elbow)) : null,
     elbowW: target.elbowWeight ?? 1,
     prev: o.prev ? toArray(o.prev) : null,
+    toward: o.toward ? toArray(o.toward) : null,
+    towardW: o.towardWeight ?? 3,
     chain: newChain(),
-    res: new Float64Array(50 + 3 * axes.length),
+    res: new Float64Array(60 + 3 * axes.length),
     q: new Float64Array(NQ),
     cost: 0,
   };
@@ -901,6 +911,10 @@ export function solveArm(s: ArmSetup, target: HandTarget, o: SolveOptions = {}):
     }
     iterations += minimise(pr, p, maxIter);
   }
+  // the cost of the pose itself (without staying close or being pulled): comparable between solves
+  pr.prev = null;
+  pr.toward = null;
+  pr.cost = costOf(pr, p);
   const q = new Float64Array(NQ);
   toAngles(p, q);
   return finish(pr, q, iterations);
@@ -908,7 +922,7 @@ export function solveArm(s: ArmSetup, target: HandTarget, o: SolveOptions = {}):
 
 /** forward kinematics only: where an arm with these angles puts its joints and hand */
 export function armPose(s: ArmSetup, angles: ArmAngles, at: V3 = [0, 0, 0]): ArmSolution {
-  const pr: Problem = { s, p: [0, 0, 0], at, axes: [], elbow: null, elbowW: 0, prev: null, chain: newChain(), res: new Float64Array(50), q: new Float64Array(NQ), cost: 0 };
+  const pr: Problem = { s, p: [0, 0, 0], at, axes: [], elbow: null, elbowW: 0, prev: null, toward: null, towardW: 0, chain: newChain(), res: new Float64Array(60), q: new Float64Array(NQ), cost: 0 };
   const q = toArray(angles);
   const sol = finish(pr, q, 0);
   sol.report.posError = 0;
@@ -961,25 +975,67 @@ function finish(pr: Problem, q: Float64Array, iterations: number): ArmSolution {
 /**
  * The stateful solver for frame-by-frame use (a bake computing the choreography frame after frame):
  * every solve starts from the last solution and stays close to it, and no joint changes by more than
- * maxStep (rad) per call (default 0.2: 12 rad/s at 60 frames per second, a fast but real arm), so
- * the arm never pops. reset() forgets the last solution.
+ * maxStep (rad) per call (default 0.2: 12 rad/s at 60 frames per second), so the arm never pops.
+ * Following one solution can get stuck in an awkward one while a much better one exists (after a
+ * turn of the hand, say): every `check` calls it also solves from scratch, and when that arm is
+ * clearly better (cost below 3/4) and different, the arm moves over to it at no more than
+ * `migrate` rad per call while still reaching the target. reset() forgets the last solution.
  */
 export class ArmIK {
   private last: ArmAngles | null = null;
+  private goal: ArmAngles | null = null;
+  private calls = 0;
+  private moving = 0;
 
-  public constructor(public maxStep = 0.2) {}
+  public constructor(
+    public maxStep = 0.2,
+    public check = 6,
+    public migrate = 0.06,
+  ) {}
 
   public solve(s: ArmSetup, target: HandTarget, maxIter?: number): ArmSolution {
-    const sol = solveArm(s, target, { prev: this.last, maxIter, maxStep: this.maxStep });
+    if (!this.last) {
+      const first = solveArm(s, target, { maxIter });
+      this.last = first.angles;
+      return first;
+    }
+    if (this.goal) {
+      // the better arm moves with the target; follow it
+      this.goal = solveArm(s, target, { prev: this.goal, maxIter }).angles;
+    }
+    const sol = solveArm(s, target, { prev: this.last, maxIter, maxStep: this.goal ? this.migrate : this.maxStep, toward: this.goal });
+    if (this.goal) {
+      this.moving++;
+      if (distance(sol.angles, this.goal) < 0.03 || this.moving > 120) {
+        this.goal = null;
+        this.moving = 0;
+      }
+    } else if (++this.calls % this.check === 0) {
+      const fresh = solveArm(s, target, { maxIter });
+      if (fresh.report.cost < 0.75 * sol.report.cost - 1 && distance(fresh.angles, sol.angles) > 0.25) {
+        this.goal = fresh.angles;
+        this.moving = 0;
+      }
+    }
     this.last = sol.angles;
     return sol;
   }
 
   public reset() {
     this.last = null;
+    this.goal = null;
+    this.calls = 0;
+    this.moving = 0;
   }
 
   public get previous(): ArmAngles | null {
     return this.last;
   }
+}
+
+/** the largest difference of any joint angle (rad) */
+function distance(a: ArmAngles, b: ArmAngles) {
+  let d = 0;
+  for (const j of ARM_JOINTS) d = Math.max(d, Math.abs(a[j] - b[j]));
+  return d;
 }

@@ -17,7 +17,7 @@
 // The hands go to the cable: every grip is made where the cable is at that moment (the scripts
 // read the rod, sim in the loop), and the hand frames and capsules are recorded as vectors.
 
-import { Bundle, Capsule, Frame, Pinch, Rod, V3, XLR, buildCable, capsuleTrack, cross, frameTrack, gripFrame, normalize, quatFromAxisAngle, quatMul, quatRotate, sub } from '../sim';
+import { BuiltCable, Bundle, Capsule, Frame, Pinch, Rod, RodBuildOptions, V3, XLR, buildCable, capsuleTrack, frameTrack, gripFrame, normalize, quatFromAxisAngle, quatMul, quatRotate, sub } from '../sim';
 import type { ShotDef } from './types';
 
 const RC = XLR.od / 2;
@@ -96,6 +96,9 @@ function corner(pts: V3[], a: V3, b: V3, r: number) {
   }
 }
 
+/** tracks with the node range of the cable proper (the tube; the plugs lie beyond) */
+export const cableRange = (b: BuiltCable) => ({ cable0: () => b.cable[0], cable1: () => b.cable[1] });
+
 /** lets a rod settle for `seconds` before shot time 0 (the hands must already hold it) */
 function preroll(rod: Rod, seconds: number, step?: (t: number) => void) {
   rod.time = -seconds;
@@ -122,10 +125,13 @@ export const physDrape: ShotDef = {
     for (let a = Math.PI; a >= 0; a -= 0.02) pts.push([R * Math.cos(a), cy + R * Math.sin(a), 0]);
     for (let y = cy; y > RC; y -= 0.002) pts.push([R, y, 0]);
     for (let x = R; x < R + 0.3; x += 0.002) pts.push([x, RC, 0]);
-    const { rod } = buildCable(XLR, pts, { plugs: 'start' });
+    const built = buildCable(XLR, pts, { plugs: 'start' }), rod = built.rod;
+    // it was straight before it was hung over the finger: the friction memory starts straight
+    rod.restFric.fill(0);
+    rod.setRestStraight();
     const finger: Capsule = { ...DRAPE.finger, group: 0 };
     rod.setCapsules([finger]);
-    return { rod, vectors: { caps: capsuleTrack(1, () => [finger]) } };
+    return { rod, vectors: { caps: capsuleTrack(1, () => [finger]) }, tracks: cableRange(built) };
   },
 };
 
@@ -156,7 +162,7 @@ export const physU: ShotDef = {
     pts.push(...polyline(pts[pts.length - 1], [[[U.span / 2, -sag, 0], sl], [[U.span / 2, sag, 0], sl]]).slice(1));
     corner(pts, [1, 0, 0], [0, -1, 0], 0.02);
     pts.push(...polyline(pts[pts.length - 1], [[[0, -1, 0], 0.18]]).slice(1));
-    const { rod } = buildCable(XLR, pts, { plugs: 'none', groundY: 0 });
+    const built = buildCable(XLR, pts, { plugs: 'none', groundY: 0 }), rod = built.rod;
     let pins: Pinch[] = [];
     const makePins = () => {
       pins = [rod.pinch({ frame: U_HANDS.left, hand: 0, blend: 0.01 }), rod.pinch({ frame: U_HANDS.right, hand: 1, blend: 0.01 })];
@@ -173,7 +179,7 @@ export const physU: ShotDef = {
         right: frameTrack((_, t) => U_HANDS.right(t)),
         caps: capsuleTrack(12, (r) => r.currentCapsules()),
       },
-      tracks: { sPinchR: () => pins[1].s },
+      tracks: { sPinchR: () => pins[1].s, ...cableRange(built) },
     };
   },
 };
@@ -195,7 +201,7 @@ export const physGrab: ShotDef = {
       h += 0.002 * 0.6 * Math.sin(s * 2.2);
       p = [p[0] + 0.002 * Math.cos(h), RC, p[2] + 0.002 * Math.sin(h)];
     }
-    const { rod } = buildCable(XLR, pts, { plugs: 'both' });
+    const built = buildCable(XLR, pts, { plugs: 'both' }), rod = built.rod;
     preroll(rod, 0.5);
     // the hand goes down to the cable where it is (the point nearest below its start), then lifts and moves
     const near = rod.closestPoint([GRAB.reach[0], RC, 0]);
@@ -213,7 +219,7 @@ export const physGrab: ShotDef = {
         if (!pin && t >= GRAB.tAt) pin = r.pinch({ frame: right, hand: 1, mode: 'held', blend: 0.1 });
       },
       vectors: { right: frameTrack((_, t) => right(t)), caps: capsuleTrack(6, (_, t) => pinchHand(right(t), 1)) },
-      tracks: { gripDistance: () => (pin ? pin.gripDistance : -1), sPinch: () => (pin ? pin.s : -1) },
+      tracks: { gripDistance: () => (pin ? pin.gripDistance : -1), sPinch: () => (pin ? pin.s : -1), ...cableRange(built) },
     };
   },
 };
@@ -228,7 +234,7 @@ export const physLay: ShotDef = {
   substeps: XLR.substeps,
   build() {
     const pts = polyline([-0.5, RC, 0], [[[1, 0, 0], 1.5]]);
-    const { rod } = buildCable(XLR, pts, { plugs: 'both' });
+    const built = buildCable(XLR, pts, { plugs: 'both' }), rod = built.rod;
     preroll(rod, 0.5);
     const p0 = rod.pointAt(LAY.s);
     const R = LAY.radius, cz = p0[2] - R;
@@ -261,6 +267,7 @@ export const physLay: ShotDef = {
         if (pin && t >= LAY.tOpen && pin.state !== 'free') pin.release(0.15);
       },
       vectors: { right: frameTrack((_, t) => frame(t)), caps: capsuleTrack(6, (_, t) => pinchHand(frame(t), 1)) },
+      tracks: cableRange(built),
     };
   },
 };
@@ -300,7 +307,7 @@ export const physCoil: ShotDef = {
     pts.push(...polyline(pts[pts.length - 1], [[[0, -1, 0], L[1] - 0.04 - RC - 0.05]]).slice(1));
     corner(pts, [0, -1, 0], [1, 0, 0], 0.05);
     pts.push(...polyline(pts[pts.length - 1], [[[1, 0, 0.3], 2.3]]).slice(1));
-    const { rod, sCable } = buildCable(XLR, pts, { plugs: 'both' });
+    const built = buildCable(XLR, pts, { plugs: 'both' }), { rod, sCable } = built;
     const coil: Bundle = rod.bundle({ frame: coilLeft, hand: 0, blend: 0.15 });
     rod.time = -1.5;
     coil.add(0, 0.11);
@@ -365,7 +372,7 @@ export const physCoil: ShotDef = {
       rod,
       script,
       vectors: { left: frameTrack((_, t) => coilLeft(t)), right: frameTrack((_, t) => right(t)), caps: capsuleTrack(9, (_, t) => caps(t)) },
-      tracks: { sHand: () => sHand, slip: () => (pin ? pin.slip : 0), force: () => (pin ? pin.force : 0), sCable0: () => sCable[0] },
+      tracks: { sHand: () => sHand, slip: () => (pin ? pin.slip : 0), force: () => (pin ? pin.force : 0), sCable0: () => sCable[0], ...cableRange(built) },
     };
   },
 };
@@ -390,7 +397,7 @@ export const physRoll: ShotDef = {
     const pts = polyline([ROLL.at[0], ROLL.at[1] + 0.05, 0], [[[0, -1, 0], ROLL.at[1] + 0.05 - RC - 0.04]]);
     corner(pts, [0, -1, 0], [1, 0, 0], 0.04);
     pts.push(...polyline(pts[pts.length - 1], [[[1, 0, 0], 0.5]]).slice(1));
-    const { rod } = buildCable(XLR, pts, { plugs: 'end' });
+    const built = buildCable(XLR, pts, { plugs: 'end' }), rod = built.rod;
     rod.time = -1;
     const pin = rod.pinch({ frame: rollHand, hand: 1, mode: 'held', blend: 0.01, roll: rollAngle });
     rod.setCapsules((t) => pinchHand(rollHand(t), 1));
@@ -398,9 +405,48 @@ export const physRoll: ShotDef = {
     return {
       rod,
       vectors: { right: frameTrack((_, t) => rollHand(t)), caps: capsuleTrack(6, (_, t) => pinchHand(rollHand(t), 1)) },
-      tracks: { sPinch: () => pin.s, twistHanging: (r) => r.twistTurns(r.segmentAt(pin.s), r.segmentAt(pin.s + 0.9)) },
+      tracks: { sPinch: () => pin.s, twistHanging: (r) => r.twistTurns(r.segmentAt(pin.s), r.segmentAt(pin.s + 0.9)), ...cableRange(built) },
     };
   },
 };
 
-export const PHYS_SHOTS: ShotDef[] = [physDrape, physU, physGrab, physLay, physCoil, physRoll];
+// ---------------------------------------------------------------- phys-cant-old / phys-cant-new
+
+/**
+ * 30 cm of cable sticking out of a fist, held straight until 0.3 s, then let go: with the first
+ * coiling bake's settings (EI 2e-3, 1.25 cm segments, 40 substeps × 3 iterations, the old
+ * damping) and with the XLR preset. The fist is at the origin, the cable along +x at 1 m.
+ */
+export const CANT = { length: 0.3, hold: 0.03, tLet: 0.3, duration: 3 };
+
+function cantShot(id: string, opts: RodBuildOptions, seg: number, substeps: number, iterations: number): ShotDef {
+  return {
+    id, duration: CANT.duration, substeps, iterations,
+    build() {
+      const pts = Array.from({ length: Math.round(CANT.length / seg) + 1 }, (_, i): V3 => [i * seg, 1, 0]);
+      const built = buildCable(XLR, pts, { plugs: 'none', segment: seg, groundY: null, ...opts }), rod = built.rod;
+      const fist = gripFrame([0.015, 1, 0], [1, 0, 0], [0, 1, 0]);
+      const hold = rod.bundle({ frame: fist, hand: 0, blend: 0.001 });
+      hold.add(0, CANT.length + 0.01);
+      let let_ = false;
+      return {
+        rod,
+        script: (r: Rod, t: number) => {
+          if (!let_ && t >= CANT.tLet) {
+            hold.release(CANT.hold, Infinity, 0.02);
+            let_ = true;
+          }
+        },
+        vectors: { caps: capsuleTrack(3, () => fistHand(fist, 0, RC)) },
+        tracks: { tip: (r) => 1 - r.x[3 * (r.n - 1) + 1], ...cableRange(built) },
+      };
+    },
+  };
+}
+
+/** the first coiling bake's cable (src/shots/s1-coil.ts) */
+export const physCantOld = cantShot('phys-cant-old', { linearDensity: 0.06, EI: 2e-3, GJ: 1.5e-3, damping: 1.2, angularDamping: 3, internalDamping: 2, bendDamping: 0, twistDamping: 0, plastic: null, radius: 0.0035 }, 0.0125, 40, 3);
+/** the calibrated XLR preset */
+export const physCantNew = cantShot('phys-cant-new', {}, XLR.segment, XLR.substeps, XLR.iterations);
+
+export const PHYS_SHOTS: ShotDef[] = [physDrape, physCantOld, physCantNew, physU, physGrab, physLay, physCoil, physRoll];
