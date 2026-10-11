@@ -160,8 +160,9 @@ fn resolve_family(st: &mut FontState, list: &str) -> Fam {
     found
 }
 
-/// A laid out text: its width and a callback over its pixels.
-fn layout_text(st: &mut FontState, text: &str, font: &Font) -> Buffer {
+/// A laid out text: its width and a callback over its pixels. `spacing`: letter spacing in em
+/// (Canvas 2D letterSpacing divided by the size), 0 = none.
+fn layout_text(st: &mut FontState, text: &str, font: &Font, spacing: f32) -> Buffer {
     let fam = resolve_family(st, &font.families);
     let metrics = Metrics::new(font.size, font.size * 1.25);
     let mut buf = Buffer::new(&mut st.sys, metrics);
@@ -172,6 +173,7 @@ fn layout_text(st: &mut FontState, text: &str, font: &Font) -> Buffer {
         Fam::SansSerif => Attrs::new().family(Family::SansSerif).weight(Weight(font.weight)),
         Fam::Monospace => Attrs::new().family(Family::Monospace).weight(Weight(font.weight)),
     };
+    let attrs = if spacing != 0.0 { attrs.letter_spacing(spacing) } else { attrs };
     buf.set_text(&mut st.sys, text, &attrs, Shaping::Advanced, None);
     buf.shape_until_scroll(&mut st.sys, false);
     buf
@@ -179,16 +181,27 @@ fn layout_text(st: &mut FontState, text: &str, font: &Font) -> Buffer {
 
 /// The width of `text` in px.
 pub fn measure_text(text: &str, font: &Font) -> f32 {
+    measure_text_spaced(text, font, 0.0)
+}
+
+/// The width of `text` in px with letter spacing (em: Canvas 2D letterSpacing / size; it follows
+/// every character, as in Chrome).
+pub fn measure_text_spaced(text: &str, font: &Font, spacing: f32) -> f32 {
     with_fonts(|st| {
-        let buf = layout_text(st, text, font);
+        let buf = layout_text(st, text, font, spacing);
         buf.layout_runs().map(|r| r.line_w).fold(0.0, f32::max)
     })
 }
 
 /// Text as coverage (0..255) in a box from the baseline: (w, h, baseline y, pixels).
 pub fn text_coverage(text: &str, font: &Font) -> (u32, u32, i32, Vec<u8>) {
+    text_coverage_spaced(text, font, 0.0)
+}
+
+/// text_coverage() with letter spacing (em, as measure_text_spaced()).
+pub fn text_coverage_spaced(text: &str, font: &Font, spacing: f32) -> (u32, u32, i32, Vec<u8>) {
     with_fonts(|st| {
-        let buf = layout_text(st, text, font);
+        let buf = layout_text(st, text, font, spacing);
         let w = buf.layout_runs().map(|r| r.line_w).fold(0.0, f32::max).ceil() as i32 + 4;
         let line_y = buf.layout_runs().next().map(|r| r.line_y).unwrap_or(font.size);
         let pad = (font.size * 0.5).ceil() as i32;
