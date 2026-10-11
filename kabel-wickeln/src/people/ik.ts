@@ -14,20 +14,27 @@
 //              and wrist (the radius turns about the ulna), so the mesh twists along the forearm.
 //   wrist      wflex (+ towards the palm, - extension), wdev (+ radial/thumb side, - ulnar)
 //
-// Limits (ARM_LIMITS, SHOULDER_CONE, the wrist ellipse) are hard: the solver never leaves them. On
-// top, a comfort cost pulls every joint towards a relaxed middle and pushes it out of the outer 15 %
-// of its range, so a person stays well inside the range when the task allows it.
+// Limits (ARM_LIMITS, SHOULDER_CONE, the wrist ellipse) are hard: the solver works on raw parameters
+// that a smooth map squashes into the ranges, so no angle ever leaves them (towards a limit an angle
+// approaches it ever more slowly). On top, a comfort cost pulls every joint towards a relaxed middle
+// and pushes it out of the outer 15 % of its range, so a person stays well inside the range when the
+// task allows it; the clavicle follows the arm (scapulohumeral rhythm) unless a reach needs it.
 //
-// solveArm(setup, target, prev?) is a damped least-squares solver (Levenberg-Marquardt with
-// projection onto the limits) over the nine angles. A target is a hand point that must reach a
-// position (required) plus optional orientation goals (hand axes that should point along world
-// directions, each with a weight: the full frame, or only the palm normal, the finger or the thumb
-// direction) and an optional elbow direction. The solver picks the elbow swivel and distributes the
-// rotation over shoulder, forearm and wrist. Without `prev` it starts from an analytic guess
-// (two-bone IK with a natural elbow, the orientation goals fitted, everything clamped): a
-// deterministic, continuous function of the target, so smooth target paths give smooth arms. With
-// `prev` (the solution of the previous frame) it starts there and stays close to it (ArmIK keeps it
-// between calls). Out of reach, the hand stops at the reachable point closest to the target.
+// solveArm(setup, target, options) is a damped least-squares solver (Levenberg-Marquardt, numeric
+// Jacobian) over the nine angles. A target is a hand point that must reach a position (required),
+// optional orientation goals (hand axes that should point along world directions, each with a
+// weight: the full frame, or only the palm normal, the finger or the thumb direction) and an optional
+// elbow direction. The solver picks the elbow swivel and distributes the rotation over shoulder,
+// forearm and wrist; it keeps the elbow, forearm and hand out of the torso. Out of reach, the hand
+// stops at the reachable point closest to the target (the arm points at it). The report says how far
+// off the hand is, the orientation errors, the limits hit and the strained joints.
+//
+// Continuity. Stateless (no prev): four analytic starts (two-bone IK with the elbow down, out,
+// forward, and a relaxed hand; each a continuous function of the target) are polished a little and
+// the best one is finished: deterministic, and smooth along smooth target paths as long as the best
+// solution does not change to another family (that can happen where a target asks for an extreme
+// turn; the stateful solver and RigTrack never jump). Stateful (prev, or ArmIK between calls): it
+// starts from the last solution, stays close to it and changes no joint by more than maxStep per call.
 //
 // Conventions: world metres, y up. Arm-local coordinates (used inside): x forward, y up, z lateral
 // (away from the body's midline); right-handed for the right arm, mirrored for the left. Hand frame

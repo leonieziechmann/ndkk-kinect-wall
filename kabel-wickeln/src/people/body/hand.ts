@@ -268,7 +268,8 @@ export const PINCH_CROSS = 1.0;
  */
 export function pinchAround(r: number, roll = 0, open = 0, crossing = PINCH_CROSS): GripShape {
   const o = clamp(open);
-  const curl = PINCH_CURL.map((c, i) => c * (1 - (i ? 0.3 : 0.15) * o)) as GripShape['curl'];
+  // opening loosens the index finger a little; the others stay loosely curled and keep guiding
+  const curl = PINCH_CURL.map((c, i) => c * (1 - (i ? 0.12 : 0.15) * o)) as GripShape['curl'];
   const idx = fingerPoints(FINGERS[0], curl[0], 0);
   const [, pip, dip] = idx.p;
   const m = norm(sub(dip, pip));

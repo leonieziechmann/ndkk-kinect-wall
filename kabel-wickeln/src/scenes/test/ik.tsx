@@ -230,9 +230,10 @@ export default makeScene2D(function* (view) {
   // cables: through the close-ups' grips, and the sweep's illustrative cable and loops
   const closeCables = CLOSE.map(() => new Curve(60, XLR));
   const closeLoops = CLOSE.map(() => [0, 1, 2].map(() => new Curve(70, XLR)));
-  const sweepCable = new Curve(160, XLR);
+  const sweepCable = new Curve(100, XLR);
+  const sweepTail = new Curve(110, XLR);
   const sweepLoops = [0, 1, 2, 3].map(() => new Curve(70, XLR));
-  for (const c of [...closeCables, ...closeLoops.flat(), sweepCable, ...sweepLoops]) scene.add(c.mesh.group);
+  for (const c of [...closeCables, ...closeLoops.flat(), sweepCable, sweepTail, ...sweepLoops]) scene.add(c.mesh.group);
   // collision capsules, see-through
   const capMat = new THREE.MeshStandardMaterial({ color: '#4aa3ff', transparent: true, opacity: 0.32, depthWrite: false, roughness: 0.6 });
   const capGroup = new THREE.Group();
@@ -261,7 +262,7 @@ export default makeScene2D(function* (view) {
     capGroup.visible = b === 2;
     fog.near = sheet ? fogNear + 6 : fogNear;
     fog.far = sheet ? fogFar + 8 : fogFar;
-    for (const c of [sweepCable, ...sweepLoops]) c.mesh.group.visible = b === 3;
+    for (const c of [sweepCable, sweepTail, ...sweepLoops]) c.mesh.group.visible = b === 3;
 
     if (sheet && b !== shownBoard) {
       SHEETS[b].forEach((c, i) => {
@@ -320,17 +321,15 @@ export default makeScene2D(function* (view) {
       const pose = track.pose(st);
       noor.update(pose);
       const [left, right] = pose.body.arms!;
-      // the cable: from the floor up into the back of the right hand, through the pinch along d3,
-      // sagging over to the coil in the left hand
+      // the cable (illustration, not simulated): through the right pinch along d3, sagging over to
+      // the coil in the left hand; behind the pinch it hangs down to the floor
       if (right.grip && left.grip) {
         const [, , d3] = quatCols(right.grip.q);
         const p = right.grip.p;
-        const back = madd(p, d3, -0.07);
-        const floor: V3 = [back[0] + 0.05, 0.004, back[2] - 0.05];
-        const low = [[floor[0] + 0.3, 0.004, floor[2] - 0.4] as V3, ...bezier(floor, [floor[0], 0.25, floor[2]], madd(back, [0, -1, 0], 0.12), back, 14), p];
         const sag = Math.max(0.06, 0.32 - 0.3 * Math.hypot(p[0] - left.grip.p[0], p[2] - left.grip.p[2]));
-        const high = bezier(p, madd(madd(p, d3, 0.12), [0, -1, 0], sag), madd(left.grip.p, [0.1, -0.05, 0], -sag), left.grip.p, 14);
-        sweepCable.set([...low, ...high.slice(1)]);
+        sweepCable.set(bezier(p, madd(madd(p, d3, 0.12), [0, -1, 0], sag), madd(left.grip.p, [0.1, -0.05, 0], -sag), left.grip.p, 24));
+        const back = madd(p, d3, -0.06);
+        sweepTail.set([madd(p, d3, 0.01), p, back, madd(back, [0, -1, 0], 0.1), [back[0], 0.3, back[2]], [back[0] + 0.02, 0.006, back[2] - 0.08], [back[0] + 0.15, 0.004, back[2] - 0.5]]);
         loopsOf(left, 4, 0.012).forEach((pts, k) => sweepLoops[k].set(pts));
       }
       orbit(sweepCam, { target: [0.02, 0.98, -0.2], yaw: Math.PI - 0.55, pitch: 0.12, dist: 2.6, fov: 30 });
@@ -359,7 +358,12 @@ export default makeScene2D(function* (view) {
       const pose = poses[i];
       if (!pose) return c.label;
       const arm = pose.body.arms![1];
-      const ax = arm.report.axisErrors.length ? ` · ${Math.round(Math.max(...arm.report.axisErrors.map((e, k) => (k < 2 ? e : 0))) / DEG)}°` : '';
+      // the orientation error of the firm goals: a grip's cable direction (a free grip's angle about
+      // it and mild wishes do not count), a free hand's finger and palm directions
+      const h = c.hands[1];
+      const firm = h?.grip ? (h.free ? [0] : [0, 1]) : [h?.dir, h?.palm].map((g, k) => (g ? k : -1)).filter((k) => k >= 0).map((_, k) => k);
+      const errs = firm.map((k) => arm.report.axisErrors[k] ?? 0);
+      const ax = errs.length ? ` · ${Math.round(Math.max(...errs) / DEG)}°` : '';
       return `${c.label}\nΔ ${(arm.report.posError * 1000).toFixed(1)} mm${ax}\n${limitsText(arm)}`;
     };
     const pos = () => {
