@@ -12,7 +12,7 @@ import { fontsReady } from '../../lib/fonts';
 import { C, FONT } from '../../lib/theme';
 import { splitPerson, viewLayers } from '../../lib/kit';
 import { NOOR } from '../../people/cast';
-import { V3, cross, madd, norm, quatCols } from '../../people/math';
+import { V3, cross, madd, norm } from '../../people/math';
 import { HandRig, Rig, eyesOfRig, gripFrame, rigPose, stand } from '../../people/rig';
 import { CableMesh } from '../../three/cable';
 import { lookFrom, makeCamera } from '../../three/camera';
@@ -20,8 +20,7 @@ import { Studio } from '../../three/studio';
 import { ThreeView, World3D } from '../../three/view';
 
 const R = 0.0032;
-const ROD = norm([-0.55, 0.2, -1]);
-const L0: V3 = [-0.17, 0.9, -0.27];
+const L0: V3 = [-0.15, 0.92, -0.3];
 
 class Curve {
   public readonly mesh: CableMesh;
@@ -54,10 +53,10 @@ export default makeScene2D(function* (view) {
   const t = createSignal(0);
   const model = () => (t() < 1 ? 0 : 1);
   // the coil's axis (where new loops go: away from the body) and the strands' direction at the top
-  const N = norm([-0.5, 0.05, -0.87]);
+  const N = norm([-0.05, 0.1, -1]);
   const A = norm(cross(N, [0, 1, 0]));
-  const hook: HandRig = { grip: gripFrame(L0, A, norm([0.5, 0.2, 0.87])), hold: 'coil', radius: 0.013, free: 0.3, thumbAlong: -1 };
-  const rod: HandRig = { grip: gripFrame(L0, ROD, norm([-0.87, -0.25, 0.5])), hold: 'coil', radius: 0.012, free: 0.5 };
+  const hook: HandRig = { grip: gripFrame(L0, norm([-A[0], 0.7, -A[2]]), norm([-0.57, -0.82, 0.1])), hold: 'coil', radius: 0.013, free: 0.4 };
+  const rod: HandRig = { grip: gripFrame(L0, norm([-A[0], 1.0, -A[2]]), norm([-0.7, -0.7, 0.1])), hold: 'coil', radius: 0.013, free: 0.4 };
   const rigOf = (h: HandRig): Rig => ({ ...stand(NOOR, [0, 0], 0, { width: 0.3 }), lean: 0.05, look: [-0.05, 0.75, -0.4], hands: [h, null] });
   const poses = [rigPose(NOOR, rigOf(hook)), rigPose(NOOR, rigOf(rod))];
   for (const p of poses) console.log('coil-pose left arm', JSON.stringify(p.body.arms![0].report), JSON.stringify(p.body.arms![0].angles));
@@ -74,6 +73,7 @@ export default makeScene2D(function* (view) {
     const g = poses[0].body.arms![0].grip!;
     const top = madd(g.p, N, -0.016 + 0.0065 * k);
     const w = 0.105, h = 0.15;
+    void w;
     const pts: V3[] = [];
     for (let i = 0; i < 40; i++) {
       const th = (i / 40) * Math.PI * 2;
@@ -83,12 +83,11 @@ export default makeScene2D(function* (view) {
   }
   function alongBundle(k: number): V3[] {
     const g = poses[1].body.arms![0].grip!;
-    const [d1, d2, d3] = quatCols(g.q);
-    const off = madd(madd(g.p, d1, ((k % 2) - 0.5) * 0.007), d2, (k / 5 - 0.5) * 0.014);
+    const top = madd(g.p, N, -0.016 + 0.0065 * k);
     const pts: V3[] = [];
     for (let i = 0; i < 40; i++) {
       const th = (i / 40) * Math.PI * 2;
-      pts.push(madd(madd(off, d3, Math.sin(th) * 0.105), [0, 1, 0], -(1 - Math.cos(th)) * 0.15));
+      pts.push(madd(madd(top, A, Math.sin(th) * 0.105), [0, 1, 0], -(1 - Math.cos(th)) * 0.15));
     }
     return pts;
   }
@@ -115,7 +114,7 @@ export default makeScene2D(function* (view) {
     view.add(<ThreeView world={world} camera={c} x={x} y={y} width={w} height={h} radius={16} />);
     view.add(
       <Rect x={x - w / 2 + 12} y={y - h / 2 + 12} offset={[-1, -1]} layout padding={[4, 12]} radius={20} fill={'#ffffffe0'}>
-        <Txt text={() => `${titles[i]} · ${model() === 0 ? 'Ringe hängen am Haken' : 'längs im Bündel'}`} fontFamily={FONT} fontWeight={700} fontSize={22} fill={C.text} />
+        <Txt text={() => `${titles[i]} · ${model()} · ${JSON.stringify(poses[model()].body.arms![0].report.strained)} ${JSON.stringify(poses[model()].body.arms![0].report.atLimit)} ${(poses[model()].body.arms![0].report.posError * 1000).toFixed(1)}mm ${Object.values(poses[model()].body.arms![0].angles).map((v) => Math.round((v * 180) / Math.PI)).join('/')}`} fontFamily={FONT} fontWeight={700} fontSize={18} fill={C.text} />
       </Rect>,
     );
   });

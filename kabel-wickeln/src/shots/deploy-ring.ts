@@ -152,7 +152,7 @@ export function windRing(spec: RingSpec, onFrame?: (rod: Rod, t: number) => void
   const x0 = rod.x.slice();
   const fist = rod.bundle({ frame: { p: [...FIST] as V3, q: [0, 0, 0, 1] }, blend: 0.001 });
   fist.add(0, sLoops[0][0]);
-  rod.addGuide({
+  const guide = rod.addGuide({
     nodes: [loops[0][0], rod.n - 1],
     compliance: 3e-3,
     target: (i, t) => [x0[3 * i], x0[3 * i + 1], x0[3 * i + 2] + (zMid - x0[3 * i + 2]) * press * smooth(t / (0.7 * T))],
@@ -163,11 +163,14 @@ export function windRing(spec: RingSpec, onFrame?: (rod: Rod, t: number) => void
     rod.step(1 / 60, 60);
     onFrame?.(rod, rod.time);
   }
-  rod.opts.iterations = it;
-  rod.releaseAll();
+  rod.removeGuide(guide);
   fist.remove();
   // relax for a moment without the guides, still without gravity, then remember this shape
-  for (let f = 0; f < 20; f++) rod.step(1 / 60, 30);
+  for (let f = 0; f < 20; f++) {
+    rod.step(1 / 60, 60);
+    onFrame?.(rod, rod.time);
+  }
+  rod.opts.iterations = it;
   rod.rememberShape();
   rod.opts.gravity = g;
   rod.v.fill(0);
@@ -233,18 +236,38 @@ export const placePoint = (p: V3, d: V3, q: Quat): V3 => add(add(quatRotate(q, s
 // ------------------------------------------------------------------ checks
 
 /**
- * The writhe each loop adds, with half of the next loop (the cable to the floor that crosses it):
- * an over-under ring alternates in sign, a same-way ring keeps one sign.
+ * The crossings, read from the ring (factory coordinates, the stack along +z): for every loop, on
+ * which side of it the cable that follows it passes (the next loop on its way down the left side,
+ * or the end tail through the eye): +1 in front (über: the cable to the floor lies on top), -1
+ * behind (unter: the loop covers it). Over-under must alternate; it also shows that pressing did
+ * not push a strand through another.
  */
-export function loopWrithes(rod: Rod, ring: Ring): number[] {
-  const out: number[] = [];
-  let prev = 0;
-  const per = ring.loops[0][1] - ring.loops[0][0];
-  for (let k = 0; k < ring.loops.length; k++) {
-    const to = Math.min(rod.n - 1, ring.loops[k][1] + Math.round(per / 2));
-    const w = rod.writhe(0, to);
-    out.push(w - prev);
-    prev = w;
+export function crossings(rod: Rod, ring: Ring): number[] {
+  const x = rod.x, out: number[] = [];
+  const N = ring.loops.length;
+  for (let k = 0; k < N; k++) {
+    const [a, b] = ring.loops[k];
+    const per = b - a + 1;
+    // the strand that follows: the next loop's first 40 %, or the end tail's first 25 cm
+    const s0 = k + 1 < N ? ring.loops[k + 1][0] + Math.round(0.08 * per) : b + 1;
+    const s1 = k + 1 < N ? ring.loops[k + 1][0] + Math.round(0.4 * per) : Math.min(rod.n - 1, rod.segmentAt(rod.sNode[b + 1] + 0.25));
+    let sum = 0, cnt = 0;
+    for (let i = s0; i <= s1; i++) {
+      // where it lies over loop k, seen along the stack: the nearest node of loop k in x-y
+      let best = Infinity, bz = 0;
+      for (let j = a; j <= b; j++) {
+        const d = Math.hypot(x[3 * i] - x[3 * j], x[3 * i + 1] - x[3 * j + 1]);
+        if (d < best) {
+          best = d;
+          bz = x[3 * j + 2];
+        }
+      }
+      if (best < 4 * ring.rc) {
+        sum += Math.sign(x[3 * i + 2] - bz);
+        cnt++;
+      }
+    }
+    out.push(cnt ? sum / cnt : 0);
   }
   return out;
 }
