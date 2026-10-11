@@ -253,7 +253,7 @@ const throwTime = (s: number) =>
  * flight, the ring's circle, the landing at the stand. The replay from the side, travelling with the
  * ring: the loops leave its back. Then high behind him: the cable on the floor.
  */
-const B_NEAR: Orbit = { target: [0.38, 0.98, 0.0], yaw: 0.95, pitch: 0.12, dist: 1.75, fov: 34 };
+const B_NEAR: Orbit = { target: [0.42, 0.98, -0.02], yaw: 0.95, pitch: 0.12, dist: 1.75, fov: 34 };
 const B_NEAR2: Orbit = { target: [0.32, 0.95, 0.12], yaw: 1.05, pitch: 0.14, dist: 2.1, fov: 34 };
 const B_BEHIND: Orbit = { target: [5.2, 0.35, 0.3], yaw: -1.36, pitch: 0.3, dist: 8.9, fov: 38 };
 const B_REST: Orbit = { target: [5.6, 0.0, 0.3], yaw: -1.2, pitch: 0.55, dist: 9.6, fov: 38 };

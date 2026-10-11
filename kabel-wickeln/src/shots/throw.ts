@@ -8,7 +8,8 @@
 // sees the circle. In flight the loops leave the ring one after the other from its back face (the
 // side towards him), the free cable trails back to his hand; the loops in his hand run out after
 // them. The ring lands near the stand, the cable lies in gentle bends on the floor, without curls
-// (the +1 and -1 turns of the über and unter loops cancel). He lets the rest run out after it.
+// (the +1 and -1 turns of the über and unter loops cancel). What is left in his hand he keeps, with
+// the end, and draws it back towards his hip: the rest he takes along.
 //
 // What is guided, what is simulated (KONZEPT: "Die Schlaufen lösen sich von einem geführten Ring,
 // simuliert wird das ausgelegte Kabel"): the ring in the right hand and in flight is a rigid bundle
@@ -107,7 +108,7 @@ export const THROW_T = {
   release: REL_AT,
   /** the ring lands */
   land: REL_AT + FLIGHT,
-  /** the left hand lets the rest run out after it */
+  /** the left hand goes back towards his hip with the rest */
   rest0: REL_AT + FLIGHT + 0.5, rest1: REL_AT + FLIGHT + 1.7,
   end: REL_AT + FLIGHT + 2.9,
 };
@@ -198,8 +199,8 @@ const mixGrip = (a: Grip, b: Grip, u: number): Grip => ({ p: lerpV(a.p, b.p, u),
 
 /** the left hand's coil grip: the strands run along z through it, the palm over them (IK probes: the comfortable one) */
 const LEFT_GRIP = gripFrame(HOLD, [0, 0, 1], [0, 1, 0]);
-/** where the left hand lets the rest run out: forward and down */
-const LEFT_REST: Grip = { p: [0.55, 0.85, -0.05], q: LEFT_GRIP.q };
+/** where the left hand goes with the rest once the ring has landed: back towards his hip, drawing the cable after it */
+const LEFT_REST: Grip = { p: [0.28, 0.93, -0.11], q: LEFT_GRIP.q };
 /**
  * The right hand's coil grip: the strands run along +z through it; on the swing arc at angle φ the
  * palm side turns with the arm (from the strands to the palm: (-cos φ, -sin φ, 0)), the comfortable
@@ -271,8 +272,9 @@ export function throwRig(p: Plan) {
   };
   const left = (t: number): HandRig => {
     // all loops in the hook of the fingers; open a little while the front loops slide out; then
-    // loosely round the start end and three loops; out and down to let the rest run out
-    const open = 0.55 * ease(t, T.take, T.take + 0.3) - 0.25 * ease(t, T.split, T.split + 0.3) + 0.6 * ease(t, T.land, T.land + 0.3);
+    // loosely round the start end and three loops, open while they may run out; with what is left
+    // back towards his hip
+    const open = 0.55 * ease(t, T.take, T.take + 0.3) - 0.25 * ease(t, T.split, T.split + 0.3) + 0.4 * ease(t, T.release + 0.6, T.release + 0.9) - 0.4 * ease(t, T.rest0, T.rest0 + 0.4);
     const g = mixGrip(LEFT_GRIP, LEFT_REST, ease(t, T.rest0, T.rest1));
     return { grip: g, hold: 'coil', radius: 0.02 - 0.006 * ease(t, T.take, T.split), open, free: 0.4 };
   };
@@ -480,12 +482,13 @@ export const throwShot: ShotDef = {
           inRing.length = 0;
           landed = true;
         }
-        // the loops in the left hand run out after the ring's, when the cable pulls on them
+        // the loops in the left hand run out after the ring's, when the cable pulls on them (what is
+        // left he keeps in the hand, with the end: the rest he takes along)
         if (!inRing.length && inHand.length) {
           const tail = P(r.n - 1);
           const D2 = len(sub(tail, hand));
           const free2 = ring.sCable[1] - ring.sLoops[inHand[0]][1];
-          if (free2 < 1.06 * D2 + 0.4 || t > T.rest0 + 0.35 * (HAND_LOOPS - inHand.length)) {
+          if (free2 < 1.06 * D2 + 0.4) {
             const k = inHand.shift() as number;
             lh.release(ring.sLoops[k][0], ring.sLoops[k][1], 0.05);
           }

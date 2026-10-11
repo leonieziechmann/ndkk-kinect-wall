@@ -18,7 +18,7 @@ import { lookFrom, makeCamera } from '../../three/camera';
 import { Studio } from '../../three/studio';
 import { ThreeView, World3D } from '../../three/view';
 
-const BAKE = 'coil-dev1';
+const BAKE = 'coil-dev';
 
 export default makeScene2D(function* (view) {
   view.fill(C.bg);

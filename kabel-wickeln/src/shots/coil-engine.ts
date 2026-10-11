@@ -112,30 +112,27 @@ export function hangingArc(p0: [number, number], p1: [number, number], len: numb
 
 // ------------------------------------------------------------------ the left fist's frame
 
-/** from the strands' axis to the palm: behind the strands (towards the body) and a little below; the fingers curl round their front */
-const TO_PALM: V3 = across(normalize(madd(mul(GEOM.N, -0.9), UP, -0.2)), GEOM.S);
+/** from the strands to the palm: the palm right behind them (towards the body), facing forward; the fingers curl round their front */
+const TO_PALM: V3 = across(mul(GEOM.N, -1), GEOM.S);
 
-/** the coil's axis N in the left grip's own frame (component across the strands) */
-const N_LOCAL: V3 = (() => {
-  const q = gripFrame([0, 0, 0], GEOM.S, TO_PALM).q;
-  const nq = across(GEOM.N, GEOM.S);
-  const inv: Quat = [-q[0], -q[1], -q[2], q[3]];
-  return quatRotate(inv, nq);
-})();
+const col1 = (f: Frame): V3 => quatRotate(f.q, [1, 0, 0]);
+const col3 = (f: Frame): V3 => quatRotate(f.q, [0, 0, 1]);
 
-/** the left grip frame (as planned) at point p: d3 = S (the thumb points along it, to the plug), d1 to the palm */
-export const leftGrip = (p: V3): Frame => gripFrame(p, GEOM.S, TO_PALM);
+/** the planned palm frame at palm point p: d3 = S (the thumb points along it, to the plug), d1 from the strands to the palm */
+export const palmFrame = (p: V3): Frame => gripFrame(p, GEOM.S, TO_PALM);
 
-/** a point of the stack in a (reached) left grip frame: strand k, `along` metres along the strands (+ = lateral) */
+/** the fist's grip frame for the IK (its axis R in front of the palm) and back */
+export const gripOfPalm = (f: Frame, R: number): Frame => ({ p: madd(f.p, col1(f), -R), q: f.q });
+export const palmOfGrip = (g: Frame, R: number): Frame => ({ p: madd(g.p, col1(g), R), q: g.q });
+
+/** strand k of the stack in a palm frame (planned or reached), `along` metres along the strands (+ = lateral, to the plug) */
 export function stackPoint(f: Frame, k: number, along: number): V3 {
-  const n = quatRotate(f.q, N_LOCAL);
-  const s = quatRotate(f.q, [0, 0, 1]);
-  return add(add(f.p, mul(n, GEOM.stack(k))), mul(s, along));
+  return madd(madd(f.p, col1(f), -GEOM.stack(k)), col3(f), along);
 }
 
-/** the stack's axis (N across the strands) and the strands' direction of a (reached) left grip frame */
+/** the stack's axis (away from the palm: in front), the strands' direction and up across them, of a palm frame */
 export function stackAxes(f: Frame): { n: V3; s: V3; u: V3 } {
-  const n = quatRotate(f.q, N_LOCAL), s = quatRotate(f.q, [0, 0, 1]);
+  const n = mul(col1(f), -1), s = col3(f);
   return { n, s, u: normalize(crossV(n, s)) };
 }
 
@@ -203,13 +200,15 @@ class Follow {
 
 /** per frame: left angles (9), right angles (9), hand shapes, the look point */
 export const REC = {
-  size: 9 + 9 + 8 + 3,
+  size: 9 + 9 + 8 + 3 + 1,
   /** offsets */
   L: 0,
   R: 9,
   /** left open, right open, roll, cross, pinch (1) or free hand (0), free-hand curl, under turn 0..1, thumbWeight */
   H: 18,
   LOOK: 26,
+  /** the fist's radius */
+  FR: 29,
 } as const;
 
 /** what the right hand does in a frame: the rig and the values recorded for the scene */
@@ -306,6 +305,8 @@ export class CoilController {
   private right!: RightState;
   private lookAt: V3 = [-0.02, 0.72, -0.4];
   private leftOpen = 0;
+  /** the fist's radius the last solved pose used */
+  private leftR: number = GEOM.fist(0);
   private started = false;
   private memo: LoopMemo | null = null;
   /** what happened when (printed with the summary) */
@@ -357,18 +358,29 @@ export class CoilController {
     return lerpV(g.leftOut, g.leftMeet, ramp(t, b.tTurned + 0.2 * (b.tAbove - b.tTurned), b.tMeet - 0.1));
   }
 
-  private leftRig(t: number): HandRig {
-    return { grip: leftGrip(this.leftPoint(t)), hold: 'coil', radius: GEOM.bundle, open: this.leftOpen, free: 0.3, thumbAlong: 1 };
+  /** the fist's radius at time t: round the strands it holds, growing as the new one comes in */
+  fistR(t: number): number {
+    const i = loopAt(this.bs, t);
+    if (i < 0) return GEOM.fist(0);
+    const b = this.bs[i];
+    return GEOM.fist(b.k - 1) + (GEOM.fist(b.k) - GEOM.fist(b.k - 1)) * ramp(t, b.tMeet - 0.2, b.tMeet + 0.05);
   }
 
-  /** the pads at the hand-over of loop k: a finger's width beyond the fist's medial end, at strand k's place in the stack */
+  private leftRig(t: number): HandRig {
+    const R = this.fistR(t);
+    return { grip: gripOfPalm(palmFrame(this.leftPoint(t)), R), hold: 'coil', radius: R, open: this.leftOpen, free: 0.3, thumbAlong: 1 };
+  }
+
+  /** the pads at the hand-over of loop k: a finger's width beyond the fist's medial end, at strand k's place in the stack (over: a little behind it, under: in front) */
   padsMeet(k: number, t: number): V3 {
-    return madd(stackPoint(leftGrip(this.leftPoint(t)), k, -(GEOM.half + GEOM.gap)), UP, -0.002);
+    const f = palmFrame(this.leftPoint(t));
+    const kind = this.plan.kinds[k - 1] ?? 'over';
+    return madd(madd(stackPoint(f, k, -(GEOM.half + GEOM.gap)), stackAxes(f).n, GEOM.padsDepth[kind]), UP, -0.002);
   }
 
   /** above the fist's medial end: the loop hangs open below between the hands */
   private padsAbove(k: number, t: number): V3 {
-    const f = leftGrip(this.leftPoint(t));
+    const f = palmFrame(this.leftPoint(t));
     const { s } = stackAxes(f);
     return madd(madd(this.padsMeet(k, t), UP, 0.07), s, -0.05);
   }
@@ -389,12 +401,15 @@ export class CoilController {
       thumbTo: toCoil,
       thumbWeight: 0.2 * (1 - out),
       prefer: [{ hand: [0, 1, 0], world: normalize([-0.4, -0.3, 0.87]), weight: 0.3 * out }],
+      // (the shoulder hangs relaxed: no shrug or drop to reach)
+      joints: { clavElev: 0.03, clavProt: 0.03 },
+      jointWeight: 2,
     };
   }
 
   /** where the strand past the pads ends (the loop's end, at the fist's lateral end once laid) and the strand's direction */
   private strandEnd(k: number, t: number, pads: V3): { e: V3; dir: V3 } {
-    const f = leftGrip(this.leftPoint(t));
+    const f = palmFrame(this.leftPoint(t));
     const lat = madd(stackPoint(f, k, GEOM.half), UP, -0.002);
     const dir = normalize(sub(lat, pads));
     return { e: madd(pads, dir, STRAND), dir };
@@ -452,7 +467,8 @@ export class CoilController {
     const hd = this.spanDir ?? end.dir;
     const d3 = normalize(lerpV(hd, end.dir, back));
     const roll = sign * g.roll * ramp(t, tBack, tBack + 0.6 * (b.tAbove - tBack));
-    const out = 1 - back;
+    // (the thumb soon points along the cable again: the cable past its tip runs clear of the fingers)
+    const out = 1 - ramp(t, tBack, tBack + 0.4 * (b.tAbove - tBack));
     if (b.kind === 'over') return { rig: this.pinchRig(p, d3, { roll, cross: 0.3 + 0.9 * out, out }), turn: 0 };
     // ---- under: turned over at the hip, back turned over, turning back on the way down into the fist
     const turn = t < b.tTurned ? ramp(t, b.tHeld, b.tTurned) : 1 - ramp(t, b.tAbove - 0.25 * (b.tAbove - b.tTurned), b.tMeet - 0.05);
@@ -491,9 +507,9 @@ export class CoilController {
     // the strand: from the loop's end up to just short of the pads
     const s0 = sP - STRAND, a = rod.segmentAt(sP - STRAND) + 1, e = rod.segmentAt(sP - 0.014);
     const padsNow = () => this.pose.body.arms![1].grip!;
-    const strand = new Follow(rod, a, e, (t, out) => {
-      const g = padsNow();
-      const { dir } = this.strandEnd(b.k, t, g.p);
+    // (straight on from the pads, the way the cable leaves past the thumb tip: never through the hand)
+    const strand = new Follow(rod, a, e, (_t, out) => {
+      const g = padsNow(), dir = col3(g);
       for (let n = a; n <= e; n++) out[n - a] = madd(g.p, dir, sP - rod.sNode[n]);
     }, 0.4);
     const tIn = b.tTurned + 0.35 * (b.tAbove - b.tTurned);
@@ -505,9 +521,9 @@ export class CoilController {
     const len = rod.sNode[le] - rod.sNode[la];
     const A = GEOM.A, N = GEOM.N;
     const P2 = (p: V3): [number, number] => [dot(p, A), p[1]];
-    const loop = new Follow(rod, la, le, (t, out) => {
+    const loop = new Follow(rod, la, le, (_t, out) => {
       const g = padsNow();
-      const { e: E } = this.strandEnd(b.k, t, g.p);
+      const E = madd(g.p, col3(g), STRAND);
       const arc = hangingArc(P2(nodeOf(rod, la)), P2(E), len);
       for (let n = la; n <= le; n++) {
         const [x, y] = arc((rod.sNode[n] - rod.sNode[la]) / len);
@@ -524,7 +540,7 @@ export class CoilController {
   /** the cable at shot time 0: the plug end through the fist (the plug out at its lateral end), the pads next to it, down to the floor, then loose bends to her right front */
   private initialPoints(length: number): V3[] {
     const g = GEOM;
-    const f = leftGrip(g.leftMeet);
+    const f = palmFrame(g.leftMeet);
     const { s: sDir } = stackAxes(f);
     const pts: V3[] = [];
     // the plug sticks out of the fist's lateral end along the strands, 2 cm of cable between
@@ -587,7 +603,7 @@ export class CoilController {
     const pre = this.o.preroll ?? 1.5;
     rod.time = -pre;
     this.solve(-pre, true);
-    this.coil = rod.bundle({ frame: this.pose.body.arms![0].grip!, hand: 0, blend: 0.01 });
+    this.coil = rod.bundle({ frame: palmOfGrip(this.pose.body.arms![0].grip!, this.leftR), hand: 0, blend: 0.01 });
     // the plug and the strand through the fist: the plug sticks out of it, held
     this.coil.add(0, sMed - 0.003, 0.01);
     // (rolls: the cable turns with the hand, the under loop's turn-over and the thumb's roll go into it;
@@ -658,12 +674,15 @@ export class CoilController {
       if (tn >= 0 && r.atLimit.length) note(`${i ? 'R' : 'L'} at limit ${r.atLimit.join(',')}`);
       if (tn >= 0 && !r.reached) note(`${i ? 'R' : 'L'} not reached`, r.posError * 1000);
     }
+    // the coil sits against the palm: the bundle's frame is the reached grip moved back to the palm
+    this.leftR = rig.hands[0]?.radius ?? GEOM.fist(0);
+    const palm = palmOfGrip(arms[0].grip!, this.leftR);
     if (this.coil) {
       if (jump) {
-        this.coil.setFrame(arms[0].grip!);
+        this.coil.setFrame(palm);
         this.pin.setFrame(arms[1].grip!);
       } else {
-        this.coil.moveTo(arms[0].grip!, DT);
+        this.coil.moveTo(palm, DT);
         this.pin.moveTo(arms[1].grip!, DT);
       }
     }
@@ -840,22 +859,26 @@ export class CoilController {
         const rec = rod.heldMark[j] ? this.penHeld : this.pen;
         if (d > rec.max) {
           rec.max = d;
-          rec.where = `t ${t.toFixed(2)} s ${rod.sNode[j].toFixed(3)} capsule group ${c.group ?? '-'} r ${(c.r * 1000).toFixed(1)}`;
+          rec.where = `t ${t.toFixed(2)} s ${rod.sNode[j].toFixed(3)} capsule group ${c.group ?? '-'} ${(c as { part?: string }).part ?? 'leg'} r ${(c.r * 1000).toFixed(1)}`;
         }
       }
     }
-    // kinks: the bend radius between neighbouring segments (free cable ≥ 15 mm, next to the fingers ≥ 10 mm)
-    const d3 = rod.d3;
-    for (let j = 0; j + 1 < rod.ns; j++) {
+    // kinks: the bend radius at each node from the positions (free cable ≥ 15 mm, next to the fingers ≥ 10 mm)
+    const x = rod.x;
+    for (let i = 1; i + 1 < rod.n; i++) {
+      const j = i - 1;
       if (rod.wc[j] === 0 && rod.wc[j + 1] === 0) continue;
-      const c = d3[3 * j] * d3[3 * j + 3] + d3[3 * j + 1] * d3[3 * j + 4] + d3[3 * j + 2] * d3[3 * j + 5];
+      const ax = x[3 * i] - x[3 * i - 3], ay = x[3 * i + 1] - x[3 * i - 2], az = x[3 * i + 2] - x[3 * i - 1];
+      const bx = x[3 * i + 3] - x[3 * i], by = x[3 * i + 4] - x[3 * i + 1], bz = x[3 * i + 5] - x[3 * i + 2];
+      const la = Math.hypot(ax, ay, az), lb = Math.hypot(bx, by, bz);
+      const c = (ax * bx + ay * by + az * bz) / (la * lb + 1e-12);
       const ang = Math.acos(Math.min(1, Math.max(-1, c)));
       if (ang < 1e-4) continue;
-      const R = (0.5 * (rod.L[j] + rod.L[j + 1])) / ang;
-      const nearHand = rod.heldMark[j] || rod.heldMark[j + 1] || rod.skipGroup[j] >= 0;
+      const R = (0.5 * (la + lb)) / ang;
+      const nearHand = rod.heldMark[j] || rod.heldMark[j + 1] || rod.skipGroup[j] >= 0 || rod.skipGroup[j + 1] >= 0;
       if (nearHand) {
-        if (R < this.kink.fingers) { this.kink.fingers = R; this.kink.fingersWhere = `t ${t.toFixed(2)} s ${rod.sNode[j + 1].toFixed(3)}`; }
-      } else if (R < this.kink.free) { this.kink.free = R; this.kink.freeWhere = `t ${t.toFixed(2)} s ${rod.sNode[j + 1].toFixed(3)}`; }
+        if (R < this.kink.fingers) { this.kink.fingers = R; this.kink.fingersWhere = `t ${t.toFixed(2)} s ${rod.sNode[i].toFixed(3)}`; }
+      } else if (R < this.kink.free) { this.kink.free = R; this.kink.freeWhere = `t ${t.toFixed(2)} s ${rod.sNode[i].toFixed(3)}`; }
     }
     // speed of the coil and the forming loop (plug … pads) from frame to frame
     const n = rod.n;
@@ -975,6 +998,7 @@ export class CoilController {
     out[REC.LOOK] = this.lookAt[0];
     out[REC.LOOK + 1] = this.lookAt[1];
     out[REC.LOOK + 2] = this.lookAt[2];
+    out[REC.FR] = this.leftR;
     return out;
   }
 }
@@ -1084,7 +1108,7 @@ export class CoilReplay {
     };
     const gl = this.bake.frame('gripL', t), gr = this.bake.frame('gripR', t);
     const H = REC.H;
-    const left: HandRig = { grip: gl, hold: 'coil', radius: GEOM.bundle, open: v[H], thumbAlong: 1 };
+    const left: HandRig = { grip: gl, hold: 'coil', radius: v[REC.FR], open: v[H], thumbAlong: 1 };
     const right: HandRig = v[H + 4] > 0.5
       ? { grip: gr, hold: 'pinch', radius: RC, open: v[H + 1], roll: v[H + 2], cross: v[H + 3] }
       : { wrist: gr.p, curl: v[H + 5] };

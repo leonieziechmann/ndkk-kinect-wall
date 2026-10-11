@@ -134,22 +134,28 @@ export const GEOM = (() => {
     N,
     A,
     S,
-    /** the fist's grip point (the middle of the strands in it): resting in front of the left hip */
+    /** the left palm (where the strands rest against it): resting in front of the left hip */
     leftRest: [-0.15, 0.9, -0.27] as V3,
     /** out to the left a little while the right hand slides out */
-    leftOut: [-0.2, 0.895, -0.26] as V3,
+    leftOut: [-0.27, 0.89, -0.3] as V3,
     /** towards the midline to meet the right hand */
     leftMeet: [-0.08, 0.91, -0.3] as V3,
     /** the right hand at the hip, slid out */
-    hip: [0.42, 0.82, -0.12] as V3,
+    hip: [0.45, 0.805, -0.13] as V3,
     /** half the length of a strand in the fist, along S [m] */
     half: 0.045,
-    /** the stack: the top of loop k (0 = the plug strand) lies this far along N from the fist's middle [m] */
-    stack: (k: number) => -0.021 + 0.007 * k,
-    /** the bundle's radius for the hand shape [m] */
-    bundle: 0.016,
+    /** the stack: strand k (0 = the plug strand) lies this far from the palm, every new one further out (along N, in front) [m] */
+    stack: (k: number) => 0.0038 + 0.005 * k,
+    /** the fist's radius round strands 0 … k: from the palm to the outer side of strand k, halved [m] */
+    fist: (k: number) => (0.0038 + 0.005 * k + 0.0032) / 2 + 0.0004,
     /** the right hand's pads this far beyond the fist's medial end at the hand-over [m] (a finger's width and room) */
     gap: 0.036,
+    /**
+     * where the pads are at the hand-over across the stack, relative to the new strand [m]: over, on
+     * Noor's side of the new loop (the cable to the floor hangs between her and the loop); under, in
+     * front of it (the wrist came through the loop: the cable to the floor hangs outside it)
+     */
+    padsDepth: { over: -0.02, under: 0.02 },
     /** how far the forearm turns over for "under" [rad] (the IK reaches ~136° with the elbow low) */
     underTurn: 135 * D,
     /** the roll of the cable between thumb and index on the way back [rad]: over +, under − */

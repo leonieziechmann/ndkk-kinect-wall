@@ -17,12 +17,12 @@ import type { ShotDef } from './types';
 
 const KINDS: LoopKind[] = ['over', 'under', 'over', 'under', 'over', 'under'];
 
-/** stage 1: two slow loops, four at the natural pace; 5 m in six loops leaves ~18 cm and the plug in the right hand */
+/** stage 1: two slow loops, four at the natural pace; 5 m in six loops leaves ~30 cm and the plug in the right hand */
 export const COIL1: CoilPlan = {
   kinds: KINDS,
   paces: KINDS.map((_, i) => (i < 2 ? TEACH : NATURAL)),
   start: 0.6,
-  loopLength: 0.77,
+  loopLength: 0.75,
 };
 
 /** how long the coil hangs still after the last loop (the strap closes in the scene) */
