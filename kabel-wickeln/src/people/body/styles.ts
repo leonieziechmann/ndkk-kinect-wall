@@ -2,13 +2,15 @@
 // from lofts (rings along a path, each a superellipse) and ellipsoids. One piece for the torso, one
 // per limb from inside the torso out to the wrist or ankle, so there are no seams where a real body
 // has none. Ported from erklaervideo/src/lib/body/styles.ts and extended: body shapes (Build), work
-// clothes, hair styles, hijab, cap, beard, glasses, gloves, painted nails, and the first-person split
-// (the own head, torso and upper arms carry the layer SELF).
+// clothes (overshirt, open work jacket, lanyard with a crew pass), hair styles, a fitted sport hijab,
+// cap, beard, glasses, gloves (work gloves and fingerless rigger gloves with a light palm and a dark
+// back), painted nails, and the first-person split (the own head, torso and upper arms carry the
+// layer SELF).
 //
 // A person always gives the same vertices and faces in the same order, whatever the pose, so a mesh
 // is built once and then refilled in place (buildBody(pose, mesh)).
 
-import { RGB, V3, across, add, clamp, cross, dot, hexRgb, lerp, local, madd, mix3, norm, scale, sub } from '../math';
+import { RGB, V3, across, add, clamp, cross, dot, hexRgb, lerp, local, madd, mix3, norm, scale, smooth, sub } from '../math';
 import type { Frame, HandPose, PersonSpec, Pose } from '../people';
 import { FINGERS, THUMB, handJoints } from './hand';
 import { MAT, MAT_COUNT, MatName, Mesh, Ring, SELF, ellipsoid, facing, loft, tubeRings } from './mesh';
@@ -55,6 +57,7 @@ export function paletteOf(spec: PersonSpec): RGB[] {
     hijab: top,
     frame: [0.16, 0.15, 0.15],
     accent: [0.94, 0.93, 0.9],
+    dye: hair,
   };
   const out: RGB[] = new Array(MAT_COUNT);
   for (const [name, i] of Object.entries(MAT) as [MatName, number][]) out[i] = c[name] ? hexRgb(c[name] as string) : derived[name];
@@ -172,14 +175,14 @@ const HAIR_BUZZ: HeadSec[] = [
   [0.113, -0.025, 0.044, 0.05, 0.062],
   [0.127, -0.026, 0.022, 0.024, 0.03],
 ];
-// the longer top of an undercut, swept up and back
+// the longer top of an undercut, swept up and forward into a tousled quiff
 const HAIR_TOP: HeadSec[] = [
   [0.045, -0.02, 0.074, 0.07, 0.092],
-  [0.075, -0.014, 0.082, 0.09, 0.104],
-  [0.105, -0.012, 0.075, 0.088, 0.098],
-  [0.132, -0.014, 0.058, 0.078, 0.082],
-  [0.151, -0.016, 0.032, 0.05, 0.05],
-  [0.16, -0.018, 0.01, 0.016, 0.016],
+  [0.08, -0.012, 0.08, 0.095, 0.104],
+  [0.112, -0.008, 0.074, 0.098, 0.096],
+  [0.14, -0.008, 0.058, 0.09, 0.078],
+  [0.162, -0.012, 0.034, 0.064, 0.05],
+  [0.172, -0.014, 0.012, 0.024, 0.016],
 ];
 // pulled back tight (ponytail, bun)
 const HAIR_PULLED: HeadSec[] = [
@@ -200,16 +203,15 @@ const HAIR_CURLY: HeadSec[] = [
   [0.14, -0.028, 0.064, 0.064, 0.082],
   [0.157, -0.03, 0.034, 0.036, 0.044],
 ];
-// a chin-length bob: the sides hang beside the cheeks, the face stays free
-const HAIR_BOB: HeadSec[] = [
-  [-0.085, -0.034, 0.09, 0.04, 0.085],
-  [-0.06, -0.03, 0.097, 0.05, 0.1],
-  [-0.02, -0.024, 0.1, 0.064, 0.112],
-  [0.02, -0.018, 0.099, 0.078, 0.118],
-  [0.06, -0.016, 0.094, 0.086, 0.118],
-  [0.095, -0.02, 0.083, 0.087, 0.108],
-  [0.12, -0.024, 0.064, 0.072, 0.088],
-  [0.137, -0.026, 0.034, 0.04, 0.052],
+// a pixie cut: close at the nape and over the ears, fuller on top, a short fringe over the forehead
+const HAIR_PIXIE: HeadSec[] = [
+  [-0.055, -0.03, 0.062, 0.03, 0.078],
+  [-0.02, -0.024, 0.077, 0.056, 0.096],
+  [0.025, -0.016, 0.084, 0.078, 0.108],
+  [0.058, -0.012, 0.085, 0.094, 0.114],
+  [0.088, -0.016, 0.08, 0.094, 0.108],
+  [0.114, -0.022, 0.066, 0.08, 0.092],
+  [0.134, -0.026, 0.04, 0.05, 0.058],
 ];
 // a cap's crown, a little outside the hair
 const CAP: HeadSec[] = [
@@ -229,25 +231,56 @@ const BEARD: HeadSec[] = [
   [-0.094, 0.044, 0.045, 0.045, 0.032],
   [-0.111, 0.05, 0.026, 0.026, 0.028],
 ];
-// a hijab around the head: the front stays behind the face from the forehead to the chin, so the
-// face looks out; under the chin it wraps the neck, then (in the chest frame) it drapes the shoulders
+// a fitted sport hijab over the head, snug at the face and over the ears, a little fuller at the back
+// (over the hair); bottom to top like HEAD, sampled at HIJAB_ROWS. The low rows reach back far
+// enough to cover the neck, which sits behind the head joint.
 const HIJAB: HeadSec[] = [
-  [0.14, -0.026, 0.04, 0.044, 0.058],
-  [0.128, -0.024, 0.066, 0.074, 0.094],
-  [0.1, -0.02, 0.087, 0.094, 0.113],
-  [0.07, -0.016, 0.094, 0.1, 0.122],
-  [0.045, -0.02, 0.096, 0.086, 0.125],
-  [0.0, -0.026, 0.096, 0.072, 0.12],
-  [-0.045, -0.022, 0.092, 0.07, 0.11],
-  [-0.085, -0.004, 0.083, 0.072, 0.097],
-  [-0.118, 0.012, 0.074, 0.08, 0.088],
-  [-0.15, 0.006, 0.08, 0.086, 0.088],
+  [-0.05, 0.013, 0.066, 0.08, 0.096],
+  [-0.03, 0.005, 0.071, 0.088, 0.096],
+  [-0.01, -0.002, 0.077, 0.097, 0.1],
+  [0.02, -0.009, 0.082, 0.099, 0.11],
+  [0.05, -0.013, 0.082, 0.095, 0.115],
+  [0.078, -0.018, 0.078, 0.086, 0.112],
+  [0.098, -0.021, 0.072, 0.078, 0.104],
+  [0.116, -0.024, 0.062, 0.066, 0.088],
+  [0.13, -0.026, 0.046, 0.05, 0.064],
 ];
-// … and over the shoulders: height above the hip joints, half width, front, back, sag
-const DRAPE: [number, number, number, number, number][] = [
-  [0.5, 0.15, 0.108, 0.104, 0],
-  [0.455, 0.206, 0.124, 0.118, 0.055],
+/** heights of the hijab's rings over the head, top to bottom: fine around the face for a smooth edge */
+const HIJAB_ROWS = [0.13, 0.116, 0.098, 0.082, 0.07, 0.06, 0.05, 0.04, 0.03, 0.02, 0.01, 0.0, -0.01, -0.02, -0.03, -0.04, -0.05];
+/**
+ * … then under the chin and around the neck into the collar: rings around the neck's axis, top to
+ * bottom: position on the axis (0 the neck joint, 1 the top of the neck), and how far the fabric
+ * stands off the neck: sides, front, back (m, base body). The top ring passes behind the chin.
+ */
+const HIJAB_NECK: [number, number, number, number][] = [
+  [0.6, 0.012, 0.03, 0.012],
+  [0.35, 0.008, 0.02, 0.01],
+  [0.1, 0.01, 0.014, 0.012],
+  [-0.2, 0.016, 0.01, 0.01],
 ];
+/**
+ * The face in the hijab, an oval over the head: centre height and half height (m above the head
+ * joint, base head), half width as the angle from straight ahead (rad), and the soft edge: from
+ * `edge[1]` in to `edge[0]` (in oval radii) the fabric comes down onto the face and lies on it, then
+ * tucks in under the face's surface.
+ */
+const FACE = { h: -0.02, hh: 0.084, phi: 1.15, edge: [0.8, 1.12] };
+/** sides of the hijab's rings */
+const HIJAB_SIDES = 40;
+
+/** a cross-section of `secs` (sorted bottom to top) at height h, linear between its rows */
+function secAt(secs: HeadSec[], h: number): HeadSec {
+  if (h <= secs[0][0]) return secs[0];
+  for (let j = 1; j < secs.length; j++) {
+    if (h <= secs[j][0]) {
+      const a = secs[j - 1];
+      const b = secs[j];
+      const t = (h - a[0]) / (b[0] - a[0]);
+      return a.map((v, i) => lerp(v, b[i], t)) as HeadSec;
+    }
+  }
+  return secs[secs.length - 1];
+}
 
 // arms: position along the arm (0 shoulder, 1 elbow, 2 wrist), radius (m, base body), and what
 // covers the segment from this point on
@@ -279,7 +312,7 @@ function clothed(m: Mesh, p: Pose) {
   const spec = p.spec;
   const top = spec.top;
   const headwear = spec.headwear ?? 'none';
-  const loose = clamp((top === 'hoodie' ? 0.5 : top === 'fleece' ? 0.35 : top === 'cardigan' ? 0.3 : 0) + (spec.loose ?? 0), 0, 1.6);
+  const loose = clamp((top === 'hoodie' ? 0.5 : top === 'fleece' || top === 'jacket' ? 0.35 : top === 'overshirt' ? 0.25 : 0) + (spec.loose ?? 0), 0, 1.6);
   const banded = top === 'hoodie' || top === 'fleece';
 
   // ---- torso: one piece from the hem to the collar
@@ -314,7 +347,8 @@ function clothed(m: Mesh, p: Pose) {
       if (j === 0) return MAT.pants;
       if (banded && j <= 2) return MAT.top2;
       if (top === 'hoodie' && (j === 4 || j === 5) && facing(i, D.torso, 0, 1) > 0.55) return MAT.top2;
-      if (top === 'cardigan' && j >= 3 && facing(i, D.torso, 0, 1) > 0.9) return MAT.top2;
+      // the open jacket shows the tee underneath
+      if (top === 'jacket' && j >= 3 && j <= 10 && facing(i, D.torso, 0, 1) > 0.9) return MAT.top2;
       return MAT.top;
     },
     2.25,
@@ -361,10 +395,44 @@ function clothed(m: Mesh, p: Pose) {
     zip.push(local(s.neck, b.chest.r, b.chest.u, b.chest.f, 0, 0.045 * k, nr + 0.014 * k));
     loft(m, tubeRings(zip, zip.map(() => 0.0035), b.chest.r, 0.6), 4, MAT.accent, 2, 0.3);
   }
-  if (top === 'cardigan') {
-    for (const h of [0.06, 0.16, 0.26, 0.35]) {
-      ellipsoid(m, onFront(h, 0.24, 0.002 * k), b.chest.r, b.chest.u, b.chest.f, 0.0075 * k, 0.0075 * k, 0.004 * k, D.small, 3, MAT.accent);
+  /** a thin rounded slab lying on the chest (pocket flap, crew pass): centre, half sizes across and up */
+  const slab = (c: V3, x: V3, n: V3, rx: number, ry: number, thick: number, mat: number) => {
+    const y = norm(cross(n, x));
+    const ring = (out: number): Ring => ({ c: madd(c, n, out), x, y, rx, ry, p: 4 });
+    loft(m, [ring(0), ring(thick)], D.small + 2, mat, 4, 0);
+  };
+  if (top === 'overshirt' || top === 'jacket') {
+    // a collar lying folded around the base of the neck
+    const nr = 0.055 * k * B.neck;
+    const u = b.chest.u;
+    loft(
+      m,
+      tubeRings([madd(s.neck, u, -0.02 * k), madd(s.neck, u, 0.018 * k), madd(s.neck, u, 0.04 * k)], [nr + 0.036 * k, nr + 0.024 * k, nr + 0.012 * k], b.chest.r, 0.95),
+      D.neck,
+      MAT.top,
+      2,
+      0.1,
+    );
+  }
+  if (top === 'overshirt') {
+    // the button placket down the front and two chest pocket flaps
+    const plk: V3[] = [];
+    for (const h of [-0.035, 0.06, 0.16, 0.26, 0.35, 0.43, 0.49]) plk.push(onFront(h, 0, 0.001 * k));
+    loft(m, tubeRings(plk, plk.map(() => 0.009 * k), b.chest.r, 0.25), 4, MAT.top2, 2, 0.2);
+    for (const sd of [-1, 1]) {
+      const n = norm(madd(b.chest.f, b.chest.r, sd * 0.42));
+      slab(onFront(0.385, sd * 0.48, 0.001 * k), across(b.chest.r, n), n, 0.042 * k, 0.017 * k, 0.005 * k, MAT.top2);
     }
+  }
+  if (spec.lanyard) {
+    // a flat strap from the pass up over the collar, around the back of the neck and down again
+    const g = (x: number, u: number, f: number) => local(s.neck, b.chest.r, b.chest.u, b.chest.f, x * k, u * k, f * k);
+    const half: V3[] = [onFront(0.3, 0.02, 0.008 * k), onFront(0.4, 0.2, 0.009 * k), onFront(0.47, 0.36, 0.012 * k), g(0.075, 0.02, 0.035), g(0.075, 0.035, -0.035), g(0, 0.04, -0.07)];
+    // the other side: mirrored at the body's middle plane
+    const mirror = (q: V3) => madd(q, b.chest.r, -2 * dot(sub(q, s.neck), b.chest.r));
+    const path = [...half, ...half.slice(0, -1).reverse().map(mirror)];
+    loft(m, tubeRings(path, path.map(() => 0.006 * k), b.chest.r, 0.3), 4, MAT.frame, 2, 0);
+    slab(onFront(0.28, 0, 0.009 * k), b.chest.r, b.chest.f, 0.024 * k, 0.034 * k, 0.003 * k, MAT.accent);
   }
   if (spec.beltGloves) {
     // a pair of gloves tucked into the waistband on the right hip, hanging down
@@ -403,19 +471,21 @@ function clothed(m: Mesh, p: Pose) {
     0.5,
   );
   const hair = spec.hair;
-  const earsFree = headwear !== 'hijab' && !['curly', 'afro', 'bob'].includes(hair);
+  const earsFree = headwear !== 'hijab' && !['curly', 'afro'].includes(hair);
   if (earsFree) {
     for (const sd of [-1, 1]) ellipsoid(m, madd(hp(-0.004, -0.008), b.head.r, sd * 0.074 * hk), b.head.r, b.head.u, b.head.f, 0.011 * hk, 0.029 * hk, 0.019 * hk, D.small + 2, 4, MAT.skin);
   }
   if (headwear !== 'hijab') {
     if (hair === 'short') loft(m, headRings(HAIR_SHORT), D.head, MAT.hair, 2.1, 0.3);
     else if (hair === 'buzz') loft(m, headRings(HAIR_BUZZ), D.head, MAT.hair, 2.1, 0.45);
+    else if (hair === 'pixie') loft(m, headRings(HAIR_PIXIE, 1, 0.002), D.head, MAT.hair, 2.1, 0.3);
+    else if (hair === 'coils') loft(m, headRings(HAIR_SHORT, 1.06, 0.005), D.head, MAT.hair, 2.1, 0.3);
     else if (hair === 'undercut') {
+      // shaved sides, the longer top dyed at the tips
       loft(m, headRings(HAIR_BUZZ), D.head, MAT.hair2, 2.1, 0.45);
-      loft(m, headRings(HAIR_TOP, 1, 0.003), D.head, MAT.hair, 2.3, 0.3);
+      loft(m, headRings(HAIR_TOP, 1, 0.008), D.head, (j) => (j >= 3 ? MAT.dye : MAT.hair), 2.3, 0.3);
     } else if (hair === 'curly') loft(m, headRings(HAIR_CURLY, 1, 0.006), D.head, MAT.hair, 2.1, 0.3);
     else if (hair === 'afro') loft(m, headRings(HAIR_CURLY, 1.25, 0.008), D.head, MAT.hair, 2, 0.3);
-    else if (hair === 'bob') loft(m, headRings(HAIR_BOB), D.head, MAT.hair, 2.1, 0.15);
     else if (hair === 'ponytail' || hair === 'bun') loft(m, headRings(HAIR_PULLED), D.head, MAT.hair, 2.1, 0.3);
     if (hair === 'bun') {
       ellipsoid(m, hp(0.085, -0.115), b.head.r, b.head.u, b.head.f, 0.042 * hk, 0.038 * hk, 0.036 * hk, D.small + 4, 5, MAT.hair);
@@ -454,12 +524,46 @@ function clothed(m: Mesh, p: Pose) {
       ellipsoid(m, hp(0.149, -0.025), b.head.r, b.head.u, b.head.f, 0.008 * hk, 0.004 * hk, 0.008 * hk, D.small, 3, MAT.cap);
     }
   } else {
-    // hijab: head rings, then the drape in the chest frame
-    const rings = headRings(HIJAB);
-    for (const [h, w, front, back, sag] of DRAPE) {
-      rings.push({ ...ringIn(s.spineAt(h * k), s.frameAt(h * k), w * k * B.shoulders, w * k * B.shoulders, front * k, back * k), sag: sag * k });
+    // the hijab: rings over the head, then around the neck down into the collar (no loose ends)
+    const rings: Ring[] = HIJAB_ROWS.map((h) => {
+      const [, fwd, w, front, back] = secAt(HIJAB, h);
+      return ringIn(hp(h, fwd), b.head, w * hk, w * hk, front * hk, back * hk);
+    });
+    // the neck's axis: from the neck joint to where the neck meets the head
+    const neckTop = madd(madd(s.head, b.head.u, -0.045 * hk), b.head.f, -0.012 * hk);
+    for (const [at, w, front, back] of HIJAB_NECK) {
+      const fr = between(b.chest, b.head, clamp(at));
+      rings.push(ringIn(mix3(s.neck, neckTop, at), fr, neckR + w * k, neckR + w * k, neckR + front * k, neckR + back * k));
     }
-    loft(m, rings, D.torso, MAT.hijab, 2.1, 0.55);
+    const start = m.vertexCount;
+    loft(m, rings, HIJAB_SIDES, MAT.hijab, 2.15, 0.25);
+    // the face oval: there the rings run just inside the head, so the face shows; around it the
+    // fabric comes down onto the face over a soft band
+    const e = 2 / 2.15;
+    HIJAB_ROWS.forEach((h, j) => {
+      const [, fwd, w, front, back] = secAt(HEAD, h);
+      for (let i = 0; i < HIJAB_SIDES; i++) {
+        const a = (2 * Math.PI * i) / HIJAB_SIDES;
+        const ca = Math.cos(a);
+        const sa = Math.sin(a);
+        // the ring's +y is the head's forward: angle from straight ahead
+        const d = Math.hypot((h - FACE.h) / FACE.hh, Math.atan2(ca, sa) / FACE.phi);
+        const t = 1 - smooth(FACE.edge[0], FACE.edge[1], d);
+        if (t <= 0) continue;
+        const ux = Math.sign(ca) * Math.abs(ca) ** e;
+        const uy = Math.sign(sa) * Math.abs(sa) ** e;
+        /** the point of the head's surface in this direction, `out` m outside it */
+        const onHead = (out: number) => madd(madd(hp(h, fwd), b.head.r, ux * (w * hk + out)), b.head.f, uy * ((uy >= 0 ? front : back) * hk + out));
+        const o = (start + j * HIJAB_SIDES + i) * 3;
+        const fab: V3 = [m.pos[o], m.pos[o + 1], m.pos[o + 2]];
+        // down onto the face first, then tucked in gradually: the edge crosses the faces of the grid
+        // smoothly instead of in steps
+        const p = mix3(fab, onHead(lerp(0.003, -0.006, smooth(0.4, 1, t))), smooth(0, 0.4, t));
+        m.pos[o] = p[0];
+        m.pos[o + 1] = p[1];
+        m.pos[o + 2] = p[2];
+      }
+    });
   }
   if (spec.glasses) {
     // two rims in front of the eyes, a bridge, temples back to the ears
@@ -562,8 +666,8 @@ function hand(m: Mesh, h: HandPose, side: number, fa: V3, wristR: number, spec: 
     h.wrist[2] + (fd[2] * x + palm[2] * y + w[2] * z) * q,
   ];
   const skinOr = gloved ? MAT.glove : MAT.skin;
-  // the palm side of a work glove is coated in the second glove colour
-  const palmSide = (fy: number) => (gl === 'work' && fy > 0.35 ? MAT.glove2 : skinOr);
+  // the palm side is the second glove colour (coated work glove, the leather palm of a rigger glove)
+  const palmSide = (fy: number) => (gloved && fy > 0.3 ? MAT.glove2 : skinOr);
 
   // palm: from a ring on the forearm (round, across it) to the knuckles
   const fx = across(w, fa);
@@ -641,7 +745,7 @@ function hand(m: Mesh, h: HandPose, side: number, fa: V3, wristR: number, spec: 
   loft(m, trings, D.finger, (j, i) => {
     const fy2 = facing(i, D.finger, 0, 1);
     if (!gloved || (gl === 'rigger' && j >= 4)) return j >= 4 && fy2 > 0.5 ? MAT.nails : MAT.skin;
-    return MAT.glove;
+    return palmSide(-fy2);
   }, 2, 0.75);
   m.curSmooth = 0;
 }

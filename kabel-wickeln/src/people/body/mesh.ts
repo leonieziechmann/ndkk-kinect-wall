@@ -11,7 +11,7 @@ import { V3, cross, dot, norm } from '../math';
 export const MAT = {
   skin: 0,
   top: 1,
-  /** second shade of the top: hems, cuffs, pockets, what shows under an open cardigan */
+  /** second shade of the top: hems, cuffs, pockets, the placket, what shows under an open jacket */
   top2: 2,
   pants: 3,
   pants2: 4,
@@ -26,9 +26,12 @@ export const MAT = {
   pad: 12,
   cap: 13,
   hijab: 14,
+  /** glasses frames, a lanyard */
   frame: 15,
-  /** small details in a contrasting colour: drawstrings, zips */
+  /** small details in a contrasting colour: drawstrings, zips, a crew pass */
   accent: 16,
+  /** dyed hair tips */
+  dye: 17,
 } as const;
 export type MatName = keyof typeof MAT;
 export const MAT_COUNT = Object.keys(MAT).length;

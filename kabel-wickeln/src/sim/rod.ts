@@ -143,6 +143,24 @@ export interface GuideSpec {
   weight?: (t: number) => number;
 }
 
+/** Everything a clip needs to continue a simulation (Rod.saveState / Rod.fromState). */
+export interface RodState {
+  opts: RodOptions;
+  /** shot time when saved */
+  time: number;
+  /** rest lengths, centres, orientations, velocities, angular velocities, rest Darboux quaternions */
+  L: Float64Array;
+  c: Float64Array;
+  q: Float64Array;
+  v: Float64Array;
+  om: Float64Array;
+  rest: Float64Array;
+  /** joint compliances (bending about d1, about d2, twist) */
+  alpha1: Float64Array;
+  alpha2: Float64Array;
+  alphaT: Float64Array;
+}
+
 export interface RodStats {
   contacts: number;
   candidates: number;
@@ -316,6 +334,40 @@ export class Rod {
     return rod;
   }
 
+  /**
+   * A rod continuing from a saved state (saveState): same options, rest lengths, stiffness, rest
+   * shape, positions, orientations, velocities and clock. Grips, guides and capsules are not part
+   * of the state; set rod.time = 0 to start a new clip at shot time 0.
+   */
+  static fromState(s: RodState): Rod {
+    const rod = new Rod(s.L.length, s.opts);
+    rod.L.set(s.L);
+    rod.initMass();
+    rod.c.set(s.c);
+    rod.q.set(s.q);
+    rod.v.set(s.v);
+    rod.om.set(s.om);
+    rod.rest.set(s.rest);
+    rod.alpha1.set(s.alpha1);
+    rod.alpha2.set(s.alpha2);
+    rod.alphaT.set(s.alphaT);
+    rod.time = s.time;
+    rod.cp.set(rod.c);
+    rod.qp.set(rod.q);
+    rod.derive();
+    return rod;
+  }
+
+  /** Snapshot of the simulated state, to chain clips (Rod.fromState). */
+  saveState(): RodState {
+    const o = this.opts;
+    return {
+      opts: { ...o, gravity: [...o.gravity] as V3 }, time: this.time,
+      L: this.L.slice(), c: this.c.slice(), q: this.q.slice(), v: this.v.slice(), om: this.om.slice(), rest: this.rest.slice(),
+      alpha1: this.alpha1.slice(), alpha2: this.alpha2.slice(), alphaT: this.alphaT.slice(),
+    };
+  }
+
   /** Straight rod from a to b with n nodes. */
   static straight(a: V3, b: V3, n: number, opts: RodBuildOptions = {}): Rod {
     const pts: V3[] = [];
@@ -375,6 +427,18 @@ export class Rod {
   }
 
   /**
+   * Adds a point mass [kg] to segment j, e.g. a plug at the end: it hangs heavier and swings and
+   * turns slower. Not part of saveState (add it again after Rod.fromState).
+   */
+  addMass(j: number, mass: number) {
+    const { L, opts } = this, r = this.radius;
+    const m = (this.m[j] += mass);
+    this.wc0[j] = 1 / m;
+    this.wt0[j] = 1 / (m * (L[j] * L[j] / 12 + r * r / 4) * opts.rotInertiaScale);
+    this.updateKinematic();
+  }
+
+  /**
    * Bending and torsional stiffness [N m²], numbers or functions of the joint index. EI sets both
    * bending axes; EI1 (about d1) and EI2 (about d2) set one each. A flat ribbon whose wide side
    * faces d2 bends easily about d1: EI2 ≫ EI1. Fields left out keep their value.
@@ -399,9 +463,17 @@ export class Rod {
     for (let k = 0; k < this.nj; k++) this.rest.set([0, 0, 0, 1], 4 * k);
   }
 
-  /** The current shape becomes the rest shape ("memory"). */
-  setRestFromCurrent() {
-    for (let k = 0; k < this.nj; k++) this.rest.set(quatMul(quatConj(this.segQuat(k)), this.segQuat(k + 1)), 4 * k);
+  /**
+   * The current shape becomes the rest shape ("memory") of the joints from..to (inclusive;
+   * default all). amount < 1 moves the rest shape only part of the way (slerp): fake plasticity,
+   * e.g. a loop pulled tight keeps a kink.
+   */
+  setRestFromCurrent(from = 0, to = this.nj - 1, amount = 1) {
+    for (let k = Math.max(0, from); k <= Math.min(this.nj - 1, to); k++) {
+      const cur = quatMul(quatConj(this.segQuat(k)), this.segQuat(k + 1));
+      const r: Quat = [this.rest[4 * k], this.rest[4 * k + 1], this.rest[4 * k + 2], this.rest[4 * k + 3]];
+      this.rest.set(amount >= 1 ? cur : quatSlerp(r, cur, amount), 4 * k);
+    }
   }
 
   /**

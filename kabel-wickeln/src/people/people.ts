@@ -48,8 +48,9 @@ export const BUILDS = {
 /** a preset with some factors changed */
 export const build = (base: Build, over: Partial<Build> = {}): Build => ({ ...base, ...over });
 
-export type Hair = 'none' | 'buzz' | 'undercut' | 'short' | 'curly' | 'afro' | 'bun' | 'ponytail' | 'bob';
-export type Top = 'tee' | 'longsleeve' | 'hoodie' | 'fleece' | 'cardigan';
+export type Hair = 'none' | 'buzz' | 'undercut' | 'short' | 'pixie' | 'coils' | 'curly' | 'afro' | 'bun' | 'ponytail';
+/** overshirt: a buttoned shirt jacket with collar and chest pockets; jacket: an open work jacket over a tee (top2) */
+export type Top = 'tee' | 'longsleeve' | 'hoodie' | 'fleece' | 'overshirt' | 'jacket';
 export type Pants = 'straight' | 'work' | 'wide';
 export type Shoes = 'sneakers' | 'workshoes' | 'boots';
 export type Headwear = 'none' | 'cap' | 'hijab';
@@ -75,6 +76,8 @@ export interface PersonSpec {
   headwear?: Headwear;
   beard?: boolean;
   glasses?: boolean;
+  /** a crew pass on a lanyard around the neck */
+  lanyard?: boolean;
   /** gloves worn on the hands; 'rigger' leaves the fingertips free */
   gloves?: Gloves;
   /** a pair of gloves hanging from the waistband (right hip) */
