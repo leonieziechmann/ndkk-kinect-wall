@@ -889,7 +889,11 @@ export function solveArm(s: ArmSetup, target: HandTarget, o: SolveOptions = {}):
   const p = new Float64Array(NQ);
   let iterations = 0;
   if (pr.prev) {
-    toRaw(pr.prev, p);
+    // a fully stretched elbow is a saddle (bending moves the hand sideways, not closer): start a
+    // little bent, so a target that came closer is followed (a straight arm comes back in one step)
+    const start = Float64Array.from(pr.prev);
+    start[I.elbow] = Math.max(start[I.elbow], 4 * DEG);
+    toRaw(start, p);
     let box: { lo: Float64Array; hi: Float64Array } | undefined;
     if (o.maxStep !== undefined && Number.isFinite(o.maxStep)) {
       const step = o.maxStep;
@@ -980,13 +984,16 @@ function finish(pr: Problem, q: Float64Array, iterations: number): ArmSolution {
  * turn of the hand, say): every `check` calls it also solves from scratch, and when that arm is
  * clearly better (cost below 3/4) and different, the arm moves over to it at no more than
  * `migrate` rad per call while still reaching the target (if the way over would pull the hand more
- * than 5 mm off, it stays and looks again later). reset() forgets the last solution.
+ * than 5 mm off, or further off than it was, it stays and looks again later). reset() forgets the
+ * last solution.
  */
 export class ArmIK {
   private last: ArmAngles | null = null;
   private goal: ArmAngles | null = null;
   private calls = 0;
   private moving = 0;
+  /** how far off the hand was when moving over began */
+  private startErr = 0;
 
   public constructor(
     public maxStep = 0.2,
@@ -1009,18 +1016,20 @@ export class ArmIK {
     const sol = solveArm(s, target, { prev: this.last, maxIter, maxStep: this.goal ? this.migrate : this.maxStep, toward: this.goal, towardWeight: pull });
     if (this.goal) {
       this.moving++;
-      // arrived; or the way over pulls the hand off its target: stay here for a while
-      const off = sol.report.posError > MIGRATE_OFF;
+      // arrived; or the way over pulls the hand (further) off its target: stay here for a while
+      const off = sol.report.posError > Math.max(MIGRATE_OFF, this.startErr + 0.003);
       if (off || distance(sol.angles, this.goal) < 0.03 || this.moving > 120) {
         this.goal = null;
         this.moving = 0;
         if (off) this.calls = -MIGRATE_PAUSE;
       }
-    } else if (++this.calls > 0 && this.calls % this.check === 0) {
+    } else if (++this.calls > 0 && (this.calls % this.check === 0 || sol.report.posError > MIGRATE_OFF)) {
+      // every few calls, and at once when the hand misses its target
       const fresh = solveArm(s, target, { maxIter });
       if (fresh.report.cost < 0.75 * sol.report.cost - 1 && distance(fresh.angles, sol.angles) > 0.25) {
         this.goal = fresh.angles;
         this.moving = 0;
+        this.startErr = sol.report.posError;
       }
     }
     this.last = sol.angles;

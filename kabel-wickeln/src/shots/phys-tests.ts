@@ -154,12 +154,23 @@ export const physU: ShotDef = {
   substeps: XLR.substeps,
   build() {
     const h = U.height, x0 = -U.span / 2;
-    // tail hanging from the left hand, the U (a deep V to start with), tail on the right
+    // tail hanging from the left hand, a smooth U (a parabola 0.9 m long), tail on the right
     const pts = polyline([x0 - 0.02, h - 0.2, 0], [[[0, 1, 0], 0.18]]);
     corner(pts, [0, 1, 0], [1, 0, 0], 0.02);
-    const sag = 0.33;
-    const sl = Math.hypot(U.span / 2, sag);
-    pts.push(...polyline(pts[pts.length - 1], [[[U.span / 2, -sag, 0], sl], [[U.span / 2, sag, 0], sl]]).slice(1));
+    const uLen = (sag: number) => {
+      let l = 0;
+      for (let i = 0; i < 200; i++) {
+        const xa = x0 + (U.span * i) / 200, xb = x0 + (U.span * (i + 1)) / 200;
+        l += Math.hypot(xb - xa, sag * ((1 - (2 * xb / U.span) ** 2) - (1 - (2 * xa / U.span) ** 2)));
+      }
+      return l;
+    };
+    let sag = 0.3;
+    for (let it = 0; it < 30; it++) sag *= 0.9 / uLen(sag);
+    for (let i = 1; i <= 300; i++) {
+      const x = x0 + (U.span * i) / 300;
+      pts.push([x, h - sag * (1 - (2 * x / U.span) ** 2), 0]);
+    }
     corner(pts, [1, 0, 0], [0, -1, 0], 0.02);
     pts.push(...polyline(pts[pts.length - 1], [[[0, -1, 0], 0.18]]).slice(1));
     const built = buildCable(XLR, pts, { plugs: 'none', groundY: 0 }), rod = built.rod;
@@ -172,6 +183,8 @@ export const physU: ShotDef = {
     makePins();
     rod.setCapsules(caps);
     preroll(rod, 2);
+    // the cable has hung like this for a while: it remembers this shape, not the made-up start
+    rod.rememberShape();
     return {
       rod,
       vectors: {

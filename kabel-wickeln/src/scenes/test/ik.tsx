@@ -254,7 +254,7 @@ export default makeScene2D(function* (view) {
   const sweepLoops = [0, 1, 2, 3].map(() => new Curve(70, XLR));
   for (const c of [...closeCables, ...closeLoops.flat(), sweepCable, sweepTail, ...sweepLoops]) scene.add(c.mesh.group);
   // collision capsules, see-through
-  const capMat = new THREE.MeshStandardMaterial({ color: '#4aa3ff', transparent: true, opacity: 0.32, depthWrite: false, roughness: 0.6 });
+  const capMat = new THREE.MeshStandardMaterial({ color: '#4aa3ff', transparent: true, opacity: 0.22, depthWrite: false, roughness: 0.6 });
   const capGroup = new THREE.Group();
   scene.add(capGroup);
 
@@ -328,9 +328,9 @@ export default makeScene2D(function* (view) {
           capGroup.add(m);
         }
         const g = arm.grip?.p ?? pose.body.hands[c.side].wrist;
-        // looking at the hand from the front, a little from the thumb side and above
-        const side = c.side ? 1 : -1;
-        const eye: V3 = [g[0] + side * 0.1, g[1] + 0.16, g[2] - 0.34];
+        // the pinch from above, in front and a little from the middle (as she sees it); the coil hand
+        // from in front and below the midline side, into the hook of the fingers
+        const eye: V3 = c.side ? [g[0] - 0.05, g[1] + 0.24, g[2] - 0.2] : [g[0] + 0.16, g[1] - 0.02, g[2] - 0.3];
         closeCams[i].position.set(...eye);
         closeCams[i].lookAt(g[0], g[1] - 0.01, g[2]);
       });

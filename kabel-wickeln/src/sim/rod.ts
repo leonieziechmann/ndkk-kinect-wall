@@ -641,6 +641,16 @@ export class Rod {
     this.rest[a4] = x; this.rest[a4 + 1] = y; this.rest[a4 + 2] = z; this.rest[a4 + 3] = Math.sqrt(Math.max(0, 1 - x * x - y * y - z * z));
   }
 
+  /**
+   * Friction memory (opts.plastic): the memorised bend of joints from..to becomes the current
+   * bend (blended by amount), e.g. after a start shape has settled, so a made-up start shape (a
+   * corner in a polyline) is not remembered. The natural rest stays.
+   */
+  rememberShape(from = 0, to = this.nj - 1, amount = 1) {
+    this.fricFromCurrent(from, to, amount);
+    this.restChanged();
+  }
+
   /** the friction memory becomes the current bend (joints from..to), blended by amount */
   private fricFromCurrent(from = 0, to = this.nj - 1, amount = 1) {
     for (let k = Math.max(0, from); k <= Math.min(this.nj - 1, to); k++) {
@@ -1484,14 +1494,18 @@ export class Rod {
     // r × n
     const ax = ry * nz - rz * ny, ay = rz * nx - rx * nz, az = rx * ny - ry * nx;
     const bx = ky * nz - kz * ny, by = kz * nx - kx * nz, bz = kx * ny - ky * nx;
-    const w = Wj + Tj * (ax * ax + ay * ay + az * az) + Wk + Tk * (bx * bx + by * by + bz * bz);
+    // a damped cable (bendDamping > 0) takes the normal push at its centre line, without the
+    // lever that tilts the segment: the strongly damped bending and a tilting push fight from
+    // iteration to iteration, and a cable draped over a finger creeps off it within seconds
+    const NR = this.opts.bendDamping > 0 ? 0 : 1;
+    const w = Wj + NR * Tj * (ax * ax + ay * ay + az * az) + Wk + NR * Tk * (bx * bx + by * by + bz * bz);
     if (w < 1e-12) return;
     const lamN = pen / w;
     c[3 * j] += Wj * lamN * nx; c[3 * j + 1] += Wj * lamN * ny; c[3 * j + 2] += Wj * lamN * nz;
-    if (Tj > 0) this.rotate(j, Tj * lamN * ax, Tj * lamN * ay, Tj * lamN * az);
+    if (Tj > 0 && NR) this.rotate(j, Tj * lamN * ax, Tj * lamN * ay, Tj * lamN * az);
     if (k >= 0) {
       c[3 * k] -= Wk * lamN * nx; c[3 * k + 1] -= Wk * lamN * ny; c[3 * k + 2] -= Wk * lamN * nz;
-      if (Tk > 0) this.rotate(k, -Tk * lamN * bx, -Tk * lamN * by, -Tk * lamN * bz);
+      if (Tk > 0 && NR) this.rotate(k, -Tk * lamN * bx, -Tk * lamN * by, -Tk * lamN * bz);
     }
     if (mu <= 0) return;
     // Friction acts on the centre lines and turns the segments only about their own axes
