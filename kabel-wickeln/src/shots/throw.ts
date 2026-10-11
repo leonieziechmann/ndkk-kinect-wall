@@ -151,6 +151,8 @@ function longRing() {
 
 const ease = (t: number, a: number, b: number) => smooth((t - a) / (b - a));
 const ID: Quat = [0, 0, 0, 1];
+/** at the end the open left hand sinks to his side with the end (the last loops slide off) */
+const sink = (t: number, letGo: number): V3 => scale3([-0.08, -0.32, 0.08], ease(t, letGo, letGo + 1.0));
 
 /** the choreography for a ring geometry: the tie, the hands, Kofi's rig, the frames of the simulation */
 export function throwChoreo(geo: ThrowGeo) {
@@ -189,9 +191,8 @@ export function throwChoreo(geo: ThrowGeo) {
       return { grip: { p: lerp3(holdRing.p, g.p, w), q: slerpQ(holdRing.q, g.q, w) }, radius: 0.02 - 0.008 * w, open: 0.7 * w, thumbAlong: -1 };
     }
     // at the end the hand opens, the last loops slide off, the hand sinks with the end
-    const down = ease(t, letGo, letGo + 0.8);
-    const g = palmUp(add(p, [-0.04 * down, -0.2 * down, -0.04 * down]));
-    return { grip: g, radius: 0.012, open: 0.7 + 0.3 * down, thumbAlong: -1 };
+    const g = palmUp(add(p, sink(t, letGo)));
+    return { grip: g, radius: 0.012, open: 0.7 + 0.3 * ease(t, letGo, letGo + 0.8), thumbAlong: -1 };
   };
   const rightHand = (t: number): HandRig => {
     const tieGrip = (tt: number): Grip => {
@@ -210,8 +211,11 @@ export function throwChoreo(geo: ThrowGeo) {
       const w = ease(t, T.pocket + 0.1, T.split0), g0 = tieGrip(T.pocket + 0.1), g = fist(geo.coilTop);
       return { grip: { p: add(lerp3(g0.p, g.p, w), [0, 0.06 * Math.sin(Math.PI * w), 0]), q: slerpQ(g0.q, g.q, w) }, radius: 0.02, open: 1 - w, pinch: 1 - w };
     }
-    // holds the thrown part, swings, lets go at the release and follows through
-    return { grip: fist(rightP(t)), radius: 0.02, open: ease(t, tRelease - 0.02, tRelease + 0.08) };
+    // holds the thrown part, swings, lets go at the release, follows through and lets the arm sink
+    const open = ease(t, tRelease - 0.02, tRelease + 0.08);
+    if (t < tRelease + 0.45) return { grip: fist(rightP(t)), radius: 0.02, open };
+    const w = ease(t, tRelease + 0.45, tRelease + 1.5), g = fist(rightP(t));
+    return { grip: { p: lerp3(g.p, rest.p, w), q: slerpQ(g.q, rest.q, w) }, radius: 0.02, open: 1 - 0.2 * w };
   };
 
   /** the ring's centre at time t while it flies (for cameras); null before the release */
@@ -311,7 +315,7 @@ export const throwShot: ShotDef = {
   id: 'throw',
   duration: 8.2,
   fps: 120,
-  substeps: 30,
+  substeps: 60,
   build() {
     const { coil, state, geo, kh: kh0, kc: kc0 } = longRing();
     const rod = Rod.fromState({ ...state, opts: { ...state.opts, groundY: 0 } });
@@ -348,7 +352,7 @@ export const throwShot: ShotDef = {
         if (stage === 2 && t >= times.letGo) {
           // the open hand lets its last loops slide off; it keeps the end
           r.releaseGrip(gl);
-          gl = r.addGrip({ nodes: [0, minKh], keepShape: true, frame: (tt) => ({ p: add(ch.leftFrame(tt).p, [-0.04 * smooth((tt - times.letGo) / 0.8), -0.2 * smooth((tt - times.letGo) / 0.8), -0.04 * smooth((tt - times.letGo) / 0.8)]), q: ID }) });
+          gl = r.addGrip({ nodes: [0, minKh], keepShape: true, frame: (tt) => ({ p: add(ch.leftFrame(tt).p, sink(tt, times.letGo)), q: ID }) });
           stage = 3;
         }
         if (stage !== 1) return;

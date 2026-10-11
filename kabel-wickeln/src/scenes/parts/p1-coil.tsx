@@ -31,12 +31,12 @@ const B = COIL1.beats;
 /** seconds of the wide opening shot (time stands still), and of the change to the split screen */
 const INTRO = 3.0, SPLIT = 1.2;
 /** a freeze after each teaching loop: swing out, hold, swing back */
-const FREEZE = { out: 1.4, hold: 3.0, back: 1.2 };
+const FREEZE = { out: 1.4, hold: 3.2, back: 1.2 };
 const FREEZE_LEN = FREEZE.out + FREEZE.hold + FREEZE.back;
 /** shot time of each freeze: the cable to the floor has dropped through the new loop */
 const freezeAt = (k: number) => B[k - 1].tFree + 0.45;
 /** time after the tie is closed: the camera moves to the ring, then the tick */
-const END = 3.8;
+const END = 4.4;
 
 const timeline = new Timeline([
   { kind: 'freeze', at: 0, len: INTRO + SPLIT * 0.6 },
@@ -119,8 +119,9 @@ export function* part(layer: Node) {
       x={() => -960 + GAP + fullW / 2 + (xR + wR / 2 - (-960 + GAP + fullW / 2)) * split()}
       width={() => fullW + (wR - fullW) * split()} />
   ) as ThreeView;
-  const povView = (<ThreeView world={cw.world} camera={cw.povCam} x={xL + wL / 2} y={midY} width={wL} height={PANEL_H} radius={28} opacity={() => smooth((tau() - INTRO - SPLIT * 0.4) / (SPLIT * 0.6))} />) as ThreeView;
-  layer.add([extView, povView]);
+  const povView = (<ThreeView world={cw.world} camera={cw.povCam} x={xL + wL / 2} y={midY} width={wL} height={PANEL_H} radius={28} opacity={() => smooth((tau() - INTRO - SPLIT * 0.2) / (SPLIT * 0.5))} />) as ThreeView;
+  // (her view lies behind the outside view, which slides off it to the right)
+  layer.add([povView, extView]);
   const titles = new Node({ opacity: () => smooth((tau() - INTRO - SPLIT * 0.6) / 0.4) });
   titles.add([<PanelTitle text={'So siehst du es'} x={xL + 24} />, <PanelTitle text={'Von außen'} x={xR + 24} />]);
   layer.add(titles);

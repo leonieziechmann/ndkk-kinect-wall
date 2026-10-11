@@ -193,9 +193,9 @@ function* shortCable(layer: Node) {
   const chip = (<StageChip current={1} x={0} y={TOP + PANEL_H + 34} opacity={0} />) as Node;
   layer.add(chip);
 
-  // both ends: labels in the outside view, pinned where the ends are once drawn out
+  // both ends: labels in the outside view while the right hand draws its end out and holds still
   const end = (i: number) => () => bake.nodeAt(t(), i, [0, 0, 0]);
-  const labelsOn = () => ramp(t(), T.outB - 0.2, T.outB + 0.2) * (1 - ramp(t(), T.pull0 - 0.3, T.pull0));
+  const labelsOn = () => ramp(t(), T.gripB + 0.2, T.gripB + 0.5) * (1 - ramp(t(), T.hang - 0.2, T.hang + 0.1));
   layer.add(callout({ view: extView, target: end(2), at: [xR + 150, TOP + 200], text: 'Ende', opacity: labelsOn }));
   layer.add(callout({ view: extView, target: end(n - 3), at: [xR + wR - 150, TOP + 200], text: 'Ende', opacity: labelsOn }));
 

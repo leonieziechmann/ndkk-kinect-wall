@@ -3,8 +3,9 @@
 // 2 m) in her left hand. Her right hand opens the velcro tie and lays it on the desk, takes
 // the end that hangs out of the ring and draws it out to the side; her left hand lets the ring
 // go and holds the other end, which sticks out of the top. Both ends are outside the ring. She
-// pulls her hands apart: the loops open one after the other, the cable sinks onto the desk in a
-// calm bend, its stripe calm: the +1 and -1 turns of the über and unter loops cancel.
+// pulls her hands apart and up: the loops open one after the other, the cable hangs between her
+// hands in a calm bend, just touching the desk, its stripe calm: the +1 and -1 turns of the über
+// and unter loops cancel.
 //
 // Everything the hands do is a pure function of the shot time and of a few points of the ring
 // (where it hangs, where its ends and its tie are), which the bake records as constant tracks, so
@@ -52,10 +53,10 @@ export const PULL_T = {
   /** right hand to the end hanging out of the ring, takes it, draws it out to the side */
   gripB: 3.45, outB: 4.05,
   /** left hand lets the ring go (it hangs between the hands), slides to the other end and holds it */
-  hang: 3.9, holdA: 4.4,
-  /** hands apart and up: the loops open; then a little down, the middle rests on the desk */
-  pull0: 4.45, pull1: 7.3, lay1: 8.5,
-  end: 9.6,
+  hang: 5.0, holdA: 5.5,
+  /** hands apart and up: the loops open; then they relax a little, the cable hangs calm */
+  pull0: 5.55, pull1: 8.4, lay1: 9.3,
+  end: 10.4,
 };
 
 /** the points of the ring the choreography needs (recorded in the bake as constant tracks) */
@@ -131,9 +132,9 @@ function shortRing() {
 // ---------------------------------------------------------------- choreography
 
 const ease = (t: number, a: number, b: number) => smooth((t - a) / (b - a));
-/** where the hands end: apart and up, then down so the cable lies on the desk */
-const PULL_L: V3 = [0.47, 1.15, 0.38], PULL_R: V3 = [-0.47, 1.15, 0.38];
-const LAY_L: V3 = [0.46, 1.1, 0.4], LAY_R: V3 = [-0.46, 1.1, 0.4];
+/** where the hands end: apart and up (the cable hangs, its bottom just on the desk), then relaxed */
+const PULL_L: V3 = [0.5, 1.2, 0.36], PULL_R: V3 = [-0.5, 1.2, 0.36];
+const LAY_L: V3 = [0.49, 1.17, 0.37], LAY_R: V3 = [-0.49, 1.17, 0.37];
 /** the right hand at rest: on the desk's front edge, open */
 const REST_R = gripFrame([-0.2, DESK.height + 0.03, 0.31], [-0.3, 0, 1], [0, 1, 0]);
 

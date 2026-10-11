@@ -312,6 +312,21 @@ export const coilShot: ShotDef = {
       gripDir = normalize(lerp3(gripDir, want, 0.12));
     };
 
+    /** rolls the part `gain` of loop k's twist out of it, spread along the loop (returns the twist before) */
+    const rollOut = (r: Rod, k: number, gain: number) => {
+      const iG = nodeAt(c.beats[k - 1].sGrip);
+      const [l0, l1] = loopNodes(k);
+      const tw = r.twistTurns(l0, l1 - 1);
+      const ang = -tw * 2 * Math.PI * gain;
+      for (let j = l0; j < iG + GRIP_HALF; j++) {
+        const roll = quatFromAxisAngle(0, 0, 1, ang * Math.min(1, (j - l0 + 0.5) / (l1 - l0)));
+        r.q.set(quatMul([r.q[4 * j], r.q[4 * j + 1], r.q[4 * j + 2], r.q[4 * j + 3]], roll), 4 * j);
+      }
+      return tw;
+    };
+    /** per loop: the twist left just before the fingers lay it in flat */
+    const laidIn: number[] = c.beats.map(() => 0);
+
     // events per loop
     const events: { t: number; run: () => void }[] = [];
     const checks: string[] = [];
@@ -331,6 +346,10 @@ export const coilShot: ShotDef = {
       const [l0, l1] = loopNodes(k);
       const f0 = floorStart(k);
       let grip = 0, shape = 0, cross = 0;
+      // how much slack a node needs before a guide pulls it fully to its place: plenty while the
+      // loop swings round (no corner where the guided part meets the free part), little at the end
+      // (the strand is laid into the fist taut)
+      const easeIn = (t: number) => 0.003 + 0.027 * (1 - smooth((t - b.tPlace + 0.35 * (b.tPlace - b.tRet)) / (0.3 * (b.tPlace - b.tRet))));
       const next = c.beats[bi + 1];
       const ret = b.tPlace - b.tRet;
       const hookedLoop = k > 1 && c.kinds[k - 2] === 'under';
@@ -386,13 +405,13 @@ export const coilShot: ShotDef = {
               const frac = (i * SEG - c.sP[k - 1]) / (c.sP[k] - c.sP[k - 1]);
               const p = add(loopP, scale(c.n, SWEEP * smooth((frac - 0.35) / 0.3) * (1 - smooth((t - b.tPlace + 0.3 * ret) / (0.25 * ret)))));
               // only where the hand, still on its way, already lets the cable reach (eased in with
-              // the slack, so the cable is never pulled taut against a target)
-              const slack = b.sGrip - i * SEG - length(sub(p, c.right(t).cable.p));
+              // the slack, see easeIn)
+              const slack = b.sGrip - i * SEG - length(sub(p, c.right(t).cable.p)) + 0.003;
               if (slack < 0) return null;
               const cur: V3 = [rod.x[3 * i], rod.x[3 * i + 1], rod.x[3 * i + 2]];
               // hooked behind the previous ("unter") loop: the start keeps its own depth
               const q = !hookedLoop || c.depthNear(k, p).phi > 1.9 ? p : add(p, scale(c.n, dot(sub(cur, p), c.n)));
-              return lerp3(cur, q, smooth(slack / 0.03));
+              return lerp3(cur, q, smooth(slack / easeIn(t)));
             },
           });
           // the cable to the floor: once the right hand lets go it hangs down through the new loop
@@ -434,6 +453,8 @@ export const coilShot: ShotDef = {
           const j = nodeAt(c.sP[k]);
           const off = length(sub([rod.x[3 * j], rod.x[3 * j + 1], rod.x[3 * j + 2]], c.strand(k)));
           report(off < 0.008, `loop ${k}: its strand lies in the fist when the left hand takes it (${(off * 1000).toFixed(1)} mm from its place)`);
+          // the fingers lay it in flat: what twist is left in the loop is rolled out of it
+          laidIn[bi] = rollOut(rod, k, 1);
           rod.releaseGrip(leftGrip);
           leftGrip = rod.addGrip({ nodes: [0, nodeAt(c.sP[k] + FIST_HALF)], keepShape: true, frame: () => left });
         },
@@ -451,7 +472,7 @@ export const coilShot: ShotDef = {
           const slack = b.sGrip - i * SEG - length(sub(p, c.right(t).cable.p)) + 0.003;
           if (slack < 0) return null;
           const cur: V3 = [rod.x[3 * i], rod.x[3 * i + 1], rod.x[3 * i + 2]];
-          return lerp3(cur, p, smooth(slack / 0.02));
+          return lerp3(cur, p, smooth(slack / easeIn(t)));
         },
       });
       events.push({ t: b.tPlace + 0.1, run: () => rod.removeGuide(strandGuide) });
@@ -462,7 +483,7 @@ export const coilShot: ShotDef = {
         t: b.letGo || !next ? Math.min(b.tPlace + 0.5, next ? next.tSlide : Infinity) : next.tClose,
         run: () => {
           const tw = rod.twistTurns(l0, l1 - 1);
-          report(Math.abs(tw) < 0.5, `loop ${k} (${b.kind}): twist ${tw.toFixed(2)} turns`);
+          report(Math.abs(tw) < 0.5, `loop ${k} (${b.kind}): twist ${tw.toFixed(2)} turns (${laidIn[bi].toFixed(2)} just before the fingers laid it in flat)`);
           const xs = crossingsInPov(rod.x, f0 + 1, Math.min(N_NODES - 2, f0 + 36), l0 + 2, l1 - 2, 0.05);
           const want = b.kind === 'over';
           const good = xs.filter((x) => x.floorInFront === want);
@@ -478,20 +499,13 @@ export const coilShot: ShotDef = {
     /**
      * On the way back the fingers roll the cable until the new loop lies flat (what a coiler feels
      * for): each frame a part of the twist left in the loop is rolled out of it, spread along the
-     * loop as the cable turns in the fingers (the cable to the floor beyond the hand takes it up).
+     * loop as the cable turns in the fingers (the cable to the floor beyond the hand takes it up);
+     * the rest when the loop is laid into the left hand.
      */
     const rollFlat = (r: Rod, t: number) => {
       const b = c.beats.find((x) => t > x.tRet + 0.2 * (x.tPlace - x.tRet) && t < x.tPlace);
-      if (!b) return;
-      const iG = nodeAt(b.sGrip);
-      const [l0, l1] = loopNodes(b.k);
-      // (firmly in the last moment before the left hand takes the loop: it is laid in flat)
-      const gain = t > b.tPlace - 0.1 ? 0.5 : 0.2;
-      const ang = -r.twistTurns(l0, l1 - 1) * 2 * Math.PI * gain;
-      for (let j = l0; j < iG + GRIP_HALF; j++) {
-        const roll = quatFromAxisAngle(0, 0, 1, ang * Math.min(1, (j - l0 + 0.5) / (l1 - l0)));
-        r.q.set(quatMul([r.q[4 * j], r.q[4 * j + 1], r.q[4 * j + 2], r.q[4 * j + 3]], roll), 4 * j);
-      }
+      // (firmly in the last moment before the left hand takes the loop)
+      if (b) rollOut(r, b.k, t > b.tPlace - 0.1 ? 0.5 : 0.2);
     };
 
     let next = 0;
