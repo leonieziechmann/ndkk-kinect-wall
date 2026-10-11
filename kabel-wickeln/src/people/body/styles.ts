@@ -10,7 +10,7 @@
 // A person always gives the same vertices and faces in the same order, whatever the pose, so a mesh
 // is built once and then refilled in place (buildBody(pose, mesh)).
 
-import { RGB, V3, across, add, clamp, cross, dot, hexRgb, lerp, local, madd, mix3, norm, scale, smooth, sub, turn } from '../math';
+import { RGB, V3, across, add, clamp, cross, dot, hexRgb, lerp, local, madd, mix3, norm, scale, smooth, sub } from '../math';
 import type { Frame, HandPose, PersonSpec, Pose } from '../people';
 import { FINGERS, THUMB, handJoints } from './hand';
 import { MAT, MAT_COUNT, MatName, Mesh, Ring, SELF, ellipsoid, facing, loft, orientRings, tubeRings } from './mesh';
@@ -627,13 +627,15 @@ function clothed(m: Mesh, p: Pose) {
       const e0 = across(arm.forearm.elbowAxis, fd);
       const w1 = across(arm.forearm.wristAxis, fd);
       const twist = Math.atan2(dot(fd, cross(e0, w1)), dot(e0, w1));
+      // the vertices keep the elbow's axis all along (no sheared faces); the forearm's oval turns
+      // with the pronation towards the wrist, a sleeve less than skin
       orientRings(
         rings,
-        sleeve.map(([t]) => (t <= 1 ? arm.forearm.elbowAxis : turn(e0, fd, twist * (t - 1)))),
+        sleeve.map(() => arm.forearm.elbowAxis),
         sleeve.map(([t, , mat], i) => {
           if (t <= 1) return null;
           const f = (t - 1) * (mat === MAT.top ? 0.5 : 1);
-          return [radii[i] * (1 + 0.16 * f), radii[i] * (1 - 0.1 * f)];
+          return [radii[i] * (1 + 0.16 * f), radii[i] * (1 - 0.1 * f), twist * (t - 1)];
         }),
       );
     }

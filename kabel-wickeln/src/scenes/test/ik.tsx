@@ -8,7 +8,9 @@
 //          range, red = at its limit. Under each figure: residual and the limits hit.
 //   2-3    hands: the pinch (roll 0, rolled, open) and the coil grip at three bundle sizes, with the
 //          collision capsules (colliders.ts) drawn see-through and a cable through the reached grip
-//   3-...  the over-under sweep (ik-sweep.ts, solved with RigTrack): own view (only the arms, the
+//   3-4    the forearm twist: Kofi's right forearm (short sleeves) fully supinated, mid-prone and fully
+//          pronated, the elbow at 90°: the twist spreads from the elbow to the wrist
+//   4-...  the over-under sweep (ik-sweep.ts, solved with RigTrack): own view (only the arms, the
 //          body's shadow on the floor) and outside view; an illustrative cable (not simulated)
 //          through the grips the hands really reached
 // Stills: node tools/render.mjs stills --project test --scene ik --out output/ik <seconds>
@@ -19,7 +21,7 @@ import * as THREE from 'three';
 import { fontsReady } from '../../lib/fonts';
 import { C, FONT } from '../../lib/theme';
 import { splitPerson, splitScreen, viewLayers } from '../../lib/kit';
-import { NOOR } from '../../people/cast';
+import { KOFI, NOOR } from '../../people/cast';
 import { Person3D } from '../../people/body3d';
 import { handColliders } from '../../people/colliders';
 import { V3, add, madd, norm, quatCols, scale, sub } from '../../people/math';
@@ -177,10 +179,10 @@ function loopsOf(arm: ArmPose, n: number, R: number): V3[][] {
 export default makeScene2D(function* (view) {
   view.fill(C.bg);
   yield fontsReady();
-  const SWEEP_AT = 3;
+  const SWEEP_AT = 4;
   const total = SWEEP_AT + SWEEP_PERIOD;
   const t = createSignal(0);
-  const board = () => (t() < 1 ? 0 : t() < 2 ? 1 : t() < 3 ? 2 : 3);
+  const board = () => (t() < 1 ? 0 : t() < 2 ? 1 : t() < 3 ? 2 : t() < 4 ? 4 : 3);
 
   // ---------------------------------------------------------------- the world
   const world = new World3D('test-ik', update);
@@ -213,6 +215,22 @@ export default makeScene2D(function* (view) {
     figures.push(p);
     scene.add(p.group);
   }
+  // the forearm twist: three Kofis, the right forearm forward with the palm up, in, down
+  const TWIST: { label: string; palm: V3 }[] = [
+    { label: 'Supination (Handfläche oben)', palm: [0, 1, 0] },
+    { label: 'Mittelstellung (Daumen oben)', palm: [-1, 0, 0] },
+    { label: 'Pronation (Handfläche unten)', palm: [0, -1, 0] },
+  ];
+  const twistX = (i: number) => (1 - i) * 0.9;
+  const twistRig = (i: number): Rig => ({ ...stand(KOFI, [twistX(i), -4], 0), look: [twistX(i), 1.0, -4.6], hands: [null, { wrist: [twistX(i) + 0.2, 1.06, -4.34], dir: [0, 0, -1], palm: TWIST[i].palm, elbow: [0, -1, 0.2], curl: 0.15 }] });
+  const kofis = TWIST.map((_, i) => {
+    const spec: PersonSpec = { ...KOFI, name: `Kofi ${i}` };
+    const p = new Person3D(spec, rigPose(spec, twistRig(i)));
+    scene.add(p.group);
+    return p;
+  });
+  const twistCams = TWIST.map(() => makeCamera(26));
+  for (const c of twistCams) viewLayers(c, 'ext');
   const track = new RigTrack(NOOR, sweepRig, 0, 60);
   const noor = splitPerson(NOOR, track.pose(0));
   scene.add(noor.person.group);
@@ -256,6 +274,7 @@ export default makeScene2D(function* (view) {
     const tt = t();
     const sheet = b <= 1;
     for (const f of figures) f.group.visible = b <= 2;
+    for (const f of kofis) f.group.visible = b === 4;
     noor.person.group.visible = b === 3;
     for (const m of [...markers.flat(), ...targets]) m.visible = sheet;
     for (const c of [...closeCables, ...closeLoops.flat()]) c.mesh.group.visible = b === 2;
@@ -315,6 +334,17 @@ export default makeScene2D(function* (view) {
         closeCams[i].lookAt(g[0], g[1] - 0.01, g[2]);
       });
       studio.focus([0, 0.9, 4], 4);
+    }
+    if (b === 4 && b !== shownBoard) {
+      kofis.forEach((f, i) => {
+        const pose = rigPose(f.spec, twistRig(i));
+        f.update(pose);
+        const el = pose.joints[8], wr = pose.joints[10];
+        const mid = madd(el, sub(wr, el), 0.5);
+        twistCams[i].position.set(mid[0] + 0.32, mid[1] + 0.22, mid[2] - 0.42);
+        twistCams[i].lookAt(mid[0], mid[1], mid[2]);
+      });
+      studio.focus([0, 1.0, -4.3], 1.6);
     }
     if (b === 3) {
       const st = tt - SWEEP_AT;
@@ -386,6 +416,36 @@ export default makeScene2D(function* (view) {
       <Rect x={x - w / 2 + 16} y={y - h / 2 + 16} offset={[-1, -1]} layout padding={[6, 16]} radius={30} fill={'#ffffffe0'}>
         <Txt text={c.label} fontFamily={FONT} fontWeight={700} fontSize={24} fill={C.text} />
       </Rect>,
+    );
+  });
+
+  // the forearm twist: three panels
+  const twistRoot = (<Node opacity={() => (board() === 4 ? 1 : 0)} />) as Node;
+  view.add(twistRoot);
+  TWIST.forEach((c, i) => {
+    const w = 600, h = 760;
+    const x = (i - 1) * (w + 24);
+    twistRoot.add(<ThreeView world={world} camera={twistCams[i]} x={x} y={-40} width={w} height={h} radius={20} />);
+    twistRoot.add(
+      <Rect x={x - w / 2 + 16} y={-40 - h / 2 + 16} offset={[-1, -1]} layout padding={[6, 16]} radius={30} fill={'#ffffffe0'}>
+        <Txt text={c.label} fontFamily={FONT} fontWeight={700} fontSize={24} fill={C.text} />
+      </Rect>,
+    );
+    twistRoot.add(
+      <Txt
+        x={x}
+        y={400}
+        text={() => {
+          board();
+          const pose = rigPose(kofis[i].spec, twistRig(i));
+          const a = pose.body.arms![1].angles;
+          return `Unterarm ${Math.round(a.pron / DEG)}° · Handgelenk ${Math.round(a.wflex / DEG)}°/${Math.round(a.wdev / DEG)}° · Ellbogen ${Math.round(a.elbow / DEG)}°`;
+        }}
+        fontFamily={FONT}
+        fontWeight={600}
+        fontSize={24}
+        fill={C.text}
+      />,
     );
   });
 

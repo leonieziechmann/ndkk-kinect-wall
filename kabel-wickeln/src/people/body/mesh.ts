@@ -163,6 +163,12 @@ export interface Ring {
   sag?: number;
   /** irregular bumps outwards (curls), m */
   bumps?: number;
+  /**
+   * the elliptic cross-section turned by this angle (rad, from x towards y) while the vertices stay
+   * at their angles: a limb whose oval turns along its length (the forearm's pronation) without
+   * shearing its faces (uses rx and ry; the loft's exponent is ignored)
+   */
+  rot?: number;
 }
 
 /** deterministic hash noise 0..1 */
@@ -216,8 +222,16 @@ export function loft(m: Mesh, rings: Ring[], sides: number, paint: Paint, p = 2,
       const [px, py] = pts[i];
       // bumps: alternating in and out with some noise, so flat faces catch the light like curls
       const b = r.bumps ? 1 + (r.bumps * (((i + j) & 1 ? 0.8 : -0.5) + hash(i, j) - 0.5)) / Math.max(r.rx, r.ry) : 1;
-      const ax = px * (px >= 0 ? r.rx : rx2) * b;
-      const ay = py * (py >= 0 ? r.ry : ry2) * b;
+      let ax = px * (px >= 0 ? r.rx : rx2) * b;
+      let ay = py * (py >= 0 ? r.ry : ry2) * b;
+      if (r.rot !== undefined) {
+        // the turned ellipse's radius at this vertex's angle
+        const a = (2 * Math.PI * i) / sides;
+        const u = a - r.rot;
+        const rr = 1 / Math.sqrt((Math.cos(u) / r.rx) ** 2 + (Math.sin(u) / r.ry) ** 2);
+        ax = Math.cos(a) * rr * b;
+        ay = Math.sin(a) * rr * b;
+      }
       const s = n ? -sag * py * py : 0;
       m.vertex3(
         r.c[0] + r.x[0] * ax + r.y[0] * ay + (n ? n[0] * s : 0),
@@ -314,10 +328,11 @@ export function tubeRings(points: V3[], radii: number[], side: V3, flatten = 1):
 
 /**
  * Turns the cross-sections of rings to given directions (x towards xs[i], kept across the path),
- * optionally with other half-widths: a limb that twists along its length (the forearm, whose
- * radius turns about the ulna) without folding, ring by ring. Entries left null keep their axes.
+ * optionally with other half-widths and an elliptic shape turned by an angle within the ring (Ring.rot:
+ * a limb that twists along its length, like the forearm whose radius turns about the ulna, without
+ * shearing its faces). Entries left null keep what they have.
  */
-export function orientRings(rings: Ring[], xs: (V3 | null)[], widths?: ([number, number] | null)[]) {
+export function orientRings(rings: Ring[], xs: (V3 | null)[], widths?: ([number, number] | [number, number, number] | null)[]) {
   for (let i = 0; i < rings.length; i++) {
     const x0 = xs[i];
     const r = rings[i];
@@ -336,6 +351,7 @@ export function orientRings(rings: Ring[], xs: (V3 | null)[], widths?: ([number,
     if (w) {
       r.rx = w[0];
       r.ry = w[1];
+      if (w[2] !== undefined) r.rot = w[2];
     }
   }
   return rings;
