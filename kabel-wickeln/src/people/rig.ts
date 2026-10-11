@@ -94,6 +94,8 @@ export interface HandRig {
   open?: number;
   /** fist: thumb lying along the cable (0) … wrapped over the fingers (1) */
   wrap?: number;
+  /** coil: the thumb lifted off the bundle, 0 (on it, default) … 1 (2.5 cm off): a new strand goes in under it */
+  thumbLift?: number;
   /** fist and free hand: thumb on the side of the index finger, 0 … 1 */
   pinch?: number;
   /**
@@ -210,6 +212,7 @@ export function gripShape(spec: PersonSpec, side: number, h: HandRig): GripShape
     g = coilAround(r);
     g.curl = g.curl.map((c) => c * (1 - 0.6 * open)) as GripShape['curl'];
     if (h.thumbAlong === -1) g = { ...g, d3: scale(g.d3, -1) };
+    if (h.thumbLift) g = { ...g, thumb: madd(g.thumb, g.thumbNail ?? [0, 1, 0], 0.025 * clamp(h.thumbLift)) };
   } else {
     const fist = fistAround(r);
     const b = Math.atan(FIST_SLOPE);

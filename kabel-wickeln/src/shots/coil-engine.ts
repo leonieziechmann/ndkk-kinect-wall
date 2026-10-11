@@ -200,15 +200,16 @@ class Follow {
 
 /** per frame: left angles (9), right angles (9), hand shapes, the look point */
 export const REC = {
-  size: 9 + 9 + 8 + 3 + 1,
+  size: 9 + 9 + 8 + 3 + 2,
   /** offsets */
   L: 0,
   R: 9,
   /** left open, right open, roll, cross, pinch (1) or free hand (0), free-hand curl, under turn 0..1, thumbWeight */
   H: 18,
   LOOK: 26,
-  /** the fist's radius */
+  /** the fist's radius, the left thumb lifted */
   FR: 29,
+  LIFT: 30,
 } as const;
 
 /** what the right hand does in a frame: the rig and the values recorded for the scene */
@@ -262,10 +263,9 @@ const STRAND = GEOM.gap + 2 * GEOM.half;
 
 interface LoopMemo {
   k: number;
-  /** the pads' frame when the loop started, and the pads dropped onto the strand's line (where the slide starts) */
+  /** the pads' frame when the loop started */
   p0: V3;
   q0: Quat;
-  pL: V3;
   /** under: the pose reached at the hip (the turn's reference) and the pads' frame there */
   outPose: Pose | null;
   outQ: Quat | null;
@@ -306,6 +306,7 @@ export class CoilController {
   private right!: RightState;
   private lookAt: V3 = [-0.02, 0.72, -0.4];
   private leftOpen = 0;
+  private leftLift = 0;
   /** the fist's radius the last solved pose used */
   private leftR: number = GEOM.fist(0);
   private started = false;
@@ -369,7 +370,7 @@ export class CoilController {
 
   private leftRig(t: number): HandRig {
     const R = this.fistR(t);
-    return { grip: gripOfPalm(palmFrame(this.leftPoint(t)), R), hold: 'coil', radius: R, open: this.leftOpen, free: 0.3, thumbAlong: 1 };
+    return { grip: gripOfPalm(palmFrame(this.leftPoint(t)), R), hold: 'coil', radius: R, open: this.leftOpen, thumbLift: this.leftLift, free: 0.3, thumbAlong: 1 };
   }
 
   /** where strand k leaves the fist (its medial end) and where it enters (the lateral end) at time t */
@@ -390,6 +391,17 @@ export class CoilController {
     const { s, n } = stackAxes(f);
     const a = GEOM.laySlope;
     return madd(madd(madd(m, s, -GEOM.gap * Math.cos(a)), UP, GEOM.gap * Math.sin(a)), n, kind ? GEOM.padsDepth[kind] : 0);
+  }
+
+  /**
+   * The pads ready to slide out after the hand-over of loop k (k = 0: at the start): beside the fist's
+   * medial end, the cable through them already pointing the way it will run while the hand slides out
+   * to the hip (towards the coil from there), so they run along it from the first moment
+   */
+  padsReady(k: number, t: number): { p: V3; d3: V3 } {
+    const { m } = this.strandEnds(k, t);
+    const d3 = normalize(sub(m, GEOM.hip));
+    return { p: madd(m, d3, -GEOM.gap), d3 };
   }
 
   /** above the fist's medial end: the loop hangs open below between the hands */
@@ -427,11 +439,13 @@ export class CoilController {
    * Returns the point at distance u from the pads, the end (the loop's end: the fist's lateral end
    * once laid) and the direction past the pads.
    */
-  strandPath(k: number, t: number, pads: V3): { at: (u: number) => V3; e: V3; dir: V3 } {
+  strandPath(k: number, t: number, pads: V3, padsDir?: V3): { at: (u: number) => V3; e: V3; dir: V3 } {
     const { m } = this.strandEnds(k, t);
     const { s } = stackAxes(palmFrame(this.leftPoint(t)));
     const dm = lenV(sub(m, pads)), dir = normalize(sub(m, pads));
-    const at = (u: number): V3 => (u <= dm ? madd(pads, dir, u) : madd(m, s, u - dm));
+    // (with the pads' own direction: a curve that leaves them that way and bends round to the fist's end)
+    const c = padsDir ? madd(pads, padsDir, 0.5 * dm) : null;
+    const at = (u: number): V3 => (u <= dm ? (c ? bez(pads, c, m, u / dm) : madd(pads, dir, u)) : madd(m, s, u - dm));
     return { at, e: at(STRAND), dir };
   }
 
@@ -441,16 +455,19 @@ export class CoilController {
     const i = loopAt(this.bs, t);
     if (i < 0 || !this.memo) {
       // before the first loop: pinching next to the fist, the thumb tip towards it
-      const p = this.padsMeet(0, t);
-      return { rig: this.pinchRig(p, this.strandPath(0, t, p).dir, {}), turn: 0 };
+      const r = this.padsReady(0, t);
+      return { rig: this.pinchRig(r.p, r.d3, {}), turn: 0 };
     }
     const b = this.bs[i];
     const m = this.memo;
     const last = i === this.bs.length - 1;
     const meet = this.padsMeet(b.k, t);
     const above = this.padsAbove(b.k, t);
-    // after the last loop: the pads keep the cable's end next to the fist
-    if (last && t >= b.t1) return { rig: this.pinchRig(meet, this.strandPath(b.k, t, meet).dir, {}), turn: 0 };
+    // after the hand-over (the fist holds the strand): the pads turn the way the next slide goes
+    if (t >= b.tMeet + 0.1) {
+      const r = this.padsReady(b.k, t), u = ramp(t, b.tMeet + 0.1, last ? b.tMeet + 0.6 : b.t1);
+      return { rig: this.pinchRig(lerpV(meet, r.p, u), normalize(lerpV(this.strandPath(b.k, t, meet).dir, r.d3, u)), {}), turn: 0 };
+    }
     // loosen where the last hand-over left the pads
     const dL = quatRotate(m.q0, [0, 0, 1]);
     if (t < b.tSlide) {
@@ -530,7 +547,7 @@ export class CoilController {
     const padsNow = () => this.pose.body.arms![1].grip!;
     // (on from the pads the way the cable leaves past the thumb tip, then along the fist)
     const strand = new Follow(rod, a, e, (t, out) => {
-      const path = this.strandPath(b.k, t, padsNow().p);
+      const g = padsNow(), path = this.strandPath(b.k, t, g.p, col3(g));
       for (let n = a; n <= e; n++) out[n - a] = path.at(sP - rod.sNode[n]);
     }, 0.4);
     const tIn = b.tTurned + 0.35 * (b.tAbove - b.tTurned);
@@ -543,7 +560,7 @@ export class CoilController {
     const A = GEOM.A, N = GEOM.N;
     const P2 = (p: V3): [number, number] => [dot(p, A), p[1]];
     const loop = new Follow(rod, la, le, (t, out) => {
-      const E = this.strandPath(b.k, t, padsNow().p).e;
+      const g = padsNow(), E = this.strandPath(b.k, t, g.p, col3(g)).e;
       const arc = hangingArc(P2(nodeOf(rod, la)), P2(E), len);
       for (let n = la; n <= le; n++) {
         const [x, y] = arc((rod.sNode[n] - rod.sNode[la]) / len);
@@ -568,7 +585,7 @@ export class CoilController {
     const lat = stackPoint(f, 0, g.half);
     const tip = madd(lat, sDir, 0.02 + 0.06);
     for (let x = 0; x <= 0.08 + 2 * g.half + 1e-9; x += 0.002) pts.push(madd(tip, sDir, -x));
-    const med = pts[pts.length - 1], padsAt = this.padsMeet(0, 0);
+    const med = pts[pts.length - 1], padsAt = this.padsReady(0, 0).p;
     const up = normalize(sub(padsAt, med)), dPads = lenV(sub(padsAt, med));
     for (let x = 0.002; x <= dPads + 1e-9; x += 0.002) pts.push(madd(med, up, x));
     // from the pads: a bend down into a hanging line (away from her body), a bend onto the floor
@@ -734,7 +751,10 @@ export class CoilController {
     const i = loopAt(this.bs, tn);
     if (i >= 0) {
       const b = this.bs[i];
-      this.leftOpen = tn < b.tMeet ? 0.4 * ramp(tn, b.tMeet - 0.45, b.tMeet - 0.1) : 0.4 * (1 - ramp(tn, b.tMeet + 0.02, b.tMeet + 0.3));
+      // (the fingers loosen and the thumb lifts: the new strand goes in under it, on top of the others)
+      const w = tn < b.tMeet ? ramp(tn, b.tMeet - 0.42, b.tMeet - 0.14) : 1 - ramp(tn, b.tMeet + 0.06, b.tMeet + 0.32);
+      this.leftOpen = 0.4 * w;
+      this.leftLift = w;
     }
     // look at the middle between the hands, a little towards the coil
     const lp = this.leftPoint(tn), rp = this.pose.body.arms![1].grip!.p;
@@ -769,7 +789,7 @@ export class CoilController {
     const b = this.bs[i];
     if (!this.memo || this.memo.k !== b.k) {
       const p0 = arms[1].grip!.p;
-      this.memo = { k: b.k, p0, q0: arms[1].pads!.q, pL: madd(p0, UP, -GEOM.gap * Math.sin(GEOM.laySlope)), outPose: null, outQ: null, stopT: null, stopP: null, holdP: null, held: false, added: false, guided: false };
+      this.memo = { k: b.k, p0, q0: arms[1].pads!.q, outPose: null, outQ: null, stopT: null, stopP: null, holdP: null, held: false, added: false, guided: false };
       // the pads loosen on the cable next to the fist and slide
       pin.set('loose', LOOSEN);
       this.log.push(`t ${tn.toFixed(2)} loop ${b.k}: the pinch loosens at s ${pin.s.toFixed(3)} (edge ${this.sEdge[b.k - 1].toFixed(3)})`);
@@ -1024,6 +1044,7 @@ export class CoilController {
     out[REC.LOOK + 1] = this.lookAt[1];
     out[REC.LOOK + 2] = this.lookAt[2];
     out[REC.FR] = this.leftR;
+    out[REC.LIFT] = this.leftLift;
     return out;
   }
 }
@@ -1133,7 +1154,7 @@ export class CoilReplay {
     };
     const gl = this.bake.frame('gripL', t), gr = this.bake.frame('gripR', t);
     const H = REC.H;
-    const left: HandRig = { grip: gl, hold: 'coil', radius: v[REC.FR], open: v[H], thumbAlong: 1 };
+    const left: HandRig = { grip: gl, hold: 'coil', radius: v[REC.FR], open: v[H], thumbLift: v[REC.LIFT], thumbAlong: 1 };
     const right: HandRig = v[H + 4] > 0.5
       ? { grip: gr, hold: 'pinch', radius: RC, open: v[H + 1], roll: v[H + 2], cross: v[H + 3] }
       : { wrist: gr.p, curl: v[H + 5] };
