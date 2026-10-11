@@ -4,6 +4,7 @@
 use crate::scene::SceneDef;
 
 pub mod common;
+mod fluid_simulation;
 mod pixel_spiegel;
 mod shader_scenes;
 
@@ -12,5 +13,6 @@ pub fn registry() -> Vec<&'static SceneDef> {
     let mut v: Vec<&'static SceneDef> = Vec::new();
     v.extend(shader_scenes::DEFS.iter());
     v.push(&pixel_spiegel::DEF);
+    v.push(&fluid_simulation::DEF);
     v
 }
