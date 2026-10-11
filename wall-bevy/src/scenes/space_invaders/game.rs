@@ -221,6 +221,10 @@ pub struct UArm {
     pub from: [f64; 2],
     pub tip: [f64; 2],
     pub dir: [f64; 2],
+    /// its real length (m from the torso)
+    pub len: f64,
+    /// the hidden arm, added on the other side (body.js `virtual`)
+    pub virt: bool,
 }
 
 /// A person as the game sees it (main.js collectPeople): art px of the map.

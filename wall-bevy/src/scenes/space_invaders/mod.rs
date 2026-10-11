@@ -18,7 +18,7 @@
 //! Not ported: the test players and the mouse unit of the browser page (globalThis.__invaders,
 //! ctx.wall.pointer): the output has neither.
 
-mod body;
+pub(crate) mod body;
 mod city;
 mod draw;
 mod fx;
@@ -77,18 +77,18 @@ pub struct P {
     link_cooldown: f64,
     point_every: f64,
     assist: f64,
-    arm_min: f64,
-    mirror_arm: bool,
+    pub(crate) arm_min: f64,
+    pub(crate) mirror_arm: bool,
     /// armSource 'Maske'
-    arm_mask: bool,
-    exact_slow: bool,
-    exact_below: f64,
-    live_above: f64,
+    pub(crate) arm_mask: bool,
+    pub(crate) exact_slow: bool,
+    pub(crate) exact_below: f64,
+    pub(crate) live_above: f64,
     homing: f64,
     body_scale: f64,
     /// look 'Silhouette'
-    silhouette: bool,
-    turn: bool,
+    pub(crate) silhouette: bool,
+    pub(crate) turn: bool,
     step_len: f64,
     foot_life: f64,
     jump_boost: bool,
@@ -154,7 +154,7 @@ pub struct P {
 }
 
 impl P {
-    fn read(p: &Params) -> Self {
+    pub(crate) fn read(p: &Params) -> Self {
         let f = |k: &str| p.f64(k);
         let control = p.s("control");
         Self {
@@ -274,7 +274,7 @@ pub struct Layout {
 }
 
 impl Layout {
-    fn new(wall: &WallMap, w: u32, h: u32, p: &P) -> Self {
+    pub(crate) fn new(wall: &WallMap, w: u32, h: u32, p: &P) -> Self {
         let st = &wall.setup;
         let (w, h) = (w as i32, h as i32);
         let s = jr((p.pixel_cm / 100.0) * f64::from(wall.px_per_m()[0])).max(1.0) as i32;
@@ -378,7 +378,7 @@ fn fog_mask(wall: &WallMap, l: &Layout, p: &P, mask: &mut Vec<u8>) {
     }
 }
 
-fn params() -> Vec<ParamSpec> {
+pub(crate) fn params() -> Vec<ParamSpec> {
     vec![
         select("control", "Automatik + Zeigen", &["Automatik + Zeigen", "Automatik", "Zeigen"], "Steuerung"),
         num("autoEvery", 0.6, 0.1, 3.0, 0.05, "Automatik: Schuss alle … s (Fort)"),

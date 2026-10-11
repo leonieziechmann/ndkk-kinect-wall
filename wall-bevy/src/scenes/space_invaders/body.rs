@@ -277,6 +277,8 @@ fn atan2f(y: f32, x: f32) -> f32 {
 struct Sk {
     joints: [Option<[f64; 3]>; NPOINTS],
     conf: [f64; NPOINTS],
+    /// the part of the joints taken from exact (0..1)
+    exact_share: f64,
 }
 
 /// One person of the bodies: map art px.
@@ -311,6 +313,8 @@ pub struct Bodies {
     arm_ids: i64,
     /// the cache entries in a torso band
     band_pts: Vec<u32>,
+    /// the largest part of a person's arm joints taken from the exact skeleton in the last result (0..1)
+    pub exact_share: f64,
 }
 
 impl Bodies {
@@ -333,6 +337,7 @@ impl Bodies {
             height: Vec::new(),
             arm_ids: 1,
             band_pts: Vec::with_capacity(32 * 1024),
+            exact_share: 0.0,
         }
     }
 
@@ -450,6 +455,7 @@ impl Bodies {
             Some(seq) => kinect.live_at(seq),
             None => None,
         };
+        self.exact_share = 0.0;
 
         // who is who: the visible persons in the zone, by slot
         let mut info = [Info::default(); SLOTS];
@@ -758,6 +764,7 @@ impl Bodies {
             }
             let center = l.map(wall, inf.cx, inf.cz);
             let sk = fused(person, exact, live_then, p);
+            self.exact_share = self.exact_share.max(sk.exact_share);
             let face = if p.turn { turn(&mut st, &sk, &m, side, l, time) } else { l.wall_face };
             let (_, across) = facing(face);
             let ks = p.body_scale * f64::from(wall.scale[s]);
@@ -828,7 +835,7 @@ impl Bodies {
                 } else {
                     (center, l.map(wall, inf.cx + a.ang.cos() * a.len * ks, inf.cz + a.ang.sin() * a.len * ks))
                 };
-                arms.push(UArm { id: a.id, from, tip, dir });
+                arms.push(UArm { id: a.id, from, tip, dir, len: a.len, virt: matches!(ar, ArmRef::Hidden) });
             }
             // an arm that points: its hand is at the tip
             let mut hands = [shrink(st.hands[0]), shrink(st.hands[1])];
@@ -1019,9 +1026,9 @@ fn v3(v: bevy::math::Vec3) -> [f64; 3] {
 /// The skeleton as the game reads it. Per joint of SKELETON the live point, moved by what live got
 /// wrong in the newest exact frame (exact minus live of that frame), fully below `exactBelow` m/s,
 /// not at all above `liveAbove`: slow = exact (brought to now), fast = live. Without exact data (or
-/// exactSlow off): the live person.
+/// exactSlow off): the live person. exact_share: the part of the joints taken from exact (0..1).
 fn fused(person: Option<&Person>, exact: Option<&PersonsView>, live_then: Option<&PersonsView>, p: &P) -> Sk {
-    let mut sk = Sk { joints: [None; NPOINTS], conf: [0.0; NPOINTS] };
+    let mut sk = Sk { joints: [None; NPOINTS], conf: [0.0; NPOINTS], exact_share: 0.0 };
     let Some(q) = person else { return sk };
     for k in 0..NPOINTS {
         sk.joints[k] = q.joints[k].map(v3);
@@ -1034,6 +1041,7 @@ fn fused(person: Option<&Person>, exact: Option<&PersonsView>, live_then: Option
         let (Some(now), Some(ex)) = (q.joints[k].map(v3), e.joints[k].map(v3)) else { continue };
         let v = q.motion[k].map_or(0.0, |m| f64::from(m.length()));
         let w = 1.0 - smoothstep(p.exact_below, p.live_above, v);
+        sk.exact_share += w / SKELETON.len() as f64;
         if w <= 0.0 {
             continue;
         }
