@@ -33,6 +33,8 @@ export type LoopKind = 'over' | 'under';
 
 /** seconds of the phases of one loop */
 export interface Pace {
+  /** the open right hand moves from the hand-over to the left hand's medial edge and takes the cable there */
+  regrip: number;
   /** sliding out to the right hip (after the pinch loosened) */
   slide: number;
   /** holding at the hip */
@@ -48,9 +50,9 @@ export interface Pace {
 }
 
 /** a slow loop for teaching: about 3.2 s (over) and 3.6 s (under) */
-export const TEACH: Pace = { slide: 1.0, hold: 0.25, turn: 0.45, spread: 0.85, approach: 0.55, give: 0.45 };
+export const TEACH: Pace = { regrip: 0.35, slide: 0.95, hold: 0.2, turn: 0.45, spread: 0.8, approach: 0.6, give: 0.35 };
 /** the user's natural pace: about 2.1 s (over) and 2.4 s (under) */
-export const NATURAL: Pace = { slide: 0.68, hold: 0.08, turn: 0.3, spread: 0.6, approach: 0.38, give: 0.28 };
+export const NATURAL: Pace = { regrip: 0.22, slide: 0.62, hold: 0.06, turn: 0.3, spread: 0.5, approach: 0.4, give: 0.22 };
 
 /** time for the pinch to loosen before the hand moves */
 export const LOOSEN = 0.1;
@@ -70,8 +72,10 @@ export interface LoopBeat {
   /** 1-based */
   k: number;
   kind: LoopKind;
-  /** the pinch loosens */
+  /** the previous hand-over ends: the right hand opens (or, for the first loop, its pinch loosens) */
   t0: number;
+  /** the right hand closes its pinch (loosely) on the cable next to the left hand's medial edge */
+  tGrip: number;
   /** the hand starts sliding out */
   tSlide: number;
   /** at the hip */
@@ -94,14 +98,15 @@ export function beats(plan: CoilPlan): LoopBeat[] {
   plan.kinds.forEach((kind, i) => {
     const p = plan.paces[i];
     const t0 = t;
-    const tSlide = t0 + LOOSEN;
+    const tGrip = t0 + (i === 0 ? 0 : p.regrip);
+    const tSlide = tGrip + LOOSEN;
     const tOut = tSlide + p.slide;
     const tHeld = tOut + p.hold;
     const tTurned = tHeld + (kind === 'under' ? p.turn : 0);
     const tSpread = tTurned + p.spread;
     const tMeet = tSpread + p.approach;
     const t1 = tMeet + p.give;
-    out.push({ k: i + 1, kind, t0, tSlide, tOut, tHeld, tTurned, tSpread, tMeet, t1 });
+    out.push({ k: i + 1, kind, t0, tGrip, tSlide, tOut, tHeld, tTurned, tSpread, tMeet, t1 });
     t = t1;
   });
   return out;
@@ -137,7 +142,7 @@ export const GEOM = (() => {
     /** out to the left while the right hand slides out */
     leftOut: [-0.25, 0.87, -0.24] as V3,
     /** towards the midline to meet the right hand */
-    leftMeet: [-0.06, 0.89, -0.32] as V3,
+    leftMeet: [-0.03, 0.89, -0.32] as V3,
     /** the right hand at the hip, slid out */
     hip: [0.4, 0.83, -0.12] as V3,
     /** half the length of the strand in the left hand, along S [m] */

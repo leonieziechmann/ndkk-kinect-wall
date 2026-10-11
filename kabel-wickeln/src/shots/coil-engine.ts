@@ -160,16 +160,19 @@ export class CoilController {
   // per loop memo (set as the bake passes the beats)
   private memo: {
     k: number;
+    /** the pads' frame when the loop started */
     p0: V3;
     q0: Quat;
+    /** under: the pose and pads frame reached at the hip, and the pads' frame wanted at the hand-over */
     outPose: Pose | null;
     outQ: Quat | null;
     homeQ: Quat | null;
+    /** the pads' frame at the hand-over */
+    qMeet: Quat | null;
+    gripped: boolean;
     held: boolean;
     added: boolean;
-    laidAt: number;
   } | null = null;
-  private lastHandover: { p: V3; q: Quat } | null = null;
   private maxPen = 0;
   private maxPenWhere = '';
   private ikIssues: string[] = [];
@@ -189,14 +192,13 @@ export class CoilController {
 
   // ---------------------------------------------------------------- the rig
 
-  /** the left hand's planned grip point at time t */
+  /** the left hand's planned grip point at time t: with the right hand at the start, out while it slides, back to meet it */
   leftPoint(t: number): V3 {
     const g = GEOM;
     const i = loopAt(this.bs, t);
-    if (i < 0) return g.leftRest;
+    if (i < 0) return g.leftMeet;
     const b = this.bs[i];
-    const from = i === 0 ? g.leftRest : g.leftMeet;
-    if (t < b.tOut) return lerpV(from, g.leftOut, ramp(t, b.tSlide - 0.05, b.tOut));
+    if (t < b.tOut) return lerpV(g.leftMeet, g.leftOut, ramp(t, b.tSlide - 0.05, b.tOut));
     if (t < b.tTurned) return g.leftOut;
     if (t < b.tMeet) return lerpV(g.leftOut, g.leftMeet, ramp(t, b.tTurned, b.tMeet - 0.05));
     if (i === this.bs.length - 1 && t > b.t1) return lerpV(g.leftMeet, g.leftRest, ramp(t, b.t1 + 0.2, b.t1 + 1.2));
@@ -207,13 +209,22 @@ export class CoilController {
     return { grip: leftGrip(this.leftPoint(t)), hold: 'coil', radius: GEOM.bundle, open: this.leftOpen, free: 0.4 };
   }
 
-  /** where the right pads go at the hand-over of loop i: beyond the left hand's medial edge, at the new strand's place */
+  /**
+   * Where the right pads go at the hand-over of loop i: the lateral end of the left hand, at the new
+   * strand's place in the stack (the loop hangs from there down the lateral side; the cable behind
+   * the pads lies across the open left hand and down from its medial edge)
+   */
   private meetPoint(i: number, t: number): V3 {
     const f = leftGrip(this.leftPoint(t));
-    return stackPoint(f, this.bs[i].k, -(GEOM.half + GEOM.gap));
+    return stackPoint(f, this.bs[i].k, GEOM.half + 0.015);
   }
 
-  /** the medial edge of the left hand where the last strand comes out (the cable runs from there to the right hand) */
+  /** where the right hand takes the cable at the start of loop i: just beyond the left hand's medial edge, where the last strand comes out */
+  private gripPoint(i: number, t: number): V3 {
+    return stackPoint(leftGrip(this.leftPoint(t)), this.bs[i].k - 1, -(GEOM.half + GEOM.gap));
+  }
+
+  /** the medial edge of the left hand where strand k comes out */
   private exitPoint(k: number, t: number): V3 {
     return stackPoint(leftGrip(this.leftPoint(t)), k, -GEOM.half);
   }
@@ -223,7 +234,7 @@ export class CoilController {
     const out = o.out ?? 0;
     const lp = this.leftPoint(this.tPose);
     const toCoil = normalize([lp[0] - p[0], 0.4 * (lp[1] - p[1]), lp[2] - p[2]]);
-    const rig: HandRig = {
+    return {
       grip: o.q ? { p, q: o.q } : gripFrame(p, d3, [0, 0, 1]),
       hold: 'pinch',
       radius: RC,
@@ -235,7 +246,6 @@ export class CoilController {
       thumbWeight: 0.2 * (1 - out),
       prefer: [{ hand: [0, 1, 0], world: normalize([-0.4, -0.3, 0.87]), weight: 0.3 * out }],
     };
-    return rig;
   }
 
   /** the right hand at time t (uses the per-loop memo the controller sets as it passes the beats) */
@@ -243,33 +253,44 @@ export class CoilController {
     const g = GEOM;
     const i = loopAt(this.bs, t);
     if (i < 0 || !this.memo) {
-      // before the first loop: pinching next to the left hand
-      const p = this.exitPoint(0, t);
-      const pads = madd(p, g.S, -g.gap);
-      return { rig: this.pinchRig(pads, g.S, {}), turn: 0 };
+      // before the first loop: pinching next to the left hand, the thumb tip towards it
+      return { rig: this.pinchRig(madd(this.exitPoint(0, t), g.S, -g.gap), g.S, {}), turn: 0 };
     }
     const b = this.bs[i];
     const m = this.memo;
     const last = i === this.bs.length - 1;
-    // after the last loop: the hand holds on at the hand-over point (the end phase is the shot's)
-    if (last && t >= b.t1) {
-      const p = this.meetPoint(i, t);
-      return { rig: this.pinchRig(p, g.S, { q: m.q0, free: 1 }), turn: 0 };
-    }
     const exit = this.exitPoint(b.k - 1, t);
+    const grip = this.gripPoint(i, t);
     const meet = this.meetPoint(i, t);
     // the span's direction at the pads: towards the left hand's edge, drooping a little
     const spanDir = (p: V3) => {
       const d = sub(exit, p);
       return normalize(madd(d, [0, -1, 0], 0.25 * lenV(d)));
     };
-    // where the hand is: slide out, give a little slack at the hip, back to where the loop hangs open
-    // between the hands (wide, so it falls round), over the left hand and down onto it, the new
-    // strand in front of the others
+    // at the hand-over the loop hangs from the thumb tip down the lateral side
+    const laying = normalize(madd(g.S, [0, -1, 0], 0.7));
+    // after the last loop: the hand opens and leaves the coil
+    if (last && t >= b.t1) {
+      const away = madd(madd(meet, UP, 0.08), g.S, -0.12);
+      const p = lerpV(meet, away, ramp(t, b.t1, b.t1 + 0.6));
+      const rig = this.pinchRig(p, laying, { q: m.qMeet ?? undefined, free: 1, open: ramp(t, b.t1, b.t1 + 0.2) });
+      return { rig, turn: 0 };
+    }
+    // the open hand moves from the last hand-over over the left hand to its medial edge and takes the cable there
+    if (t < b.tGrip) {
+      const u = ramp(t, b.t0, b.tGrip);
+      const mid = madd(lerpV(m.p0, grip, 0.5), UP, 0.035);
+      const p = u < 0.5 ? lerpV(m.p0, mid, minJerk(u * 2) * 0.999 + 0.001 * u) : lerpV(mid, grip, minJerk((u - 0.5) * 2));
+      const q = quatSlerp(m.q0, gripFrame(grip, g.S, [0, 0, 1]).q, u);
+      const rig = this.pinchRig(p, g.S, { q, free: u, open: 1 - ramp(t, b.tGrip - 0.12, b.tGrip), roll: this.prevRoll(i) * (1 - u) });
+      return { rig, turn: this.turnLeft(i, t) };
+    }
+    // where the hand is: slide out, a little slack at the hip, back to where the loop hangs open
+    // between the hands (wide, so it falls round), over the left hand and down onto its lateral end
     const sh = normalize([g.S[0], 0, g.S[2]]);
     const slack = lerpV(g.hip, exit, 0.06);
-    const spread = madd(madd(madd(meet, sh, -0.26), UP, 0.03), g.N, 0.04);
-    const above = madd(madd(meet, UP, 0.035), g.N, 0.012);
+    const spread = madd(madd(madd(exit, sh, -0.24), UP, 0.0), g.N, 0.05);
+    const above = madd(madd(meet, UP, 0.06), g.N, 0.015);
     const tBack = Math.max(b.tTurned, b.tHeld);
     const tAbove = b.tSpread + 0.6 * (b.tMeet - b.tSpread);
     let p: V3;
@@ -277,46 +298,39 @@ export class CoilController {
     else if (t < tBack) p = lerpV(g.hip, slack, ramp(t, b.tOut, tBack));
     else if (t < b.tSpread) p = lerpV(slack, spread, ramp(t, tBack, b.tSpread));
     else if (t < tAbove) p = lerpV(spread, above, ramp(t, b.tSpread, tAbove));
-    else p = lerpV(above, madd(meet, g.N, 0.004), ramp(t, tAbove, b.tMeet));
+    else p = lerpV(above, meet, ramp(t, tAbove, b.tMeet));
     // how far out (0 next to the coil … 1 at the hip): shapes the pinch (cross, palm wish)
-    const out = t < b.tOut ? ramp(t, b.tSlide, b.tOut) : t < b.tTurned ? 1 : 1 - ramp(t, b.tTurned, b.tSpread + 0.5 * (b.tMeet - b.tSpread));
+    const out = t < b.tOut ? ramp(t, b.tSlide, b.tOut) : t < tBack ? 1 : 1 - ramp(t, tBack, b.tSpread);
     const cross = 0.3 + 0.9 * out;
     // the pinch loosens while sliding (visible: the thumb lifts a little)
-    const open = t < b.tOut ? 0.45 * ramp(t, b.t0, b.tSlide) * (1 - ramp(t, b.tOut - 0.15, b.tOut)) : 0;
-    // the roll on the way back: over +, under −; back to 0 on the next slide (the pinch is loose then)
+    const open = t < b.tOut ? 0.4 * ramp(t, b.tGrip, b.tSlide) * (1 - ramp(t, b.tOut - 0.15, b.tOut)) : 0;
+    // the roll on the way back: over +, under −
     const sign = b.kind === 'over' ? 1 : -1;
-    const prevRoll = i > 0 ? (this.bs[i - 1].kind === 'over' ? 1 : -1) * g.roll : 0;
-    const roll = t < b.tTurned ? prevRoll * (1 - ramp(t, b.t0, b.tSlide + 0.3)) : sign * g.roll * ramp(t, b.tTurned, b.tSpread);
-    // the cable's direction: along the span, turning onto the knuckle line for the hand-over
-    const w = ramp(t, b.tSpread - 0.2, b.tMeet);
-    const d3 = normalize(lerpV(spanDir(p), g.S, w));
-    // at the start of a loop the hand turns from the hand-over frame into the free slide (and an
-    // under loop's hand finishes turning back: the wrist slips out of the new loop)
-    const blendIn = ramp(t, b.t0, b.tSlide + 0.35);
-    if (b.kind === 'over' || t < b.tHeld) {
-      const rig = this.pinchRig(p, d3, { roll, open, cross, out });
-      if (blendIn < 1) {
-        rig.grip = { p, q: quatSlerp(m.q0, gripFrame(p, d3, [0, 0, 1]).q, blendIn) };
-        rig.free = blendIn;
-      }
-      return { rig, turn: this.turnLeft(i, t) };
-    }
+    const roll = t < tBack ? this.prevRoll(i) * (1 - ramp(t, b.tGrip, b.tSlide + 0.3)) : sign * g.roll * ramp(t, tBack, b.tSpread);
+    // the cable's direction: along the span, then turning down the lateral side for the hand-over
+    const w = ramp(t, b.tSpread, b.tMeet);
+    const d3 = normalize(lerpV(spanDir(p), laying, w));
+    if (b.kind === 'over' || t < b.tHeld) return { rig: this.pinchRig(p, d3, { roll, open, cross, out }), turn: this.turnLeft(i, t) };
     // under: turn the hold frame about the forearm, unwinding into the hand-over frame on the way back
-    const turn = t < b.tTurned ? ramp(t, b.tHeld, b.tTurned) : 1 - 0.75 * ramp(t, b.tSpread - 0.25, b.tMeet);
+    const turn = t < b.tTurned ? ramp(t, b.tHeld, b.tTurned) : 1 - 0.7 * ramp(t, b.tSpread - 0.2, b.tMeet);
     const home = ramp(t, b.tSpread - 0.3, b.tMeet);
     const outPose = m.outPose ?? this.pose;
     const base: Frame = { p, q: quatSlerp(m.outQ ?? m.q0, m.homeQ ?? m.q0, home) };
-    const grip = turnWithForearm(outPose, 1, base, g.underTurn * turn);
-    const rig = this.pinchRig(p, d3, { roll, open: 0, cross: 0.3 + 0.9 * (1 - home), out, free: 0, q: grip.q });
+    const rig = this.pinchRig(p, d3, { roll, open: 0, cross: 0.3 + 0.9 * (1 - home), out, free: 0, q: turnWithForearm(outPose, 1, base, g.underTurn * turn).q });
     rig.thumbTo = undefined;
     rig.prefer = [];
     return { rig, turn };
   }
 
+  /** the roll the last loop left on the cable (0 before the first) */
+  private prevRoll(i: number): number {
+    return i > 0 ? (this.bs[i - 1].kind === 'over' ? 1 : -1) * GEOM.roll : 0;
+  }
+
   /** an under loop's turn still to undo at the start of the next loop (for the arrow and the rig) */
   private turnLeft(i: number, t: number): number {
     if (i < 1 || this.bs[i - 1].kind !== 'under') return 0;
-    return 0.25 * (1 - ramp(t, this.bs[i].t0, this.bs[i].tSlide + 0.35));
+    return 0.3 * (1 - ramp(t, this.bs[i].t0, this.bs[i].tGrip));
   }
 
   /** the whole rig at time t */
@@ -501,42 +515,51 @@ export class CoilController {
     this.measure(rod, t);
   }
 
-  /** the beats that need the cable: loosen, hold after a loop length, the hand-over */
+  /** the beats that need the cable: let go and take it again next to the left hand, hold after a loop length, the hand-over */
   private events(rod: Rod, t: number) {
-    const i = loopAt(this.bs, t + DT);
+    const tn = t + DT;
+    const i = loopAt(this.bs, tn);
     if (i < 0) return;
     const b = this.bs[i];
     const pin = this.pin;
+    const arms = this.pose.body.arms!;
     if (!this.memo || this.memo.k !== b.k) {
-      // a new loop: the pinch loosens where the hand is
-      const pads = this.pose.body.arms![1].grip!;
-      this.memo = { k: b.k, p0: pads.p, q0: this.lastHandover?.q ?? pads.q, outPose: null, outQ: null, homeQ: null, held: false, added: false, laidAt: -1 };
-      pin.set('loose', LOOSEN);
+      // a new loop: the hand lets go at the hand-over (the first loop: it already holds next to the left hand)
+      this.memo = { k: b.k, p0: arms[1].grip!.p, q0: arms[1].pads!.q, outPose: null, outQ: null, homeQ: null, qMeet: null, gripped: false, held: false, added: false };
+      if (i > 0) pin.release(0.12);
     }
     const m = this.memo;
     const edge = this.sEdge[b.k - 1];
-    // hold as soon as a loop length has passed through the pads (or at the hip at the latest)
-    if (!m.held && t >= b.tSlide && (pin.s - edge >= this.plan.loopLength + GEOM.gap || t + DT >= b.tOut)) {
+    if (!m.gripped && tn >= b.tGrip) {
+      // the pads close loosely on the cable between them, next to the left hand
+      pin.set('loose', LOOSEN);
+      m.gripped = true;
+    }
+    // hold as soon as a loop's worth has passed through the pads (or at the hip at the latest)
+    const sHold = edge + this.plan.loopLength - 2 * GEOM.half - 0.015;
+    if (m.gripped && !m.held && tn >= b.tSlide && (pin.s >= sHold || tn >= b.tOut)) {
       pin.set('held', 0.25);
       m.held = true;
     }
-    if (b.kind === 'under' && !m.outPose && t + DT >= b.tHeld) {
+    if (b.kind === 'under' && !m.outPose && tn >= b.tHeld) {
       // the frame the hand reached at the hip, and the frame it should have at the hand-over
       m.outPose = this.pose;
-      m.outQ = this.pose.body.arms![1].pads!.q;
-      const home = rigPose(this.spec, { ...coilStance(this.spec), look: this.lookAt, hands: [this.leftRig(b.tMeet), this.pinchRig(this.meetPoint(i, b.tMeet), GEOM.S, {})] });
+      m.outQ = arms[1].pads!.q;
+      const laying = normalize(madd(GEOM.S, [0, -1, 0], 0.7));
+      const home = rigPose(this.spec, { ...coilStance(this.spec), look: this.lookAt, hands: [this.leftRig(b.tMeet), this.pinchRig(this.meetPoint(i, b.tMeet), laying, {})] });
       m.homeQ = home.body.arms![1].pads!.q;
     }
-    if (!m.added && t + DT >= b.tMeet - 0.02) {
-      // the strand across the left hand joins the coil where it lies
-      const s1 = pin.s - GEOM.gap;
-      this.coil.add(s1 - 2 * GEOM.half - 0.01, s1 + 0.004, 0.2);
+    if (!m.added && tn >= b.tMeet - 0.02) {
+      // the cable behind the pads lies across the open left hand: the coil takes it where it lies
+      const s0 = pin.s;
+      this.coil.add(s0 + 0.005, s0 + 2 * GEOM.half + 0.025, 0.2);
+      const s1 = s0 + 2 * GEOM.half + 0.015;
       this.sEdge.push(s1);
       m.added = true;
-      m.laidAt = t;
       this.results.push({ k: b.k, kind: b.kind, length: s1 - edge, sEdge: s1, aspectLaid: 0, aspectEnd: 0, width: 0, height: 0, crossDepth: [], lk: 0, floorTwist: 0 });
     }
-    if (t + DT >= b.t1 - DT && m.added) this.lastHandover = { p: this.pose.body.arms![1].grip!.p, q: this.pose.body.arms![1].pads!.q };
+    if (m.added && !m.qMeet && tn >= b.t1 - DT) m.qMeet = arms[1].pads!.q;
+    if (i === this.bs.length - 1 && m.added && tn >= b.t1 && pin.state !== 'free') pin.release(0.15);
   }
 
   // ---------------------------------------------------------------- measuring
