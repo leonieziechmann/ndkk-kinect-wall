@@ -46,6 +46,11 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // logs into a file (start-wand, tests): without color codes
+    if !std::io::IsTerminal::is_terminal(&std::io::stdout()) && std::env::var_os("NO_COLOR").is_none() {
+        // SAFETY: at the very start, before any thread exists
+        unsafe { std::env::set_var("NO_COLOR", "1") };
+    }
     let present_mode = match cfg.vsync.as_str() {
         "mailbox" => PresentMode::Mailbox,
         "immediate" | "off" => PresentMode::AutoNoVsync,
@@ -179,6 +184,9 @@ fn place_window(
     .or_else(|| list.iter().filter(|x| !x.2).min_by_key(|x| (x.1.physical_position.x, x.1.physical_position.y)).map(|x| x.0));
     let key = (pick, out.setup_generation());
     if last.as_ref() == Some(&key) {
+        // shown one check after it went onto its screen: never visible anywhere else first (a window
+        // on the notebook's panel, even for a frame, is closed by start-wand)
+        window.visible = true;
         return;
     }
     *last = Some(key);
@@ -188,6 +196,8 @@ fn place_window(
             info!("Ausgabe auf Bildschirm {name}");
             window.mode = WindowMode::BorderlessFullscreen(MonitorSelection::Entity(m));
             window.decorations = false;
+            *checked = now - 0.8; // shown in 0.2 s
+            return;
         }
         // started by start-wand.ps1 for a screen that is gone (Windows would move the window onto the
         // notebook's panel): end; start-wand opens the output again as soon as there is a screen

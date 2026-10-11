@@ -2,13 +2,15 @@
   start-wand.ps1: starts everything the LED wall needs and tunes Windows for it, only while it runs.
 
     start-wand.cmd                     double-click (or the desktop icon "Kinect-Wand starten")
-    .\start-wand.ps1 [-NoWall] [-NoControl] [-Hub 8091] [-RecordMinutes 5]
+    .\start-wand.ps1 [-NoWall] [-NoControl] [-Hub 8091] [-RecordMinutes 5] [-Bevy]
     .\start-wand.ps1 -Panic            NOTAUS (also Strg+Alt+Shift+N, desktop icon "Kinect-Wand NOTAUS")
 
   Starts (or reuses, if they already run) from the main checkout: kinect-hub (real Kinect, :8090),
   the Vite dev server of web/ (show, control center), the output window /wall/ as a kiosk window on
   the LED screen (the same as npm run wall) and the control center /control/ on the notebook's own
-  panel. A watchdog restarts what dies.
+  panel. A watchdog restarts what dies. With -Bevy the output is the native app instead of the
+  browser window (wall-bevy\target\release\wall-bevy.exe, see wall-bevy\README.md; the browser
+  window as always while it is not built).
 
   The displays are found automatically every time (no setting): the output window only ever goes to
   the second display, never the notebook's own panel (with several other displays the one named in
@@ -55,6 +57,7 @@
 [CmdletBinding()]
 param(
   [switch]$NoWall,    # no output window (e.g. without the LED screen)
+  [switch]$Bevy,      # the output as the native app wall-bevy instead of the browser window
   [switch]$NoControl, # no control center window on the notebook
   [int]$Hub = 8090,   # the hub to use; only the real one on 8090 is started, others must run already
   [ValidateRange(1, 60)][int]$RecordMinutes = 5,   # R: length of a recording (training data)
@@ -1021,6 +1024,9 @@ if ($Guard) {
 $Main = if ($Checkout) { (Resolve-Path $Checkout).Path } else { Get-MainCheckout }
 $Web = Join-Path $Main 'web'
 $HubExe = Join-Path $Main 'kinect-hub\target\release\kinect-hub.exe'
+# the native output (-Bevy); a test checkout (-Checkout) without a build of its own uses the main one's
+$BevyExe = Join-Path $Main 'wall-bevy\target\release\wall-bevy.exe'
+if ($Checkout -and -not (Test-Path -LiteralPath $BevyExe)) { $BevyExe = Join-Path (Get-MainCheckout) 'wall-bevy\target\release\wall-bevy.exe' }
 # where the wall setup lives and the kiosk browser keeps its profile (as tools/wall-window.mjs)
 $WallDir = if ($env:KINECT_WALL_DIR) { [IO.Path]::GetFullPath($env:KINECT_WALL_DIR) } else { Join-Path $Web '.cache\wall' }
 $WallProfile = (Join-Path (Split-Path -Parent $WallDir) 'wall-browser').ToLower()
@@ -1147,7 +1153,7 @@ Enable-PowerPlan
 $script:Optimize = $true
 
 # ---- priorities and efficiency mode
-$TuneNames = @('kinect-hub.exe', 'fn2_capture.exe', 'chrome.exe', 'msedge.exe', 'node.exe', 'msedgewebview2.exe') +
+$TuneNames = @('kinect-hub.exe', 'fn2_capture.exe', 'chrome.exe', 'msedge.exe', 'node.exe', 'msedgewebview2.exe', 'wall-bevy.exe') +
   @($BackgroundApps | ForEach-Object { "$_.exe" })
 $BackgroundExes = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 foreach ($a in $BackgroundApps) { [void]$BackgroundExes.Add("$a.exe") }
@@ -1162,6 +1168,7 @@ function Get-Role([string]$name, [int]$id) {
       return 'background'   # test hubs (replay, synthetic)
     }
     'fn2_capture.exe' { return 'core' }
+    'wall-bevy.exe' { return 'wall' }   # the native output (-Bevy)
     { $_ -in 'chrome.exe', 'msedge.exe' } {
       $cl = [string][KinectWandNative]::CommandLine($id)
       if ($cl.ToLower().Replace('/', '\').Contains($WallProfile)) {
@@ -1192,7 +1199,7 @@ function Update-TuneSummary {
     if (-not $t) { continue }
     if ($t.role -eq 'core') { $core++ } elseif ($t.role -eq 'wall') { $wall++ } else { [void]$bg.Add([string]$t.name) }
   }
-  $script:TuneSummary = "Vorrang: Hub/Worker ($core), Wand-Browser ($wall) · Effizienzmodus: $(if ($bg.Count) { @($bg) -join ', ' } else { '-' })"
+  $script:TuneSummary = "Vorrang: Hub/Worker ($core), Wand-$(if ($UseBevy) { 'Ausgabe' } else { 'Browser' }) ($wall) · Effizienzmodus: $(if ($bg.Count) { @($bg) -join ', ' } else { '-' })"
   $script:Dirty = $true
 }
 
@@ -1219,6 +1226,13 @@ function Update-Tuning {
     [void][KinectWandNative]::SetEco($n.pid, $n.eco)
   }
   Update-TuneSummary
+}
+
+# -Bevy: the native output if it is built, else the browser window as always
+$UseBevy = $false
+if ($Bevy) {
+  if (Test-Path -LiteralPath $BevyExe) { $UseBevy = $true }
+  else { Add-Event "wall-bevy ist nicht gebaut ($BevyExe; in wall-bevy: cargo build --release): nehme das Browser-Fenster" 'warn' }
 }
 
 # ---- components: hub, dev server, output window
@@ -1437,7 +1451,7 @@ function Get-OpenScreen {
 }
 
 function Open-Wall($screen) {
-  if (-not $script:Vite -or -not $Node) { return }
+  if (-not $script:Vite -or (-not $Node -and -not $UseBevy)) { return }
   $now = $Clock.Elapsed.TotalSeconds
   while ($script:WallLaunches.Count -and $script:WallLaunches[0] -lt $now - 180) { $script:WallLaunches.RemoveAt(0) }
   if ($script:WallLaunches.Count -ge 4) {
@@ -1446,6 +1460,7 @@ function Open-Wall($screen) {
     return
   }
   [void]$script:WallLaunches.Add($now)
+  if ($UseBevy) { Open-WallBevy $screen; return }
   $url = $script:Vite.url
   $place = '{0},{1},{2},{3}' -f $screen.X, $screen.Y, $screen.Width, $screen.Height
   $out = & $Node (Join-Path $Web 'tools\wall-window.mjs') --url $url --screen $place 2>&1 | Out-String
@@ -1466,6 +1481,28 @@ function Open-Wall($screen) {
     return
   }
   Add-Event ('Wand-Fenster: ' + (($out -split "`n" | Where-Object { $_.Trim() }) -join ' ').Trim()) 'warn'
+}
+
+# The native output (-Bevy) on that display. It places itself there (--screen), finds the dev server
+# itself (also a new one) and ends when that display is gone; it shares this console window (no
+# window of its own), its output goes to the logs.
+function Open-WallBevy($screen) {
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $place = '{0},{1},{2},{3}' -f $screen.X, $screen.Y, $screen.Width, $screen.Height
+  try {
+    $p = Start-Process -FilePath $BevyExe -ArgumentList '--hub', $HubUrl, '--web', "`"$Web`"", '--screen', $place -WorkingDirectory $Main `
+      -NoNewWindow -PassThru -RedirectStandardInput $NoInput `
+      -RedirectStandardOutput (Join-Path $LogDir "wall-bevy-$stamp.log") -RedirectStandardError (Join-Path $LogDir "wall-bevy-$stamp.err.log")
+  } catch {
+    Add-Event "Wand (wall-bevy) startet nicht: $($_.Exception.Message)" 'warn'
+    return
+  }
+  $e = Add-Started 'wall' $p.Id
+  $script:WallPid = $p.Id
+  $script:WallStart = $e.start
+  $script:WallUrl = $null   # it follows a new dev server address by itself
+  $script:WallScreen = $screen
+  Add-Event "Wand (nativ, wall-bevy) gestartet auf $(Format-Screen $screen)"
 }
 
 function Close-Wall([switch]$Now) {
@@ -1567,7 +1604,10 @@ function Watch-Components {
     $screen = Get-OpenScreen
     if (-not $screen) { return }
     $found = Find-Wall
-    if ($found -and $found.CommandLine.Contains("--app=$($script:Vite.url)/wall/")) {
+    if ($UseBevy) {
+      if ($found) { Stop-Tree $found.Pid -Gentle }   # a browser output window: the native one replaces it
+      Open-Wall $screen
+    } elseif ($found -and $found.CommandLine.Contains("--app=$($script:Vite.url)/wall/")) {
       $script:WallPid = $found.Pid; $script:WallStart = [string]$found.Start; $script:WallUrl = $script:Vite.url
       if (-not ($J.started | Where-Object { $_ -and $_.role -eq 'wall' -and [int]$_.pid -eq $found.Pid })) { Add-Event "Das Wand-Fenster ist schon offen (PID $($found.Pid)), wird mitbenutzt" }
       [void](Test-WallPlace)
@@ -1787,7 +1827,7 @@ function Show-Status {
     $viteText = if ($script:ViteOurs -and [int]$script:ViteOurs.pid -eq [int]$script:Vite.pid) { 'von hier gestartet' } else { 'mitbenutzt' }
     L "  Dev-Server $($script:Vite.url) $viteText (PID $($script:Vite.pid))"
   } else { L '  Dev-Server läuft nicht' 'Red' }
-  if ($script:WallPid) { $wallText = "offen auf $(Format-Screen $script:WallScreen)" }
+  if ($script:WallPid) { $wallText = "offen auf $(Format-Screen $script:WallScreen)" + $(if ($UseBevy) { ' (nativ: wall-bevy)' } else { '' }) }
   elseif ($script:ScreenMissing -eq 'mirror' -and $script:WallAuto) { $wallText = 'zu: der zweite Bildschirm spiegelt das Notebook (Win+P: Erweitern)' }
   elseif ($script:ScreenMissing -and $script:WallAuto) { $wallText = 'zu: kein zweiter Bildschirm (nie auf dem Notebook)' }
   else { $wallText = 'zu' }
