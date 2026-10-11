@@ -1509,7 +1509,7 @@ export class Rod {
     }
     if (mu <= 0) return;
     // Friction acts on the centre lines and turns the segments only about their own axes
-    // (rolling): r = (contact point on the axis) - n rc, and the surface lever only rolls. Turning a
+    // (rolling, undamped cables only): r = (contact point on the axis) - n rc, and the surface lever only rolls. Turning a
     // segment's tangent by a friction impulse at its surface would couple friction with bending,
     // and with the strongly damped bending a cable then creeps over a finger it should hang on.
     const rc = this.rc, pm = this.pm, d3 = this.d3, j3 = 3 * j, k3 = 3 * k;
@@ -1529,8 +1529,11 @@ export class Rod {
     const tx = dx / dl, ty = dy / dl, tz = dz / dl;
     // rolling levers: ((-n rc) × t)·d3 for j, ((n rc) × t)·d3 for k
     const cx = ny * tz - nz * ty, cy = nz * tx - nx * tz, cz = nx * ty - ny * tx;
-    const lj = -rc * (cx * d3[j3] + cy * d3[j3 + 1] + cz * d3[j3 + 2]);
-    const lk = k >= 0 ? rc * (cx * d3[k3] + cy * d3[k3 + 1] + cz * d3[k3 + 2]) : 0;
+    // (a damped cable does not roll under friction either: the rolling lever and the damped bending
+    // drive each other, and a cable hanging over a finger starts to swing out of its plane)
+    const RL = NR;
+    const lj = -rc * RL * (cx * d3[j3] + cy * d3[j3 + 1] + cz * d3[j3 + 2]);
+    const lk = k >= 0 ? rc * RL * (cx * d3[k3] + cy * d3[k3 + 1] + cz * d3[k3 + 2]) : 0;
     const wT = Wj + Tj * lj * lj + Wk + Tk * lk * lk;
     const lamT = -Math.min(dl / wT, mu * lamN); // static (cancel slip) or kinetic (Coulomb limit)
     c[j3] += Wj * lamT * tx; c[j3 + 1] += Wj * lamT * ty; c[j3 + 2] += Wj * lamT * tz;
