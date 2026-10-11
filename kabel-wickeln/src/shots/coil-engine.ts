@@ -474,11 +474,10 @@ export class CoilController {
     const last = i === this.bs.length - 1;
     const meet = this.padsMeet(b.k, t);
     const above = this.padsAbove(b.k, t);
-    // after the hand-over (the fist holds the strand): the pads turn the way the next slide goes
-    if (t >= b.tMeet + 0.1) {
-      const r = this.padsReady(b.k, t), u = ramp(t, b.tMeet + 0.1, last ? b.tMeet + 0.6 : b.t1);
-      return { rig: this.pinchRig(lerpV(meet, r.p, u), normalize(lerpV(this.strandPath(b.k, t, meet).dir, r.d3, u)), {}), turn: 0 };
-    }
+    // after the hand-over (the fist holds the strand): the pads stay beside it, the cable through them
+    // already pointing about the way the next slide goes (GEOM.layYaw)
+    if (t >= b.tMeet + 0.1) return { rig: this.pinchRig(meet, this.strandPath(b.k, t, meet).dir, {}), turn: 0 };
+    void last;
     // loosen where the last hand-over left the pads
     const dL = quatRotate(m.q0, [0, 0, 1]);
     if (t < b.tSlide) {

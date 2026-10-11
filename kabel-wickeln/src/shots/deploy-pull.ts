@@ -1,22 +1,28 @@
 // Stage 1, item 3: a short cable laid out again, done right. Ilse sits in her wheelchair at the FOH
 // desk with a short over-under ring of a black charging cable (CHARGING preset, Ø 4 mm, 4 loops of
-// Ø 9 cm, 1.45 m with the plugs), holding it at its top between the thumb and index finger of her
-// left hand, its face towards her; the start end runs through her fingers, its plug sticks out to
-// her left. The ring is closed with a velcro tie that lives on that end (9 cm from the plug). Her
-// right hand comes from above, pinches the tie's pull tab and pulls it up out of its eyelet: the
-// band comes loose. The right hand goes round the ring to the other end, which hangs out of the ring
-// below, and takes it. Both ends are outside the ring. The left hand opens but keeps the start end:
-// the loops slip out of the loose tie (it stays on the cable) and the ring hangs between the hands.
-// She pulls her hands apart: the loops open one after the other, the cable ends up hanging calm
-// between her hands, its middle on the desk, without curls (the +1 and -1 turns of the über and
-// unter loops cancel).
+// Ø 9 cm, 1.44 m with the plugs). She holds it at chest height, its top between the thumb and index
+// finger of her left hand, its face towards her: the ring hangs from that hand. The start end runs
+// through her fingers, its plug sticks out to her left. The ring is closed with a velcro tie that
+// lives on that end (9 cm from the plug). Her right hand comes from above, pinches the tie's pull tab
+// and pulls it up out of its eyelet: the band comes loose. The right hand goes round the ring to the
+// other end, which hangs out of the ring below, and takes it. Both ends are outside the ring, and
+// both are in her hands now. She holds still (the ends are pointed out), then pulls her hands apart:
+// the right hand draws the last loop out of the loosened left hand, then the next, …, one after the
+// other, each opening as it is pulled (the left hand keeps only the start end at the end). The cable
+// hangs calm between her hands, without curls (the +1 and -1 turns of the über and unter loops
+// cancel); she lowers her hands and its middle lies on the desk.
+//
+// The loops leave the left hand on a schedule computed from the planned hand paths when the right
+// hand has the end (a loop goes when the cable already out would no longer reach between the hands
+// with a little slack): what the pads of a loosened pinch do when the cable is pulled. Before that
+// every loop is held (the left hand's pads, a bundle). The schedule is recorded in the plan, the
+// rig uses it (the pads loosen as each loop goes), so the bake and the scene agree.
 //
 // The grips were chosen with the IK (stateless probes of rigPose: the comfortable ones, no joint at
-// its limit): the ring's top and the ends are pinched with the cable leaving past the thumb towards
-// the ring, the tie's end with the thumb up. Hands stay clear of the hanging loops: a 9 cm ring is
-// smaller than a hand, every touch would push it. (A ring this light, hung from its start end
-// alone, unrolls under its own weight in the simulation: so the left hand keeps the loops until
-// the right hand has the other end.)
+// its limit): hands at chest height (Ilse's shoulders are at 0.99 m seated), the ring's top and
+// the ends pinched with the cable leaving past the thumb towards the ring, the tie's end with the
+// thumb up. Hands stay clear of the hanging loops: a 9 cm ring is smaller than a hand, every touch
+// would push it.
 //
 // Everything is simulated except the tie (kinematic). Ilse's arms come from one RigTrack (people/
 // rig.ts), the single source for the bake and the scene: the simulation's hand frames are the grip
@@ -24,8 +30,8 @@
 // each (handColliders: a pinch or bundle of the same hand lets its cable through), her torso and
 // thighs are capsules too, and the desk top is the floor. A hand going to an end follows that end
 // where the simulation has it (a tenth of a second ago): the bake records the end every frame
-// (vector "endB") and the ring's geometry ("plan"), so the scene builds the same RigTrack
-// (pullTrack(plan, endsFrom(bake))).
+// (vector "endB") and the ring's geometry and the loops' schedule ("plan"), so the scene builds the
+// same RigTrack (pullTrack(plan, endsFrom(bake))).
 //
 // Coordinates: Ilse sits at the origin facing +z (her left is +x); the desk's top at DESK.height.
 
