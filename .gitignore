@@ -23,3 +23,5 @@ snapshots/
 fn2/logs/
 *.csv
 *.log
+# wall-bevy (native output): build output
+wall-bevy/target/
