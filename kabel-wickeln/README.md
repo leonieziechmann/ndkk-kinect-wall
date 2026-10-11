@@ -9,7 +9,7 @@ Eine Erklär-Animation mit Motion Canvas, etwa 3:20 min, ohne Ton. Sie beginnt m
 | 2 · Warum | Jede Schlaufe dreht das Kabel einmal um sich selbst. Immer gleich gewickelt: 6 Drehungen, Kringel beim Auslegen. Über-unter: 0. Der gelbe Streifen auf dem Kabel zeigt die Drehung. | 0:27 |
 | 3 · Schritt für Schritt | Sechs Schritte, langsam: Ende in die linke Hand, greifen, Über-Schlaufe (vorwärts rollen), Unter-Schlaufe (Hand umdrehen, zurückdrehen), abwechselnd, Klettband. Eine Lupe zeigt, wie das Kabel über bzw. unter sich selbst läuft. | 0:50 |
 | 4 · Feinheiten | Nie ein Ende durch den Ring ziehen (sonst Knoten in jeder zweiten Schlaufe). Will die Schlaufe zur Acht: falsch herum gedreht. Nicht um Hand und Ellenbogen wickeln. Dicke Kabel in Achten auf den Boden legen. Gleich große Schlaufen, Klettband, Linkshänder spiegeln. | 0:51 |
-| 5 · Physik | Ein Band mit einer Schlaufe: auseinandergezogen wird die Schlaufe zu einer ganzen Drehung, die Unter-Schlaufe zur Gegendrehung (Satz von Călugăreanu). 1+1+1+1+1+1 = 6, 1−1+1−1+1−1 = 0. | 0:34 |
+| 5 · Physik | Ein Band mit einer Schlaufe: auseinandergezogen wird die Schlaufe zu einer ganzen Drehung, die Unter-Schlaufe zur Gegendrehung (Satz von Călugăreanu). 1+1+1+1+1+1 = 6, 1−1+1−1+1−1 = 0. | 0:33 |
 
 ## Bedienung
 
