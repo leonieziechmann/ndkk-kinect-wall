@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::gpu::{FULLSCREEN_WGSL, Gpu, layout};
+use wall::gpu::{FULLSCREEN_WGSL, Gpu, layout};
 
 pub enum Purpose {
     /// JPEG data URL for the control center
@@ -80,7 +80,7 @@ impl Readback {
                 let Some((_, _, stex, group)) = &self.small else { return };
                 let sview = stex.create_view(&Default::default());
                 {
-                    let mut pass = crate::gpu::begin_pass(enc, "preview small", &sview);
+                    let mut pass = wall::gpu::begin_pass(enc, "preview small", &sview);
                     pass.set_pipeline(pipe);
                     pass.set_bind_group(0, group, &[]);
                     pass.draw(0..3, 0..1);

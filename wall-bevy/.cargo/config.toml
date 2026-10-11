@@ -1,0 +1,4 @@
+# The output (wall-bevy), the framework (wall) and every scene library share one copy of Rust's
+# standard library: the scenes are dynamic libraries loaded while the output runs.
+[build]
+rustflags = ["-C", "prefer-dynamic"]

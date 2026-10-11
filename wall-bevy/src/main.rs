@@ -6,27 +6,17 @@
 
 mod audio;
 mod bus;
-mod canvas;
 mod compositor;
 mod config;
+mod devbuild;
 mod docs;
-mod gpu;
-mod hub;
-mod kinect;
-mod kinect_gpu;
+mod newscene;
 mod output;
-mod params;
 mod patterns;
-mod persons;
 mod platform;
 mod preview;
-mod scene;
 mod scenes;
-mod shader_pass;
 mod show;
-mod store;
-mod wall;
-mod wall_persons;
 
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::prelude::*;
@@ -52,9 +42,30 @@ fn main() {
         // SAFETY: at the very start, before any thread exists
         unsafe { std::env::set_var("NO_COLOR", "1") };
     }
+    if let Some(name) = &cfg.new_scene {
+        use std::io::Write;
+        let Some(root) = cfg.watch.clone().or_else(devbuild::default_root) else {
+            eprintln!("--new-scene: wo ist der Workspace (wall-bevy/)? --watch DIR angeben");
+            std::process::exit(2);
+        };
+        match newscene::create(&root, name) {
+            Ok(msg) => {
+                let _ = writeln!(std::io::stdout(), "{msg}");
+                return;
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
     if cfg.list_scenes {
         use std::io::Write;
-        let _ = writeln!(std::io::stdout(), "{}", scenes::declarations());
+        let (defs, errors, _) = scenes::load_all();
+        for e in errors {
+            let _ = writeln!(std::io::stderr(), "{e}");
+        }
+        let _ = writeln!(std::io::stdout(), "{}", scenes::declarations(&defs));
         return;
     }
     let present_mode = match cfg.vsync.as_str() {

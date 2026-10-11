@@ -1,0 +1,16 @@
+[package]
+name = "wall-scene-shader-scenes"
+version = "0.1.0"
+edition = "2024"
+description = "Scenes wand-spiegel, person-mask, person-skeleton, depth-shader"
+publish = false
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+wall.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

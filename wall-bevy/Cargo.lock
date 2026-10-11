@@ -4414,25 +4414,217 @@ dependencies = [
 ]
 
 [[package]]
+name = "wall"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "cosmic-text",
+ "crossbeam-channel",
+ "glam",
+ "naga",
+ "parking_lot",
+ "qrcodegen",
+ "serde",
+ "serde_json",
+ "tiny-skia",
+ "tracing",
+ "tungstenite",
+ "wgpu",
+]
+
+[[package]]
 name = "wall-bevy"
 version = "0.1.0"
 dependencies = [
  "base64",
  "bevy",
  "bytemuck",
- "cosmic-text",
  "crossbeam-channel",
  "jpeg-encoder",
- "naga",
+ "libloading",
  "parking_lot",
  "png 0.18.1",
- "qrcodegen",
  "serde",
  "serde_json",
  "tiny-skia",
  "tungstenite",
+ "wall",
  "wgpu",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "wall-invaders"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde_json",
+ "wall",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-blasen-platzen"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde_json",
+ "wall",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-cyberspiegel"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde_json",
+ "wall",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-fluid-simulation"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde_json",
+ "wall",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-fruit-ninja"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "crossbeam-channel",
+ "serde_json",
+ "wall",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-hallo-wand"
+version = "0.1.0"
+dependencies = [
+ "wall",
+]
+
+[[package]]
+name = "wall-scene-invaders-tracking"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde_json",
+ "wall",
+ "wall-invaders",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-leonie-ziechmann"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde_json",
+ "tiny-skia",
+ "wall",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-live-exakt"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "wall",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-llg-sakura"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "tiny-skia",
+ "wall",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-modern-events"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "tiny-skia",
+ "wall",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-neon-room"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "wall",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-pixel-jump-run"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde_json",
+ "wall",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-pixel-spiegel"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde_json",
+ "wall",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-pointcloud"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde_json",
+ "wall",
+ "wgpu",
+]
+
+[[package]]
+name = "wall-scene-shader-scenes"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "wall",
+]
+
+[[package]]
+name = "wall-scene-space-invaders"
+version = "0.1.0"
+dependencies = [
+ "wall",
+ "wall-invaders",
+]
+
+[[package]]
+name = "wall-scene-three-points"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "serde_json",
+ "wall",
+ "wgpu",
 ]
 
 [[package]]

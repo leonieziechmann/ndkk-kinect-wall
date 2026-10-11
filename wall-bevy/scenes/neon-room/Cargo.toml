@@ -1,0 +1,17 @@
+[package]
+name = "wall-scene-neon-room"
+version = "0.1.0"
+edition = "2024"
+description = "Scene neon-room"
+publish = false
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+wall.workspace = true
+bytemuck.workspace = true
+wgpu.workspace = true
+
+[lints]
+workspace = true

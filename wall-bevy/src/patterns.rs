@@ -6,10 +6,10 @@ use std::f32::consts::{PI, TAU};
 
 use serde_json::Value;
 
-use crate::canvas::{Align, Baseline, Canvas, Font, Rgba};
-use crate::kinect::KinectData;
-use crate::persons::{BONES, j};
-use crate::wall::WallMap;
+use wall::canvas::{Align, Baseline, Canvas, Font, Rgba};
+use wall::kinect::KinectData;
+use wall::persons::{BONES, j};
+use wall::map::WallMap;
 
 fn px(n: f32) -> f32 {
     n.round().max(1.0)
@@ -148,7 +148,7 @@ fn draw_sweep(g: &mut Canvas, w: f32, h: f32, now: f64) {
 }
 
 /// The highest a person reaches (m above the floor): a hand, else the head.
-pub fn reach_of(p: &crate::persons::Person) -> Option<f32> {
+pub fn reach_of(p: &wall::persons::Person) -> Option<f32> {
     let mut top: Option<f32> = None;
     for jj in [j::LEFT_HAND, j::RIGHT_HAND, j::LEFT_WRIST, j::RIGHT_WRIST, j::HEAD] {
         if let Some(r) = p.room.joints[jj] {

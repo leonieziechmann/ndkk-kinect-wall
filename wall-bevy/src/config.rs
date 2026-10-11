@@ -47,6 +47,10 @@ pub struct Config {
     pub led: Option<(u32, u32)>,
     /// --list-scenes: print every scene's declaration as JSON and end
     pub list_scenes: bool,
+    /// --watch [DIR]: build the scenes when their sources change and swap them (DIR: the workspace, wall-bevy/)
+    pub watch: Option<std::path::PathBuf>,
+    /// --new-scene NAME: a new scene crate from the template (scenes/NAME), then end
+    pub new_scene: Option<String>,
 }
 
 /// http://127.0.0.1:<port> from a port, host:port or URL (as hub.js does).
@@ -108,7 +112,7 @@ fn main_checkout(top: &Path) -> PathBuf {
 
 impl Config {
     pub fn from_args() -> Result<Self, String> {
-        let mut args = std::env::args().skip(1);
+        let mut args = std::env::args().skip(1).peekable();
         let mut hub = std::env::var("KINECT_HUB").ok();
         let mut web: Option<PathBuf> = None;
         let mut cfg = Config {
@@ -130,6 +134,8 @@ impl Config {
             params: Vec::new(),
             led: None,
             list_scenes: false,
+            watch: None,
+            new_scene: None,
         };
         while let Some(a) = args.next() {
             let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} braucht einen Wert"));
@@ -153,6 +159,15 @@ impl Config {
                 "--shot-every" => cfg.shot_every = value("--shot-every")?.parse().map_err(|_| "--shot-every: Zahl erwartet")?,
                 "--mute" => cfg.mute = true,
                 "--list-scenes" => cfg.list_scenes = true,
+                "--watch" => {
+                    // an optional directory: the next argument unless it is an option
+                    let dir = match args.peek() {
+                        Some(a) if !a.starts_with('-') => args.next().map(std::path::PathBuf::from),
+                        _ => crate::devbuild::default_root(),
+                    };
+                    cfg.watch = Some(dir.ok_or_else(|| "--watch: wo ist der Workspace (wall-bevy/)? --watch DIR angeben".to_string())?);
+                }
+                "--new-scene" => cfg.new_scene = Some(value("--new-scene")?),
                 "--no-bus" => cfg.no_bus = true,
                 "--param" | "-p" => {
                     let kv = value("--param")?;
@@ -222,5 +237,7 @@ const HELP: &str = "wall-bevy: die LED-Wand-Ausgabe als native App (Bevy)
   --shots DIR --seconds S        Test: S Sekunden rendern, PNGs und Bildzeiten nach DIR
   --led 1008x336                 LED-Größe für Tests ohne Setup
   --list-scenes                  alle Szenen (Name, Titel, Parameter, ...) als JSON ausgeben
+  --watch [DIR]                  Szenen beim Speichern neu bauen und austauschen (DIR: wall-bevy/)
+  --new-scene NAME               neue Szene aus der Vorlage anlegen (scenes/NAME)
   --mute                         ohne Ton
   --no-bus                       ohne Steuerzentrale";

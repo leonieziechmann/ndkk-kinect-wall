@@ -3,7 +3,7 @@
 
 use serde_json::{Value, json};
 
-use crate::wall::valid_name;
+use wall::map::valid_name;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Entry {

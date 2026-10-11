@@ -11,7 +11,7 @@ use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use serde_json::{Value, json};
 use tungstenite::Message;
 
-use crate::hub::{connect_ws, mono_ms, send_json};
+use wall::hub::{connect_ws, mono_ms, send_json};
 
 pub struct BusMsg {
     pub kind: String,

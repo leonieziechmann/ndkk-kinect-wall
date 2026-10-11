@@ -1,0 +1,16 @@
+[package]
+name = "wall-scene-space-invaders"
+version = "0.1.0"
+edition = "2024"
+description = "Scene space-invaders (the game is in invaders-core)"
+publish = false
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+wall.workspace = true
+wall-invaders = { path = "../invaders-core" }
+
+[lints]
+workspace = true

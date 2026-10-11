@@ -1,3 +1,36 @@
+# The LED wall output as a native app: the output (this package), the framework (wall/) and one
+# crate per scene (scenes/*). Build all of it at once (`cargo build --release` here): the scenes
+# must be built together with the output and the framework they are loaded into.
+[workspace]
+resolver = "3"
+members = [".", "wall", "scenes/*"]
+default-members = [".", "wall", "scenes/*"]
+
+[workspace.dependencies]
+wall = { path = "wall" }
+# std: error scopes per thread (Bevy builds wgpu without it: one global stack for all threads)
+wgpu = { version = "30", default-features = false, features = ["std"] }
+naga = { version = "30", features = ["wgsl-in"] }
+glam = "0.33"
+tracing = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tungstenite = "0.28"
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+bytemuck = { version = "1", features = ["derive"] }
+tiny-skia = "0.11"
+cosmic-text = "0.15"
+qrcodegen = "1.8"
+
+[workspace.lints.clippy]
+# the scenes mirror the browser's JS: its signatures and names (from_world, from_room, ...)
+too_many_arguments = "allow"
+wrong_self_convention = "allow"
+type_complexity = "allow"
+# !(a > b) on purpose: false for NaN, as in the JS it was ported from
+neg_cmp_op_on_partial_ord = "allow"
+
 [package]
 name = "wall-bevy"
 version = "0.1.0"
@@ -27,47 +60,47 @@ bevy = { version = "0.20", default-features = false, features = [
   "wav",
   "x11",
 ] }
-# std: error scopes per thread (Bevy builds wgpu without it: one global stack for all threads)
-wgpu = { version = "30", default-features = false, features = ["std"] }
-naga = { version = "30", features = ["wgsl-in"] }
+wall.workspace = true
+wgpu.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tungstenite.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+bytemuck.workspace = true
+tiny-skia.workspace = true
 png = "0.18"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tungstenite = "0.28"
-crossbeam-channel = "0.5"
-parking_lot = "0.12"
-bytemuck = { version = "1", features = ["derive"] }
-tiny-skia = "0.11"
-cosmic-text = "0.15"
 jpeg-encoder = "0.6"
 base64 = "0.22"
-qrcodegen = "1.8"
+libloading = "0.8"
 
 # Windows: process priority and power throttling (platform.rs); already in the tree via winit
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
-[lints.clippy]
-# the scenes mirror the browser's JS: its signatures and names (from_world, from_room, ...)
-too_many_arguments = "allow"
-wrong_self_convention = "allow"
-type_complexity = "allow"
-# !(a > b) on purpose: false for NaN, as in the JS it was ported from
-neg_cmp_op_on_partial_ord = "allow"
+[lints]
+workspace = true
 
-# dev: the scenes run fast enough to judge them (deps optimized), links stay quick and small
+# dev: the scenes run fast enough to judge them (deps optimized), links stay quick and small;
+# rpath: the programs find the framework and Rust's std library next to them / in the toolchain
 [profile.dev]
 opt-level = 1
 debug = "line-tables-only"
+rpath = true
 
 [profile.dev.package."*"]
 opt-level = 3
 debug = false
 
-# release: line tables only for this crate (readable panics); the dependencies without (the exe stays small)
+# release: line tables only for our crates (readable panics); the dependencies without.
+# incremental: a scene's crate is rebuilt in seconds while the show runs (only the changed parts are
+# optimized again; the dependencies are never built incrementally). Measured: a 6.5k-line scene
+# 5.6 -> 1.6 s, invaders 7.3 -> 3.7 s, no difference in the frame times.
 [profile.release]
 debug = "line-tables-only"
 codegen-units = 16
+incremental = true
+rpath = true
 
 [profile.release.package."*"]
 debug = false

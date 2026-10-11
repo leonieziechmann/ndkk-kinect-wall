@@ -17,22 +17,23 @@ use bevy::render::renderer::{RenderDevice, RenderQueue};
 use crossbeam_channel::Receiver;
 use serde_json::{Value, json};
 
-use crate::audio::{Audio, SoundQueue};
+use crate::audio::SoundQueue;
+use wall::audio::Audio;
 use crate::bus::{Bus, BusIn};
-use crate::canvas::Canvas;
+use wall::canvas::Canvas;
 use crate::compositor::{Fit, OutputImage};
 use crate::config::Config;
 use crate::docs::Docs;
-use crate::gpu::{FULLSCREEN_WGSL, Gpu, TARGET_FORMAT, layout};
-use crate::hub::mono_ms;
-use crate::kinect::KinectData;
-use crate::kinect_gpu::KinectGpu;
-use crate::params::{Glide, Params, retune, step_glide};
-use crate::persons::{PersonOptions, PersonsResult};
+use wall::gpu::{FULLSCREEN_WGSL, Gpu, TARGET_FORMAT, layout};
+use wall::hub::mono_ms;
+use wall::kinect::KinectData;
+use wall::kinect_gpu::KinectGpu;
+use wall::params::{Glide, Params, retune, step_glide};
+use wall::persons::{PersonOptions, PersonsResult};
 use crate::preview::{Purpose, Readback};
-use crate::scene::{FrameCtx, Scene, SceneDef, SetupCtx};
+use wall::scene::{FrameCtx, Scene, SceneDef, SetupCtx};
 use crate::show::{Entry, Show, Transition, crowd_wait, normalize_show, step_entry};
-use crate::wall::{ProjectionDoc, Setup, WallMap, normalize_projection_doc, normalize_setup, resolve_projection};
+use wall::map::{ProjectionDoc, Setup, WallMap, normalize_projection_doc, normalize_setup, resolve_projection};
 
 const TELEMETRY_MS: f64 = 250.0;
 const PREVIEW_MS: f64 = 200.0;
@@ -122,6 +123,8 @@ enum State {
 struct Instance {
     def: &'static SceneDef,
     scene: Box<dyn Scene>,
+    /// the GPU with this scene library's cache names
+    gpu: Gpu,
     params: Params,
     overrides: Value,
     wall: WallMap,
@@ -152,17 +155,22 @@ struct Leaving {
 
 /// A scene being set up in a worker thread.
 /// A warm-up setup: the scene, its params, the instance parts (or the error), the ms it took.
-type WarmResult = (&'static SceneDef, Params, Result<(Box<dyn Scene>, WallMap, wgpu::Buffer, wgpu::Texture), String>, f64);
+type WarmResult = (&'static SceneDef, Params, Result<(Box<dyn Scene>, Gpu, WallMap, wgpu::Buffer, wgpu::Texture), String>, f64);
 
 struct Pending {
     name: &'static str,
+    /// the scene as it was when its setup started (a newer build of it may come meanwhile)
+    def: &'static SceneDef,
     rx: Receiver<Result<(Box<dyn Scene>, SetupBits), String>>,
     transition: Transition,
     fade: f64,
     overrides: Value,
+    /// a new build of the running scene (--watch): when its setup began, when its source was saved
+    reload: Option<(f64, Option<std::time::SystemTime>)>,
 }
 
 struct SetupBits {
+    gpu: Gpu,
     params: Params,
     wall: WallMap,
     wall_buf: wgpu::Buffer,
@@ -296,6 +304,12 @@ pub struct OutputState {
     projections: ProjectionDoc,
     live_at: [f64; 3],
     registry: Vec<&'static SceneDef>,
+    /// the scene libraries built anew while the output runs (scenes.rs)
+    scene_updates: Receiver<crate::scenes::Update>,
+    /// --watch: the builder's reports, and when the last build started (mono ms)
+    dev: Option<Receiver<crate::devbuild::DevEvent>>,
+    /// when the file of the running build was saved (dev builds: the time to the swap)
+    dev_saved: Option<std::time::SystemTime>,
     current: Option<Instance>,
     leaving: Vec<Leaving>,
     pending: Option<Pending>,
@@ -385,7 +399,12 @@ impl OutputState {
 }
 
 fn new_state(cfg: Config) -> OutputState {
-    crate::canvas::preload_fonts();
+    wall::canvas::preload_fonts();
+    let (registry, scene_errors, seen) = crate::scenes::load_all();
+    info!("{} Szenen aus {}", registry.len(), crate::scenes::dir().display());
+    for e in &scene_errors {
+        warn!("{e}");
+    }
     let docs = Docs::start(["setup", "projection", "show"].iter().map(|k| (k.to_string(), cfg.doc_file(k))).collect());
     let bus = if cfg.no_bus || cfg.shots.is_some() {
         None
@@ -407,7 +426,10 @@ fn new_state(cfg: Config) -> OutputState {
         projection_raw: Value::Null,
         projections: ProjectionDoc::default(),
         live_at: [-1e9; 3],
-        registry: crate::scenes::registry(),
+        registry,
+        scene_updates: crate::scenes::watch(seen),
+        dev: cfg.watch.clone().map(crate::devbuild::start),
+        dev_saved: None,
         current: None,
         leaving: Vec::new(),
         pending: None,
@@ -508,14 +530,14 @@ impl OutputState {
     }
 
     /// The projection of a scene: the default, its wishes, the control center's values.
-    fn projection_of(&self, def: &SceneDef) -> crate::wall::Profile {
+    fn projection_of(&self, def: &SceneDef) -> wall::map::Profile {
         resolve_projection(&self.projections, &self.setup, self.page_wall.tan_h, def.name, &(def.projection)())
     }
 
     /// Setup or projections changed: every wall map takes them.
     fn apply_wall(&mut self) {
         self.projections = normalize_projection_doc(&self.projection_raw);
-        let default = self.projections.default.clone().unwrap_or_else(|| crate::wall::projection_from_setup(&self.setup, self.page_wall.tan_h));
+        let default = self.projections.default.clone().unwrap_or_else(|| wall::map::projection_from_setup(&self.setup, self.page_wall.tan_h));
         self.page_wall.set_setup(self.setup.clone());
         self.page_wall.set_projection(default.clone());
         let mut list: Vec<&mut Instance> = Vec::new();
@@ -556,18 +578,19 @@ impl OutputState {
         let led = self.led();
         let (tx, rx) = crossbeam_channel::bounded(1);
         let name = def.name;
+        let gpu = gpu.namespaced(&wall::scene::cache_namespace(def));
         std::thread::Builder::new()
             .name(format!("setup {name}"))
             .spawn(move || {
                 let result = catch_unwind(AssertUnwindSafe(|| {
-                    let wall_buf = gpu.uniform_buffer(&format!("{name} wall"), (crate::wall::WALL_UNIFORM_FLOATS * 4) as u64);
+                    let wall_buf = gpu.uniform_buffer(&format!("{name} wall"), (wall::map::WALL_UNIFORM_FLOATS * 4) as u64);
                     let target = gpu.target(&format!("{name} output"), led[0], led[1], TARGET_FORMAT);
                     let mut w = wall.clone();
                     gpu.queue.write_buffer(&wall_buf, 0, w.uniform_bytes());
                     let ctx = SetupCtx { gpu: gpu.clone(), kgpu, wall, wall_buf: wall_buf.clone(), params: params.clone(), width: led[0], height: led[1], name };
                     let (made, err) = gpu.scoped(|| (def.make)(&ctx));
                     match (made, err) {
-                        (Ok(scene), None) => Ok((scene, SetupBits { params, wall: ctx.wall, wall_buf, target })),
+                        (Ok(scene), None) => Ok((scene, SetupBits { gpu: gpu.clone(), params, wall: ctx.wall, wall_buf, target })),
                         (Ok(_), Some(e)) => Err(e),
                         (Err(e), _) => Err(e),
                     }
@@ -578,16 +601,21 @@ impl OutputState {
         if let Some(old) = self.pending.take() {
             debug!("setup von {} abgelöst", old.name);
         }
-        self.pending = Some(Pending { name, rx, transition, fade, overrides });
+        self.pending = Some(Pending { name, def, rx, transition, fade, overrides, reload: None });
     }
 
     /// A scene's setup came back: it takes over (crossfade, cut).
     fn adopt(&mut self, p: Pending, scene: Box<dyn Scene>, bits: SetupBits, now: f64) {
+        if let Some((began, saved)) = p.reload {
+            let since = saved.and_then(|t| t.elapsed().ok()).map(|d| format!(", {:.1} s nach dem Speichern", d.as_secs_f64())).unwrap_or_default();
+            info!("{}: neue Version läuft (Setup {:.0} ms{since})", p.name, now - began);
+        }
         let view = bits.target.create_view(&Default::default());
-        let Some(def) = self.find(p.name) else { return };
+        let def = p.def;
         let mut inst = Instance {
             def,
             scene,
+            gpu: bits.gpu,
             params: bits.params,
             overrides: p.overrides,
             wall: bits.wall,
@@ -788,7 +816,7 @@ fn panic_text(p: &Box<dyn std::any::Any + Send>) -> String {
 pub fn init_output(world: &mut World) {
     let cfg = world.resource::<Config>().clone();
     // the scenes' localStorage (tests keep theirs in memory)
-    crate::store::init(cfg.shots.is_none().then(|| cfg.web_dir.join(".cache").join("wall").join("bevy-store.json")));
+    wall::store::init(cfg.shots.is_none().then(|| cfg.web_dir.join(".cache").join("wall").join("bevy-store.json")));
     world.insert_non_send(new_state(cfg));
 }
 
@@ -858,6 +886,7 @@ fn output_frame(
 
     // ----- documents and commands -----
     st.take_docs(now);
+    st.take_scene_updates(now);
     st.take_bus(now, &mut exit);
 
     // ----- the hub's messages (every display frame) -----
@@ -1025,6 +1054,74 @@ fn refresh_interval(intervals: &VecDeque<f64>) -> f64 {
 }
 
 impl OutputState {
+    /// Scene libraries built anew: their scenes replace the old ones in the registry; the running
+    /// scene is set up again with its new code (in a worker, as always) and takes over with a cut.
+    fn take_scene_updates(&mut self, now: f64) {
+        let events: Vec<crate::devbuild::DevEvent> = self.dev.as_ref().map(|d| d.try_iter().collect()).unwrap_or_default();
+        for e in events {
+            match e {
+                crate::devbuild::DevEvent::Started(files, saved) => {
+                    info!("baue: {}", files.join(", "));
+                    self.dev_saved = saved;
+                }
+                crate::devbuild::DevEvent::Done { ok: true, secs, .. } => info!("gebaut in {secs:.1} s"),
+                crate::devbuild::DevEvent::Done { ok: false, secs, errors } => {
+                    warn!("Build fehlgeschlagen ({secs:.1} s):\n{errors}");
+                    let short: Vec<&str> = errors.lines().filter(|l| !l.trim().is_empty()).take(12).collect();
+                    self.push_error("Build", &short.join("\n"));
+                    self.dev_saved = None;
+                }
+                crate::devbuild::DevEvent::Restart(files) => {
+                    let more = if files.len() > 4 { format!(" und {} weitere", files.len() - 4) } else { String::new() };
+                    let shown: Vec<&str> = files.iter().take(4).map(String::as_str).collect();
+                    let msg = format!("Framework oder Ausgabe geändert ({}{more}): wall-bevy neu bauen und starten, Szenen werden bis dahin nicht gebaut", shown.join(", "));
+                    warn!("{msg}");
+                    self.push_error("Build", &msg);
+                }
+            }
+        }
+        let updates: Vec<crate::scenes::Update> = self.scene_updates.try_iter().collect();
+        for u in updates {
+            let file = u.file.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string();
+            let defs = match u.result {
+                Ok(defs) => defs,
+                Err(e) => {
+                    self.push_error("Szenen-Bibliothek", &e);
+                    continue;
+                }
+            };
+            let names: Vec<&'static str> = defs.iter().map(|d| d.name).collect();
+            let saved = self.dev_saved.take();
+            let since = saved.and_then(|t| t.elapsed().ok()).map(|d| format!(", {:.1} s nach dem Speichern", d.as_secs_f64())).unwrap_or_default();
+            info!("{} neu geladen aus {file} ({:.0} ms{since})", names.join(", "), u.ms);
+            for d in defs {
+                match self.registry.iter_mut().find(|r| r.name == d.name) {
+                    Some(r) => *r = d,
+                    None => {
+                        self.registry.push(d);
+                        self.registry.sort_by_key(|d| d.name);
+                    }
+                }
+            }
+            let running = self.current.as_ref().filter(|c| names.contains(&c.def.name)).map(|c| (c.def.name, c.overrides.clone()));
+            if let Some((name, overrides)) = running
+                && let Some(def) = self.find(name)
+            {
+                self.launch(def, overrides, Transition::Cut, 0.0);
+                if let Some(p) = self.pending.as_mut() {
+                    p.reload = Some((now, saved));
+                }
+            } else if let Some(want) = self.cfg.scene.as_deref()
+                && names.contains(&want)
+                && self.current.as_ref().is_none_or(|c| c.def.name != want)
+                && self.pending.is_none()
+            {
+                // --scene NAME of a library that was not built yet (a new scene): it plays now
+                self.start_show(now);
+            }
+        }
+    }
+
     fn take_docs(&mut self, now: f64) {
         while let Ok((kind, doc)) = self.docs.changed.try_recv() {
             match kind.as_str() {
@@ -1222,21 +1319,21 @@ impl OutputState {
             };
             let mut handles: Vec<std::thread::JoinHandle<WarmResult>> = Vec::new();
             for def in defs {
-                let (gpu, kgpu) = (gpu.clone(), kgpu.clone());
+                let (gpu, kgpu) = (gpu.namespaced(&wall::scene::cache_namespace(def)), kgpu.clone());
                 let mut wall = WallMap::new(self.setup.clone(), Some(self.projection_of(def)));
                 wall.active = true;
                 handles.push(std::thread::spawn(move || {
                     let t0 = mono_ms();
                     let params = Params::resolve(Arc::new((def.params)()), &json!({}));
                     let r = catch_unwind(AssertUnwindSafe(|| {
-                        let wall_buf = gpu.uniform_buffer("warm wall", (crate::wall::WALL_UNIFORM_FLOATS * 4) as u64);
+                        let wall_buf = gpu.uniform_buffer("warm wall", (wall::map::WALL_UNIFORM_FLOATS * 4) as u64);
                         let target = gpu.target("warm output", led[0], led[1], TARGET_FORMAT);
                         let mut w = wall.clone();
                         gpu.queue.write_buffer(&wall_buf, 0, w.uniform_bytes());
                         let ctx = SetupCtx { gpu: gpu.clone(), kgpu, wall, wall_buf: wall_buf.clone(), params: params.clone(), width: led[0], height: led[1], name: def.name };
                         let (made, err) = gpu.scoped(|| (def.make)(&ctx));
                         match (made, err) {
-                            (Ok(scene), None) => Ok((scene, ctx.wall, wall_buf, target)),
+                            (Ok(scene), None) => Ok((scene, gpu.clone(), ctx.wall, wall_buf, target)),
                             (Ok(_), Some(e)) | (Err(e), _) => Err(e),
                         }
                     }));
@@ -1261,12 +1358,13 @@ impl OutputState {
             let Ok((def, params, r, ms)) = h.join() else { continue };
             {
                 match r {
-                    Ok((scene, wall, wall_buf, target)) => {
+                    Ok((scene, scene_gpu, wall, wall_buf, target)) => {
                         info!("bereit: {} ({ms:.0} ms)", def.name);
                         let view = target.create_view(&Default::default());
                         self.warm.get_or_insert_with(Vec::new).push(Instance {
                             def,
                             scene,
+                            gpu: scene_gpu,
                             params,
                             overrides: json!({}),
                             wall,
@@ -1306,7 +1404,7 @@ impl OutputState {
             let (r, err) = gpu.scoped(|| {
                 catch_unwind(AssertUnwindSafe(|| {
                     let mut ctx = FrameCtx {
-                        gpu,
+                        gpu: &inst.gpu,
                         encoder: &mut enc,
                         target: &inst.view,
                         width: self.setup.led_w,
@@ -1447,7 +1545,7 @@ impl OutputState {
             let (r, err) = gpu.scoped(|| {
                 catch_unwind(AssertUnwindSafe(|| {
                     let mut ctx = FrameCtx {
-                        gpu,
+                        gpu: &inst.gpu,
                         encoder: &mut enc,
                         target: &inst.view,
                         width: led[0],
@@ -1577,7 +1675,7 @@ impl OutputState {
         let Some(o) = self.out.as_ref() else { return };
         let mut enc = gpu.encoder("output");
         {
-            let mut pass = crate::gpu::begin_pass(&mut enc, "stage", &o.stage_view);
+            let mut pass = wall::gpu::begin_pass(&mut enc, "stage", &o.stage_view);
             for g in &layers {
                 pass.set_pipeline(&o.layer_pipe);
                 pass.set_bind_group(0, g, &[]);
@@ -1594,7 +1692,7 @@ impl OutputState {
         let c = [s.brightness * s.gain[0], s.brightness * s.gain[1], s.brightness * s.gain[2], s.gamma, black, 0.0, 0.0, 0.0];
         gpu.queue.write_buffer(&o.final_buf, 0, bytemuck::cast_slice(&c));
         {
-            let mut pass = crate::gpu::begin_pass(&mut enc, "final", &o.led_view);
+            let mut pass = wall::gpu::begin_pass(&mut enc, "final", &o.led_view);
             pass.set_pipeline(&o.final_pipe);
             pass.set_bind_group(0, &o.final_group, &[]);
             pass.draw(0..3, 0..1);

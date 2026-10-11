@@ -120,9 +120,9 @@ fn prepare_blit(device: Res<RenderDevice>, out: Res<RenderOutput>, views: Query<
         st.layout = Some(dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("led blit"),
             entries: &[
-                crate::gpu::layout::float_tex(0, vis, true),
-                crate::gpu::layout::sampler(1, vis, true),
-                crate::gpu::layout::uniform(2, vis),
+                wall::gpu::layout::float_tex(0, vis, true),
+                wall::gpu::layout::sampler(1, vis, true),
+                wall::gpu::layout::uniform(2, vis),
             ],
         }));
         st.sampler = Some(dev.create_sampler(&wgpu::SamplerDescriptor {
