@@ -45,6 +45,8 @@ pub struct Config {
     pub params: Vec<(String, String)>,
     /// LED size for tests without a setup (--led 1008x336)
     pub led: Option<(u32, u32)>,
+    /// --list-scenes: print every scene's declaration as JSON and end
+    pub list_scenes: bool,
 }
 
 /// http://127.0.0.1:<port> from a port, host:port or URL (as hub.js does).
@@ -127,6 +129,7 @@ impl Config {
             no_bus: false,
             params: Vec::new(),
             led: None,
+            list_scenes: false,
         };
         while let Some(a) = args.next() {
             let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} braucht einen Wert"));
@@ -149,6 +152,7 @@ impl Config {
                 "--seconds" => cfg.seconds = Some(value("--seconds")?.parse().map_err(|_| "--seconds: Zahl erwartet")?),
                 "--shot-every" => cfg.shot_every = value("--shot-every")?.parse().map_err(|_| "--shot-every: Zahl erwartet")?,
                 "--mute" => cfg.mute = true,
+                "--list-scenes" => cfg.list_scenes = true,
                 "--no-bus" => cfg.no_bus = true,
                 "--param" | "-p" => {
                     let kv = value("--param")?;
@@ -217,5 +221,6 @@ const HELP: &str = "wall-bevy: die LED-Wand-Ausgabe als native App (Bevy)
   --vsync fifo|mailbox|immediate Darstellung (Standard fifo)
   --shots DIR --seconds S        Test: S Sekunden rendern, PNGs und Bildzeiten nach DIR
   --led 1008x336                 LED-Größe für Tests ohne Setup
+  --list-scenes                  alle Szenen (Name, Titel, Parameter, ...) als JSON ausgeben
   --mute                         ohne Ton
   --no-bus                       ohne Steuerzentrale";

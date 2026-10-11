@@ -52,6 +52,11 @@ fn main() {
         // SAFETY: at the very start, before any thread exists
         unsafe { std::env::set_var("NO_COLOR", "1") };
     }
+    if cfg.list_scenes {
+        use std::io::Write;
+        let _ = writeln!(std::io::stdout(), "{}", scenes::declarations());
+        return;
+    }
     let present_mode = match cfg.vsync.as_str() {
         "mailbox" => PresentMode::Mailbox,
         "immediate" | "off" => PresentMode::AutoNoVsync,

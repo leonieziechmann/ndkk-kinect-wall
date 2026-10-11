@@ -30,6 +30,25 @@ pub struct ParamSpec {
 }
 
 impl ParamSpec {
+    /// The declaration as the browser scene writes it ({ value, min, max, step, options, label }).
+    pub fn declaration(&self) -> Value {
+        let mut o = serde_json::Map::new();
+        o.insert("value".into(), self.default.clone());
+        match &self.kind {
+            Kind::Number { min, max, step } => {
+                o.insert("min".into(), json!(min));
+                o.insert("max".into(), json!(max));
+                o.insert("step".into(), json!(step));
+            }
+            Kind::Select(opts) => {
+                o.insert("options".into(), Value::Array(opts.iter().map(|(_, v)| v.clone()).collect()));
+            }
+            Kind::Bool | Kind::Color | Kind::Text => {}
+        }
+        o.insert("label".into(), json!(self.label));
+        Value::Object(o)
+    }
+
     /// The value as this param keeps it, or None if it does not fit: numbers as f64, a select's
     /// own option value (numbers compared by value, as JS does: 4 and 4.0 are the same option).
     pub fn canonical(&self, v: &Value) -> Option<Value> {
