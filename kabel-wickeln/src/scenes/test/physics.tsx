@@ -32,13 +32,13 @@ const XLR_R = 0.0032;
 const DURATION = 14.5;
 
 const CELLS: Cell[] = [
-  { ids: ['phys-drape'], title: 'Über einen Finger gehängt', cam: { target: [0.005, 0.94, 0], yaw: 0.25, pitch: 0.12, dist: 0.42, fov: 30 }, focus: [[0, 0.9, 0], 0.3], plugs: ['xlr-male', null] },
-  { ids: ['phys-cant-old', 'phys-cant-new'], title: '30 cm frei: alt (hinten) – neu (vorn)', cam: { target: [0.15, 0.9, 0.05], yaw: 0.35, pitch: 0.15, dist: 0.85, fov: 30 }, focus: [[0.15, 0.9, 0], 0.4], plugs: [null, null], offsets: [[0, 0, -0.08], [0, 0, 0.12]] },
+  { ids: ['phys-drape'], title: 'Über einen Finger gehängt', cam: { target: [0.005, 0.92, 0], yaw: 0.25, pitch: 0.1, dist: 0.55, fov: 30 }, focus: [[0, 0.9, 0], 0.3], plugs: ['xlr-male', null] },
+  { ids: ['phys-cant-old', 'phys-cant-new'], title: '30 cm frei: alt (hinten) – neu (vorn)', cam: { target: [0.17, 0.88, 0.03], yaw: 0.55, pitch: 0.18, dist: 0.85, fov: 30 }, focus: [[0.15, 0.9, 0], 0.4], plugs: [null, null], offsets: [[0, 0, -0.08], [0, 0, 0.12]] },
   { ids: ['phys-u'], title: 'U zwischen zwei Händen', cam: { target: [0, 0.8, 0.08], yaw: 0.55, pitch: 0.12, dist: 1.5, fov: 32 }, focus: [[0, 0.7, 0], 0.8], plugs: [null, null] },
   { ids: ['phys-grab'], title: 'Aufheben, 50 cm bewegen, anhalten', cam: { target: [0.15, 0.35, 0.05], yaw: 0.3, pitch: 0.22, dist: 2.2, fov: 34 }, focus: [[0.1, 0.3, 0], 1.3], plugs: ['xlr-male', 'xlr-female'] },
-  { ids: ['phys-lay'], title: 'Im Bogen ablegen, loslassen', cam: { target: [0.2, 0.02, -0.12], yaw: 0.2, pitch: 0.95, dist: 1.4, fov: 34 }, focus: [[0.2, 0, -0.1], 0.9], plugs: ['xlr-male', 'xlr-female'] },
-  { ids: ['phys-coil'], title: 'Durchgleiten, halten, ins Bündel legen', cam: { target: [0.25, 0.7, 0], yaw: 0.35, pitch: 0.12, dist: 1.7, fov: 34 }, focus: [[0.25, 0.6, 0], 1.0], plugs: ['xlr-male', 'xlr-female'] },
-  { ids: ['phys-roll'], title: 'Mit Daumen rollen, dann Hand drehen', cam: { target: [0.1, 0.55, 0], yaw: 0.45, pitch: 0.18, dist: 1.35, fov: 32 }, focus: [[0.1, 0.5, 0], 0.7], plugs: [null, 'xlr-female'] },
+  { ids: ['phys-lay'], title: 'Im Bogen ablegen, loslassen', cam: { target: [0.45, 0, -0.1], yaw: 0.15, pitch: 1.0, dist: 1.5, fov: 34 }, focus: [[0.2, 0, -0.1], 0.9], plugs: ['xlr-male', 'xlr-female'] },
+  { ids: ['phys-coil'], title: 'Durchgleiten, halten, ins Bündel legen', cam: { target: [0.3, 0.74, 0], yaw: 0.3, pitch: 0.12, dist: 1.85, fov: 34 }, focus: [[0.25, 0.6, 0], 1.0], plugs: ['xlr-male', 'xlr-female'] },
+  { ids: ['phys-roll'], title: 'Mit Daumen rollen, dann Hand drehen', cam: { target: [0.0, 0.88, 0], yaw: 3.6, pitch: 0.12, dist: 0.5, fov: 30 }, focus: [[0.1, 0.5, 0], 0.7], plugs: [null, 'xlr-female'] },
 ];
 
 const SKIN = new THREE.MeshStandardMaterial({ color: '#d6a283', roughness: 0.65 });

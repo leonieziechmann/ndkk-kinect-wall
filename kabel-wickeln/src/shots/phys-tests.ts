@@ -444,7 +444,7 @@ function cantShot(id: string, opts: RodBuildOptions, seg: number, substeps: numb
       let let_ = false;
       return {
         rod,
-        script: (r: Rod, t: number) => {
+        script: (_: Rod, t: number) => {
           if (!let_ && t >= CANT.tLet) {
             hold.release(CANT.hold, Infinity, 0.02);
             let_ = true;

@@ -20,8 +20,16 @@
 // before the direct solve and makes the bodies it holds heavier in the directions it holds them
 // (an anisotropic inverse mass, the Schur complement of the attachment), so the direct solve
 // keeps them where the hand put them while it closes the joints. Hand capsules move with the
-// hand per substep: friction against the capsule's own motion, and a contact normal remembered
-// from the start of the substep, so a fast hand never pushes the cable through a finger.
+// hand per substep: friction against the capsule's own motion, and every capsule-segment pair
+// that comes near remembers which side it is on, so a fast hand (tested to 5 m/s) never pushes
+// the cable through a finger; pushes out of a capsule are limited per iteration (MAX_PUSH).
+// Controllers that steer the hands from the cable (sim in the loop) read it with closestPoint,
+// pointAt, tangentAt, frameAt and velocityAt.
+//
+// For a damped cable (bendDamping > 0) contacts and friction act on the centre lines (no lever
+// that tilts or rolls a segment): with the strongly damped bending such levers pump energy (a
+// cable over a finger swings out of its plane and creeps off). Undamped rods keep the
+// prototype's contact model.
 //
 // Units: metres, kilograms, seconds, radians. World: y up, ground plane y = groundY.
 // Quaternions [x, y, z, w].
@@ -33,11 +41,13 @@
 //   joints    k = 0..ns-2  between segment k and k+1; rest Darboux quaternion rest[k] = q̄_k q_{k+1}
 //                          at rest (natural curvature and twist: "memory")
 //
-// Per substep: predict (gravity, damping) -> grips (kinematic) -> capsules -> `iterations` x
-//   { direct XPBD solve of all joints (stretch 3 rows + bend-twist 3 rows: EI1 about d1, EI2
-//     about d2, GJ about d3), pins and swivels, guides, self-contact (segment capsules, spatial
-//     hash, remembered normals), kinematic capsules, ground (Coulomb friction at the cable
-//     surface, so friction also resists rolling) } -> velocities -> internal damping.
+// Per substep: predict (gravity, damping) -> grips (kinematic) -> attachments (what they hold,
+//   how firmly) -> capsules -> `iterations` x { attachments project, direct XPBD solve of all
+//   joints (stretch 3 rows + bend-twist 3 rows: EI1 about d1, EI2 about d2, GJ about d3, with
+//   material damping), pins and swivels, guides, self-contact (segment capsules, spatial hash,
+//   remembered normals), kinematic capsules, ground (Coulomb friction) } -> strand friction
+//   (plastic memory) -> attachments finish (sliding, rolling) -> velocities (capped at maxSpeed)
+//   -> internal damping.
 //
 // Determinism: fixed step, fixed order, no randomness; two runs give bit-identical frames.
 

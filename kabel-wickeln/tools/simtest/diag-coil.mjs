@@ -13,10 +13,8 @@ import { load, writeSummary } from './lib.mjs';
 const { mods: [shots, coil, sim], close } = await load('/src/shots/index.ts', '/src/shots/s1-coil.ts', '/src/sim/index.ts');
 // every guide's pull: wrap the target functions (called once per node and substep)
 const guideForce = { max: 0, sum: 0, n: 0, maxAt: -1 };
-let liveRod = null;
 const addGuide0 = sim.Rod.prototype.addGuide;
 sim.Rod.prototype.addGuide = function (spec) {
-  liveRod = this;
   let wt = -1, w = 1;
   const target = (i, t) => {
     const p = spec.target(i, t);

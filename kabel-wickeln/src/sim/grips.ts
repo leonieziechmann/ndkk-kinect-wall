@@ -256,7 +256,7 @@ export class Pinch implements Attachment {
     return this.track.at(t);
   }
 
-  prepare(t: number, h: number) {
+  prepare(t: number) {
     const rod = this.rod;
     const g = this.level(t);
     if (this.to === 0 && g <= 1e-6 && t >= this.tChange + this.blend) {

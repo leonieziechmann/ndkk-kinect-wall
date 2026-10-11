@@ -4,10 +4,11 @@
 // segment length, plus the plugs as rigid, heavy end pieces.
 //
 // The model behind the numbers (rod.ts): a highflex cable is soft but "dead". It is heavily damped
-// (Kelvin-Voigt bendDamping / twistDamping) and keeps the shape it is given (plastic memory beyond
-// a small elastic range), so it moves slowly and heavily and does not swing, bounce or spring
-// back. `damping` (air drag in the rod) also stands in for what calms a swinging cable in real
-// hands: the arm gives way, loops rub on each other.
+// (Kelvin-Voigt bendDamping / twistDamping) and its strands stick by friction: gentle bends near
+// the shape it was given are stiff, tight bends are soft, and a bend the hands give it stays
+// (opts.plastic). So it moves slowly and heavily and does not swing, bounce or spring back.
+// `damping` (air drag in the rod) also stands in for what calms a swinging cable in real hands:
+// the arm gives way, loops rub on each other.
 
 import { Plasticity, Rod, RodBuildOptions, RodOptions } from './rod';
 import { V3 } from './vec';
@@ -50,15 +51,24 @@ export interface CableSpec {
 
 /**
  * Sommer Cable SC-Stage 22 Highflex (the user's cable), Ø 6.4 mm, with Neutrik XLR plugs.
- * Weighed by the user: 5 m with two plugs = 250 g → 42 g/m and ~20 g per plug. EI fitted to the
- * user's drape photo (the cable over a finger, a 10 cm leg with the plug and a long leg; leg
- * spacing and top bend, see calib-xlr.mjs); GJ ≈ 0.8 EI (stranded cores, braided shield). The
- * damping and memory reproduce what the user describes and the two coiling videos show: it
- * follows the hands calmly, settles at once and keeps the bends it is given.
+ * - Mass: weighed by the user, 5 m with two plugs = 250 g → 42 g/m and ~20 g per plug.
+ * - Bending: two observations that no single elastic EI explains. The drape photo (over a
+ *   finger, legs 5.3 cm apart) needs EI ≈ 1.3e-4 N m² (elastic fit); but 30-35 cm loops hang
+ *   round in the user's coiling videos, which needs ≳ 1e-3 N m² (a 30 cm loop of an elastic
+ *   EI 1.3e-4 cable hangs as a narrow teardrop). A stranded cable is both: its strands stick by
+ *   friction for small bends and slip for tight ones. So: EI 1.0e-4 (strands slipping) plus the
+ *   strand friction 2e-3 N m² up to 3 /m from the memorised bend (calib-xlr.mjs: the drape is
+ *   5.3-5.6 cm a few seconds after hanging, top radius 1.9 cm, photo 1.5-2.2 cm), creeping at
+ *   0.4 /s. GJ ≈ 0.8 EI (stranded cores, braided shield; an estimate).
+ * - Damping: τ = 0.08 s in bending and twist (a 15 cm end settles without overshoot), air drag
+ *   3 /s (the cable picked up and moved 50 cm in 0.6 s settles in ~0.45 s, physics.mjs; a 1 m
+ *   free fall takes ~0.49 s instead of 0.45 s).
+ * - Coil memory 6 /m: a used cable curls with the radius of its usual coil (loops of 30-35 cm).
+ * - Friction on skin 0.8 (PVC on skin), floor 0.5, cable on cable 0.35.
  */
 export const XLR: CableSpec = {
   name: 'XLR, Sommer SC-Stage 22 Highflex',
-  source: 'user: Ø 6.4 mm, 250 g per 5 m with 2 Neutrik plugs; EI from the drape photo (calib-xlr.mjs); damping and memory: drape, U, grab-and-move and lay-down tests against the coiling videos',
+  source: 'user: Ø 6.4 mm, 250 g per 5 m with 2 Neutrik plugs; EI and strand friction from the drape photo and the round loops of the coiling videos (calib-xlr.mjs); damping: grab-and-move, U and lay-down tests (physics.mjs)',
   od: 0.0064,
   linearDensity: 0.042,
   EI: 1.0e-4,
