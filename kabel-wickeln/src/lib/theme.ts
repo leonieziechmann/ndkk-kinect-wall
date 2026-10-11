@@ -1,34 +1,25 @@
-// Colors and type of the animation: a light drawing board, a black cable, blue for "über" and
-// orange for "unter" (the two stay apart for colour-blind eyes too).
+// Colours and type of the 2D layer (captions, labels, cards). The 3D world has its own materials
+// (src/three). Blue means "über", orange "unter"; both carry white text at ≥ 5:1 contrast and stay
+// apart for colour-blind eyes. Red and green are only used together with ✗ / ✓.
+
+export const OVER = '#2a6cc4';
+export const UNDER = '#b85000';
 
 export const C = {
   bg: '#f2eee6',
   paper: '#fbf9f4',
-  floor: '#e3ddd1',
-  floorLine: '#cfc6b6',
+  plate: '#ffffffe6',
   text: '#1d232d',
-  muted: '#6b7280',
+  /** secondary text, still ≥ 4.5:1 on bg */
+  muted: '#5b616d',
   faint: '#b9b2a5',
-  cable: '#2b3038',
-  cableEdge: '#0f1216',
-  cableHi: '#6c7584',
+  over: OVER,
+  under: UNDER,
   stripe: '#f2c230',
-  over: '#2f78d6',
-  overSoft: '#d6e6fa',
-  under: '#e8742a',
-  /** the jacket of a loop tinted by its kind */
-  overCable: '#2a5c9c',
-  underCable: '#b4581d',
-  underSoft: '#fbe3d2',
-  good: '#2e9e5b',
-  bad: '#d64545',
-  skin: '#f0c4a0',
-  skinShade: '#d9a07c',
-  skinLine: '#a8714f',
-  sleeve: '#46506a',
-  sleeveShade: '#353d52',
-  metal: '#c7ccd4',
-  metalDark: '#7d8590',
+  good: '#2e8a52',
+  bad: '#c63b3b',
+  /** "too small" and other soft warnings (never alone: always with a word or a symbol) */
+  amber: '#9a6a00',
 };
 
 export const FONT = 'Inter';
