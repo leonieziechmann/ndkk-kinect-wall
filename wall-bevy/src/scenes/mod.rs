@@ -3,6 +3,7 @@
 
 use crate::scene::SceneDef;
 
+mod blasen_platzen;
 pub mod common;
 mod fluid_simulation;
 mod modern_events;
@@ -18,5 +19,6 @@ pub fn registry() -> Vec<&'static SceneDef> {
     v.push(&fluid_simulation::DEF);
     v.push(&modern_events::DEF);
     v.push(&pixel_jump_run::DEF);
+    v.push(&blasen_platzen::DEF);
     v
 }
