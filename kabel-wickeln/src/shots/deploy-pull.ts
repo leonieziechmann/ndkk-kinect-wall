@@ -278,9 +278,10 @@ export function pullRig(p: Plan, ends: Ends) {
 
   const left = (t: number): HandRig => {
     // the ring's top in the pads (8 mm thick); then only the start end (it closes a little on it)
-    const radius = 0.008 + (PINCH.radius - 0.008) * ease(t, T.drop, T.drop + 0.4);
+    // (the pads open a little and the loops slip out; only then do they close on the start end)
+    const radius = 0.008 + (PINCH.radius - 0.008) * ease(t, T.drop + 0.45, T.drop + 0.85);
     const g = mixGrip(mixGrip(leftGrip(), PULL_L, ease(t, T.pull0, T.pull1)), LAY_L, ease(t, T.pull1, T.lay1));
-    return { grip: g, ...PINCH, radius, open: 0.3 * Math.sin(Math.PI * ease(t, T.drop, T.drop + 0.4)), free: 0.5 };
+    return { grip: g, ...PINCH, radius, open: 0.5 * Math.sin(Math.PI * ease(t, T.drop, T.drop + 0.8)), free: 0.5 };
   };
 
   const rig = (t: number): Rig => {
