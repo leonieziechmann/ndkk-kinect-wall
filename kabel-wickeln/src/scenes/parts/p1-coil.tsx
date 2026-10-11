@@ -1,14 +1,194 @@
 // Stage 1, part 1: Noor coils the 5 m XLR cable over and under into her left hand (KONZEPT stage 1,
-// items 1 and 2). Being rebuilt on the coiling engine (shots/coil-engine.ts); until then a short
-// placeholder so the stage still plays.
+// items 1 and 2).
+//
+//   - a few seconds from outside, wide: who and where; then the picture splits into her own view
+//     (left, 55 %: her arms only, her body's shadow) and the outside view (right, 45 %)
+//   - the first pair slowly: an "über" loop, then an "unter" loop (the right hand turns over, in slow
+//     motion, an arc round the forearm as far as it really turns). After each, time stops and the
+//     outside camera swings ~45° round the left hand to her right side (Noor see-through): the cable
+//     to the floor glows white, the crossing gets a blue or orange rim, and a label says which strand
+//     lies on top (only if the simulation really has it so)
+//   - four more loops at her natural pace, the tally ü u ü u ü u fills up
+//   - the velcro tie closes round the coil next to her hand; ✓ "Der Ring liegt rund und flach." (only
+//     if the bake's checks found every loop round and untwisted)
+//
+// The outside camera stands at her right front: the loops hang in planes facing forward and a little
+// to her right (shots/coiling.ts GEOM.N), so from there the rings are seen open, and the right hand's
+// way out to the hip and its turn over are in front of the camera, not behind her body.
+//
+// Everything comes from the bake s1-coil (shots/s1-coil.ts, coil-engine.ts): the cable, her arms
+// (recorded angles), the hand shapes; the world is coil-world.ts.
 
-import { Node, Txt } from '@motion-canvas/2d';
-import { waitFor } from '@motion-canvas/core';
-import { C, FONT } from '../../lib/theme';
+import { Layout, Node, Txt } from '@motion-canvas/2d';
+import { all, easeInOutCubic, waitFor } from '@motion-canvas/core';
+import { BakedRod, loadBake, smooth } from '../../sim';
+import { COIL1 } from '../../shots/s1-coil';
+import { beats } from '../../shots/coiling';
+import { CAPTION_Y, Captions, GAP, PANEL_H, PanelTitle, TOP, Timeline, clock, readTime, slowBadge, swing, tally } from '../../lib/kit';
+import { C, FONT, OVER, UNDER } from '../../lib/theme';
+import { Mark, StageChip } from '../../lib/ui';
+import { Orbit, mixOrbit } from '../../three/camera';
+import { callout } from '../../three/overlay';
+import { ThreeView } from '../../three/view';
+import { CoilWorld } from './coil-world';
+
+const B = beats(COIL1);
+const LAST = B[B.length - 1];
+
+/** seconds of the wide opening shot (time stands still), and of the change to the split screen */
+const INTRO = 3.0, SPLIT = 1.2;
+/** a freeze after each teaching loop: swing out, hold, swing back */
+const FREEZE = { out: 1.4, hold: 3.6, back: 1.2 };
+const FREEZE_LEN = FREEZE.out + FREEZE.hold + FREEZE.back;
+/** shot time of each freeze: the loop is laid, the cable to the floor hangs from the pads through it */
+const freezeAt = (k: number) => B[k - 1].tMeet + 0.22;
+/** the turn over of the first "unter" loop in slow motion (0.25×) */
+const SLOW_AT = B[1].tHeld - 0.1, SLOW_LEN = B[1].tTurned - B[1].tHeld + 0.25, SLOW_F = 0.25;
+/** the tie (shot times, after the last loop) */
+const TIE = { wrap0: LAST.t1 + 0.9, wrap1: LAST.t1 + 1.9, fold1: LAST.t1 + 2.5 };
+/** the end: time stands still while the camera moves round to the front of the ring */
+const END_HOLD = 4.2;
 
 export function* part(layer: Node) {
-  const t = new Txt({ text: 'Wickeln (wird neu gebaut)', fontFamily: FONT, fontWeight: 600, fontSize: 46, fill: C.text });
-  layer.add(t);
-  yield* waitFor(2);
+  const bake = (yield loadBake('s1-coil')) as BakedRod;
+  const SHOT_END = bake.duration - 0.05;
+  const timeline = new Timeline([
+    { kind: 'freeze', at: 0, len: INTRO + SPLIT * 0.6 },
+    { kind: 'freeze', at: freezeAt(1), len: FREEZE_LEN },
+    { kind: 'slow', at: SLOW_AT, len: SLOW_LEN, factor: SLOW_F },
+    { kind: 'freeze', at: freezeAt(2), len: FREEZE_LEN },
+    { kind: 'freeze', at: SHOT_END, len: END_HOLD },
+  ]);
+  const LENGTH = timeline.scene(SHOT_END) + END_HOLD;
+  const { tau, run } = clock(LENGTH);
+  const t = () => Math.min(SHOT_END, timeline.shot(tau()));
+  /** 0 … 1 … 0 during the freeze after loop k (events 1 and 3) */
+  const sw = (k: number) => swing(timeline.phase(tau(), k === 1 ? 1 : 3), FREEZE.out / FREEZE_LEN, FREEZE.back / FREEZE_LEN);
+  const freeze = () => Math.max(sw(1), sw(2));
+  const endU = () => smooth(Math.max(0, (tau() - timeline.scene(SHOT_END)) / 2.4));
+
+  // ------------------------------------------------------------------------- cameras
+  const gl = bake.frame('gripL', freezeAt(1)).p;
+  const coilAt: [number, number, number] = [gl[0] + 0.02, gl[1] - 0.16, gl[2]];
+  /** wide: Noor standing with the cable, the rest of it on the floor to her right front */
+  const WIDE: Orbit = { target: [0.12, 0.78, -0.45], yaw: 2.5, pitch: 0.2, dist: 3.1, fov: 34 };
+  /** the outside camera: her right front, the coil and both hands */
+  const EXT: Orbit = { target: [0.12, 0.76, -0.24], yaw: 2.3, pitch: 0.3, dist: 1.6, fov: 38 };
+  /** the freeze: ~45° further round the left hand, to her right side: front and back of the loops become left and right */
+  const FREEZE_CAM: Orbit = { target: coilAt, yaw: 2.3 - 0.8, pitch: 0.2, dist: 0.95, fov: 40 };
+  /** the finished ring from the front at hip height */
+  const END_CAM: Orbit = { target: [coilAt[0] - 0.04, coilAt[1] + 0.02, coilAt[2] + 0.04], yaw: Math.PI - 0.3, pitch: 0.12, dist: 1.0, fov: 38 };
+  const o1: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
+  const o2: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
+  const ext = (): Orbit => {
+    const s = tau();
+    if (s < INTRO + SPLIT) {
+      const wide = mixOrbit(WIDE, { ...WIDE, dist: WIDE.dist * 0.88 }, smooth(s / INTRO), o1);
+      return mixOrbit(wide, EXT, easeInOutCubic(Math.max(0, (s - INTRO) / SPLIT)), o2);
+    }
+    if (endU() > 0) return mixOrbit(EXT, END_CAM, easeInOutCubic(endU()), o2);
+    return mixOrbit(EXT, FREEZE_CAM, freeze(), o2);
+  };
+
+  const cw: CoilWorld = new CoilWorld('p1-coil', bake, COIL1, {
+    t,
+    ext,
+    xray: freeze,
+    glow: () => {
+      const tt = t();
+      for (const k of [1, 2]) {
+        const b = B[k - 1], nx = B[k];
+        if (tt > b.tMeet - 0.1 && tt < nx.tSlide + 0.3) return { k, on: Math.min(1, (tt - b.tMeet + 0.1) / 0.3, (nx.tSlide + 0.3 - tt) / 0.3) };
+      }
+      return null;
+    },
+    arrow: (): number | null => {
+      // the first "unter" loop: while the hand turns over, and as it turns back on the way
+      const tt = t(), b = B[1];
+      if (tt < b.tHeld - 0.05 || tt > b.tSpread) return null;
+      return cw.replay.at(tt).turn;
+    },
+    tie: () => {
+      const tt = t();
+      if (tt < TIE.wrap0) return null;
+      return { wrap: smooth((tt - TIE.wrap0) / (TIE.wrap1 - TIE.wrap0)), fold: smooth((tt - TIE.wrap1) / (TIE.fold1 - TIE.wrap1)) };
+    },
+  });
+  // the crossings the labels point at, and whether the labels are true there
+  const cross = [1, 2].map((k) => cw.crossing(k, freezeAt(k)));
+  const truth = cross.map((c, i) => c !== null && (i === 0 ? c.depth < 0 : c.depth > 0));
+  const roundOk = bake.track('round', bake.duration) > 0.5;
+
+  // ------------------------------------------------------------------------- the picture
+  const wL = Math.round((1920 - 3 * GAP) * 0.55);
+  const wR = 1920 - 3 * GAP - wL;
+  const xL = -960 + GAP, xR = 960 - GAP - wR;
+  const midY = TOP + PANEL_H / 2;
+  const fullW = 1920 - 2 * GAP;
+  const split = () => easeInOutCubic(Math.min(1, Math.max(0, (tau() - INTRO) / SPLIT)));
+
+  const extView = (
+    <ThreeView world={cw.world} camera={cw.extCam} y={midY} height={PANEL_H} radius={28}
+      x={() => -960 + GAP + fullW / 2 + (xR + wR / 2 - (-960 + GAP + fullW / 2)) * split()}
+      width={() => fullW + (wR - fullW) * split()} />
+  ) as ThreeView;
+  const povView = (<ThreeView world={cw.world} camera={cw.povCam} x={xL + wL / 2} y={midY} width={wL} height={PANEL_H} radius={28} opacity={() => smooth((tau() - INTRO - SPLIT * 0.2) / (SPLIT * 0.5))} />) as ThreeView;
+  // (her view lies behind the outside view, which slides off it to the right)
+  layer.add([povView, extView]);
+  const titles = new Node({ opacity: () => smooth((tau() - INTRO - SPLIT * 0.6) / 0.4) });
+  titles.add([<PanelTitle text={'So siehst du es'} x={xL + 24} />, <PanelTitle text={'Von außen'} x={xR + 24} />]);
+  layer.add(titles);
+  layer.add(<StageChip current={1} x={0} y={TOP + PANEL_H + 34} />);
+
+  // tally: one letter per laid loop
+  const placed = (i: number) => smooth((t() - B[i].tMeet) / 0.25);
+  const tal = tally(layer, COIL1.kinds, placed);
+  tal.opacity(() => smooth((tau() - INTRO - SPLIT) / 0.4));
+  // "Zeitlupe" over her view while the hand turns over in slow motion
+  slowBadge(layer, () => smooth((timeline.phase(tau(), 2) + 1e-6) / 0.08) * (timeline.phase(tau(), 2) >= 0 ? 1 : 0), xL + wL / 2, TOP + 24);
+
+  // labels at the crossing: in the outside view during the freeze (only if they are true)
+  const LABELS = ['Kabel zum Boden: obenauf', 'Die Schlaufe deckt es zu'];
+  for (const k of [1, 2]) {
+    if (!truth[k - 1]) continue;
+    const color = k === 1 ? OVER : UNDER;
+    layer.add(callout({ view: extView, target: () => cw.crossPoint(k, t()), at: [xR + wR / 2, TOP + PANEL_H - 90], text: LABELS[k - 1], color, size: 34, arrow: true, opacity: () => smooth((sw(k) - 0.5) / 0.4) }));
+  }
+
+  // the end: ✓ the ring lies round and flat
+  const done = (
+    <Layout layout direction={'row'} alignItems={'center'} gap={20} y={CAPTION_Y} opacity={0}>
+      <Mark good size={58} />
+      <Txt text={'Der Ring liegt rund und flach.'} fontFamily={FONT} fontWeight={600} fontSize={46} fill={C.text} />
+    </Layout>
+  ) as Layout;
+  layer.add(done);
+
+  const cap = new Captions(layer);
+  const at = (shotT: number) => timeline.scene(shotT);
+  const CAP1 = 'Leg Schlaufen in die linke Hand – abwechselnd über und unter.';
+  const CAP2 = 'Für »unter« drehst du die rechte Hand um.';
+
+  yield* all(
+    run(),
+    (function* () {
+      // caption 1 during the opening, a second before the first movement; it stays through the first loop
+      yield* waitFor(INTRO - 1.4);
+      yield* cap.show(CAP1);
+      yield* waitFor(Math.max(readTime(CAP1), at(B[0].tMeet) - tau()));
+      yield* cap.hide();
+      // caption 2 at the end of the first freeze, well before the hand turns
+      yield* waitFor(at(freezeAt(1)) + FREEZE_LEN - 0.4 - tau());
+      yield* cap.show(CAP2);
+      yield* waitFor(Math.max(readTime(CAP2), at(B[1].tMeet) - tau()));
+      yield* cap.hide();
+      yield* waitFor(at(SHOT_END) + 1.6 - tau());
+      if (roundOk) yield* done.opacity(1, 0.4);
+      yield* waitFor(LENGTH - tau() - 0.5);
+      yield* all(...layer.children().map((c) => c.opacity(0, 0.5)));
+    })(),
+  );
+
   layer.removeChildren();
+  cw.world.dispose();
 }

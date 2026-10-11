@@ -49,10 +49,10 @@ export interface Pace {
   give: number;
 }
 
-/** a slow loop for teaching: about 3.2 s (over) and 3.6 s (under) */
-export const TEACH: Pace = { regrip: 0, slide: 0.95, hold: 0.2, turn: 0.45, spread: 0.8, approach: 0.6, give: 0.35 };
+/** a slow loop for teaching: about 3.2 s (over) and 3.65 s (under) */
+export const TEACH: Pace = { regrip: 0, slide: 1.0, hold: 0.2, turn: 0.45, spread: 0.85, approach: 0.65, give: 0.4 };
 /** the user's natural pace: about 2.1 s (over) and 2.4 s (under) */
-export const NATURAL: Pace = { regrip: 0, slide: 0.62, hold: 0.06, turn: 0.3, spread: 0.5, approach: 0.4, give: 0.22 };
+export const NATURAL: Pace = { regrip: 0, slide: 0.7, hold: 0.06, turn: 0.3, spread: 0.55, approach: 0.45, give: 0.25 };
 
 /** time for the pinch to loosen before the hand moves */
 export const LOOSEN = 0.1;

@@ -44,6 +44,57 @@ export const minJerk = (u: number) => {
 const ramp = (t: number, a: number, b: number) => minJerk((t - a) / Math.max(1e-6, b - a));
 const across = (v: V3, d: V3): V3 => normalize(madd(v, d, -dot(v, d)));
 
+/**
+ * A round arc of length len hanging below the chord from p0 to p1 (2D: x across, y up): the major
+ * arc of a circle when the ends are close (a loop), the minor one when they are far apart (a sag),
+ * a straight line when the cable is too short. Returns the point at arc fraction u (0 at p0).
+ */
+export function hangingArc(p0: [number, number], p1: [number, number], len: number): (u: number) => [number, number] {
+  const dx = p1[0] - p0[0], dy = p1[1] - p0[1], c = Math.hypot(dx, dy);
+  if (len <= c + 1e-6) return (u) => [p0[0] + dx * u, p0[1] + dy * u];
+  // the side the arc hangs to: down (across the chord), towards -x when the chord is vertical
+  let nx = 0, ny = -1;
+  if (c > 1e-6) {
+    nx = dy / c; ny = -dx / c;
+    if (ny > 0 || (Math.abs(ny) < 1e-9 && nx > 0)) { nx = -nx; ny = -ny; }
+  }
+  let R: number, sign: number;
+  if (c < 1e-6) {
+    R = len / (2 * Math.PI);
+    sign = 1;
+  } else if (len >= (Math.PI * c) / 2) {
+    // major arc: len = R (2π − 2 asin(c / 2R))
+    let lo = c / 2, hi = len / Math.PI;
+    for (let k = 0; k < 40; k++) {
+      const r = (lo + hi) / 2;
+      if (r * (2 * Math.PI - 2 * Math.asin(Math.min(1, c / (2 * r)))) > len) hi = r; else lo = r;
+    }
+    R = (lo + hi) / 2;
+    sign = 1;
+  } else {
+    // minor arc: len = 2 R asin(c / 2R)
+    let lo = c / 2, hi = c * 1e3;
+    for (let k = 0; k < 60; k++) {
+      const r = Math.sqrt(lo * hi);
+      if (2 * r * Math.asin(Math.min(1, c / (2 * r))) > len) lo = r; else hi = r;
+    }
+    R = Math.sqrt(lo * hi);
+    sign = -1;
+  }
+  const h = Math.sqrt(Math.max(0, R * R - (c * c) / 4));
+  const cx = (p0[0] + p1[0]) / 2 + sign * nx * h, cy = (p0[1] + p1[1]) / 2 + sign * ny * h;
+  const th0 = Math.atan2(p0[1] - cy, p0[0] - cx);
+  // sweep through the lowest point (centre + n R)
+  const ax = p0[0] - cx, ay = p0[1] - cy;
+  const cr = ax * ny * R - ay * nx * R;
+  const dir = cr >= 0 ? 1 : -1;
+  const S = len / R;
+  return (u) => {
+    const th = th0 + dir * S * u;
+    return [cx + R * Math.cos(th), cy + R * Math.sin(th)];
+  };
+}
+
 // ------------------------------------------------------------------ the left hand's frame
 
 /** from the strands' axis to the palm (palm up and towards the midline) */
@@ -113,6 +164,12 @@ export interface LoopResult {
   lk: number;
   /** twist in the cable beyond the right hand (to the floor) right after the hand-over [turns] */
   floorTwist: number;
+  /** twist in the first metre of cable beyond the left hand (what hangs to the floor) [turns] */
+  hangTwist: number;
+  /** twist inside the loop [turns] */
+  loopTwist: number;
+  /** Lk of the coil so far (plug to the new strand) pulled apart along its axis N (ends drawn out −N and +N) */
+  coilLk: number;
 }
 
 export interface CoilOptions {
@@ -176,8 +233,9 @@ export class CoilController {
     rollTo: number | null;
     /** the soft guide that lets the new loop fall round (rod.addGuide id) */
     guide: number;
-    /** the soft guide that brings the loop's end in front of (over) or behind (under) its start (rod.addGuide id) */
-    route: number;
+    /** the soft guides that lay the new strand across the left hand and set the floor cable's side (rod.addGuide ids) */
+    strand: number;
+    cross: number;
     gripped: boolean;
     held: boolean;
     added: boolean;
@@ -189,6 +247,14 @@ export class CoilController {
   private maxPen = 0;
   private maxPenWhere = '';
   private ikIssues: string[] = [];
+  /** IK issues grouped: 'L at limit clavElev:min' → frames, first and last time */
+  private readonly ikGroups = new Map<string, { n: number; t0: number; t1: number; worst: number }>();
+  private readonly crossDone = new Set<number>();
+  /** the cable's direction at the pads (towards the coil), read every frame */
+  private cableDir: V3 | null = null;
+  private follow: V3 | null = null;
+  /** the coil's Lk at shot time 0 (the plug strand only) */
+  coilLk0: number | null = null;
 
   constructor(
     readonly plan: CoilPlan,
@@ -287,8 +353,11 @@ export class CoilController {
     const grip = this.gripPoint(i, t);
     const meet = this.meetPoint(i, t);
     // the span's direction at the pads: towards the left hand's edge, drooping a little
+    // (towards a point 5 cm inside the hand from its medial edge: lateral even while the pads are
+    // still at the edge)
+    const into = madd(exit, g.S, 0.05);
     const spanDir = (p: V3) => {
-      const d = sub(exit, p);
+      const d = sub(into, p);
       return normalize(madd(d, [0, -1, 0], 0.25 * lenV(d)));
     };
     // at the hand-over the cable past the thumb tip lies along the knuckle line into the left hand:
@@ -322,7 +391,9 @@ export class CoilController {
     const tBack = Math.max(b.tTurned, b.tHeld);
     const tAbove = b.tSpread + 0.6 * (b.tMeet - b.tSpread);
     let p: V3;
-    if (t < b.tOut) p = lerpV(m.p0, g.hip, ramp(t, b.tSlide, b.tOut));
+    if (t < b.tOut) {
+      p = lerpV(m.p0, g.hip, ramp(t, b.tSlide, b.tOut));
+    }
     else if (t < tBack) p = lerpV(g.hip, slack, ramp(t, b.tOut, tBack));
     else if (t < b.tSpread) p = lerpV(slack, spread, ramp(t, tBack, b.tSpread));
     else if (t < tAbove) p = lerpV(spread, above, ramp(t, b.tSpread, tAbove));
@@ -338,7 +409,13 @@ export class CoilController {
     // the cable's direction: along the span, then turning down the lateral side for the hand-over
     const w = ramp(t, b.tSpread, b.tMeet);
     const d30 = quatRotate(m.q0, [0, 0, 1]);
-    const along = normalize(lerpV(i === 0 ? this.gripDir(i, t) : d30, spanDir(p), ramp(t, b.t0, b.tSlide + 0.4)));
+    let along = normalize(lerpV(i === 0 ? this.gripDir(i, t) : d30, spanDir(p), ramp(t, b.t0, b.tSlide + 0.4)));
+    // while the pads slide they follow the cable where it really runs through them (read from the
+    // simulation): after a hand-over it hangs down from them and comes up into line as they go
+    if (this.cableDir && t < b.tOut + 0.1) {
+      const u = 0.65 * (1 - ramp(t, b.tOut - 0.3, b.tOut + 0.1));
+      if (dot(this.cableDir, along) > 0) along = normalize(lerpV(along, this.cableDir, u));
+    }
     const d3 = normalize(lerpV(along, laying, w));
     if (b.kind === 'over' || t < b.tHeld) return { rig: this.pinchRig(p, d3, { roll, open, cross, out }), turn: this.turnLeft(i, t) };
     // under: turn the hold frame about the forearm, unwinding into the hand-over frame on the way back
@@ -356,52 +433,98 @@ export class CoilController {
    * The new loop falls round: a used cable remembers its loops and opens into a round loop by itself
    * once the hands bring its ends together (the user's videos, B 3.3 → 3.5). Our cable model's
    * memory is too weak for that (sim/cables.ts: the strand friction keeps any shape), so a soft
-   * guide (KONZEPT: pseudo-simulation) pulls the free part of the loop towards a circle hanging
-   * from the hand-over point, in the coil's plane only (along N, front and back, it is free, so over
-   * and under come from the hands), for about half a second; the strand friction then keeps it.
+   * guide (KONZEPT: pseudo-simulation, "Ringfabrik ... mit Führungskräften") pulls the free part of
+   * the loop towards a round arc hanging below its two ends (where they really are: the exit at the
+   * left hand's medial edge and, at the hand-over, the lateral edge where the new strand comes into
+   * the hand), in the coil's plane only: along N, front and back, it is free. It acts from the
+   * moment the loop hangs open between the hands and stays on, weaker, as the cable's memory.
    */
-  private roundLoop(i: number, rod: Rod) {
+  private hangRound(i: number, rod: Rod) {
     const b = this.bs[i], m = this.memo!;
-    const a = rod.segmentAt(this.sEdge[b.k - 1]) + 3, e = rod.segmentAt(this.pin.s) - 4;
+    const a = rod.segmentAt(this.sEdge[b.k - 1]) + 1;
+    const e = rod.segmentAt(this.pin.s - (2 * GEOM.half - 0.005));
     if (e <= a + 10) return;
     const len = rod.sNode[e] - rod.sNode[a];
-    const R = (len + 0.03) / (2 * Math.PI);
     const A = GEOM.A, N = GEOM.N;
+    let tc = NaN, wArc = 0, arc: ((u: number) => [number, number]) | null = null;
     const target = (n: number, t: number): V3 | null => {
-      if (n < a || n > e) return null;
-      const top = this.meetPoint(i, t);
-      const u = (rod.sNode[n] - rod.sNode[a] + 0.015) / (len + 0.03);
-      const x = -R * Math.sin(2 * Math.PI * u), y = -R + R * Math.cos(2 * Math.PI * u);
-      const c = add(add(top, mul(A, x)), mul(UP, y));
-      // keep the node's own depth along N
-      const n3 = 3 * n, depth = dot([rod.x[n3], rod.x[n3 + 1], rod.x[n3 + 2]], N) - dot(c, N);
-      return madd(c, N, depth);
+      if (n <= a || n >= e) return null;
+      if (t !== tc) {
+        tc = t;
+        const P = (j: number): [number, number] => [rod.x[3 * j] * A[0] + rod.x[3 * j + 2] * A[2], rod.x[3 * j + 1]];
+        const p0 = P(a), p1 = P(e);
+        // only once the loop's end has come up past its start on the lateral side (before that the
+        // cable hangs as it wants between the hands)
+        wArc = ramp(p1[0] - p0[0], 0.01, 0.07);
+        arc = wArc > 0 ? hangingArc(p0, p1, len) : null;
+      }
+      if (!arc) return null;
+      const [x, y] = arc((rod.sNode[n] - rod.sNode[a]) / len);
+      const n3 = 3 * n, p: V3 = [rod.x[n3], rod.x[n3 + 1], rod.x[n3 + 2]];
+      const depth = dot(p, N);
+      return lerpV(p, [A[0] * x + N[0] * depth, y, A[2] * x + N[2] * depth], wArc);
     };
-    const t0 = b.tMeet - 0.15, t1 = b.t1 + 0.1, t2 = b.t1 + 0.45;
-    m.guide = rod.addGuide({ nodes: [a, e], target, compliance: 0.04, weight: (t) => (t < t1 ? ramp(t, t0, b.tMeet + 0.1) : 1 - ramp(t, t1, t2)) });
+    const t0 = b.tMeet - 0.35, t1 = b.t1 + 0.1;
+    m.guide = rod.addGuide({ nodes: [a, e], target, compliance: 0.06, weight: (t) => (t < t1 ? ramp(t, t0, b.tMeet) : 1 - 0.7 * ramp(t, t1, t1 + 0.5)) });
   }
 
   /**
-   * Over and under differ in where the loop's end comes up past its start at the left hand: in front
-   * of it (over: the cable to the floor then lies on Noor's side of the new loop) or behind it
-   * (under: the hand turned over, the loop over the back of the hand and the wrist; the new loop
-   * then covers the cable to the floor). A soft guide on the last part of the loop (only along N,
-   * front and back) sets that side while the hands are still apart, before the two legs meet, so
-   * the contacts then keep it (the old coil factory's crossing guide, KONZEPT: pseudo-simulation).
+   * The last piece before the pads is laid across the open left hand, along the knuckle line from its
+   * lateral edge to the pads (the new strand of the stack): a soft guide for the moment of the
+   * hand-over, until the bundle has taken it.
    */
-  private routeEnd(i: number, rod: Rod) {
+  private layStrand(i: number, rod: Rod) {
     const b = this.bs[i], m = this.memo!;
-    const a = rod.segmentAt(this.pin.s - 0.24), e = rod.segmentAt(this.pin.s - 0.03);
-    const N = GEOM.N;
-    const side = b.kind === 'over' ? 1 : -1;
+    const sP = this.pin.s, sL = sP - (2 * GEOM.half - 0.005);
+    const a = rod.segmentAt(sL), e = rod.segmentAt(sP - 0.012);
+    const target = (n: number): V3 | null => {
+      if (n < a || n > e) return null;
+      // straight on from the pads, the way the thumb tip points (it lies on the open palm)
+      const g = this.pose.body.arms![1].grip!;
+      return madd(g.p, quatRotate(g.q, [0, 0, 1]), sP - rod.sNode[n]);
+    };
+    const t0 = b.tSpread + 0.3 * (b.tMeet - b.tSpread), t1 = b.tMeet + 0.05;
+    m.strand = rod.addGuide({ nodes: [a, e], target, compliance: 0.05, weight: (t) => (t < t1 ? ramp(t, t0, b.tMeet - 0.02) : 1 - ramp(t, t1, t1 + 0.25)) });
+  }
+
+  /**
+   * Over and under: where the cable to the floor crosses the new loop (KONZEPT: "über: das Kabel
+   * zum Boden liegt obenauf, auf deiner Seite der neuen Schlaufe; unter: die neue Schlaufe deckt es
+   * zu, es läuft hinter ihr durch"). In the user's hands the turned-over right hand decides it (the
+   * wrist inside the loop slips out of it); here a soft guide on the first half metre of the cable
+   * beyond the pads sets the side along N (only that) while the loop still hangs open between the
+   * hands, before its bottom swings under the cable, so the contacts keep it afterwards
+   * (KONZEPT: "Führungskräfte, so dass die Kreuzungen stimmen").
+   */
+  private crossFloor(i: number, rod: Rod) {
+    const b = this.bs[i], m = this.memo!;
+    const sP = this.pin.s;
+    const a = rod.segmentAt(sP + 0.03), e = Math.min(rod.n - 2, rod.segmentAt(sP + 0.5));
+    const l0 = rod.segmentAt(this.sEdge[b.k - 1]) + 4, l1 = rod.segmentAt(sP - 0.1);
+    const N = GEOM.N, A = GEOM.A;
+    const side = b.kind === 'over' ? -1 : 1;
+    let tc = NaN, ref = 0;
     const target = (n: number, t: number): V3 | null => {
       if (n < a || n > e) return null;
-      const ref = dot(this.exitPoint(b.k - 1, t), N) + side * 0.016;
+      if (t !== tc) {
+        // the loop's own depth: the mean of its nodes along N
+        tc = t;
+        let sum = 0;
+        for (let j = l0; j <= l1; j++) sum += rod.x[3 * j] * N[0] + rod.x[3 * j + 2] * N[2];
+        ref = sum / Math.max(1, l1 - l0 + 1) + side * 0.02;
+      }
       const n3 = 3 * n, p: V3 = [rod.x[n3], rod.x[n3 + 1], rod.x[n3 + 2]];
-      return madd(p, N, ref - dot(p, N));
+      const q = madd(p, N, ref - dot(p, N));
+      // at the hand-over it hangs from the pads straight down through the new loop
+      // (the first 10-20 cm beyond the pads hang as they want: the pads slide along them next)
+      const w = ramp(t, b.tMeet - 0.25, b.tMeet) * ramp(rod.sNode[n] - sP, 0.1, 0.22);
+      if (w <= 0) return q;
+      const xm = dot(this.exitPoint(b.k, t), A) - 0.03;
+      return madd(q, A, w * (xm - dot(q, A)));
     };
-    const t0 = Math.max(b.tTurned, b.tHeld), t1 = b.tMeet - 0.05, t2 = b.tMeet + 0.2;
-    m.route = rod.addGuide({ nodes: [a, e], target, compliance: 0.05, weight: (t) => (t < t1 ? ramp(t, t0, t0 + 0.3) : 1 - ramp(t, t1, t2)) });
+    // (off before the next loop's slide: the pads run along this cable then)
+    const t0 = b.tSpread - 0.15, t1 = b.t1 - 0.3;
+    m.cross = rod.addGuide({ nodes: [a, e], target, compliance: 0.08, weight: (t) => (t < t1 ? ramp(t, t0, t0 + 0.35) : 1 - ramp(t, t1, b.t1 - 0.02)) });
   }
 
   /** the roll the last loop left on the cable (0 before the first) */
@@ -494,7 +617,8 @@ export class CoilController {
     this.solve(-pre, true);
     this.coil = rod.bundle({ frame: this.pose.body.arms![0].grip!, hand: 0, blend: 0.01 });
     this.coil.add(this.plugStrand[0], this.plugStrand[1] + 0.004, 0.01);
-    this.pin = rod.pinch({ frame: this.pose.body.arms![1].grip!, hand: 1, mode: 'held', blend: 0.01 });
+    // (a swivel: the cable turns between thumb and index as it wants, its twist runs on to the floor)
+    this.pin = rod.pinch({ frame: this.pose.body.arms![1].grip!, hand: 1, mode: 'held', blend: 0.01, rolls: false });
     rod.setCapsules((tt) => this.capsAt(tt));
     const frames = Math.round(pre * 60);
     for (let f = 0; f < frames; f++) {
@@ -504,6 +628,7 @@ export class CoilController {
     rod.time = 0;
     this.solve(0, true);
     this.started = false;
+    this.coilLk0 = +coilLink(rod, this.sEdge[0]).toFixed(2);
 
     const rec = new Array<number>(REC.size).fill(0);
     const vectors: Record<string, VectorTrack> = {
@@ -525,6 +650,12 @@ export class CoilController {
           return i < 0 ? 0 : this.bs[i].k + clamp01((t - this.bs[i].t0) / (this.bs[i].t1 - this.bs[i].t0)) - 1;
         },
         edge: () => this.sEdge[this.sEdge.length - 1],
+        seg: () => this.rod.totalLength / (this.rod.n - 1),
+        // 1 once every loop is laid and hangs round (w/h ≥ 0.6) with little twist in it (the scene's ✓)
+        round: (_r, t) => (t > this.tDone + 0.5 && this.results.length === this.plan.kinds.length && this.results.every((res) => {
+          const sh = this.shape(res.k);
+          return sh.width / sh.height >= 0.6 && Math.abs(res.loopTwist) < 0.35;
+        }) ? 1 : 0),
       },
     };
   }
@@ -551,8 +682,13 @@ export class CoilController {
     const arms = pose.body.arms!;
     for (const [i, a] of arms.entries()) {
       const r = a.report;
-      if (r.atLimit.length && this.ikIssues.length < 40) this.ikIssues.push(`t ${tn.toFixed(2)} ${i ? 'R' : 'L'} at limit ${r.atLimit.join(',')}`);
-      if (!r.reached && this.ikIssues.length < 40) this.ikIssues.push(`t ${tn.toFixed(2)} ${i ? 'R' : 'L'} not reached ${(r.posError * 1000).toFixed(1)} mm`);
+      const note = (key: string, v = 0) => {
+        const g = this.ikGroups.get(key);
+        if (g) { g.n++; g.t1 = tn; g.worst = Math.max(g.worst, v); } else this.ikGroups.set(key, { n: 1, t0: tn, t1: tn, worst: v });
+      };
+      if (tn >= 0 && r.atLimit.length) note(`${i ? 'R' : 'L'} at limit ${r.atLimit.join(',')}`);
+      if (tn >= 0 && !r.reached) note(`${i ? 'R' : 'L'} not reached`, r.posError * 1000);
+      if (tn >= 0 && (r.atLimit.length || !r.reached) && this.ikIssues.length < 40) this.ikIssues.push(`t ${tn.toFixed(2)} ${i ? 'R' : 'L'} ${r.atLimit.join(',')} ${r.reached ? '' : `not reached ${(r.posError * 1000).toFixed(1)} mm`}`);
     }
     if (this.coil) {
       if (jump) {
@@ -600,6 +736,11 @@ export class CoilController {
   /** the beats that need the cable: let go and take it again next to the left hand, hold after a loop length, the hand-over */
   private events(rod: Rod, t: number) {
     const tn = t + DT;
+    // the cable's direction at the pads, towards the coil, and a point a little beyond them (the slide follows it)
+    if (this.pin && this.pin.state !== 'free') {
+      this.cableDir = mul(rod.tangentAt(this.pin.s), -1);
+      this.follow = rod.pointAt(this.pin.s + 0.006);
+    }
     const i = loopAt(this.bs, tn);
     if (i < 0) return;
     const b = this.bs[i];
@@ -607,7 +748,7 @@ export class CoilController {
     const arms = this.pose.body.arms!;
     if (!this.memo || this.memo.k !== b.k) {
       // a new loop: the hand lets go at the hand-over (the first loop: it already holds next to the left hand)
-      this.memo = { k: b.k, p0: arms[1].grip!.p, q0: arms[1].pads!.q, outPose: null, outQ: null, homeQ: null, qMeet: null, gripLocal: null, gripDirLocal: null, rollTo: null, guide: 0, route: 0, gripped: false, held: false, added: false };
+      this.memo = { k: b.k, p0: arms[1].grip!.p, q0: arms[1].pads!.q, outPose: null, outQ: null, homeQ: null, qMeet: null, gripLocal: null, gripDirLocal: null, rollTo: null, guide: 0, strand: 0, cross: 0, gripped: false, held: false, added: false };
       if (i > 0) {
         // the hand goes where the cable really comes out of the left hand
         const lf = arms[0].grip!;
@@ -643,22 +784,22 @@ export class CoilController {
       m.homeQ = home.body.arms![1].pads!.q;
     }
     if (m.held && m.rollTo === null && tn >= Math.max(b.tTurned, b.tHeld)) {
-      // roll the cable so that its remembered bend curls down into the hanging loop (a used cable)
-      const d = pin.rollToCurl([0, -1, 0]);
-      const now = this.right.rig.roll ?? 0;
-      m.rollTo = d === null ? (b.kind === 'over' ? 1 : -1) * GEOM.roll : Math.max(-1.3, Math.min(1.3, now + d));
+      // the thumb rolls the cable a little on the way back (over forwards, under backwards); the
+      // pinch is a swivel, so the cable turns in it as its memory wants
+      m.rollTo = (b.kind === 'over' ? 1 : -1) * GEOM.roll;
     }
-    if (!m.route && m.held && tn >= Math.max(b.tTurned, b.tHeld)) this.routeEnd(i, rod);
-    if (!m.guide && tn >= b.tMeet - 0.15) this.roundLoop(i, rod);
+    if (!m.guide && m.held && tn >= b.tSpread - 0.1) this.hangRound(i, rod);
+    if (!m.cross && m.held && tn >= b.tSpread - 0.15) this.crossFloor(i, rod);
+    if (!m.strand && tn >= b.tSpread + 0.3 * (b.tMeet - b.tSpread)) this.layStrand(i, rod);
     if (!m.added && tn >= b.tMeet - 0.02) {
       // the cable behind the pads lies across the open left hand: the coil takes it where it lies
       const s0 = pin.s;
-      this.coil.add(s0 - 0.03, s0 - 0.004, 0.2);
+      this.coil.add(s0 - (2 * GEOM.half - 0.005), s0 - 0.004, 0.2);
       const s1 = s0;
       this.sEdge.push(s1);
       this.log.push(`t ${tn.toFixed(2)} loop ${b.k}: hand-over at s ${s0.toFixed(3)}, new edge ${s1.toFixed(3)}`);
       m.added = true;
-      this.results.push({ k: b.k, kind: b.kind, length: s1 - edge, sEdge: s1, aspectLaid: 0, aspectEnd: 0, width: 0, height: 0, crossDepth: [], lk: 0, floorTwist: 0 });
+      this.results.push({ k: b.k, kind: b.kind, length: s1 - edge, sEdge: s1, aspectLaid: 0, aspectEnd: 0, width: 0, height: 0, crossDepth: [], lk: 0, floorTwist: 0, hangTwist: 0, loopTwist: 0, coilLk: 0 });
     }
     if (m.added && !m.qMeet && tn >= b.t1 - DT) {
       m.qMeet = arms[1].pads!.q;
@@ -736,13 +877,19 @@ export class CoilController {
     }
     for (const res of this.results) {
       const b = this.bs[res.k - 1];
+      if (!res.crossDepth.length && !this.crossDone.has(res.k) && t >= b.tMeet + 0.2) {
+        this.crossDone.add(res.k);
+        res.crossDepth = this.crossings(res.k);
+      }
       if (!res.aspectLaid && t >= b.t1 + 0.25) {
         const s = this.shape(res.k);
         res.aspectLaid = +(s.width / s.height).toFixed(3);
-        res.crossDepth = this.crossings(res.k);
         const j0 = rod.segmentAt(this.sEdge[res.k - 1]), j1 = rod.segmentAt(this.sEdge[res.k]);
         res.lk = j1 > j0 + 2 ? +linkOf(rod.x, rod.q, j0, j1, GEOM.A, mul(GEOM.A, -1)).toFixed(2) : NaN;
         res.floorTwist = +twistTurns(rod.q, rod.segmentAt(this.sEdge[res.k] + GEOM.gap + 0.02), rod.ns - 1).toFixed(2);
+        res.hangTwist = +twistTurns(rod.q, rod.segmentAt(this.sEdge[res.k] + 0.03), Math.min(rod.ns - 1, rod.segmentAt(this.sEdge[res.k] + 1.0))).toFixed(2);
+        res.loopTwist = +twistTurns(rod.q, j0, j1).toFixed(2);
+        res.coilLk = +coilLink(rod, this.sEdge[res.k]).toFixed(2);
       }
     }
   }
@@ -764,14 +911,17 @@ export class CoilController {
     }
     const lk = pullApartTwist(rod);
     lines.push(...this.log);
-    for (const r of this.results) lines.push(`loop ${r.k} ${r.kind}: length ${r.length.toFixed(3)} m, w/h laid ${r.aspectLaid}, end ${r.aspectEnd} (${(r.width * 100).toFixed(1)} × ${(r.height * 100).toFixed(1)} cm), Lk ${r.lk}, twist to the floor ${r.floorTwist}, floor-cable crossings (depth along N, + = in front) ${JSON.stringify(r.crossDepth)}`);
+    for (const r of this.results) lines.push(`loop ${r.k} ${r.kind}: length ${r.length.toFixed(3)} m, w/h laid ${r.aspectLaid}, end ${r.aspectEnd} (${(r.width * 100).toFixed(1)} × ${(r.height * 100).toFixed(1)} cm), loop Lk (sideways) ${r.lk}, twist in the loop ${r.loopTwist}, coil Lk so far ${r.coilLk}, twist hanging ${r.hangTwist}, to the floor ${r.floorTwist}, floor-cable crossings (depth along N: − on Noor's side, + behind the loop) ${JSON.stringify(r.crossDepth)}`);
+    const coilEnd = coilLink(rod, this.sEdge[this.sEdge.length - 1]);
+    lines.push(`the coil pulled apart along its axis (Lk, ends −N/+N): ${coilEnd.toFixed(2)}; the whole cable (ends +A/−A): ${JSON.stringify(lk)}`);
     check('all loops laid', this.results.length === this.plan.kinds.length, this.results.length);
     check('loops round (width/height ≥ 0.6 at the end)', this.results.every((r) => r.aspectEnd >= 0.6), this.results.map((r) => r.aspectEnd));
     check('loop lengths within 5 cm of the plan', this.results.every((r) => Math.abs(r.length - this.plan.loopLength) < 0.05), this.results.map((r) => +r.length.toFixed(3)));
-    check('pull-apart twist |Tw + Wr| < 0.3 turns', Math.abs(lk.lk) < 0.3, lk);
-    check('over and under alternate (each loop\'s Lk: over and under opposite, |Lk| > 0.5)', this.results.every((r, i) => Math.abs(r.lk) > 0.5 && (i === 0 || Math.sign(r.lk) !== Math.sign(this.results[i - 1].lk))), this.results.map((r) => r.lk));
+    check('over: the cable to the floor crosses the new loop on Noor\'s side; under: behind it', this.results.every((r) => r.crossDepth.length > 0 && r.crossDepth.every((d) => (r.kind === 'over' ? d < 0 : d > 0))), this.results.map((r) => `${r.kind} ${JSON.stringify(r.crossDepth)}`).join(' · '));
+    check('twist in each loop small (|Tw| < 0.35 turns)', this.results.every((r) => Math.abs(r.loopTwist) < 0.35), this.results.map((r) => r.loopTwist));
+    check('pull-apart twist of the coil: |Lk − Lk at the start| < 0.3 turns after every over-under pair', this.results.every((r, i) => i % 2 === 0 || Math.abs(r.coilLk - (this.coilLk0 ?? 0)) < 0.3), { start: this.coilLk0, after: this.results.map((r) => r.coilLk) });
     check('no free cable deeper than 1.5 mm in a hand or leg', this.maxPen < 0.0015, `${(this.maxPen * 1000).toFixed(2)} mm (${this.maxPenWhere})`);
-    check('IK: no hard limits, every grip reached', this.ikIssues.length === 0, this.ikIssues.slice(0, 12).join('; ') || 'none');
+    check('IK: no hard limits, every grip reached', this.ikGroups.size === 0, [...this.ikGroups].map(([k, g]) => `${k}: ${g.n} frames, t ${g.t0.toFixed(2)}–${g.t1.toFixed(2)}${g.worst ? `, worst ${g.worst.toFixed(1)} mm` : ''}`).join('; ') || 'none');
     check('pinch never lost', !this.pin.lost, this.pin.lost);
     return { ok, lines, data: { results: this.results, lk, maxPen: this.maxPen, ik: this.ikIssues } };
   }
@@ -817,6 +967,16 @@ export function linkOf(x: ArrayLike<number>, q: ArrayLike<number>, j0: number, j
     p[3 * (m + 1) + c] = p[3 * m + c] + dirEnd[c] * far;
   }
   return twistTurns(q, j0, j1) + writhe(p, 0, m + 1);
+}
+
+/**
+ * What pulling the coil apart along its axis would leave in it (the cable beyond it free to turn):
+ * Lk of the cable from the plug to material s (the coil's last strand), its ends drawn out behind
+ * the coil (−N, the plug strand is the backmost) and in front of it (+N, the newest strand).
+ */
+export function coilLink(rod: Rod, s: number): number {
+  const j1 = rod.segmentAt(s);
+  return j1 > 2 ? linkOf(rod.x, rod.q, 0, j1, mul(GEOM.N, -1), GEOM.N) : 0;
 }
 
 /**
