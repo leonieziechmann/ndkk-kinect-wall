@@ -7,6 +7,7 @@ mod blasen_platzen;
 pub mod common;
 mod cyberspiegel;
 mod fluid_simulation;
+mod fruit_ninja;
 mod llg_sakura;
 mod leonie_ziechmann;
 mod live_exakt;
@@ -34,5 +35,6 @@ pub fn registry() -> Vec<&'static SceneDef> {
     v.push(&neon_room::DEF);
     v.push(&pointcloud::DEF);
     v.push(&three_points::DEF);
+    v.push(&fruit_ninja::DEF);
     v
 }
