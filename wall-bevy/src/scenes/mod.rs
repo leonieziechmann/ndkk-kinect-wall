@@ -18,6 +18,7 @@ mod pixel_spiegel;
 mod pointcloud;
 mod shader_scenes;
 mod three_points;
+mod space_invaders;
 
 /// Every scene this output can play.
 pub fn registry() -> Vec<&'static SceneDef> {
@@ -36,5 +37,6 @@ pub fn registry() -> Vec<&'static SceneDef> {
     v.push(&pointcloud::DEF);
     v.push(&three_points::DEF);
     v.push(&fruit_ninja::DEF);
+    v.push(&space_invaders::DEF);
     v
 }
