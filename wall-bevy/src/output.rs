@@ -345,7 +345,12 @@ pub struct OutputState {
     warm_frames: u32,
     warmed: bool,
     windowed: bool,
+    /// the output's screen and window as the browser reports them (telemetry `screen`)
+    screen: Value,
     problem: String,
+    problem_key: String,
+    problem_since: f64,
+    problem_logged: bool,
     retry_entry: Option<(Entry, f64)>,
 }
 
@@ -432,7 +437,11 @@ fn new_state(cfg: Config) -> OutputState {
         warm_frames: 0,
         warmed: false,
         windowed: cfg.windowed,
+        screen: json!({ "w": 0, "h": 0, "left": Value::Null, "top": Value::Null, "dpr": 1, "inner": [0, 0], "fullscreen": false }),
         problem: String::new(),
+        problem_key: String::new(),
+        problem_since: 0.0,
+        problem_logged: false,
         retry_entry: None,
         gpu: None,
         out: None,
@@ -736,6 +745,7 @@ fn output_frame(
     mut image: ResMut<OutputImage>,
     mut sounds: ResMut<SoundQueue>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    monitors: Query<(Entity, &bevy::window::Monitor)>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(mut st) = state else {
@@ -766,6 +776,9 @@ fn output_frame(
     let Some(kgpu) = st.kgpu.clone() else { return };
     if let Ok(w) = windows.single() {
         st.windowed = w.mode == bevy::window::WindowMode::Windowed;
+        if st.frame_no.is_multiple_of(30) {
+            st.screen = screen_info(w, &monitors);
+        }
     }
 
     // ----- timing -----
@@ -865,6 +878,41 @@ fn output_frame(
     let fps = st.fps;
     st.kinect.report_render(fps, target.round(), name);
     st.shots(now, &mut exit);
+}
+
+/// The screen the window is on and the window, as the browser's telemetry has them (CSS pixels:
+/// physical / scale factor).
+fn screen_info(w: &Window, monitors: &Query<(Entity, &bevy::window::Monitor)>) -> Value {
+    use bevy::window::{MonitorSelection, WindowMode, WindowPosition};
+    let on = match w.mode {
+        WindowMode::BorderlessFullscreen(MonitorSelection::Entity(e)) | WindowMode::Fullscreen(MonitorSelection::Entity(e), _) => monitors.get(e).ok().map(|m| m.1),
+        _ => None,
+    }
+    .or_else(|| {
+        let WindowPosition::At(p) = w.position else { return None };
+        monitors
+            .iter()
+            .map(|m| m.1)
+            .find(|m| {
+                let q = m.physical_position;
+                p.x >= q.x && p.y >= q.y && p.x < q.x + m.physical_width as i32 && p.y < q.y + m.physical_height as i32
+            })
+    })
+    .or_else(|| monitors.iter().next().map(|m| m.1));
+    let dpr = f64::from(w.resolution.scale_factor());
+    let inner = [w.resolution.width().round(), w.resolution.height().round()];
+    let fullscreen = w.mode != WindowMode::Windowed;
+    match on {
+        Some(m) => {
+            let s = m.scale_factor.max(0.1);
+            json!({
+                "w": (f64::from(m.physical_width) / s).round(), "h": (f64::from(m.physical_height) / s).round(),
+                "left": (f64::from(m.physical_position.x) / s).round(), "top": (f64::from(m.physical_position.y) / s).round(),
+                "dpr": dpr, "inner": inner, "fullscreen": fullscreen, "name": m.name,
+            })
+        }
+        None => json!({ "w": inner[0], "h": inner[1], "left": Value::Null, "top": Value::Null, "dpr": dpr, "inner": inner, "fullscreen": fullscreen }),
+    }
 }
 
 /// The display interval (ms): a low percentile of the recent frame intervals, snapped to a usual rate.
@@ -1004,7 +1052,8 @@ impl OutputState {
                 self.telemetry(now);
             }
             "ping" => self.telemetry(now),
-            // a reload of the browser page: here the docs are read again and the entry starts anew
+            // the browser reloads its page; here the documents are read again (the scene keeps
+            // running: no black frame on the wall)
             "reload" => {
                 for k in ["setup", "projection", "show"] {
                     self.docs.reload(k);
@@ -1537,12 +1586,18 @@ impl OutputState {
     fn telemetry(&mut self, now: f64) {
         self.last_telemetry = now;
         let problem = self.status_line();
-        if problem != self.problem {
-            if !problem.is_empty() {
-                warn!("{problem}");
-            }
-            self.problem = problem.clone();
+        // logged once it has lasted 2 s (not for the moment the hub connects), once per kind
+        let key: String = problem.chars().filter(|c| !c.is_ascii_digit()).collect();
+        if key != self.problem_key {
+            self.problem_key = key;
+            self.problem_since = now;
+            self.problem_logged = false;
         }
+        if !self.problem_logged && !problem.is_empty() && now - self.problem_since >= 2000.0 {
+            warn!("{problem}");
+            self.problem_logged = true;
+        }
+        self.problem = problem.clone();
         let Some(bus) = &self.bus else { return };
         let sw = self.current.as_ref().map(|c| &c.wall).unwrap_or(&self.page_wall);
         let elapsed = (now - self.started_at) / 1000.0;
@@ -1601,7 +1656,7 @@ impl OutputState {
             "over": self.over,
             "led": [self.setup.led_w, self.setup.led_h],
             "native": { "engine": "bevy", "late": self.late, "refreshHz": (1000.0 / refresh_interval(&self.intervals)).round(), "playDelayMs": k.play_delay().round() },
-            "screen": { "w": Value::Null, "h": Value::Null, "left": Value::Null, "top": Value::Null, "dpr": 1, "inner": Value::Null, "fullscreen": !self.windowed },
+            "screen": self.screen,
         });
         bus.send("telemetry", data, Some("control"));
     }
