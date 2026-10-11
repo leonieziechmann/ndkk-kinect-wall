@@ -333,6 +333,8 @@ pub struct OutputState {
     last_frame: f64,
     last_scene_frame: f64,
     frame_no: u64,
+    /// shifts the render cap's cadence (a new scene's first frame sets its phase)
+    cap_phase: u64,
     intervals: VecDeque<f64>,
     fps: f64,
     fps_count: u32,
@@ -430,6 +432,7 @@ fn new_state(cfg: Config) -> OutputState {
         last_frame: now,
         last_scene_frame: 0.0,
         frame_no: 0,
+        cap_phase: 0,
         intervals: VecDeque::new(),
         fps: 0.0,
         fps_count: 0,
@@ -895,7 +898,13 @@ fn output_frame(
     let scene_cap = st.current.as_ref().map(|c| (c.def.max_fps)(&c.params)).unwrap_or(0.0);
     let cap = if cap > 0.0 && scene_cap > 0.0 { cap.min(scene_cap) } else { cap.max(scene_cap) };
     let every = if cap > 0.0 { ((1000.0 / cap) / refresh).round().max(1.0) as u64 } else { 1 };
-    let render_scenes = every <= 1 || st.frame_no.is_multiple_of(every);
+    // a scene that has not rendered yet renders now (a cut would show a black frame otherwise),
+    // and the cadence of the cap continues from there, steady
+    let first = st.current.as_ref().is_some_and(|c| !c.shown) || st.leaving.iter().any(|l| !l.inst.shown);
+    if first && every > 1 {
+        st.cap_phase = (every - st.frame_no % every) % every;
+    }
+    let render_scenes = every <= 1 || first || (st.frame_no + st.cap_phase).is_multiple_of(every);
 
     if render_scenes {
         st.render_scenes(&gpu, &kgpu, now, &mut sounds);
