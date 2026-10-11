@@ -148,8 +148,13 @@ export const GEOM = (() => {
     stack: (k: number) => 0.0038 + 0.006 * k,
     /** the fist's radius round strands 0 … k: from the palm to the outer side of strand k, halved [m] */
     fist: (k: number) => (0.0038 + 0.006 * k + 0.0032) / 2 + 0.0004,
-    /** the right hand lays the cable down into the fist: the pads this much higher than the strand, the cable past them sloping down [rad] */
-    laySlope: 24 * D,
+    /**
+     * the right hand lays the cable into the fist from her right: the cable past the pads runs this much
+     * more to her left than the strands (a bend at the fist's medial end) and slopes down a little
+     * into the fist (the arm's most comfortable way: no joint near a limit) [rad]
+     */
+    layYaw: 35 * D,
+    laySlope: 6 * D,
     /** the right hand's pads this far beyond the fist's medial end at the hand-over [m] (a finger's width and room) */
     gap: 0.036,
     /**

@@ -258,8 +258,18 @@ export function coilStance(spec: PersonSpec): Pick<Rig, 'pos' | 'yaw' | 'feet' |
   return { ...stand(spec, [0, 0], 0, { width: 0.3 }), lean: 0.06 };
 }
 
+/** the cable's direction past the pads at the hand-over (into the fist): the strands' direction s turned to her left by layYaw and sloping down by laySlope */
+function layDir(s: V3): V3 {
+  const c = Math.cos(GEOM.layYaw), sn = Math.sin(GEOM.layYaw);
+  const h = normalize([c * s[0] + sn * s[2], 0, -sn * s[0] + c * s[2]]);
+  const a = GEOM.laySlope;
+  return normalize([h[0] * Math.cos(a), -Math.sin(a), h[2] * Math.cos(a)]);
+}
+
 /** the length of the strand past the pads at the hand-over: the gap to the fist and the fist [m] */
 const STRAND = GEOM.gap + 2 * GEOM.half;
+/** how strongly the crossing is helped (0 = not at all; 1 = compliance 0.4 m/N) */
+const CROSS_HELP = { over: 1, under: 1 };
 /** the fist starts taking the new strand this long before the hand-over [s] */
 const TAKE = 0.25;
 
@@ -391,8 +401,7 @@ export class CoilController {
     const kind = k >= 1 ? this.plan.kinds[k - 1] : null;
     const { m } = this.strandEnds(k, t);
     const { s, n } = stackAxes(f);
-    const a = GEOM.laySlope;
-    return madd(madd(madd(m, s, -GEOM.gap * Math.cos(a)), UP, GEOM.gap * Math.sin(a)), n, kind ? GEOM.padsDepth[kind] : 0);
+    return madd(madd(m, layDir(s), -GEOM.gap), n, kind ? GEOM.padsDepth[kind] : 0);
   }
 
   /**
@@ -556,7 +565,9 @@ export class CoilController {
     }, 0.4);
     const tIn = b.tTurned + 0.35 * (b.tAbove - b.tTurned);
     const tOff = b.t1 + 0.15;
-    rod.addGuide({ nodes: [a, e], target: strand.target, compliance: 0.05, weight: (t) => ramp(t, tIn, Math.max(tIn + 0.6, b.tAbove)) * (1 - ramp(t, tOff, tOff + 0.4)) });
+    // (the strand only once the pads come down to the fist: on the way back it hangs from them as it wants)
+    const tLay = b.tAbove - 0.15;
+    rod.addGuide({ nodes: [a, e], target: strand.target, compliance: 0.05, weight: (t) => ramp(t, tLay, Math.max(tLay + 0.4, b.tMeet - 0.1)) * (1 - ramp(t, tOff, tOff + 0.4)) });
     // the loop: from just past the fist's medial end to the strand's start
     const la = rod.segmentAt(this.sEdge[b.k - 1]) + 2, le = a - 1;
     if (le <= la + 10) return;
@@ -574,6 +585,34 @@ export class CoilController {
     }, 0.4);
     rod.addGuide({ nodes: [la, le], target: loop.target, compliance: 0.08, weight: (t) => ramp(t, tIn, Math.max(tIn + 0.7, b.tAbove)) * (1 - ramp(t, tOff, tOff + 0.6)) });
     void s0;
+    if (CROSS_HELP[b.kind] > 0) this.guideCross(i, rod, la, le);
+  }
+
+  /**
+   * A weak help for the crossing (KONZEPT: "Führungskräfte, so dass die Kreuzungen stimmen"): the
+   * first 45 cm of the cable to the floor are led, along the coil's axis only, a few cm to the side
+   * of the new loop they belong on (over: Noor's side, under: behind it). Weak (a fifth of the other
+   * guides' strength), fading in over 0.6 s while the hand lays the strand, off before the next
+   * slide. What the hands do decides it first; this only keeps it.
+   */
+  private guideCross(i: number, rod: Rod, la: number, le: number) {
+    const b = this.bs[i];
+    const sP = this.pin.s;
+    const a = rod.segmentAt(sP + 0.06), e = Math.min(rod.n - 2, rod.segmentAt(sP + 0.5));
+    const N = GEOM.N, side = b.kind === 'over' ? -1 : 1;
+    const m0 = la + Math.floor((le - la) / 3), m1 = le - Math.floor((le - la) / 3);
+    const cross = new Follow(rod, a, e, (_t, out) => {
+      let depth = 0;
+      for (let j = m0; j <= m1; j++) depth += dot(nodeOf(rod, j), N) / (m1 - m0 + 1);
+      const want = depth + side * 0.035;
+      for (let n = a; n <= e; n++) {
+        const p = nodeOf(rod, n), off = want - dot(p, N);
+        // (only towards the right side: a cable already there is left alone)
+        out[n - a] = off * side > 0 ? madd(p, N, off) : p;
+      }
+    }, 0.3);
+    const t0 = b.tAbove - 0.1, t1 = b.t1 - 0.05;
+    rod.addGuide({ nodes: [a, e], target: cross.target, compliance: 0.4 / CROSS_HELP[b.kind], weight: (t) => ramp(t, t0, t0 + 0.6) * (1 - ramp(t, t1, t1 + 0.12)) });
   }
 
   // ---------------------------------------------------------------- the cable
@@ -700,7 +739,7 @@ export class CoilController {
       ...handColliders(pose, 0, { group: 0, soft: { index: 0.3, middle: 0.3, ring: 0.3, little: 0.3, thumb: 0.3 } }),
       // (the right hand's middle, ring and little fingers are not part of the pinch: the cable past the
       // pads drapes over them instead of passing through, so they keep colliding next to the pads too)
-      ...handColliders(pose, 1, { group: 1, soft: { index: 0.3, middle: 0.3, ring: 0.3, little: 0.3, thumb: 0.3 } }).map((c) => (c.part === 'middle' || c.part === 'ring' || c.part === 'little' ? { ...c, group: 2 } : c)),
+      ...handColliders(pose, 1, { group: 1, soft: { index: 0.3, middle: 0.3, ring: 0.3, little: 0.3, thumb: 0.3 } }).map((c) => (c.part === 'middle' || c.part === 'ring' || c.part === 'little' ? { ...c, group: 2, soft: 1 } : c)),
       ...this.legs,
     ];
     if (jump) {
@@ -897,6 +936,20 @@ export class CoilController {
   }
 
   private debugStrand(rod: Rod, t: number) {
+    if (t > 2.6 && t < 2.72) {
+      const caps = rod.currentCapsules();
+      for (const ds of [0.03, 0.045, 0.06]) {
+        const s = this.pin.s - ds, j = rod.segmentAt(s), p: V3 = [rod.c[3 * j], rod.c[3 * j + 1], rod.c[3 * j + 2]];
+        let best = Infinity, near = '';
+        caps.forEach((c, ci) => {
+          if (c.r < 0) return;
+          const ax = sub(c.b, c.a), l2 = dot(ax, ax) || 1, u = clamp01(dot(sub(p, c.a), ax) / l2);
+          const d = lenV(sub(p, madd(c.a, ax, u))) - c.r - RC;
+          if (d < best) { best = d; near = `#${ci} ${(c as { part?: string }).part ?? 'leg'}/${c.group} soft ${c.soft}`; }
+        });
+        this.log.push(`  dbg2 t ${t.toFixed(3)} s ${s.toFixed(3)} nearest ${near} ${(best * 1000).toFixed(1)} mm held ${rod.heldMark[j]} skip ${rod.skipGroup[j]} wc ${rod.wc[j].toFixed(3)}`);
+      }
+    }
     const i = loopAt(this.bs, t);
     if (i < 0) return;
     const b = this.bs[i];
