@@ -19,6 +19,8 @@ import { Studio } from '../../three/studio';
 import { ThreeView, World3D } from '../../three/view';
 
 const BAKE = 'coil-dev1';
+/** the fourth view close on the right hand instead of both hands */
+const CLOSE = true;
 
 export default makeScene2D(function* (view) {
   view.fill(C.bg);
@@ -52,8 +54,10 @@ export default makeScene2D(function* (view) {
     lookFrom(cams[0], [e[0], e[1] + 0.03, e[2] + 0.04], [lh[0] + 0.16, lh[1] - 0.2, lh[2] - 0.08], 62);
     lookFrom(cams[1], [0.0, 0.85, -1.6], [0.0, 0.72, -0.2], 38);
     lookFrom(cams[2], [1.0, 1.15, -1.1], [0.02, 0.72, -0.25], 36);
-    const mid: V3 = [lh[0] + 0.12, lh[1] - 0.1, lh[2]];
-    lookFrom(cams[3], [mid[0] + 0.05, mid[1] + 0.55, mid[2] - 0.55], mid, 46);
+    const rh = bake.frame('gripR', tt).p;
+    const mid: V3 = CLOSE ? [rh[0], rh[1] - 0.02, rh[2]] : [lh[0] + 0.12, lh[1] - 0.1, lh[2]];
+    if (CLOSE) lookFrom(cams[3], [mid[0] + 0.12, mid[1] + 0.22, mid[2] - 0.3], mid, 40);
+    else lookFrom(cams[3], [mid[0] + 0.05, mid[1] + 0.55, mid[2] - 0.55], mid, 46);
     scene.updateMatrixWorld();
   }
 

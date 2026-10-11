@@ -260,6 +260,8 @@ export function coilStance(spec: PersonSpec): Pick<Rig, 'pos' | 'yaw' | 'feet' |
 
 /** the length of the strand past the pads at the hand-over: the gap to the fist and the fist [m] */
 const STRAND = GEOM.gap + 2 * GEOM.half;
+/** the fist starts taking the new strand this long before the hand-over [s] */
+const TAKE = 0.25;
 
 interface LoopMemo {
   k: number;
@@ -408,7 +410,7 @@ export class CoilController {
   private padsAbove(k: number, t: number): V3 {
     const f = palmFrame(this.leftPoint(t));
     const { s } = stackAxes(f);
-    return madd(madd(this.padsMeet(k, t), UP, 0.06), s, -0.05);
+    return madd(madd(this.padsMeet(k, t), UP, 0.04), s, -0.05);
   }
 
   /** the right hand's pinch: point, cable direction past the thumb tip (towards the coil), and the shape */
@@ -428,8 +430,8 @@ export class CoilController {
       thumbWeight: 0.2 * (1 - out),
       prefer: [{ hand: [0, 1, 0], world: normalize([-0.4, -0.3, 0.87]), weight: 0.3 * out }],
       // (the forearm a little pronated: the back of the hand up, as in the user's videos)
-      joints: { pron: 0.4 },
-      jointWeight: 0.5,
+      joints: { pron: 0.45 },
+      jointWeight: 2,
     };
   }
 
@@ -543,7 +545,9 @@ export class CoilController {
     const b = this.bs[i];
     const sP = this.pin.s;
     // the strand: from the loop's end up to just short of the pads
-    const s0 = sP - STRAND, a = rod.segmentAt(sP - STRAND) + 1, e = rod.segmentAt(sP - 0.014);
+    // (only the part that will lie in the fist: the cable between the pads and the fist's end hangs as it
+    // wants, over the fingers)
+    const s0 = sP - STRAND, a = rod.segmentAt(sP - STRAND) + 1, e = rod.segmentAt(sP - GEOM.gap - 0.006);
     const padsNow = () => this.pose.body.arms![1].grip!;
     // (on from the pads the way the cable leaves past the thumb tip, then along the fist)
     const strand = new Follow(rod, a, e, (t, out) => {
@@ -694,7 +698,9 @@ export class CoilController {
     this.pose = pose;
     const caps = [
       ...handColliders(pose, 0, { group: 0, soft: { index: 0.3, middle: 0.3, ring: 0.3, little: 0.3, thumb: 0.3 } }),
-      ...handColliders(pose, 1, { group: 1, soft: { index: 0.3, middle: 0.3, ring: 0.3, little: 0.3, thumb: 0.3 } }),
+      // (the right hand's middle, ring and little fingers are not part of the pinch: the cable past the
+      // pads drapes over them instead of passing through, so they keep colliding next to the pads too)
+      ...handColliders(pose, 1, { group: 1, soft: { index: 0.3, middle: 0.3, ring: 0.3, little: 0.3, thumb: 0.3 } }).map((c) => (c.part === 'middle' || c.part === 'ring' || c.part === 'little' ? { ...c, group: 2 } : c)),
       ...this.legs,
     ];
     if (jump) {
@@ -822,10 +828,11 @@ export class CoilController {
       m.guided = true;
       this.guideLoop(i, rod);
     }
-    if (!m.added && tn >= b.tMeet - 0.02) {
-      // the strand lies in the open fist: the coil takes it where it lies
+    if (!m.added && tn >= b.tMeet - TAKE) {
+      // the strand comes down into the open fist (the fingers loose, the thumb lifted): the fist takes it
+      // as it settles there, more and more firmly, and holds it where it lies
       const sP = pin.s, s1 = sP - GEOM.gap;
-      this.coil.add(s1 - 2 * GEOM.half + 0.003, s1 - 0.003, 0.25);
+      this.coil.add(s1 - 2 * GEOM.half + 0.003, s1 - 0.003, TAKE + 0.15);
       this.sEdge.push(s1);
       this.log.push(`t ${tn.toFixed(2)} loop ${b.k}: hand-over, pads at s ${sP.toFixed(3)}, new edge ${s1.toFixed(3)}`);
       m.added = true;
@@ -889,7 +896,29 @@ export class CoilController {
     return segmentThroughLoop(P, J0[J.rightElbow], J0[J.rightWrist]) || segmentThroughLoop(P, J0[J.rightWrist], this.pose.body.arms![1].grip!.p);
   }
 
+  private debugStrand(rod: Rod, t: number) {
+    const i = loopAt(this.bs, t);
+    if (i < 0) return;
+    const b = this.bs[i];
+    if (Math.abs(t - b.tMeet) > 0.08) return;
+    const g = this.pose.body.arms![1].grip!, path = this.strandPath(b.k, t, g.p, col3(g));
+    const sP = this.pin.s;
+    for (const ds of [0.09, 0.1, 0.11]) {
+      const s = sP - ds, j = rod.segmentAt(s), p = nodeOf(rod, j), want = path.at(ds);
+      let near = '';
+      let best = Infinity;
+      for (const c of rod.currentCapsules()) {
+        if (c.r < 0) continue;
+        const ax = sub(c.b, c.a), l2 = dot(ax, ax) || 1, u = clamp01(dot(sub(p, c.a), ax) / l2);
+        const d = lenV(sub(p, madd(c.a, ax, u))) - c.r - RC;
+        if (d < best) { best = d; near = `${(c as { part?: string }).part ?? 'leg'}/${c.group}`; }
+      }
+      this.log.push(`  dbg t ${t.toFixed(3)} s ${s.toFixed(3)} off target ${(lenV(sub(p, want)) * 1000).toFixed(1)} mm, nearest capsule ${near} ${(best * 1000).toFixed(1)} mm, held ${rod.heldMark[j]} skip ${rod.skipGroup[j]}`);
+    }
+  }
+
   private measure(rod: Rod, t: number) {
+    if (TRACE) this.debugStrand(rod, t);
     // (1) free cable inside a capsule (hands, forearms, legs); (2) pieces the other hand holds inside a hand
     for (const c of rod.currentCapsules()) {
       if (c.r < 0) continue;
