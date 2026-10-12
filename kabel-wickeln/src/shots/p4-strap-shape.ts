@@ -295,10 +295,10 @@ export function zipTie(b: BandPath, bundle: Section, squeeze: number) {
 }
 
 /**
- * A band falling from where it was let go (its points `p0`), dt seconds later: it drops, turns a
- * little and, on the floor, lies flat (each point settles to the floor in its own time).
+ * A band falling from where it was let go (its points `p0`), dt seconds later: it drops and turns a
+ * little; on the floor it opens out and lies flat in a gentle curve (its width flat on the floor).
  */
-export function falling(b: BandPath, p0: Float32Array, side0: V3, dt: number, floorY: number, spin: V3 = [0.4, 0, 0.9]) {
+export function falling(b: BandPath, p0: Float32Array, side0: V3, dt: number, floorY: number, spin: V3 = [0.4, 0, 0.9], drift: V3 = [0.12, 0, 0.05]) {
   const M = b.M, g = 9.81;
   let cx = 0, cy = 0, cz = 0;
   for (let k = 0; k < M; k++) {
@@ -307,32 +307,40 @@ export function falling(b: BandPath, p0: Float32Array, side0: V3, dt: number, fl
     cz += p0[3 * k + 2] / M;
   }
   const c: V3 = [cx, cy, cz];
-  const drop = 0.5 * g * dt * dt;
-  const ang = 2.2 * dt;
-  const ax = norm(spin);
-  const ground = floorY + b.T / 2;
+  const ground = floorY + b.T / 2 + 0.0005;
   const tLand = Math.sqrt((2 * Math.max(0.01, cy - ground)) / g);
-  const flat = Math.max(0, Math.min(1, (dt - tLand) / 0.25));
+  // (turning and drifting stop once it lies: it does not slide on)
+  const tm = Math.min(dt, tLand);
+  const drop = 0.5 * g * tm * tm;
+  const ang = 2.2 * tm;
+  const ax = norm(spin);
+  const flat = Math.max(0, Math.min(1, (dt - tLand) / 0.3));
+  const land: V3 = [c[0] + drift[0] * tLand, ground, c[2] + drift[2] * tLand];
+  // where it lies: an open curve through the landing point, along the way the band ran (end to end, flat)
+  const along = norm([p0[3 * (M - 1)] - p0[0] || 1e-3, 0, p0[3 * (M - 1) + 2] - p0[2]]);
+  const across = cross([0, 1, 0], along);
+  const R = 0.16, L = b.L;
   for (let k = 0; k < M; k++) {
     let p: V3 = sub([p0[3 * k], p0[3 * k + 1], p0[3 * k + 2]], c);
     p = add(add(mul(p, Math.cos(ang)), mul(cross(ax, p), Math.sin(ang))), mul(ax, dot(ax, p) * (1 - Math.cos(ang))));
-    p = add(p, [c[0] + 0.12 * dt, c[1] - drop, c[2] + 0.05 * dt]);
-    if (p[1] < ground || flat > 0) {
-      // on the floor: lie down (spread a little where it lands)
-      const y = Math.max(p[1], ground);
-      p = [p[0], y + (ground - y) * flat, p[2]];
-      if (p[1] < ground) p[1] = ground;
+    p = add(p, [c[0] + drift[0] * tm, c[1] - drop, c[2] + drift[2] * tm]);
+    p[1] = Math.max(p[1], ground);
+    if (flat > 0) {
+      const th = ((k / (M - 1)) - 0.5) * (L / R);
+      const rest = add(land, add(mul(along, R * Math.sin(th)), mul(across, R * (1 - Math.cos(th)))));
+      const e = flat * flat * (3 - 2 * flat);
+      p = add(mul(p, 1 - e), mul(rest, e));
+      p[1] = Math.max(p[1], ground);
     }
     b.pts[3 * k] = p[0];
     b.pts[3 * k + 1] = p[1];
     b.pts[3 * k + 2] = p[2];
   }
-  // (the width keeps its direction relative to the band, carried along)
+  // the width: as it was while it falls, flat on the floor once it lies
   for (let k = 0; k < M; k++) {
     const a = Math.max(0, k - 1), bb = Math.min(M - 1, k + 1);
     const t = norm([b.pts[3 * bb] - b.pts[3 * a], b.pts[3 * bb + 1] - b.pts[3 * a + 1], b.pts[3 * bb + 2] - b.pts[3 * a + 2]]);
-    const s = perp(flat > 0.5 ? [0, 1, 0] : side0, t);
-    const side = flat > 0.5 ? cross(t, s) : s;
+    const side = flat > 0.5 ? perp(cross(t, [0, 1, 0]), t) : perp(side0, t);
     b.sides[3 * k] = side[0];
     b.sides[3 * k + 1] = side[1];
     b.sides[3 * k + 2] = side[2];

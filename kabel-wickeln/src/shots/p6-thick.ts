@@ -35,7 +35,7 @@
 //
 // Coordinates: y up, metres. Mai stands at the origin facing -z (yaw 0, her right +x).
 
-import { Bundle, Frame, POWER_5G16, POWER_5G2_5, Pinch, Rod, RodState, TAU, V3, buildCable, frameTrack, gripFrame, quatFromAxisAngle, quatMul, quatRotate } from '../sim';
+import { Bundle, Frame, POWER_5G16, POWER_5G2_5, Pinch, Rod, RodState, TAU, V3, buildCable, frameTrack, gripFrame, quatConj, quatFromAxisAngle, quatMul, quatRotate } from '../sim';
 import type { ShotDef } from './types';
 import { RingSpec, placeRing, ringRod, windRing } from './deploy-ring';
 import { roundLoop } from './eight';
@@ -279,12 +279,16 @@ export function depositTime(s: number): number {
   }
   return b;
 }
+/** cable laid per metre of path beyond the first eights: 1 / (1 - EIGHTS_CLIMB) */
+const EIGHTS_CLIMB = 0.04;
 /** the pre-roll of p6-eights starts at this shot time [s] */
 const EIGHTS_PRE = -1.5;
 /** settings the experiments vary (scratchpad p6/exp-*.mjs); the shots use them as they are */
 export const EIGHTS_CFG = { laid: 2e-4, conv: 2e-4, convOn: true };
 /** her fist runs this far ahead of the laying point (material) and this high */
-const FIST_AHEAD = 0.3, FIST_Y = 0.36;
+const FIST_AHEAD = 0.3, FIST_Y = 0.42;
+/** her fist does not go over the far half of the stack (she stands at the near side): beyond this (plane F) it follows only a fifth as far */
+const FIST_FAR = 0.04;
 /** the supply comes from far in front of her, on the right, along the floor: where it enters (plane), its direction (world) */
 const FEED_X = 1.05, FEED_F = 1.35;
 const FEED_DIR: V3 = [0, 0, -1];
@@ -293,7 +297,8 @@ const FEED_DIR: V3 = [0, 0, -1];
 export function eightsFist(t: number): Frame {
   const s = depositAt(t) + FIST_AHEAD;
   const p = stackPlane(s);
-  const at = stackWorld(p.X, p.F, FIST_Y);
+  const F = p.F > FIST_FAR ? FIST_FAR + 0.2 * (p.F - FIST_FAR) : p.F;
+  const at = stackWorld(p.X, F, FIST_Y);
   // the cable runs through it along the path; the palm on top of it
   return gripFrame(at, [p.tX, 0, -p.tF], UP);
 }
@@ -307,6 +312,8 @@ interface EightsBuilt {
   x0: Float64Array;
   /** material = plane path parameter + delta beyond the laid part (the laid strands climb over each other: a little more cable than path) */
   delta: number;
+  /** when her fist let go of the end (shot time) */
+  endAt: { t: number };
   /** the conveyor now: material at the feed point (only grows: the supply is pulled in, never pushed back) */
   conv: { s: number; v: number };
   /** sim in the loop, before each frame: her fist pulls the supply in as far as it needs */
@@ -390,11 +397,20 @@ function buildEights(): EightsBuilt {
   const pin = rod.pinch({ frame: eightsFist, mode: 'loose', friction: 18, pad: 0.03, blend: 0.01, lostDistance: 0.14, lostAngle: 1.5, maxGripDistance: 0.05 });
   const sConv0 = rod.closestPoint(feed).s;
   const conv = { s: sConv0, v: 0 };
+  const endAt = { t: Infinity };
   // the free cable from her fist to the feed point is at least 1.3 × their distance + 0.6 m: when
   // the fist goes away from the supply it pulls cable in; coming back it leaves slack on the floor
   // (pulled in smoothly: at most 1.5 m/s, accelerating at most 3 m/s²; not during the pre-roll)
   let last = -Infinity;
+  let open = false;
   const script = (_r: Rod, t: number) => {
+    // the end comes (the supply's far end is free, or the end is at her fist): her fist opens; the
+    // last metre is laid by the guides, her hand goes with the end and puts it down
+    if (!open && (pin.s > STACK.total - 0.55 || conv.s > STACK.total - 0.2)) {
+      pin.release(0.25);
+      open = true;
+      endAt.t = t;
+    }
     const d = len(sub(eightsFist(t).p, feed));
     const dt = Math.min(1 / 60, Math.max(0, t - last));
     last = t;
@@ -404,7 +420,7 @@ function buildEights(): EightsBuilt {
     conv.s += Math.max(0, conv.v) * dt;
   };
   const delta = rod.closestPoint(stackPoint(s0), s0 - 0.5, s0 + 2).s - s0;
-  return { rod, pin, sConv0, conv, script, cable: built.cable, x0: Float64Array.from(rod.x), delta };
+  return { rod, pin, sConv0, conv, script, cable: built.cable, x0: Float64Array.from(rod.x), delta, endAt };
 }
 
 /**
@@ -416,8 +432,15 @@ function buildEights(): EightsBuilt {
 function eightsGuides(rod: Rod, b: EightsBuilt, preRoll: boolean): number[] {
   const s0 = depositAt(0);
   const S = rod.sNode;
-  /** a node's place on the stack path (plane parameter) */
-  const sOf = (i: number) => S[Math.min(i, S.length - 1)] - b.delta;
+  /**
+   * a node's place on the stack path (plane parameter): laid cable climbs over the strands below,
+   * so it needs a little more cable than path (4 %); without that allowance the laying would pull
+   * the fresh strands taut and drag the stack along
+   */
+  const sOf = (i: number) => {
+    const p = S[Math.min(i, S.length - 1)] - b.delta;
+    return p <= s0 ? p : s0 + (p - s0) * (1 - EIGHTS_CLIMB);
+  };
   const tOf = new Float64Array(rod.n).map((_, i) => (sOf(i) <= s0 ? -10 : depositTime(sOf(i))));
   const laid = rod.addGuide({
     nodes: [rod.segmentAt(0.5), rod.n - 1],
@@ -458,6 +481,8 @@ function eightsGuides(rod: Rod, b: EightsBuilt, preRoll: boolean): number[] {
 /** the eights' measurements: twist of the cable from the start to the laying point, and in the free part up to the supply */
 function eightsTracks(b: EightsBuilt) {
   return {
+    iC0: () => b.cable[0],
+    iC1: () => b.cable[1],
     /** material coordinate where the cable reaches the floor (laying point) */
     sDep: (_r: Rod, t: number) => depositAt(t) + b.delta,
     /** twist from the start end (under the stack) to the laying point [turns] */
@@ -470,6 +495,8 @@ function eightsTracks(b: EightsBuilt) {
     sConv: () => b.conv.s,
     /** her fist's material coordinate */
     sFist: () => b.pin.s,
+    /** her fist: 0 open, 0.5 loose (the cable runs through), 1 held */
+    grip: (_r: Rod, t: number) => b.pin.level(t),
     /** the highest point of the stack (m) */
     top: (r: Rod) => {
       let y = 0;
@@ -514,11 +541,22 @@ export const eightsShot: ShotDef = {
   substeps: POWER_5G16.substeps,
   build() {
     const b = runEights(null);
+    // her fist: the sim's pinch; after it has let go, with the cable's end (her hand puts it down)
+    const fist = (r: Rod, t: number): Frame => {
+      const f = b.pin.frame(t);
+      if (t < b.endAt.t) return f;
+      const sE = r.totalLength - 0.2;
+      const p = r.pointAt(sE), d = r.tangentAt(sE);
+      const u = clamp01((t - b.endAt.t) / 0.5);
+      const lift = clamp01((t - b.endAt.t - 2.6) / 1.2);
+      const at = add(mix(f.p, add(p, [0, R16 + 0.03, 0]), u), [0, 0.35 * ease(lift), 0]);
+      return gripFrame(at, norm([d[0], 0, d[2]]), UP);
+    };
     return {
       rod: b.rod,
       script: b.script,
       tracks: eightsTracks(b),
-      vectors: { fist: frameTrack(() => b.pin.frame()) },
+      vectors: { fist: frameTrack(fist) },
     };
   },
 };
@@ -540,7 +578,7 @@ export function stackState(): RodState {
     const crypto = get('node:crypto') as typeof import('node:crypto');
     const key = crypto
       .createHash('sha1')
-      .update([runEights, buildEights, eightsGuides, depositAt, stackPlane, eightPoint, dropHeights, buildCable, JSON.stringify(STACK), JSON.stringify(EIGHTS_T), JSON.stringify(POWER_5G16)].map(String).join('\n'))
+      .update([runEights, buildEights, eightsGuides, depositAt, stackPlane, eightPoint, dropHeights, buildCable, eightsFist, JSON.stringify(STACK), JSON.stringify(EIGHTS_T), JSON.stringify(POWER_5G16), JSON.stringify(EIGHTS_CFG), FIST_AHEAD, FIST_Y, FIST_FAR, FEED_X, FEED_F, EIGHTS_CLIMB].map(String).join('\n'))
       .digest('hex')
       .slice(0, 16);
     file = path.join(pr.cwd(), 'bakes', 'cache', `p6-stack-${key}.json`);
@@ -580,13 +618,13 @@ export const COIL = (() => {
     E1,
     /** the left fist at rest (the strands' entry), and spread out */
     F,
-    Fout: add(F, [-0.11, 0.02, 0.03]) as V3,
+    Fout: add(F, [-0.16, 0.03, 0.04]) as V3,
     /** the right fist slid out (far end of the slide) */
-    out: [0.66, 0.93, -0.06] as V3,
+    out: [0.72, 0.9, -0.05] as V3,
     /** layer distance of the loops in the fist */
     pitch: 0.022,
-    /** wanted cable per loop [m] (Ø ≈ 40 cm) */
-    loop: 1.26,
+    /** wanted cable per loop [m] (laid round: Ø 43 cm) */
+    loop: 1.36,
     kinds: ['over', 'under', 'over'] as ('over' | 'under')[],
   };
 })();
@@ -671,6 +709,8 @@ interface CoilBuilt {
   script: (rod: Rod, t: number) => void;
   /** material where each loop starts and ends (filled while it runs) */
   loops: { s0: number; s1: number }[];
+  /** nodes of the cable proper (between the plugs) */
+  cable: [number, number];
 }
 
 /** a round loop of cable length l hanging from a to b (in the vertical plane through them) */
@@ -711,9 +751,9 @@ function buildCoil(): CoilBuilt {
   const sHome = rod.closestPoint(COIL_HOME).s;
   // the left fist holds the plug end
   const fist = rod.bundle({ frame: coilFist, hand: 0, blend: 0.01 });
-  fist.add(0, rod.closestPoint(G.F).s + 0.03, 0.01);
+  fist.add(0, sHome - 0.04, 0.01);
   // the right fist: closed on the cable next to the left fist
-  const pin = rod.pinch({ frame: coilRight, mode: 'held', s: sHome, hand: 1, pad: 0.02, friction: 4, blend: 0.01, lostDistance: 0.06, lostAngle: 1.4, maxGripDistance: 0.03 });
+  const pin = rod.pinch({ frame: coilRight, mode: 'held', s: sHome, hand: 1, pad: 0.02, friction: 4, rolls: false, blend: 0.01, lostDistance: 0.06, lostAngle: 1.4, maxGripDistance: 0.03 });
   const loops: { s0: number; s1: number }[] = [];
   const guides: (number | null)[] = [];
   let state: 'rest' | 'slide' | 'held' | 'given' = 'rest';
@@ -762,7 +802,7 @@ function buildCoil(): CoilBuilt {
     if (state === 'held' && t >= b.give) {
       // the left fist takes the strand where it lies, the right one loosens
       // (not the material between the pads: they slide on from there)
-      fist.add(pin.s - 0.1, pin.s - 0.035, 0.25);
+      fist.add(pin.s - 0.16, pin.s - 0.035, 0.25);
       pin.set('loose', 0.2);
       loops[k].s1 = pin.s;
       state = 'given';
@@ -781,7 +821,7 @@ function buildCoil(): CoilBuilt {
       }
     }
   };
-  return { rod, pin, fist, script, loops };
+  return { rod, pin, fist, script, loops, cable: built.cable };
 }
 
 /** the pre-roll of p6-coil starts at this shot time [s] */
@@ -814,6 +854,9 @@ export const coilShot: ShotDef = {
     }
     rod.time = 0;
     const tracks: Record<string, (r: Rod, t: number) => number> = {
+      /** nodes of the cable proper (the tube; the plugs lie beyond) */
+      iC0: () => b.cable[0],
+      iC1: () => b.cable[1],
       sFist: () => b.pin.s,
       /** the right fist: 0.5 loose (sliding), 1 held */
       grip: (_r, t) => b.pin.level(t),
@@ -837,7 +880,295 @@ export const coilShot: ShotDef = {
   },
 };
 
-export const P6_SHOTS: ShotDef[] = [coilShot, eightsShot];
+// ======================================================================================= ring
+
+/**
+ * The finished 15 m ring of the 5G2.5 (ring factory: 11 loops over-under of 1.3 m, Ø ≈ 41 cm, the
+ * start plug in the fist, the end plug hanging out of the eye), pressed and stored.
+ */
+export const RING25: RingSpec = { cable: POWER_5G2_5, loop: 1.3, pattern: 'ouououououo', lead: 0.3, tail: 0.4, spacing: 0.036, press: 0.75, pressTime: 3, fist: 0.05, tear: 0.08, memoryRound: true };
+
+/** p6-ring: Mai holds the finished ring at her left side; lifts it close to her body and walks two steps */
+export const RING_T = { lift0: 0.6, lift1: 1.6, walk0: 2.0, walk1: 4.4, end: 6.0 };
+/** the ring's fist (world): low at her left side, then up close to her body, then carried forward (-z) */
+export function ringFist(t: number): Frame {
+  const low: V3 = [-0.3, 1.0, -0.26];
+  const close: V3 = [-0.26, 1.12, -0.12];
+  const lift = ramp(t, RING_T.lift0, RING_T.lift1);
+  const walked = 1.1 * ramp(t, RING_T.walk0, RING_T.walk1);
+  // a little bob with the steps
+  const bob = 0.012 * Math.sin(Math.PI * 4 * clamp01((t - RING_T.walk0) / (RING_T.walk1 - RING_T.walk0)));
+  const p = add(mix(low, close, lift), [0, bob, -walked]);
+  // the factory ring hangs in the x-y plane, stack along +z: turned so the loops face forward-right
+  const q = quatFromAxisAngle(0, 1, 0, -0.45);
+  return { p, q };
+}
+
+export const ringShot: ShotDef = {
+  id: 'p6-ring',
+  duration: RING_T.end,
+  substeps: POWER_5G2_5.substeps,
+  build() {
+    const ring = windRing(RING25);
+    const f0 = ringFist(0);
+    const st = placeRing(ring.state, sub(f0.p, [0, 1.6, 0]), f0.q, 0);
+    const rod = ringRod(ring, st, RING25);
+    rod.time = 0;
+    // the fist (and the strap round the top of the ring) holds what the factory's fist held
+    const toFist = (t: number): Frame => {
+      const f = ringFist(t);
+      // placeRing moved the factory fist [0, 1.6, 0] to f0.p turned by f0.q: the bundle frame keeps that relation
+      return { p: f.p, q: quatMul(f.q, quatConj(f0.q)) };
+    };
+    const fist = rod.bundle({ frame: (t) => {
+      const f = toFist(t);
+      return { p: f.p, q: f.q };
+    }, hand: 0, blend: 0.001 });
+    for (const [a, b] of ring.held) fist.add(a, b, 0.001);
+    return {
+      rod,
+      tracks: {
+        iC0: () => ring.cable[0],
+        iC1: () => ring.cable[1],
+        /** the lowest point of the ring above the floor [m] */
+        low: (r) => {
+          let y = Infinity;
+          for (let i = 0; i < r.n; i++) y = Math.min(y, r.x[3 * i + 1]);
+          return y;
+        },
+      },
+      vectors: { fist: frameTrack((_r, t) => ringFist(t)) },
+    };
+  },
+};
+
+// ======================================================================================= fail
+
+/**
+ * p6-fail: the end of the 25 m 5G16 lies on the floor in front of Mai, running to her right. 8 m
+ * are simulated (the scene draws the rest on along +x from the last node).
+ */
+export const FAIL = {
+  /** the start plug's tip */
+  tip: [-0.95, R16, -0.5] as V3,
+  /** simulated length [m] (its far end is free: the cable gets dragged a little; the scene draws the rest on from it) */
+  length: 8,
+  /** where the fists take it (material from the plug's tip) */
+  sL: 0.32,
+  sR: 2.05,
+};
+export const FAIL_T = { reachL: 0.5, gripL: 1.4, upL: 2.5, reachR: 2.7, gripR: 3.6, loop0: 3.8, loop1: 5.3, letGo: 5.9, down0: 6.9, down1: 7.9, open: 8.0, end: 9.4 };
+
+interface FailBuilt {
+  rod: Rod;
+  /** the fists' frames (decided as it runs: the right one goes where the cable lies) */
+  left: (t: number) => Frame;
+  right: (t: number) => Frame;
+  script: (rod: Rod, t: number) => void;
+  cable: [number, number];
+}
+
+function buildFail(): FailBuilt {
+  const T = FAIL_T;
+  const pts: V3[] = [];
+  for (let s = 0; s <= FAIL.length + 1e-9; s += 0.01) pts.push(add(FAIL.tip, [s, 0, 0]));
+  const built = buildCable(POWER_5G16, pts, { plugs: 'start', up: UP });
+  const rod = built.rod;
+  rod.time = 0;
+  // the left fist: down to the cable, takes it, stands up with the end; at the end puts it down
+  const pL = rod.pointAt(FAIL.sL);
+  const fistOver = (p: V3): Frame => gripFrame(p, [1, 0, 0], UP);
+  const hipL: V3 = [-0.33, 0.95, -0.36];
+  const leftPos = pathKeys([
+    [0, [-0.35, 0.75, -0.25]],
+    [T.reachL, [-0.35, 0.75, -0.25]],
+    [T.gripL, add(pL, [0, 0, 0])],
+    [T.gripL + 0.15, add(pL, [0, 0, 0])],
+    [T.upL, hipL],
+    [T.down0, hipL],
+    [T.down1, add(pL, [0.05, 0, 0.05])],
+  ]);
+  // her left fist holds the end level, the plug sticking out to her left, the cable leaving to her right and a little down
+  const left = (t: number): Frame => {
+    const u = ramp(t, T.gripL + 0.15, T.upL) * (1 - ramp(t, T.down0, T.down1));
+    const along = norm(mix([1, 0, 0], [0.9, -0.35, -0.1], u));
+    return gripFrame(leftPos(t), along, norm(mix(UP, [0, 0.4, 0.9], u)));
+  };
+  // the right fist: where the cable lies at T.reachR (sim in the loop), then up and round to the left fist
+  let grabP: V3 | null = null, grabT: V3 = [1, 0, 0];
+  const restR: V3 = [0.3, 0.8, -0.2];
+  const right = (t: number): Frame => {
+    if (!grabP || t < T.reachR) return fistOver(restR);
+    // she brings the loop up next to the left fist (a hand's width off), then tries to close it
+    const near: V3 = add(hipL, [0.26, 0.04, 0.02]);
+    const shut: V3 = add(hipL, [0.13, 0.04, 0.03]);
+    const top: V3 = add(mix(grabP, near, 0.55), [0, 0.25, 0]);
+    if (t < T.gripR + 0.15) return gripFrame(mix(restR, grabP, ramp(t, T.reachR, T.gripR)), grabT, UP);
+    const upIn: V3 = norm([-0.45, 0.9, 0.05]);
+    if (t < T.letGo) {
+      // up and over towards the left fist, the cable turning up through the fist (a loop between the fists)
+      const u = ramp(t, T.loop0, T.loop1);
+      const p = mix(mix(grabP, top, u), mix(top, near, u), u);
+      const w = ramp(t, T.loop1, T.letGo - 0.1);
+      return gripFrame(mix(p, shut, w), norm(mix(grabT, upIn, u)), norm(mix(UP, [0.9, 0.45, 0], u)));
+    }
+    // let go: the hand opens and backs off a little
+    const v = ramp(t, T.letGo, T.letGo + 0.6);
+    return gripFrame(add(shut, [0.14 * v, 0.06 * v, 0.1 * v]), upIn, [0.9, 0.45, 0]);
+  };
+  let gL: number | null = null, gR: number | null = null;
+  const seg = (s: number) => rod.segmentAt(s);
+  const script = (r: Rod, t: number) => {
+    if (gL === null && t >= T.gripL) gL = r.addGrip({ nodes: [seg(FAIL.sL - 0.05), seg(FAIL.sL + 0.05) + 1], frame: left, blend: 0.15 });
+    if (grabP === null && t >= T.reachR) {
+      grabP = r.pointAt(FAIL.sR);
+      grabT = r.tangentAt(FAIL.sR);
+    }
+    if (gR === null && t >= T.gripR) gR = r.addGrip({ nodes: [seg(FAIL.sR - 0.05), seg(FAIL.sR + 0.05) + 1], frame: right, blend: 0.15 });
+    if (gR !== null && gR >= 0 && t >= T.letGo) {
+      r.releaseGrip(gR);
+      gR = -1;
+    }
+    if (gL !== null && gL >= 0 && t >= T.open) {
+      r.releaseGrip(gL);
+      gL = -1;
+    }
+  };
+  return { rod, left, right, script, cable: built.cable };
+}
+
+export const failShot: ShotDef = {
+  id: 'p6-fail',
+  duration: FAIL_T.end,
+  substeps: POWER_5G16.substeps,
+  build() {
+    const b = buildFail();
+    return {
+      rod: b.rod,
+      script: b.script,
+      tracks: {
+        iC0: () => b.cable[0],
+        iC1: () => b.cable[1],
+        /** how far apart the loop's two ends are while she holds it, and its lowest point */
+        low: (r) => {
+          let y = Infinity;
+          const e = r.segmentAt(FAIL.sR + 0.3);
+          for (let i = 0; i <= e; i++) y = Math.min(y, r.x[3 * i + 1]);
+          return y;
+        },
+        /** the tightest bend radius between the fists [m] */
+        bend: (r) => {
+          let k = 0;
+          const a = r.segmentAt(FAIL.sL + 0.08), c = r.segmentAt(FAIL.sR - 0.08);
+          for (let j = a + 1; j < c; j++) {
+            const p0 = node(r, j - 1), p1 = node(r, j), p2 = node(r, j + 1);
+            const t1 = norm(sub(p1, p0)), t2 = norm(sub(p2, p1));
+            const ang = Math.acos(Math.max(-1, Math.min(1, dot(t1, t2))));
+            k = Math.max(k, ang / (0.5 * (len(sub(p1, p0)) + len(sub(p2, p1)))));
+          }
+          return k > 0 ? 1 / k : 99;
+        },
+      },
+      vectors: { left: frameTrack((_r, t) => b.left(t)), right: frameTrack((_r, t) => b.right(t)) },
+    };
+  },
+};
+
+// ===================================================================================== unroll
+
+/** p6-unroll: Mai takes the end on top of the stack, lifts it and walks away to her right with it */
+export const UNROLL_T = { grip: 0.6, lift: 1.4, walk0: 1.6, walk1: 12.0, end: 12.6 };
+/** the stack's top end at the start (material from the start: the end plug and 25 cm of cable) */
+const UNROLL_HOLD = 0.32;
+
+interface UnrollBuilt {
+  rod: Rod;
+  fist: (t: number) => Frame;
+  script: (rod: Rod, t: number) => void;
+}
+
+function buildUnroll(): UnrollBuilt {
+  const st = stackState();
+  const rod = Rod.fromState(st);
+  // the plugs' masses are not part of a saved state
+  plugMasses(rod, POWER_5G16);
+  rod.time = 0;
+  rod.v.fill(0);
+  rod.om.fill(0);
+  const T = UNROLL_T;
+  const sEnd = rod.totalLength;
+  const p0 = rod.pointAt(sEnd - UNROLL_HOLD / 2);
+  const t0 = rod.tangentAt(sEnd - UNROLL_HOLD / 2);
+  // up to chest height (the cable comes off the top, not across it), then away to her right (+x)
+  const lifted: V3 = [p0[0] + 0.1, 1.05, p0[2] + 0.1];
+  const dir: V3 = [1, 0, 0.12];
+  const fist = (t: number): Frame => {
+    if (t < T.grip) return gripFrame(add(p0, [0, 0.08 * (1 - ramp(t, 0, T.grip)), 0]), t0, UP);
+    if (t < T.walk0) return gripFrame(mix(p0, lifted, ramp(t, T.grip + 0.1, T.lift)), norm(mix(t0, [1, 0.3, 0], ramp(t, T.grip + 0.1, T.lift))), UP);
+    // walking away at about 0.5 m/s (eased in over the first second)
+    const v = 0.5, u = Math.min(t, T.walk1) - T.walk0;
+    const d = u < 1 ? (v * u * u) / 2 : v * (u - 0.5);
+    return gripFrame(add(lifted, mul(norm(dir), Math.max(0, d))), norm([1, 0.3, 0.1]), UP);
+  };
+  let g: number | null = null;
+  const script = (r: Rod, t: number) => {
+    if (g === null && t >= T.grip) g = r.addGrip({ nodes: [r.segmentAt(sEnd - UNROLL_HOLD), r.n - 1], frame: fist, blend: 0.2 });
+  };
+  return { rod, fist, script };
+}
+
+/** puts a preset's plug masses back on a rod built with plugs: 'both' (they are not part of RodState) */
+function plugMasses(rod: Rod, spec: typeof POWER_5G16) {
+  const plug = spec.plug;
+  if (!plug) return;
+  const S = rod.sNode, ns = rod.ns, total = rod.totalLength;
+  const i0 = rod.segmentAt(plug.length - 1e-9) + 1, i1 = rod.segmentAt(total - plug.length + 1e-9);
+  const spread = (j0: number, j1: number) => {
+    const l = S[j1] - S[j0];
+    for (let j = j0; j < j1; j++) rod.addMass(j, plug.mass * (rod.L[j] / l) - rod.m[j]);
+  };
+  spread(0, i0);
+  spread(i1, ns);
+}
+
+export const unrollShot: ShotDef = {
+  id: 'p6-unroll',
+  duration: UNROLL_T.end,
+  substeps: POWER_5G16.substeps,
+  build() {
+    const b = buildUnroll();
+    const n0 = b.rod.n;
+    return {
+      rod: b.rod,
+      script: b.script,
+      tracks: {
+        iC0: (r) => r.segmentAt(POWER_5G16.plug!.length - 1e-9) + 1,
+        iC1: (r) => r.segmentAt(r.totalLength - POWER_5G16.plug!.length + 1e-9),
+        /** twist in the cable pulled off the stack: from where it leaves the stack to her fist [turns] */
+        twOut: (r) => {
+          // where it leaves the stack: the last node (from the fist back) lower than 6 cm
+          let i = r.n - 1;
+          while (i > 0 && r.x[3 * i + 1] > 0.06) i--;
+          return r.twistTurns(Math.max(0, r.segmentAt(r.sNode[i] - 0.0)), r.ns - 1);
+        },
+        /** twist in the whole cable from the start plug to her fist [turns] */
+        twAll: (r) => r.twistTurns(0, r.ns - 1),
+        /** material still lying on the stack (nodes within 1.2 m of the stack's centre, lower than 25 cm) [m] */
+        onStack: (r) => {
+          let c = 0;
+          for (let i = 0; i < n0; i++) {
+            const x = node(r, i);
+            if (Math.hypot(x[0] - STACK.C[0], x[2] - STACK.C[2]) < 1.0 && x[1] < 0.25) c++;
+          }
+          return (c * r.totalLength) / n0;
+        },
+      },
+      vectors: { fist: frameTrack((_r, t) => b.fist(t)) },
+    };
+  },
+};
+
+export const P6_SHOTS: ShotDef[] = [coilShot, ringShot, failShot, eightsShot, unrollShot];
 
 // (helpers used by later shots; referenced here so the module type-checks while it grows)
 void TAU;

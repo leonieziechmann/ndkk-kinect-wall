@@ -472,7 +472,6 @@ export function* part(layer: Node) {
       const c = bPrep.point(S_STRAP), a = bPrep.tangent(S_STRAP);
       return { c, a, u: perp(prepPlan.u, a), r: RC };
     };
-    let letGo: Float32Array | null = null;
     const pose = { v: prepTr.pose(0) as Pose };
     // (from his left and a little below: the cable and the tie in front of his right hand, which comes from his right)
     const NAH: Orbit = { target: add(mix(PREP.fist, prepPlan.p, 0.68), [0, 0.0, 0]), yaw: Math.PI + 0.95, pitch: 0.02, dist: 0.43, fov: 34 };
@@ -495,15 +494,16 @@ export function* part(layer: Node) {
       else if (t < PREP_T.let) choke(band, s, 1, 1, ps.cinch, pads);
       else {
         choke(band, s, 1, 1, 1, null);
-        // (the end swings down from where the hand let it go)
-        if (!letGo) {
-          choke(band2, s, 1, 1, 1, pads);
-          letGo = Float32Array.from(band2.pts);
-        }
+        // (the end swings down from where the hand let it go: the band as it was then, a pure function of time)
         const u = ease((t - PREP_T.let) / 0.35);
-        if (u < 1) for (let k = 0; k < band.pts.length; k++) band.pts[k] = letGo[k] + (band.pts[k] - letGo[k]) * u;
+        if (u < 1) {
+          bPrep.at(PREP_T.let);
+          const s0 = sec();
+          choke(band2, s0, 1, 1, 1, prepTr.pose(PREP_T.let).body.arms?.[1].grip?.p ?? s0.c);
+          bPrep.at(t);
+          for (let k = 0; k < band.pts.length; k++) band.pts[k] = band2.pts[k] + (band.pts[k] - band2.pts[k]) * u;
+        }
       }
-      if (t < PREP_T.let) letGo = null;
       drawBand(strap, band);
       // the arrow round the cable (the way the long end goes) and the pull out of the slot
       const r = s.c;
@@ -609,7 +609,6 @@ export function* part(layer: Node) {
     readonly pos = new Float32Array(3 * bOk.n);
     readonly d1 = new Float32Array(3 * bOk.n);
     readonly rad = new Float32Array(bOk.n);
-    letGo: Float32Array | null = null;
     pose: Pose;
     constructor(readonly off: number) {
       this.pose = ringTr.pose(0);
@@ -733,17 +732,18 @@ export function* part(layer: Node) {
         const strand = S0.strand(S_STRAP, SEC.u);
         const bundle: Section = { ...SEC, c: tf(bt).p };
         const choked = k === 2;
-        if (d < DROP_T.let) {
-          round(S0.band, strand, bundle, 1, null, { peel: peelOf(d), choked });
-          S0.letGo = Float32Array.from(S0.band.pts);
-        } else if (!choked) {
-          const p0 = S0.letGo ?? S0.band.pts;
-          falling(S0.band, p0, A, d - DROP_T.let, 0);
-        } else {
-          choke(S0.band, strand, 1, 1, 1, null);
-          const lg = S0.letGo;
-          const u = ease((d - DROP_T.let) / 0.45);
-          if (lg && u < 1) for (let q = 0; q < S0.band.pts.length; q++) S0.band.pts[q] = lg[q] + (S0.band.pts[q] - lg[q]) * u;
+        if (d < DROP_T.let) round(S0.band, strand, bundle, 1, null, { peel: peelOf(d), choked });
+        else {
+          // the band as the hand let it go (a pure function of time: the ring is still there)
+          round(S0.band2, strand, bundle, 1, null, { peel: 1, choked });
+          if (!choked) {
+            // (it falls clear of his feet, towards the camera)
+            falling(S0.band, S0.band2.pts, A, d - DROP_T.let, 0, [0.4, 0, 0.9], [0.05, 0, -0.4]);
+          } else {
+            choke(S0.band, strand, 1, 1, 1, null);
+            const u = ease((d - DROP_T.let) / 0.45);
+            if (u < 1) for (let q = 0; q < S0.band.pts.length; q++) S0.band.pts[q] = S0.band2.pts[q] + (S0.band.pts[q] - S0.band2.pts[q]) * u;
+          }
         }
         drawBand(S0.strap, S0.band);
         S0.zip.group.visible = false;
@@ -751,7 +751,7 @@ export function* part(layer: Node) {
         const u = s - S('drop');
         const down = ramp(u, DROP_T.let + 0.3, DROP_T.let + 1.1) * (1 - ramp(u, DROP_CAM.up0, DROP_CAM.up1));
         const near: Orbit = { target: S0.W(add(SEC.c, [0, -0.05, 0])), yaw: YAW_TIE, pitch: 0.28, dist: 0.66, fov: 34 };
-        const floor: Orbit = { target: S0.W([SEC.c[0] + 0.05, 0.03, SEC.c[2] + 0.1]), yaw: YAW_TIE, pitch: 0.75, dist: 0.8, fov: 34 };
+        const floor: Orbit = { target: S0.W([SEC.c[0] + 0.0, 0.03, SEC.c[2] - 0.17]), yaw: YAW_TIE, pitch: 0.8, dist: 0.85, fov: 34 };
         orbit(colCam[k], mixOrbit(near, floor, down, k === 0 ? o2 : o3));
       }
     } else if (active('start')) {
