@@ -1,0 +1,15 @@
+[package]
+name = "wall-invaders"
+version = "0.1.0"
+edition = "2024"
+description = "Space Invaders: the game, shared by the scenes space-invaders and invaders-tracking"
+publish = false
+
+[dependencies]
+wall.workspace = true
+bytemuck.workspace = true
+serde_json.workspace = true
+wgpu.workspace = true
+
+[lints]
+workspace = true

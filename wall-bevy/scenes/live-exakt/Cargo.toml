@@ -1,0 +1,17 @@
+[package]
+name = "wall-scene-live-exakt"
+version = "0.1.0"
+edition = "2024"
+description = "Scene live-exakt"
+publish = false
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+wall.workspace = true
+bytemuck.workspace = true
+wgpu.workspace = true
+
+[lints]
+workspace = true

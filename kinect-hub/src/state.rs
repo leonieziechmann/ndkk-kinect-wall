@@ -11,7 +11,6 @@ use serde_json::{Value, json};
 use tokio::sync::{Semaphore, watch};
 
 use crate::config::Config;
-use crate::devservers::DevServers;
 use crate::pose::{PoseSet, PoseState};
 use crate::render::RenderReports;
 use crate::tracking::{PersonsSet, TrackingState};
@@ -224,8 +223,6 @@ pub struct Hub {
     metrics: Mutex<Metrics>,
     pub started: Instant,
     stop: AtomicBool,
-    /// Scene dev servers (one per worktree) that announced themselves; see devservers.rs.
-    pub devservers: DevServers,
     /// Newest poses of the pose model (pose.rs), latest-only like the frames.
     pub poses: watch::Sender<Option<Arc<PoseSet>>>,
     pub pose: PoseState,
@@ -260,7 +257,6 @@ impl Hub {
             metrics: Mutex::new(Metrics::default()),
             started: Instant::now(),
             stop: AtomicBool::new(false),
-            devservers: DevServers::default(),
             poses: watch::Sender::new(None),
             pose,
             persons: watch::Sender::new(None),
@@ -352,7 +348,6 @@ impl Hub {
             },
             "clients": self.clients.load(Ordering::Relaxed),
             "max_clients": self.cfg.max_clients,
-            "dev_servers": self.devservers.count(),
             "pose": self.pose.status_json(),
             "tracking": self.tracking.status_json(),
             "render": self.render.status_json(),

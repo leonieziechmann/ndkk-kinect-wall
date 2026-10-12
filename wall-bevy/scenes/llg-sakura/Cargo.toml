@@ -1,0 +1,18 @@
+[package]
+name = "wall-scene-llg-sakura"
+version = "0.1.0"
+edition = "2024"
+description = "Scene llg-sakura"
+publish = false
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+wall.workspace = true
+bytemuck.workspace = true
+wgpu.workspace = true
+tiny-skia.workspace = true
+
+[lints]
+workspace = true

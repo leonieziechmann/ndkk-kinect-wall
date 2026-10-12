@@ -1,0 +1,18 @@
+[package]
+name = "wall-scene-blasen-platzen"
+version = "0.1.0"
+edition = "2024"
+description = "Scene blasen-platzen"
+publish = false
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+wall.workspace = true
+bytemuck.workspace = true
+serde_json.workspace = true
+wgpu.workspace = true
+
+[lints]
+workspace = true

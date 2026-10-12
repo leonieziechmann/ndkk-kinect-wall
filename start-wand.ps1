@@ -5,18 +5,19 @@
     .\start-wand.ps1 [-NoWall] [-NoControl] [-Hub 8091] [-RecordMinutes 5]
     .\start-wand.ps1 -Panic            NOTAUS (also Strg+Alt+Shift+N, desktop icon "Kinect-Wand NOTAUS")
 
-  Starts (or reuses, if they already run) from the main checkout: kinect-hub (real Kinect, :8090),
-  the Vite dev server of web/ (show, control center), the output window /wall/ as a kiosk window on
-  the LED screen (the same as npm run wall) and the control center /control/ on the notebook's own
-  panel. A watchdog restarts what dies.
+  Starts (or reuses, if they already run) from the main checkout: kinect-hub (real Kinect, :8090)
+  and the output wall-bevy (wall-bevy\target\release\wall-bevy.exe, see wall-bevy\README.md) on
+  the LED screen. The output brings the control center with it (http://127.0.0.1:8095/, also a
+  remote for phones in the same network); it opens as an app window on the notebook's own panel as
+  soon as the output serves it. A watchdog restarts what dies.
 
-  The displays are found automatically every time (no setting): the output window only ever goes to
-  the second display, never the notebook's own panel (with several other displays the one named in
-  the wall setup, else the leftmost); with no second display it stays closed until one is plugged
-  in. Where it really is gets checked twice a second: a wall window on the notebook's panel (Windows
-  moves it there when the LED screen goes away) is closed at once. The control center opens as an
-  app window of its own, maximized on the notebook's panel; with the lid closed (no notebook panel)
-  it stays closed, so it never covers the wall.
+  The displays are found automatically every time (no setting): the output only ever goes to the
+  second display, never the notebook's own panel (with several other displays the one named in the
+  wall setup, else the leftmost); with no second display it stays closed until one is plugged in,
+  and with it the control center. Where it really is gets checked twice a second: an output window
+  on the notebook's panel (Windows moves it there when the LED screen goes away) is closed at once.
+  The control center opens as an app window of its own, maximized on the notebook's panel; with the
+  lid closed (no notebook panel) it stays closed, so it never covers the wall.
 
   R records training data while the show goes on: RecordMinutes (5) of depth and infrared from the
   running hub (kinect-hub-probe record, never the sensor itself) into recordings\wand-<date>-<time>.k2rec
@@ -29,10 +30,9 @@
     - power plan: a temporary copy of "High performance": no sleep, no display off, lid closed = do
       nothing, USB selective suspend and PCIe link power saving off (Kinect), CPU min 100 %, boost
     - no sleep or display off (SetThreadExecutionState, ends with this process)
-    - priorities: hub, depth worker and the kiosk browser above normal (the same level, so neither
-      waits for the other), never in efficiency mode; chat/sync apps (Teams, WhatsApp, Signal, Phone
-      Link, OneDrive, ...), test hubs, headless test browsers and the dev servers of other worktrees in
-      efficiency mode (idle + EcoQoS)
+    - priorities: hub, depth worker and the output above normal (the same level, so neither waits
+      for the other), never in efficiency mode; chat/sync apps (Teams, WhatsApp, Signal, Phone Link,
+      OneDrive, ...), test hubs and headless test browsers in efficiency mode (idle + EcoQoS)
   Windows services stay as they are: Windows starts the search indexer and Windows Update again
   within seconds, so stopping them only made them start over and over (more load, not less).
 
@@ -55,6 +55,7 @@
 [CmdletBinding()]
 param(
   [switch]$NoWall,    # no output window (e.g. without the LED screen)
+  [switch]$Bevy,      # no effect any more (the output is always wall-bevy); kept for old command lines
   [switch]$NoControl, # no control center window on the notebook
   [int]$Hub = 8090,   # the hub to use; only the real one on 8090 is started, others must run already
   [ValidateRange(1, 60)][int]$RecordMinutes = 5,   # R: length of a recording (training data)
@@ -74,8 +75,8 @@ $HotkeyFile = Join-Path $StateDir 'hotkey.txt'
 $GuardStopFlag = Join-Path $StateDir 'guard-stop.flag'
 $QuitFlag = Join-Path $StateDir 'quit.flag'      # written by anyone: the main program ends cleanly (as with Q)
 $EventLog = Join-Path $StateDir 'start-wand.log'
-# stdin of the hub and the dev server: without it, Start-Process hands them this console's input,
-# Vite reads it as a terminal and takes the events [Console]::KeyAvailable waits for (it hangs)
+# stdin of the hub and the output: without it, Start-Process hands them this console's input, and a
+# program that reads it takes the events [Console]::KeyAvailable waits for (it hangs)
 $NoInput = Join-Path $StateDir 'no-input.txt'
 $RunOnceKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
 $RunOnceName = 'KinectWandEnergieplan'
@@ -383,10 +384,10 @@ public static class KinectWandNative {
   static int ourWindowsPid;
 
   // No wall window on the notebook's own panel: sends WM_CLOSE to every visible window (larger than
-  // 100 x 100) there that belongs to ourPid or to another browser with the wall profile, and returns
-  // those processes. Notes where the largest window of ourPid is (OurDevice). full: one pass over
-  // all windows; otherwise only the windows of ourPid found by the last full pass (a few calls; a
-  // full pass happens anyway when one of them is gone).
+  // 100 x 100) there that belongs to ourPid or (profile not empty) to a browser with that profile,
+  // and returns those processes. Notes where the largest window of ourPid is (OurDevice). full: one
+  // pass over all windows; otherwise only the windows of ourPid found by the last full pass (a few
+  // calls; a full pass happens anyway when one of them is gone).
   public static int[] WallScan(int ourPid, string profile, bool full) {
     Screens();
     var inner = internalMonitors;
@@ -422,7 +423,7 @@ public static class KinectWandNative {
         if (ours) { mine.Add(h); if (w * ht > bestArea) { bestArea = w * ht; best = h; } }
         if (w <= 100 || ht <= 100 || inner.Count == 0) return true;
         if (!inner.Contains(MonitorFromWindow(h, 2))) return true;
-        if (ours || IsWallBrowser((int)wp, profile)) {
+        if (ours || (profile.Length > 0 && IsWallBrowser((int)wp, profile))) {
           PostMessage(h, 0x0010, IntPtr.Zero, IntPtr.Zero);
           if (!bad.Contains((int)wp)) bad.Add((int)wp);
         }
@@ -948,7 +949,7 @@ function Format-Recording($info) {
 
 function Stop-Started($j) {
   $stopped = @()
-  foreach ($role in 'record', 'wall', 'control', 'vite', 'hub') {
+  foreach ($role in 'record', 'wall', 'control', 'vite', 'hub') {   # vite: journals of older versions
     foreach ($s in @($j.started)) {
       if (-not $s -or $s.role -ne $role) { continue }
       if (Test-Alive $s.pid $s.start) {
@@ -981,7 +982,7 @@ function Invoke-Notaus([switch]$FromGuard) {
   if (-not $FromGuard -and $j -and (Test-Alive $j.guardPid $j.guardStart)) { Stop-Process -Id ([int]$j.guardPid) -Force -ErrorAction SilentlyContinue }
   if ($j -and (Test-Alive $j.mainPid $j.mainStart)) { Stop-Process -Id ([int]$j.mainPid) -Force -ErrorAction SilentlyContinue }
   $r = Restore-All $j -StopStarted
-  $names = @{ record = 'Aufnahme'; wall = 'Wand-Fenster'; control = 'Steuerzentrale'; vite = 'Dev-Server'; hub = 'Kinect-Hub' }
+  $names = @{ record = 'Aufnahme'; wall = 'Ausgabe'; control = 'Steuerzentrale'; vite = 'Dev-Server'; hub = 'Kinect-Hub' }
   $msg = 'NOTAUS: alle Einstellungen sind zurückgestellt'
   if ($r.stopped.Count) { $msg += ', beendet: ' + (($r.stopped | ForEach-Object { $names[$_] }) -join ', ') }
   $msg += '.'
@@ -1019,14 +1020,14 @@ if ($Guard) {
 # main program
 
 $Main = if ($Checkout) { (Resolve-Path $Checkout).Path } else { Get-MainCheckout }
-$Web = Join-Path $Main 'web'
 $HubExe = Join-Path $Main 'kinect-hub\target\release\kinect-hub.exe'
-# where the wall setup lives and the kiosk browser keeps its profile (as tools/wall-window.mjs)
-$WallDir = if ($env:KINECT_WALL_DIR) { [IO.Path]::GetFullPath($env:KINECT_WALL_DIR) } else { Join-Path $Web '.cache\wall' }
-$WallProfile = (Join-Path (Split-Path -Parent $WallDir) 'wall-browser').ToLower()
+# the output; a test checkout (-Checkout) without a build of its own uses the main one's
+$BevyExe = Join-Path $Main 'wall-bevy\target\release\wall-bevy.exe'
+if ($Checkout -and -not (Test-Path -LiteralPath $BevyExe)) { $BevyExe = Join-Path (Get-MainCheckout) 'wall-bevy\target\release\wall-bevy.exe' }
+# the output's data folder: setup, projections, show, pairing code, control.json (its control center)
+$WallDir = if ($env:KINECT_WALL_DIR) { [IO.Path]::GetFullPath($env:KINECT_WALL_DIR).TrimEnd('\', '/') } else { Join-Path $Main 'wall-bevy\data' }
 $HubUrl = "http://127.0.0.1:$Hub"
 $Interactive = -not [Console]::IsInputRedirected
-$Node = (Get-Command node.exe -ErrorAction SilentlyContinue).Source
 $Ps = Join-Path $PSHOME 'powershell.exe'
 $Here = Split-Path -Parent $PSCommandPath
 
@@ -1147,7 +1148,7 @@ Enable-PowerPlan
 $script:Optimize = $true
 
 # ---- priorities and efficiency mode
-$TuneNames = @('kinect-hub.exe', 'fn2_capture.exe', 'chrome.exe', 'msedge.exe', 'node.exe', 'msedgewebview2.exe') +
+$TuneNames = @('kinect-hub.exe', 'fn2_capture.exe', 'chrome.exe', 'msedge.exe', 'msedgewebview2.exe', 'wall-bevy.exe') +
   @($BackgroundApps | ForEach-Object { "$_.exe" })
 $BackgroundExes = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 foreach ($a in $BackgroundApps) { [void]$BackgroundExes.Add("$a.exe") }
@@ -1162,19 +1163,10 @@ function Get-Role([string]$name, [int]$id) {
       return 'background'   # test hubs (replay, synthetic)
     }
     'fn2_capture.exe' { return 'core' }
+    'wall-bevy.exe' { return 'wall' }   # the output
     { $_ -in 'chrome.exe', 'msedge.exe' } {
-      $cl = [string][KinectWandNative]::CommandLine($id)
-      if ($cl.ToLower().Replace('/', '\').Contains($WallProfile)) {
-        if ($cl -notmatch '--type=' -or $cl -match '--type=(gpu-process|renderer)') { return 'wall' }
-        return $null
-      }
-      if ($cl -match '--headless') { return 'background' }   # test runs (npm run check)
-      return $null
-    }
-    'node.exe' {
-      $cl = [string][KinectWandNative]::CommandLine($id)
-      if ($cl -match 'vite' -and -not $cl.ToLower().Contains($Web.ToLower() + '\')) { return 'background' }   # other worktrees
-      return $null
+      if ([string][KinectWandNative]::CommandLine($id) -match '--headless') { return 'background' }   # test runs
+      return $null   # the control center's window: as it is
     }
     'msedgewebview2.exe' {
       if ([string][KinectWandNative]::CommandLine($id) -match '--webview-exe-name=([^\s"]+?)\.exe' -and $BackgroundApps -contains $Matches[1]) { return 'background' }
@@ -1192,7 +1184,7 @@ function Update-TuneSummary {
     if (-not $t) { continue }
     if ($t.role -eq 'core') { $core++ } elseif ($t.role -eq 'wall') { $wall++ } else { [void]$bg.Add([string]$t.name) }
   }
-  $script:TuneSummary = "Vorrang: Hub/Worker ($core), Wand-Browser ($wall) · Effizienzmodus: $(if ($bg.Count) { @($bg) -join ', ' } else { '-' })"
+  $script:TuneSummary = "Vorrang: Hub/Worker ($core), Ausgabe ($wall) · Effizienzmodus: $(if ($bg.Count) { @($bg) -join ', ' } else { '-' })"
   $script:Dirty = $true
 }
 
@@ -1221,26 +1213,27 @@ function Update-Tuning {
   Update-TuneSummary
 }
 
-# ---- components: hub, dev server, output window
+if (-not (Test-Path -LiteralPath $BevyExe)) { Add-Event "Die Ausgabe ist nicht gebaut: $BevyExe fehlt (in wall-bevy: cargo build --release)" 'warn' }
+
+# ---- components: hub, output (with the control center)
 $script:HubStatus = $null
 $script:HubFails = 0
 $script:HubOurs = $null
-$script:ViteOurs = $null
-$script:Vite = $null        # dev-server.json of the main checkout while it answers
 $script:WallPid = 0
 $script:WallStart = $null
-$script:WallUrl = $null
 $script:WallAuto = -not $NoWall
 $script:WallLaunches = New-Object System.Collections.ArrayList
-$script:NextTry = @{ hub = 0; vite = 0; wall = 0; hubPoll = 0 }
+$script:NextTry = @{ hub = 0; wall = 0; hubPoll = 0; control = 0 }
 $script:ControlPid = 0
 $script:ControlStart = $null
 $script:ControlUrl = $null
+$script:ControlWanted = -not $NoControl   # open its window as soon as the output serves it
+$script:Ctl = $null         # the output's control.json while it answers: url, port, lan, pid
+$script:CtlStamp = 0
 $script:Rec = $null         # the running recording (its journal entry)
 $Clock = [Diagnostics.Stopwatch]::StartNew()
 foreach ($s in $adopt) {
   if ($s.role -eq 'hub') { $script:HubOurs = $s }
-  if ($s.role -eq 'vite') { $script:ViteOurs = $s }
   if ($s.role -eq 'wall') { $script:WallPid = [int]$s.pid; $script:WallStart = $s.start }
   if ($s.role -eq 'control') { $script:ControlPid = [int]$s.pid; $script:ControlStart = $s.start }
   if ($s.role -eq 'record') { $script:Rec = $s }
@@ -1268,47 +1261,32 @@ function Test-Listening([int]$port) {
   return $false
 }
 
+# The pose models for the hub, best first, as one --pose-models value ('' if none): kinect-hub/models
+# in the order the hub picks them itself (hub builds from before that folder looked in web/lib/models).
+function Get-PoseModels {
+  $dir = Join-Path $Main 'kinect-hub\models'
+  if ($Checkout -and -not (Test-Path -LiteralPath $dir)) { $dir = Join-Path (Get-MainCheckout) 'kinect-hub\models' }
+  $names = @('yolo11s-pose-512x448-fp16.onnx', 'yolo11s-pose-384x320-fp16.onnx')
+  # n at 512 costs about as much as s at 384 and is worse: only without that one
+  if (-not (Test-Path -LiteralPath (Join-Path $dir 'yolo11s-pose-384x320-fp16.onnx'))) { $names += 'yolo11n-pose-fp16.onnx' }
+  $names += 'yolo11n-pose-384-fp16.onnx'
+  return (@($names | ForEach-Object { Join-Path $dir $_ } | Where-Object { Test-Path -LiteralPath $_ }) -join ',')
+}
+
 function Start-Hub {
   if ($Hub -ne 8090) { Add-Event "Hub :$Hub antwortet nicht (gestartet wird nur der echte Hub auf 8090)" 'warn'; return }
   if (-not (Test-Path $HubExe)) { Add-Event "kinect-hub.exe fehlt: $HubExe (im main bauen)" 'warn'; return }
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-  $p = Start-Process -FilePath $HubExe -WorkingDirectory $Main -WindowStyle Hidden -PassThru -RedirectStandardInput $NoInput `
-    -RedirectStandardOutput (Join-Path $LogDir "hub-$stamp.out.log") -RedirectStandardError (Join-Path $LogDir "hub-$stamp.log")
+  $start = @{
+    FilePath = $HubExe; WorkingDirectory = $Main; WindowStyle = 'Hidden'; PassThru = $true; RedirectStandardInput = $NoInput
+    RedirectStandardOutput = (Join-Path $LogDir "hub-$stamp.out.log"); RedirectStandardError = (Join-Path $LogDir "hub-$stamp.log")
+  }
+  $models = Get-PoseModels
+  if ($models) { $start.ArgumentList = @('--pose-models', "`"$models`"") }
+  $p = Start-Process @start
   $script:HubOurs = Add-Started 'hub' $p.Id
   Add-Event "Kinect-Hub gestartet (PID $($p.Id))"
 }
-
-function Get-DevServer {
-  $info = Read-Json (Join-Path $Web '.cache\dev-server.json')
-  if (-not $info -or -not $info.url -or -not $info.pid) { return $null }
-  if (-not (Test-Alive $info.pid $null)) { return $null }
-  if ($null -eq [KinectWandNative]::HttpGet("$($info.url)/__scenes", 3000)) { return $null }
-  return $info
-}
-
-function Start-Vite {
-  if (-not $Node) { Add-Event 'node.exe nicht gefunden: der Dev-Server kann nicht starten' 'warn'; return }
-  $vite = Join-Path $Web 'node_modules\vite\bin\vite.js'
-  if (-not (Test-Path $vite)) { Add-Event "Dev-Server: $vite fehlt (npm install in web)" 'warn'; return }
-  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-  $before = $env:KINECT_HUB
-  $env:KINECT_HUB = $HubUrl
-  try {
-    $p = Start-Process -FilePath $Node -ArgumentList "`"$vite`"" -WorkingDirectory $Web -WindowStyle Hidden -PassThru -RedirectStandardInput $NoInput `
-      -RedirectStandardOutput (Join-Path $LogDir "vite-$stamp.log") -RedirectStandardError (Join-Path $LogDir "vite-$stamp.err.log")
-  } finally { $env:KINECT_HUB = $before }
-  $script:ViteOurs = Add-Started 'vite' $p.Id
-  for ($i = 0; $i -lt 60 -and -not $p.HasExited; $i++) {
-    Start-Sleep -Milliseconds 500
-    $info = Get-DevServer
-    if ($info -and [int]$info.pid -eq $p.Id) { $script:Vite = $info; break }
-  }
-  if ($script:Vite -and [int]$script:Vite.pid -eq $p.Id) { Add-Event "Dev-Server gestartet: $($script:Vite.url)" }
-  else { Add-Event "Dev-Server startet nicht (Logs: L)" 'warn' }
-}
-
-# The main process of an output window (its own browser profile), or $null.
-function Find-Wall { return [KinectWandNative]::BrowserMains($WallProfile) | Select-Object -First 1 }
 
 # The display for the output window, found automatically every time: the second display, never the
 # notebook's own panel. Only with several other displays does the monitor name in the wall setup
@@ -1341,9 +1319,26 @@ function Get-BrowserExe {
   return $list | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 }
 
-# ---- the control center: an app window of its own (own browser profile), maximized on the
-# notebook's panel; never opened while that panel is off, so it never covers the wall
-$ControlProfile = Join-Path (Split-Path -Parent $WallDir) 'control-browser'
+# ---- the control center: served by the output; here an app window of its own (own browser
+# profile), maximized on the notebook's panel; never opened while that panel is off, so it never
+# covers the wall
+$ControlProfile = Join-Path $StateDir 'control-browser'
+$CtlFile = Join-Path $WallDir 'control.json'
+
+# The output's control.json ({url, port, lan, pid}) while that output runs, else $null. Read again
+# only when the file changed (cheap: one file time per call).
+function Get-ControlInfo {
+  $t = 0
+  try { if ([IO.File]::Exists($CtlFile)) { $t = [IO.File]::GetLastWriteTimeUtc($CtlFile).Ticks } } catch { }
+  if ($t -ne $script:CtlStamp) {
+    $script:CtlStamp = $t
+    $script:Ctl = if ($t) { Read-Json $CtlFile } else { $null }
+  }
+  $c = $script:Ctl
+  if (-not $c -or -not $c.url -or -not $c.pid) { return $null }
+  if ([int]$c.pid -ne $script:WallPid -or -not (Test-Alive $c.pid $script:WallStart)) { return $null }
+  return $c
+}
 
 # No "translate this page?" bubble in the control center: its profile gets German as the browser's
 # language and translation switched off (Preferences, written while that browser is closed).
@@ -1372,21 +1367,27 @@ function Set-NoTranslate([string]$profileDir) {
 }
 
 function Open-Control {
-  if (-not $script:Vite) { Add-Event 'Steuerzentrale: der Dev-Server läuft noch nicht' 'warn'; return }
+  $ctl = Get-ControlInfo
+  if (-not $ctl) {
+    $why = if (-not $script:WallPid) { 'sie kommt mit der Ausgabe, und die ist zu' } else { 'die Ausgabe startet noch' }
+    Add-Event "Steuerzentrale: $why (öffnet sich dann von selbst)" 'warn'
+    $script:ControlWanted = $true
+    return
+  }
   $nb = Get-NotebookScreen
-  if (-not $nb) { Add-Event 'Der Notebook-Bildschirm ist aus (Deckel zu?): die Steuerzentrale bleibt zu, S öffnet sie' 'warn'; return }
-  $url = "$($script:Vite.url)/control/"
+  if (-not $nb) { Add-Event 'Der Notebook-Bildschirm ist aus (Deckel zu?): die Steuerzentrale bleibt zu, S öffnet sie' 'warn'; $script:ControlWanted = $false; return }
+  $url = [string]$ctl.url
   if (Test-Alive $script:ControlPid $script:ControlStart) {
     # already open: S brings it back onto the notebook's panel
     [void][KinectWandNative]::PlaceMaximized($script:ControlPid, $nb.X, $nb.Y, $nb.Width, $nb.Height)
     return
   }
   $exe = Get-BrowserExe
-  if (-not $exe) { Add-Event 'Kein Chrome/Edge gefunden: die Steuerzentrale bleibt zu' 'warn'; return }
-  # a window of this profile from before (one browser per profile): reuse it if it shows this dev server
+  if (-not $exe) { Add-Event "Kein Chrome/Edge gefunden: die Steuerzentrale im Browser öffnen: $url" 'warn'; $script:ControlWanted = $false; return }
+  # a window of this profile from before (one browser per profile): reuse it if it shows this address
   foreach ($b in [KinectWandNative]::BrowserMains($ControlProfile)) {
     if ($b.CommandLine.Contains("--app=$url")) {
-      $script:ControlPid = $b.Pid; $script:ControlStart = [string]$b.Start; $script:ControlUrl = $script:Vite.url
+      $script:ControlPid = $b.Pid; $script:ControlStart = [string]$b.Start; $script:ControlUrl = $url
       [void][KinectWandNative]::PlaceMaximized($script:ControlPid, $nb.X, $nb.Y, $nb.Width, $nb.Height)
       Add-Event 'Steuerzentrale ist schon offen, auf den Notebook-Bildschirm geholt'
       return
@@ -1401,7 +1402,7 @@ function Open-Control {
   $e = Add-Started 'control' $p.Id
   $script:ControlPid = $p.Id
   $script:ControlStart = $e.start
-  $script:ControlUrl = $script:Vite.url
+  $script:ControlUrl = $url
   for ($i = 0; $i -lt 50 -and (Test-Alive $p.Id $e.start); $i++) {
     if ([KinectWandNative]::PlaceMaximized($p.Id, $nb.X, $nb.Y, $nb.Width, $nb.Height)) { break }
     Start-Sleep -Milliseconds 100
@@ -1426,7 +1427,7 @@ function Get-OpenScreen {
     $why = if ($script:ScreenMirrored) { 'mirror' } else { 'none' }
     if ($script:ScreenMissing -ne $why) {
       if ($why -eq 'mirror') { Add-Event 'Der zweite Bildschirm zeigt dasselbe wie das Notebook: mit Win+P auf "Erweitern" stellen, dann geht das Wand-Fenster dort auf' 'warn' }
-      else { Add-Event 'Kein zweiter Bildschirm: das Wand-Fenster bleibt zu, bis einer angeschlossen ist' 'warn' }
+      else { Add-Event 'Kein zweiter Bildschirm: die Ausgabe (und mit ihr die Steuerzentrale) bleibt zu, bis einer angeschlossen ist' 'warn' }
     }
     $script:ScreenMissing = $why
     return $null
@@ -1437,35 +1438,45 @@ function Get-OpenScreen {
 }
 
 function Open-Wall($screen) {
-  if (-not $script:Vite -or -not $Node) { return }
+  if (-not (Test-Path -LiteralPath $BevyExe)) { return }
   $now = $Clock.Elapsed.TotalSeconds
   while ($script:WallLaunches.Count -and $script:WallLaunches[0] -lt $now - 180) { $script:WallLaunches.RemoveAt(0) }
   if ($script:WallLaunches.Count -ge 4) {
     $script:WallAuto = $false
-    Add-Event 'Das Wand-Fenster geht immer wieder zu: automatisches Öffnen aus (W öffnet es)' 'warn'
+    Add-Event 'Die Ausgabe geht immer wieder zu: automatisches Öffnen aus (W öffnet sie)' 'warn'
     return
   }
   [void]$script:WallLaunches.Add($now)
-  $url = $script:Vite.url
+  # It places itself on that display (--screen) and ends when the display is gone; it shares this
+  # console window (no window of its own), its output goes to the logs.
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
   $place = '{0},{1},{2},{3}' -f $screen.X, $screen.Y, $screen.Width, $screen.Height
-  $out = & $Node (Join-Path $Web 'tools\wall-window.mjs') --url $url --screen $place 2>&1 | Out-String
-  if ($out -match 'PID (\d+)' -and (Test-Alive ([int]$Matches[1]) $null)) {
-    $id = [int]$Matches[1]
-    $e = Add-Started 'wall' $id
-    $script:WallPid = $id
-    $script:WallStart = $e.start
-    $script:WallUrl = $url
-    $script:WallScreen = $screen
-    # check at once where it really opened (closed within a fraction of a second if on the notebook)
-    for ($i = 0; $i -lt 50 -and (Test-Alive $id $e.start); $i++) {
-      if (-not (Test-WallPlace)) { return }
-      if ([KinectWandNative]::WindowDisplay($id)) { break }
-      Start-Sleep -Milliseconds 100
-    }
-    Add-Event "Wand-Fenster geöffnet auf $(Format-Screen $screen)"
+  try {
+    $p = Start-Process -FilePath $BevyExe -ArgumentList '--hub', $HubUrl, '--data', "`"$WallDir`"", '--screen', $place -WorkingDirectory $Main `
+      -NoNewWindow -PassThru -RedirectStandardInput $NoInput `
+      -RedirectStandardOutput (Join-Path $LogDir "wall-bevy-$stamp.log") -RedirectStandardError (Join-Path $LogDir "wall-bevy-$stamp.err.log")
+  } catch {
+    Add-Event "Die Ausgabe (wall-bevy) startet nicht: $($_.Exception.Message)" 'warn'
     return
   }
-  Add-Event ('Wand-Fenster: ' + (($out -split "`n" | Where-Object { $_.Trim() }) -join ' ').Trim()) 'warn'
+  $e = Add-Started 'wall' $p.Id
+  $script:WallPid = $p.Id
+  $script:WallStart = $e.start
+  $script:WallScreen = $screen
+  Add-Event "Ausgabe (wall-bevy) gestartet auf $(Format-Screen $screen)"
+}
+
+# An output that already runs on this data folder (started by hand, or by a run of this program that
+# did not end properly): taken over instead of starting a second one.
+function Find-Wall {
+  [void](Get-ControlInfo)   # the newest control.json, whoever wrote it
+  $c = $script:Ctl
+  if (-not $c -or -not $c.pid -or [KinectWandNative]::ImageName([int]$c.pid) -ne 'wall-bevy.exe') { return $null }
+  # a test window (an agent's --windowed or --shots run) is no output for the show
+  if ([string][KinectWandNative]::CommandLine([int]$c.pid) -match '--windowed|--shots') { return $null }
+  $start = Get-StartKey ([int]$c.pid)
+  if (-not $start) { return $null }
+  return [pscustomobject]@{ Pid = [int]$c.pid; Start = $start }
 }
 
 function Close-Wall([switch]$Now) {
@@ -1474,14 +1485,14 @@ function Close-Wall([switch]$Now) {
   $script:WallStart = $null
 }
 
-# No wall window may be on the notebook's own panel (wrong place at launch, opened there from the
-# control center, or moved there by Windows when the LED screen went away): it gets WM_CLOSE at
-# once, its browser is ended if it is still there 1.5 s later; ours opens again on a second display
-# as soon as there is one. Returns $false if ours was on the notebook. $bad: a WallScan just made.
+# No wall window may be on the notebook's own panel (wrong place at launch, or moved there by
+# Windows when the LED screen went away): it gets WM_CLOSE at once, its program is ended if it is
+# still there 1.5 s later; ours opens again on a second display as soon as there is one. Returns
+# $false if ours was on the notebook. $bad: a WallScan just made.
 $script:InternalSince = @{}
 $script:WallPlaceVer = -1
 function Test-WallPlace($bad = $null) {
-  if ($null -eq $bad) { $bad = [KinectWandNative]::WallScan([int]$script:WallPid, $WallProfile, $true) }
+  if ($null -eq $bad) { $bad = [KinectWandNative]::WallScan([int]$script:WallPid, '', $true) }
   if ($bad.Length -eq 0) {
     if ($script:InternalSince.Count) { $script:InternalSince.Clear() }
   } else {
@@ -1492,7 +1503,7 @@ function Test-WallPlace($bad = $null) {
         Add-Event 'Ein Wand-Fenster war auf dem Notebook-Bildschirm: sofort geschlossen' 'warn'
       } elseif ($now - $script:InternalSince[$id] -gt 1.5) {
         Stop-Tree $id
-        Add-Event 'Das Wand-Fenster ging auf dem Notebook nicht zu: Browser beendet' 'warn'
+        Add-Event 'Das Wand-Fenster ging auf dem Notebook nicht zu: Programm beendet' 'warn'
       }
     }
     foreach ($k in @($script:InternalSince.Keys)) { if ($bad -notcontains $k) { $script:InternalSince.Remove($k) } }
@@ -1533,48 +1544,39 @@ function Watch-Components {
       $script:NextTry.hub = $now + 15
     }
   }
-  # dev server
-  if (-not $script:Vite -or -not (Test-Alive $script:Vite.pid $null)) {
-    $script:Vite = Get-DevServer
-    if (-not $script:Vite -and $now -ge $script:NextTry.vite) {
-      Add-Event 'Der Dev-Server läuft nicht: starte ihn' 'warn'
-      Start-Vite
-      $script:NextTry.vite = $Clock.Elapsed.TotalSeconds + 20
-    }
-  }
-  # output window
+  # output (wall-bevy, with the control center)
   if ($script:WallPid -and -not (Test-Alive $script:WallPid $script:WallStart)) {
     $script:WallPid = 0
-    if ($script:WallAuto) { Add-Event 'Das Wand-Fenster wurde geschlossen: öffne es wieder' 'warn'; $script:NextTry.wall = $now + 3 }
+    if ($script:WallAuto) { Add-Event 'Die Ausgabe ist zu: öffne sie wieder' 'warn'; $script:NextTry.wall = $now + 3 }
   }
-  # control center: closed by hand stays closed (S); a new dev server address needs a new window
-  if ($script:ControlPid -and -not (Test-Alive $script:ControlPid $script:ControlStart)) {
-    $script:ControlPid = 0
-    Add-Event 'Steuerzentrale geschlossen (S öffnet sie wieder)'
-  }
-  if ($script:ControlPid -and $script:Vite -and $script:ControlUrl -and $script:ControlUrl -ne $script:Vite.url) {
-    Stop-Tree $script:ControlPid -Gentle
-    $script:ControlPid = 0
-    Open-Control
-  }
-  if ($script:WallPid -and $script:Vite -and $script:WallUrl -and $script:WallUrl -ne $script:Vite.url) {
-    Add-Event "Der Dev-Server hat eine neue Adresse: öffne das Wand-Fenster neu"
-    Close-Wall
-    $script:NextTry.wall = 0
-  }
-  if ($script:WallAuto -and -not $script:WallPid -and $script:Vite -and $now -ge $script:NextTry.wall) {
+  if ($script:WallAuto -and -not $script:WallPid -and $now -ge $script:NextTry.wall) {
     $script:NextTry.wall = $now + 5
-    $screen = Get-OpenScreen
-    if (-not $screen) { return }
     $found = Find-Wall
-    if ($found -and $found.CommandLine.Contains("--app=$($script:Vite.url)/wall/")) {
-      $script:WallPid = $found.Pid; $script:WallStart = [string]$found.Start; $script:WallUrl = $script:Vite.url
-      if (-not ($J.started | Where-Object { $_ -and $_.role -eq 'wall' -and [int]$_.pid -eq $found.Pid })) { Add-Event "Das Wand-Fenster ist schon offen (PID $($found.Pid)), wird mitbenutzt" }
+    if ($found) {
+      $script:WallPid = $found.Pid; $script:WallStart = $found.Start
+      Add-Event "Die Ausgabe läuft schon (PID $($found.Pid)), wird mitbenutzt"
       [void](Test-WallPlace)
     } else {
-      if ($found) { Stop-Tree $found.Pid -Gentle }   # an old window of another dev server
-      Open-Wall $screen
+      $screen = Get-OpenScreen
+      if ($screen) { Open-Wall $screen }
     }
+  }
+  # control center: its window opens once the output serves it; closed by hand it stays closed (S);
+  # an output on another port (8095 was taken) needs a new window
+  if ($script:ControlPid -and -not (Test-Alive $script:ControlPid $script:ControlStart)) {
+    $script:ControlPid = 0
+    $script:ControlWanted = $false
+    Add-Event 'Steuerzentrale geschlossen (S öffnet sie wieder)'
+  }
+  $ctl = Get-ControlInfo
+  if ($script:ControlPid -and $ctl -and $script:ControlUrl -and $script:ControlUrl -ne [string]$ctl.url) {
+    Stop-Tree $script:ControlPid -Gentle
+    $script:ControlPid = 0
+    $script:ControlWanted = $true
+  }
+  if ($script:ControlWanted -and -not $script:ControlPid -and $ctl -and $now -ge $script:NextTry.control) {
+    $script:NextTry.control = $now + 10
+    Open-Control
   }
 }
 
@@ -1625,7 +1627,7 @@ function Start-Recording {
       -ArgumentList @('record', '--seconds', $seconds, '--url', "ws://127.0.0.1:$Hub/ws", '--out', "`"$out`"") `
       -RedirectStandardInput $NoInput -RedirectStandardOutput "$log.log" -RedirectStandardError "$log.err.log"
   } catch { Add-Event "Aufnahme startet nicht: $($_.Exception.Message)" 'warn'; return }
-  # below the show (hub, worker, wall browser: above normal); a frame it is too slow for is skipped
+  # below the show (hub, worker, output: above normal); a frame it is too slow for is skipped
   # by the hub, nothing waits for it
   [void][KinectWandNative]::SetPriority($p.Id, 'BelowNormal')
   $script:Rec = [pscustomobject]@{ role = 'record'; pid = $p.Id; start = (Get-StartKey $p.Id); out = $out; log = $log; seconds = $seconds }
@@ -1706,28 +1708,8 @@ if ($script:HubStatus) {
   for ($i = 0; $i -lt 40 -and -not $script:HubStatus; $i++) { Start-Sleep -Milliseconds 500; $script:HubStatus = Get-HubStatus }
 }
 
-$script:Vite = Get-DevServer
-if ($script:Vite) {
-  $viteHub = ([string]$script:Vite.hub).TrimEnd('/')
-  if ($viteHub -and $viteHub -ne $HubUrl) {
-    $answer = 'n'
-    if ($Interactive) { $answer = Read-Host "  Der Dev-Server im main ($($script:Vite.url)) nutzt den Hub $viteHub statt $HubUrl. Neu starten? [J/n]" }
-    if ($answer -notmatch '^[nN]') {
-      Stop-Tree ([int]$script:Vite.pid)
-      Add-Event "Dev-Server mit Hub $viteHub beendet"
-      $script:Vite = $null
-      Start-Sleep -Seconds 1
-    } else {
-      Add-Event "Der Dev-Server nutzt den Hub $viteHub (nicht $HubUrl)" 'warn'
-    }
-  }
-  if ($script:Vite -and -not (Test-Ours $script:ViteOurs)) { Add-Event "Dev-Server läuft schon: $($script:Vite.url), wird mitbenutzt" }
-}
-if (-not $script:Vite) { Start-Vite }
-
 $script:NextTry.hubPoll = 10
-if ($script:WallAuto) { Watch-Components }
-if (-not $NoControl) { Open-Control }
+Watch-Components   # the output; its control center opens from the loop once it answers
 Update-Tuning
 
 # ---------------------------------------------------------------------------------------------
@@ -1774,8 +1756,8 @@ function Show-Status {
     L ('  Kinect     {0:0} fps · Sensor {1}{2} · {3} Personen · Pose {4} {5:0} ms' -f [double]$h.fps, $sensor, $detail, [int]$h.tracking.persons, $h.pose.active, [double]$h.pose.ms) $color
     $pages = @($h.render | Where-Object { $_ -and $_.visible })
     if ($pages.Count) {
-      L ('  Szenen     ' + (($pages | ForEach-Object { '{0} {1:0}/{2:0} fps' -f $(if ($_.scene) { $_.scene } else { 'Seite' }), [double]$_.fps, [double]$_.target }) -join ' · '))
-    } else { L '  Szenen     keine sichtbare Seite rendert' 'DarkGray' }
+      L ('  Szenen     ' + (($pages | ForEach-Object { '{0} {1:0}/{2:0} fps' -f $(if ($_.scene) { $_.scene } else { 'Ausgabe' }), [double]$_.fps, [double]$_.target }) -join ' · '))
+    } else { L '  Szenen     keine Bildrate gemeldet (Ausgabe zu?)' 'DarkGray' }
   } else {
     L "  Kinect     der Hub $HubUrl antwortet nicht" 'Red'
     L ''
@@ -1783,18 +1765,20 @@ function Show-Status {
   $hubText = if (Test-Ours $script:HubOurs) { "von hier gestartet (PID $($script:HubOurs.pid))" } else { 'mitbenutzt' }
   if ($h) { $hubText += " · Worker-Neustarts $($h.worker.restarts) · Clients $($h.clients)" }
   L "  Hub        $HubUrl $hubText"
-  if ($script:Vite) {
-    $viteText = if ($script:ViteOurs -and [int]$script:ViteOurs.pid -eq [int]$script:Vite.pid) { 'von hier gestartet' } else { 'mitbenutzt' }
-    L "  Dev-Server $($script:Vite.url) $viteText (PID $($script:Vite.pid))"
-  } else { L '  Dev-Server läuft nicht' 'Red' }
-  if ($script:WallPid) { $wallText = "offen auf $(Format-Screen $script:WallScreen)" }
+  if ($script:WallPid) { $wallText = "wall-bevy offen auf $(Format-Screen $script:WallScreen) (PID $($script:WallPid))" }
+  elseif (-not (Test-Path -LiteralPath $BevyExe)) { $wallText = 'nicht gebaut (in wall-bevy: cargo build --release)' }
   elseif ($script:ScreenMissing -eq 'mirror' -and $script:WallAuto) { $wallText = 'zu: der zweite Bildschirm spiegelt das Notebook (Win+P: Erweitern)' }
   elseif ($script:ScreenMissing -and $script:WallAuto) { $wallText = 'zu: kein zweiter Bildschirm (nie auf dem Notebook)' }
   else { $wallText = 'zu' }
-  $wallText += if ($script:WallAuto) { ' · geht es zu, öffnet es sich wieder' } else { ' · automatisch öffnen: aus (W)' }
-  L "  Wand       $wallText" $(if ($script:WallPid -or -not $script:WallAuto) { 'Gray' } else { 'Yellow' })
-  if ($script:ControlPid) { L '  Steuerung  Steuerzentrale offen auf dem Notebook-Bildschirm (S holt sie dorthin zurück)' }
-  else { L '  Steuerung  Steuerzentrale zu (S öffnet sie auf dem Notebook-Bildschirm)' 'DarkGray' }
+  $wallText += if ($script:WallAuto) { ' · geht sie zu, öffnet sie sich wieder' } else { ' · automatisch öffnen: aus (W)' }
+  L "  Ausgabe    $wallText" $(if ($script:WallPid -or -not $script:WallAuto) { 'Gray' } else { 'Yellow' })
+  $ctl = Get-ControlInfo
+  if ($ctl) {
+    $lan = @($ctl.lan) | Where-Object { $_ } | Select-Object -First 1
+    L ("  Steuerung  $($ctl.url)" + $(if ($lan) { " · Fernbedienung im Netz: $lan (Code im Tab Fernbedienung)" } else { ' · im Netz nicht erreichbar' }))
+    if ($script:ControlPid) { L '             Fenster offen auf dem Notebook-Bildschirm (S holt es dorthin zurück)' 'DarkGray' }
+    else { L '             Fenster zu (S öffnet es auf dem Notebook-Bildschirm)' 'DarkGray' }
+  } else { L '  Steuerung  kommt mit der Ausgabe' 'DarkGray' }
   if ($script:Rec) {
     $t = 0; $bytes = 0
     if ($script:Rec.start) { $t = ([DateTime]::UtcNow - [DateTime]::FromFileTimeUtc([long]$script:Rec.start)).TotalSeconds }
@@ -1821,7 +1805,7 @@ function Show-Status {
   if ($script:Optimize) { L "  Optimiert  Energieplan · kein Standby/Bildschirm aus · $($script:TuneSummary)" 'DarkGreen' }
   else { L '  Optimiert  nein, zurückgestellt (der Bildschirm bleibt trotzdem an)' 'DarkGray' }
   L ''
-  L '  [Q] Beenden  [W] Wand-Fenster zu/auf  [S] Steuerzentrale  [R] Aufnahme  [O] Optimierungen zurück  [L] Logs' 'White'
+  L '  [Q] Beenden  [W] Ausgabe zu/auf  [S] Steuerzentrale  [R] Aufnahme  [O] Optimierungen zurück  [L] Logs' 'White'
   L ''
   foreach ($e in $Events) { L ('  {0:HH:mm:ss} {1}' -f $e.t, $e.text) $(if ($e.level -eq 'warn') { 'Yellow' } else { 'DarkGray' }) }
 
@@ -1909,9 +1893,10 @@ while (-not $quit) {
           if ($why) { Add-Event $why 'warn' } else { $script:ConfirmKind = 'record'; $script:ConfirmUntil = $now + 10 }
         }
       } elseif ($ch -eq 'w') {
-        if ($script:WallPid) { $script:WallAuto = $false; Close-Wall; Add-Event 'Wand-Fenster geschlossen (W öffnet es wieder)' }
+        if ($script:WallPid) { $script:WallAuto = $false; Close-Wall; Add-Event 'Ausgabe geschlossen, mit ihr die Steuerzentrale (W öffnet sie wieder)' }
         else { $script:WallAuto = $true; $script:WallLaunches.Clear(); $script:NextTry.wall = 0; $nextWatch = 0 }
       } elseif ($ch -eq 's') {
+        $script:ControlWanted = $true
         Open-Control
       } elseif ($ch -eq 'o') {
         if ($script:Optimize) { Stop-Optimizing }
@@ -1921,10 +1906,10 @@ while (-not $quit) {
       $nextDraw = 0
     }
     if ($now -ge $nextPlace) {
-      # twice a second our window(s), every 2 s all windows (a wall browser opened elsewhere)
+      # twice a second our window(s), every 2 s all windows (a new one of ours)
       $full = $now -ge $nextScan
       if ($full) { $nextScan = $now + 2 }
-      $bad = [KinectWandNative]::WallScan([int]$script:WallPid, $WallProfile, $full)
+      $bad = [KinectWandNative]::WallScan([int]$script:WallPid, '', $full)
       if ($bad.Length -or $script:InternalSince.Count -or $script:WallPlaceVer -ne [KinectWandNative]::PlaceVersion) { [void](Test-WallPlace $bad) }
       $nextPlace = $now + 0.5
     }

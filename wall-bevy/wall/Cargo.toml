@@ -1,0 +1,30 @@
+[package]
+name = "wall"
+version = "0.1.0"
+edition = "2024"
+description = "The framework of the LED wall scenes: what a scene sees and the helpers it builds on"
+publish = false
+
+# one dynamic library that the output and every scene library link against: one copy of the
+# framework, wgpu and the other shared crates in the process (scenes can be swapped while it runs)
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+wgpu = { workspace = true, features = ["wgsl"] }
+naga.workspace = true
+glam.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tungstenite.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+bytemuck.workspace = true
+tiny-skia.workspace = true
+cosmic-text.workspace = true
+qrcodegen.workspace = true
+png.workspace = true
+
+[lints]
+workspace = true

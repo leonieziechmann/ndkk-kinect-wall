@@ -3,7 +3,6 @@
 //! to any number of clients over WebSocket and HTTP. See README.md.
 
 mod config;
-mod devservers;
 mod lut;
 mod pipeline;
 mod pose;

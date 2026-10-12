@@ -502,7 +502,7 @@ fn serve(hub: &Arc<Hub>, rt: &Handle) -> Result<(), String> {
     let device = device(hub);
     let files = hub.cfg.pose_model_paths();
     if files.is_empty() {
-        return Err("no pose model (web/ directory not found; pass --pose-models)".to_string());
+        return Err("no pose model (kinect-hub/models/ not found; pass --pose-models)".to_string());
     }
     let mut models: Vec<Model> = Vec::new();
     let mut infos: Vec<ModelInfo> = Vec::new();
