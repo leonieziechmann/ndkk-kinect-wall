@@ -2,7 +2,7 @@
 name = "persons"
 version = "0.1.0"
 edition = "2024"
-description = "Person tracking in the Kinect depth image (masks, skeletons, floor): a port of web/lib/persons-core.js for kinect-hub"
+description = "Person tracking in the Kinect depth image (masks, skeletons, floor) for kinect-hub, ported from the browser's persons-core.js"
 publish = false
 
 [dependencies]

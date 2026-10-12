@@ -1,8 +1,9 @@
 //! pose-bench: a measurement prototype. Runs the pose model of the person tracking (YOLO11n-pose,
-//! web/lib/models/) natively with ONNX Runtime, on the GPU through DirectML and on the CPU with N
-//! threads, prepared and decoded exactly as web/lib/persons-pose.js does it in the browser. Prints
-//! the time per run (median, p90), the CPU it takes and the sensor rate at the hub meanwhile, and
-//! compares the results with the browser's (web/tools/pose-ref.mjs). README.md has the steps.
+//! kinect-hub/models/) natively with ONNX Runtime, on the GPU through DirectML and on the CPU with
+//! N threads, prepared and decoded exactly as persons-pose.js did it in the browser. Prints the time
+//! per run (median, p90), the CPU it takes and the sensor rate at the hub meanwhile, and compares
+//! the results with the browser's (references written by web/tools/pose-ref.mjs, which is gone with
+//! web/; see the git history). README.md has the steps.
 //!
 //!   pose-bench --ep dml,cpu6 --frames a.bin,b.bin --compare
 //!   pose-bench --ep dml --seconds 20 --load           # CPU and GPU load per process (load.ps1)
@@ -80,7 +81,7 @@ struct Opts {
 fn opts() -> Res<Opts> {
     let here = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut o = Opts {
-        model: here.join("../../web/lib/models/yolo11n-pose-fp16.onnx"),
+        model: here.join("../models/yolo11n-pose-fp16.onnx"),
         // the hub's copy (setup-onnxruntime.ps1) unless there is one of its own
         dylib: std::env::var_os("ORT_DYLIB_PATH").map_or_else(
             || Some(here.join("ort/onnxruntime.dll")).filter(|p| p.is_file()).unwrap_or_else(|| here.join("../onnxruntime/onnxruntime.dll")),
@@ -118,7 +119,7 @@ fn opts() -> Res<Opts> {
             }
             "-h" | "--help" => {
                 println!(
-                    "pose-bench [--ep dml,cpu6,cpu3spin] [--frames a.bin,b.bin] [--runs 100 | --seconds 20] [--hz 15] [--load] [--compare]\n           [--model web/lib/models/yolo11n-pose-fp16.onnx] [--ort ort/onnxruntime.dll] [--hub 127.0.0.1:8090] [--warmup 5]
+                    "pose-bench [--ep dml,cpu6,cpu3spin] [--frames a.bin,b.bin] [--runs 100 | --seconds 20] [--hz 15] [--load] [--compare]\n           [--model ../models/yolo11n-pose-fp16.onnx] [--ort ort/onnxruntime.dll] [--hub 127.0.0.1:8090] [--warmup 5]
 pose-bench --extract OUT_DIR a.k2rec b.k2rec   (the middle infrared frame of each as OUT_DIR/<name>.bin)"
                 );
                 std::process::exit(0);
@@ -129,7 +130,7 @@ pose-bench --extract OUT_DIR a.k2rec b.k2rec   (the middle infrared frame of eac
     Ok(o)
 }
 
-// ---- input and output, as web/lib/persons-pose.js -------------------------------------------------
+// ---- input and output, as the browser's persons-pose.js -------------------------------------------
 
 /// How the 512x424 image sits in the model input: scaled to fit, gray bands around it (as in
 /// training). At 512x448 the scale is 1 and the bands are 12 rows above and below.
@@ -554,7 +555,7 @@ fn bench(o: &Opts, e: Ep, frames: &[Frame]) -> Res<()> {
 // ---- comparing with the browser ------------------------------------------------------------------
 
 /// Compares this run with the browser's of the same frame (<name>.browser.f32 / .browser.txt from
-/// web/tools/pose-ref.mjs, next to the frame).
+/// web/tools/pose-ref.mjs of the former web/ directory, next to the frame).
 fn compare(f: &Frame, out: &[f32], channels: usize, anchors: usize, lb: &Letterbox) {
     let Some(path) = &f.path else { return };
     let Ok(raw) = std::fs::read(path.with_extension("browser.f32")) else {

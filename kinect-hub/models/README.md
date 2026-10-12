@@ -1,6 +1,6 @@
 # Pose models
 
-The hub loads all of these and runs the best one that keeps its pose rate (kinect-hub/README.md, "Posen"): `yolo11s-pose-512x448-fp16.onnx` (best), `yolo11s-pose-384x320-fp16.onnx`, `yolo11n-pose-384-fp16.onnx` (cheapest). `yolo11n-pose-fp16.onnx` (n at 512) is the browser's model (`lib/persons-pose.js`); the hub takes it only without the s 384 one, which costs about as much and is better.
+The hub loads all of these and runs the best one that keeps its pose rate (kinect-hub/README.md, "Posen"): `yolo11s-pose-512x448-fp16.onnx` (best), `yolo11s-pose-384x320-fp16.onnx`, `yolo11n-pose-384-fp16.onnx` (cheapest). `yolo11n-pose-fp16.onnx` (n at 512) was the browser's model; the hub takes it only without the s 384 one, which costs about as much and is better. The hub finds this folder by itself (`kinect-hub/models/`, searched upwards from the hub and the current directory); `--pose-models` overrides it.
 
 | file | model | input | pose mAP vs. the teacher on 800 unseen Kinect frames (final setup) | DirectML, GPU free / under heavy load |
 |---|---|---|---|---|
@@ -13,7 +13,7 @@ The hub loads all of these and runs the best one that keeps its pose rate (kinec
 
 The fine-tuned models sometimes report a "person" without a single sure joint at the image edge while nobody is in view: the hub drops poses with fewer than 3 keypoints of confidence 0.5 (`kinect-hub/src/yolo.rs`).
 
-All are exported as below with `imgsz` = (height, width) of the input. At 384×320 the image is scaled to 384×318 (bilinear) with one gray row above and below; the hub and `persons-pose.js` letterbox any input size. Times: `kinect-hub/pose-bench/README.md` (measured with the COCO weights; the fine-tuned ones have the same architecture).
+All are exported as below with `imgsz` = (height, width) of the input. At 384×320 the image is scaled to 384×318 (bilinear) with one gray row above and below; the hub letterboxes any input size. Times: `kinect-hub/pose-bench/README.md` (measured with the COCO weights; the fine-tuned ones have the same architecture).
 
 Origin: [Ultralytics YOLO11-pose](https://docs.ultralytics.com/tasks/pose/) (COCO-17 keypoints), weights `yolo11n-pose.pt` / `yolo11s-pose.pt` from the Ultralytics assets release (the s ones fine-tuned with `pose-training/train.py`), exported for the Kinect infrared image and converted to float16 (half the size, same results).
 

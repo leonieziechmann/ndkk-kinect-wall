@@ -1,7 +1,7 @@
-//! YOLO-pose (Ultralytics YOLO11n-pose, web/lib/models/README.md) on the infrared image with ONNX
-//! Runtime: preparing the input and decoding the output exactly as web/lib/persons-pose.js does
-//! in the browser, for any input size the model was exported with (512x448, 384x320, ...).
-//! Measured against the browser with kinect-hub/pose-bench (README there).
+//! YOLO-pose (Ultralytics YOLO11-pose, kinect-hub/models/README.md) on the infrared image with ONNX
+//! Runtime: preparing the input and decoding the output exactly as the browser did (persons-pose.js
+//! of the former web/ directory), for any input size the model was exported with (512x448,
+//! 384x320, ...). Measured against the browser with kinect-hub/pose-bench (README there).
 
 use std::path::{Path, PathBuf};
 

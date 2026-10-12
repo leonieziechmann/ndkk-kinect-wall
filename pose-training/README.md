@@ -1,6 +1,6 @@
 # Pose model training (Kinect infrared)
 
-Fine-tunes the browser's pose model (`web/lib/models/yolo11n-pose-fp16.onnx`, Ultralytics YOLO11n-pose) on the Kinect's infrared image. The data are the local recordings in `recordings/` of the main checkout: the multi-user recordings of 2026-10-08 (catalog: `recordings/katalog/KATALOG.md`), `hops2`/`nohops` and `wand-*`. A large pose model (the **teacher**, YOLO11x-pose) labels the frames; the small model learns to see what it sees.
+Fine-tunes the hub's pose models (`kinect-hub/models/`, first `yolo11n-pose-fp16.onnx`, Ultralytics YOLO11n-pose) on the Kinect's infrared image. The data are the local recordings in `recordings/` of the main checkout: the multi-user recordings of 2026-10-08 (catalog: `recordings/katalog/KATALOG.md`), `hops2`/`nohops` and `wand-*`. A large pose model (the **teacher**, YOLO11x-pose) labels the frames; the small model learns to see what it sees.
 
 The data, labels, weights and runs show people. They stay in `recordings/training/` (git-ignored): never commit or upload them. Only these scripts are in git.
 
@@ -19,7 +19,7 @@ $PY pose-training/teacher.py --split val --flip             # teacher labels; ~1
 $PY pose-training/teacher.py --split train --flip
 $PY pose-training/train.py --epochs 30                      # hours on the CPU, see "Stopping"
 $PY pose-training/eval.py                                   # old vs new on the held-out frames
-$PY pose-training/export.py                                 # ONNX + float16 like web/lib/models/README.md
+$PY pose-training/export.py                                 # ONNX + float16 like kinect-hub/models/README.md
 ```
 
 (Paths of the scripts relative to the worktree or checkout that has `pose-training/`.)
@@ -29,7 +29,7 @@ $PY pose-training/export.py                                 # ONNX + float16 lik
 - **compare.py**: two models' raw detections side by side, with a contact sheet of the frames where they differ most.
 - **train.py**: fine-tunes from the COCO weights: AdamW, small learning rate, no hue/saturation augmentation (infrared is gray), brightness ±30 %, flips, mosaic. `--fraction 0.1 --epochs 1` for a quick test, `--train-split val` to test the pipeline before the training labels exist.
 - **eval.py**: pose mAP (keypoint similarity, OKS) and box mAP on the validation frames against the teacher, per model.
-- **export.py**: ONNX for 448×512, then float16, and a check against the current browser model (same input and output, run with the browser's preprocessing). The result goes into `web/lib/models/` only after the backtest (`recordings/backtest/`) and a check in the browser.
+- **export.py**: ONNX for 448×512, then float16, and a check against the current model (same input and output, run with the hub's preprocessing). The result goes into `kinect-hub/models/` only after the backtest (`kinect-hub/persons/examples/backtest.rs`) and a check on the wall.
 
 ## On Colab (colab CLI, e.g. an A100 with Colab Pro)
 
@@ -130,4 +130,4 @@ Everything can stop at any time and go on later:
 
 ## License
 
-Ultralytics YOLO models and their fine-tuned weights are AGPL-3.0 (or an Ultralytics enterprise license); see `web/lib/models/README.md`.
+Ultralytics YOLO models and their fine-tuned weights are AGPL-3.0 (or an Ultralytics enterprise license); see `kinect-hub/models/README.md`.

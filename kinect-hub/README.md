@@ -1,6 +1,6 @@
 # kinect-hub
 
-Middleware für die Kinect v2: **ein** Prozess besitzt den Sensor, rechnet alles, was jeder Client braucht, **einmal pro Frame** vor und streamt das Ergebnis an beliebig viele Clients (Browser/WebGPU, Python, Rust, …) per WebSocket und HTTP.
+Middleware für die Kinect v2: **ein** Prozess besitzt den Sensor, rechnet alles, was jeder Client braucht, **einmal pro Frame** vor und streamt das Ergebnis an beliebig viele Clients (die LED-Wand-Ausgabe wall-bevy, Python, Rust, …) per WebSocket und HTTP.
 
 ```
 Kinect ─USB─▶ fn2_capture.exe   (C++/libfreenect2 + OpenCL, eigener Prozess)
@@ -12,7 +12,7 @@ Kinect ─USB─▶ fn2_capture.exe   (C++/libfreenect2 + OpenCL, eigener Prozes
              Fan-out     – „latest only“: langsame Clients überspringen Frames statt zu verzögern
                  │ ws://127.0.0.1:8090/ws  +  http://127.0.0.1:8090/api/…
                  ▼
-           Szenen im Browser (web/, ein Vite-Dev-Server je Worktree), kinect_hub.py, eigene Agenten …
+           wall-bevy (die LED-Wand), kinect_hub.py, viewer.py, eigene Agenten …
 ```
 
 ## Start
@@ -22,7 +22,7 @@ cargo build --release                      # im Ordner kinect-hub
 kinect-hub\target\release\kinect-hub.exe   # aus dem Projektordner
 ```
 
-Optionen (`--help`): `--bind 0.0.0.0:8090` (LAN statt nur localhost), `--source synthetic` (generierte Testszene ohne Kinect), `--source replay DATEI` (Aufnahme in Schleife abspielen, s. u.), `--pipeline fast|cl` (Tiefen-Dekodierung, s. u.), `--persons on|off`, `--persons-delay 12`, `--smoothing 0.4`, `--max-clients 64`, `--allow-origin URL`, `--web-dir` (z. B. `web/dist` für gebaute Szenen), `--worker`, `--pose dml|cpu|off`, `--pose-hz 15`, `--pose-models A,B,…`, `--onnxruntime` (s. u. „Posen“). Logging über `RUST_LOG=debug`.
+Optionen (`--help`): `--bind 0.0.0.0:8090` (LAN statt nur localhost), `--source synthetic` (generierte Testszene ohne Kinect), `--source replay DATEI` (Aufnahme in Schleife abspielen, s. u.), `--pipeline fast|cl` (Tiefen-Dekodierung, s. u.), `--persons on|off`, `--persons-delay 12`, `--smoothing 0.4`, `--max-clients 64`, `--allow-origin URL`, `--worker`, `--pose dml|cpu|off`, `--pose-hz 15`, `--pose-models A,B,…`, `--onnxruntime` (s. u. „Posen“). Logging über `RUST_LOG=debug`.
 
 Für die Posen einmal je Checkout `powershell -NoProfile -ExecutionPolicy Bypass -File kinect-hub\setup-onnxruntime.ps1` (holt `onnxruntime.dll`, s. u.). Ohne läuft der Hub wie bisher, nur ohne Posen.
 
@@ -32,7 +32,7 @@ Der Worker `fn2/bin/fn2_capture.exe` wird mit `sh fn2/build.sh` gebaut. Er brauc
 
 | | |
 |---|---|
-| `GET /` | Startseite aus `web/`: Status, 2D-Vorschau und die Szenen aller angemeldeten Dev-Server |
+| `GET /` | Startseite: Status und Links (die Steuerzentrale der Wand liefert wall-bevy aus, Port 8095) |
 | `GET /api` | maschinenlesbare Beschreibung von allem hier (für Agenten) |
 | `GET /api/status` | Sensorzustand, fps, Latenz, Clients, Worker, Fehlerzähler, Statistik des letzten Frames |
 | `GET /api/params` | Intrinsik und Verzeichnung der Tiefenkamera (aus der Kinect gelesen) |
@@ -40,9 +40,6 @@ Der Worker `fn2/bin/fn2_capture.exe` wird mit `sh fn2/build.sh` gebaut. Er brauc
 | `GET /api/frame/{depth,depth_raw,ir,points,meta}` | neuester Frame binär; `?format=png` für depth (16 Bit, mm) und ir |
 | `GET /api/poses` | neueste Posen (JSON wie der Stream `poses`). Eine Anfrage hält das Modell 5 s am Laufen, die erste bekommt eventuell `poses: null` |
 | `GET /ws` | WebSocket-Stream |
-| `GET /api/devservers` | Register der Szenen-Dev-Server (Vite, einer je Worktree) mit ihren Szenen |
-| `POST /api/devservers` | Dev-Server meldet sich an: `{url: "http://127.0.0.1:<port>", label, branch, worktree, hub, pid, scenes: [...]}`. Alle paar Sekunden wiederholen, Einträge verfallen nach 15 s. Erledigt das Vite-Plugin in `web/tools/`. |
-| `DELETE /api/devservers?url=…` | Dev-Server meldet sich ab |
 
 ## WebSocket-Protokoll
 
@@ -92,16 +89,16 @@ Der Worker dekodiert die Rohdaten der Kinect standardmäßig selbst auf der CPU 
 
 ## Posen
 
-Der Hub erkennt die Körperhaltung der Menschen vor der Kinect selbst: YOLO11n-pose (`web/lib/models/`) auf dem Infrarotbild, mit ONNX Runtime auf der GPU über DirectML (`src/pose.rs`, `src/yolo.rs`). Das Ergebnis ist dasselbe wie im Browser (`web/lib/persons-pose.js`), es kostet aber nur etwa ein Drittel der GPU-Zeit und wird einmal für alle Clients gerechnet. Messungen und Vergleich: `pose-bench/README.md`.
+Der Hub erkennt die Körperhaltung der Menschen vor der Kinect selbst: YOLO11-pose (`kinect-hub/models/`) auf dem Infrarotbild, mit ONNX Runtime auf der GPU über DirectML (`src/pose.rs`, `src/yolo.rs`). Das Ergebnis ist dasselbe wie früher im Browser, es kostet aber nur etwa ein Drittel der GPU-Zeit und wird einmal für alle Clients gerechnet. Messungen und Vergleich: `pose-bench/README.md`.
 
 - **Eigener Thread:** Er nimmt das neueste Bild, sobald die nächste Pose fällig ist (`--pose-hz`, Standard 15). Die Frames warten nie auf ihn. Das Modell rechnet nur, solange jemand `poses` abonniert hat oder `/api/poses` fragt.
-- **Mehrere Modelle, das beste, das die Rate schafft:** Der Hub lädt alle Modelle von `--pose-models A,B,…` (das beste zuerst) und rechnet mit dem besten, das `--pose-hz` hält. Ohne die Option nimmt er aus `web/lib/models/`, was davon da ist: `yolo11s-pose-512x448-fp16.onnx`, `yolo11s-pose-384x320-fp16.onnx`, `yolo11n-pose-fp16.onnx` (nur ohne das s-384, das so viel kostet und besser ist) und `yolo11n-pose-384-fp16.onnx`.
+- **Mehrere Modelle, das beste, das die Rate schafft:** Der Hub lädt alle Modelle von `--pose-models A,B,…` (das beste zuerst) und rechnet mit dem besten, das `--pose-hz` hält. Ohne die Option nimmt er aus `kinect-hub/models/` (gesucht von der exe und vom aktuellen Ordner aufwärts), was davon da ist: `yolo11s-pose-512x448-fp16.onnx`, `yolo11s-pose-384x320-fp16.onnx`, `yolo11n-pose-fp16.onnx` (nur ohne das s-384, das so viel kostet und besser ist) und `yolo11n-pose-384-fp16.onnx`.
   - Braucht das laufende Modell im Mittel länger als 95 % der Periode (frühestens nach 8 Läufen), übernimmt das nächstkleinere.
   - Alle 3 s probiert er das nächstbessere (die Pose zählt mit); zweimal hintereinander unter 85 % der Periode, und es übernimmt.
   - Fehlgeschlagene Versuche und Wechsel nach oben, die keine 20 s halten, verlängern die Pause bis zu dem Modell (bis 30 s); nach einer Minute auf einem Modell gilt wieder 3 s.
   - Jede Pose nennt ihr `model` (`s@384` = YOLO11s mit 384 px breitem Eingang). `/api/status` → `pose.models` zeigt je Modell die Zeit nach dem Laden und die ms je Lauf zuletzt.
   - Gemessen (`pose-bench/README.md`): GPU frei s@512 46–55 ms, s@384 27–34, n@384 12–14; unter hoher GPU-Last s@512 145–170 ms, s@384 83–92, n@384 33–37. `--pose-model` / `--pose-model-fast` gehen weiterhin (das beste und das nächste Modell).
-- **Die Szene geht vor:** Rendert eine sichtbare Seite 2 s lang unter 85 % ihrer Ziel-fps (Nachricht `render`, die Laufzeit schickt sie), übernimmt das nächstkleinere Modell, auch wenn das große die Pose-Rate noch schafft. Bis 8 s nach der letzten solchen Meldung probiert der Hub kein besseres. `/api/status` → `pose.pressure` nennt die Seite.
+- **Die Szene geht vor:** Rendert die Ausgabe 2 s lang unter 85 % ihrer Ziel-fps (Nachricht `render`, wall-bevy schickt sie), übernimmt das nächstkleinere Modell, auch wenn das große die Pose-Rate noch schafft. Bis 8 s nach der letzten solchen Meldung probiert der Hub kein besseres. `/api/status` → `pose.pressure` nennt die Szene.
 - **Leerer Raum:** Hat 2 s lang keine Pose jemanden gefunden und verfolgt der Tracker niemanden, rechnet der Hub nur noch 3 Posen pro Sekunde mit dem kleinsten Modell (`--pose-idle-hz`, 0 = aus; `pose.quiet` im Status). Tauchen 1500 Pixel vor dem gelernten Hintergrund auf, die niemandem gehören, weckt der Tracker das Modell sofort. Gemessen mit Aufnahme „leerer Raum, dann kommt eine Gruppe“: Die erste Person erschien im selben Frame wie ohne Ruhemodus.
 - **ONNX Runtime** wird zur Laufzeit geladen: `onnxruntime.dll` neben der exe, sonst `kinect-hub/onnxruntime/` (füllt `setup-onnxruntime.ps1`: NuGet-Paket Microsoft.ML.OnnxRuntime.DirectML 1.24.4, die neueste Version mit DirectML; prüft Prüfsumme und Microsoft-Signatur; nicht im Git). `DirectML.dll` bringt Windows mit.
 - **Fehler:** Fehlen DLL oder Modell oder scheitert DirectML, läuft der Hub ohne Posen weiter. `/api/status` → `pose` sagt warum (`state`: `off`, `loading`, `idle`, `running`, `error`), und der Hub versucht es alle 10 s neu. Eine DLL oder ein Modell, das später dazukommt, wird also ohne Neustart übernommen. Abstürze im Pose-Thread werden abgefangen und gezählt.
@@ -109,18 +106,18 @@ Der Hub erkennt die Körperhaltung der Menschen vor der Kinect selbst: YOLO11n-p
 
 ## Personen
 
-Der Hub verfolgt die Personen selbst (`src/tracking.rs` mit der Bibliothek `persons/`, dem Tracker aus `web/lib/persons-core.js` in Rust) und schickt das Ergebnis an alle Clients; Szenen mit `streams: ['persons']` nutzen es automatisch (`web/lib/persons.js`), ältere Hubs ohne diese Streams fallen auf den Tracker im Browser zurück.
+Der Hub verfolgt die Personen selbst (`src/tracking.rs` mit der Bibliothek `persons/`, dem früheren Tracker des Browsers in Rust) und schickt das Ergebnis an alle Clients; wall-bevy nimmt es für alle Szenen, die Personen brauchen.
 
-- **Streams:** `persons_live` (jedes Frame sofort) und `persons` (jedes Frame, sobald die Pose eines späteren Frames da ist; Skelette dazwischen interpoliert, höchstens `--persons-delay` Frames, Standard 12). Je Ergebnis JSON (`type`, `seq`, `capture_time_us`, `persons` mit den Feldern aus `web/PERSONS.md`, `floor`, `ms`, `pose_ms`) und danach die Labels als binäre Nachricht (kind 5 bzw. 6, Lauflängen: je Lauf u8 Slot, u16 Länge; ~19 KB statt 217 KB).
+- **Streams:** `persons_live` (jedes Frame sofort) und `persons` (jedes Frame, sobald die Pose eines späteren Frames da ist; Skelette dazwischen interpoliert, höchstens `--persons-delay` Frames, Standard 12). Je Ergebnis JSON (`type`, `seq`, `capture_time_us`, `persons` mit den Feldern aus `wall-bevy/PERSONS.md`, `floor`, `ms`, `pose_ms`) und danach die Labels als binäre Nachricht (kind 5 bzw. 6, Lauflängen: je Lauf u8 Slot, u16 Länge; ~19 KB statt 217 KB).
 - Der Tracker übergibt die Frames selbst an das Pose-Modell (jede Pose wird mit den Labels ihres Frames verglichen) und läuft nur, solange jemand abonniert. `GET /api/persons` liefert das neueste JSON und hält ihn 5 s am Laufen.
 - **Gleich gut wie im Browser:** Der Backtest (`persons/examples/backtest.rs`, wie `recordings/backtest/backtest.mjs`) gibt auf allen vier Backtest-Aufnahmen dieselben Kennzahlen (Keypoint-Fehler, Flackern, IDs, Verzögerung). 2–5 ms je Frame statt 12–30 ms in Node; optischer Fluss mit AVX2.
 - Gemessen (Replay mit bis zu 4 Personen, `person-skeleton`): 14,5 Posen/s statt 4,7 im Browser, exakte Ausgabe nach 150 statt 415 ms, weniger GPU-Last. Status in `/api/status` → `tracking`. Ein Absturz im Tracker wird abgefangen, er beginnt neu.
 
 ## Eigene Clients
 
-- **Browser:** Szenen entstehen in `web/scenes/<name>/` und laufen über einen Vite-Dev-Server mit Hot-Swap, siehe [`web/README.md`](../web/README.md) und [`web/AGENTS.md`](../web/AGENTS.md). Für eine schlichte Seite ohne Build genügt `import { KinectStream } from '/lib/kinect-stream.js'`; der Hub liefert `web/` direkt aus.
+- **LED-Wand:** `wall-bevy/` (native Ausgabe, Szenen als Rust-Crates, eingebaute Steuerzentrale), siehe [`wall-bevy/README.md`](../wall-bevy/README.md). Sie liest `persons`, `depth`, `ir` und `/api/frame/points` vom Hub.
 - **Python:** `kinect_hub.py` im Projektordner: `Hub().depth()`, `.points()`, `.status()` per HTTP (nur Standardbibliothek + numpy), Live-Stream mit `Hub().stream([...])` (braucht `pip install websockets`). `viewer.py --hub` und `pointcloud.py --hub` lesen ebenfalls vom Hub.
-- **Andere Origins:** Seiten von anderen localhost-Ports (z. B. Vite) sind erlaubt. Fremde Origins nur mit `--allow-origin`, damit keine beliebige Website den Tiefenstream deines Zimmers lesen kann.
+- **Browserseiten:** Seiten von localhost sind erlaubt, fremde Origins nur mit `--allow-origin`, damit keine beliebige Website den Tiefenstream deines Zimmers lesen kann. Programme ohne Origin-Header (wall-bevy, Python) betrifft das nicht.
 
 ## Aufnahme und Wiedergabe
 
@@ -172,7 +169,7 @@ Es gibt keine Frame-Anzahl im Kopf, damit eine abgebrochene Aufnahme lesbar blei
 - Im Code gibt es kein `unwrap`, `expect`, `panic!` und keine ungeprüfte Indizierung (Clippy-Lints auf `deny`). Fehler werden behandelt und geloggt.
 - **libfreenect2 läuft nie im Hub.** Stürzt der Worker ab, hängt er (5 s ohne Heartbeat) oder spinnt die Kinect, beendet der Hub ihn und startet ihn neu (Backoff 0,25–5 s). Gemessen: harter Kill bis wieder Bilder kommen ≈ 1,1 s; die Clients bleiben verbunden.
 - Stirbt der Hub, merkt der Worker das an seinem geschlossenen stdin und gibt die Kinect sauber frei. Es bleibt kein verwaister Prozess zurück.
-- **Standby:** Ein zweiter Hub auf demselben Port fasst die Kinect nicht an, sondern wartet. Fällt der erste aus, übernimmt er nach ≈ 3 s. Browser-Clients verbinden sich automatisch neu.
+- **Standby:** Ein zweiter Hub auf demselben Port fasst die Kinect nicht an, sondern wartet. Fällt der erste aus, übernimmt er nach ≈ 3 s. wall-bevy und `kinect_hub.py` verbinden sich automatisch neu.
 - Jeder Client läuft in einer eigenen Task:
   - Senden hat ein Timeout von 5 s. Ein Client, der nicht mehr liest, wird getrennt.
   - Steuernachrichten sind auf 64 KB und 20/s begrenzt.
@@ -180,11 +177,7 @@ Es gibt keine Frame-Anzahl im Kopf, damit eine abgebrochene Aufnahme lesbar blei
   - Höchstens 64 Clients; weitere bekommen HTTP 503.
 - Panics in Tasks, Threads oder der Frame-Verarbeitung werden abgefangen und gezählt (`errors` in `/api/status`).
 - Ist der Port belegt, versucht der Hub es weiter. Fehlt der Worker, liefert der Hub die API trotzdem und zeigt den Grund im Status.
-- Dev-Server-Register:
-  - Anmelden darf nur ein Prozess auf diesem Rechner, nie eine Browserseite (Origin-Header → 403).
-  - Grenzen: höchstens 64 Einträge, 64 KB je Anmeldung, nur `http://127.0.0.1|localhost|[::1]:<port>`, Texte werden gekürzt und gesäubert.
-  - Ein abgestürzter Dev-Server verschwindet nach 15 s.
-- Der Worker startet den Sensor erst nach 2 s ohne Frame neu. Die Tiefenberechnung teilt sich die GPU mit den Browser-Szenen, und bei Volllast kommen Frames nur langsamer, sie fehlen nicht. Ein Neustart würde dann nur weitere 3 s Pause bringen.
+- Der Worker startet den Sensor erst nach 2 s ohne Frame neu. Die Tiefenberechnung teilt sich die GPU mit den Szenen, und bei Volllast kommen Frames nur langsamer, sie fehlen nicht. Ein Neustart würde dann nur weitere 3 s Pause bringen.
 
 ## Latenz
 
@@ -211,6 +204,6 @@ Ohne Kinect oder für reproduzierbare Messungen: einen Replay-Hub auf einem frei
 `abuse`: Ein gesunder Client misst durchgehend, während andere angreifen:
 - Müll senden, fluten, übergroße Nachrichten schicken, nicht mehr lesen
 - 300 Verbindungen auf- und abbauen, das Client-Limit sprengen, 40 PNGs parallel holen
-- das Dev-Server-Register mit Müll, fremden URLs, Browser-Origins, übergroßen und zu vielen Anmeldungen bombardieren
+- HTTP: die Startseite, unbekannte Pfade, Pfade aus dem Wurzelordner heraus, ein übergroßer POST
 
-Am Ende muss der Hub weiter 30 fps liefern und 0 Fehler zählen, und die Register-Zeile endet mit `OK`.
+Am Ende muss der Hub weiter 30 fps liefern und 0 Fehler zählen, und die Zeile `http paths` endet mit `OK`.

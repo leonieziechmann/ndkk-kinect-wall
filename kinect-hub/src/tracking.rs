@@ -1,15 +1,15 @@
-//! Person tracking in the hub: the persons crate (kinect-hub/persons, the tracker of
-//! web/lib/persons-core.js in Rust) once for all clients, fed with every frame and with the poses
+//! Person tracking in the hub: the persons crate (kinect-hub/persons, the tracker that once ran in
+//! the browser, in Rust) once for all clients, fed with every frame and with the poses
 //! of the pose model (pose.rs). Two streams:
 //!
 //!   persons_live  every frame at once (its skeletons follow the optical flow since the last pose)
 //!   persons       every frame once the pose of a later frame is in (at most --persons-delay
-//!                 frames): skeletons interpolated between the poses before and after it, as the
-//!                 browser's delayed output (web/lib/persons-worker.js)
+//!                 frames): skeletons interpolated between the poses before and after it (the
+//!                 delayed output)
 //!
 //! A result is a JSON text message {type: "persons" | "persons_live", seq, capture_time_us,
 //! persons, floor, ...} followed by the labels of that frame (binary kind 5 / 6, run-length coded:
-//! per run u8 slot, u16 length). The person list has the browser's fields (PERSONS.md).
+//! per run u8 slot, u16 length). The fields of the person list: wall-bevy/PERSONS.md.
 //!
 //! It runs while someone subscribes. It hands the frames to the pose model itself (a pose is
 //! matched against the labels of the frame it was computed on, so it must know that frame before

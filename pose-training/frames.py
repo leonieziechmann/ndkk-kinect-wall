@@ -1,6 +1,6 @@
 # Picks the training and validation frames from the recordings and writes their infrared images the way
-# web/lib/persons-pose.js feeds them to the pose model: unmirrored, gray, 512x424 (the letterbox to 512x448
-# happens in training and in the browser alike). One PNG per frame:
+# the hub feeds them to the pose model (kinect-hub/src/yolo.rs): unmirrored, gray, 512x424 (the letterbox to
+# 512x448 happens in training and in the hub alike). One PNG per frame:
 #   <out>/images/<split>/<recording>_<frame>.png
 # Usage: python frames.py [--out recordings/training] [--stride 12] [--val-stride 15]
 #

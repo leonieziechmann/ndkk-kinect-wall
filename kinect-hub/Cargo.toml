@@ -32,7 +32,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }  # recordings keep the camera parameters exact
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }
 tokio-tungstenite = "0.28"
-tower-http = { version = "0.6", features = ["fs", "cors", "catch-panic", "set-header"] }
+tower-http = { version = "0.6", features = ["cors", "catch-panic"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
