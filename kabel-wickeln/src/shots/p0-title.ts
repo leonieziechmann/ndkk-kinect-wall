@@ -30,7 +30,7 @@ const smooth01 = (x: number) => {
 };
 
 /** the flight case the ring lies on: centre on the floor (x, z), size, turned about y (rad) */
-export const HERO_CASE = { x: 1.35, z: 1.35, width: 0.8, depth: 0.6, height: 0.55, yaw: -0.12 };
+export const HERO_CASE = { x: 1.15, z: 1.25, width: 0.8, depth: 0.6, height: 0.55, yaw: -0.12 };
 /** the case's top surface (the laminate lies 2 mm below the top of the box) */
 export const HERO_TOP = HERO_CASE.height - 0.002;
 
@@ -49,7 +49,7 @@ export const RING_T = {
   /** the end tail is led out beside the tie, then let go */
   guide1: 1.4,
   guideOff: 1.9,
-  end: 3.6,
+  end: 4.5,
 };
 
 /** the factory ring's centre (the loops' middle) and its turned axes in the world */
@@ -99,10 +99,7 @@ export const ringShot: ShotDef = {
     // 5 cm of the start end under it; the rest of the start end with its plug lies free)
     const tie: Bundle = rod.bundle({ frame: { p: tieP, q: RING_Q }, blend: 0.001 });
     const sLead = ring.sLoops[0][0];
-    for (const [a, b] of ring.held) {
-      if (b <= sLead + 1e-9) tie.add(Math.max(a, sLead - 0.045), b);
-      else tie.add(a, b);
-    }
+    for (const [a, b] of ring.held) tie.add(a < sLead ? Math.max(a, sLead - 0.045) : a, b);
 
     // The end tail hung down through the eye in front of the last loop (an "über" loop): laid flat
     // it lies on top of the stack, across the middle of the ring. It is turned about the tie by 90°

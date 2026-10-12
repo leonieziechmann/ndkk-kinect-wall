@@ -22,6 +22,7 @@
         p6thick: () => import('/src/test-p6-thick.ts?project'),
         p4strap: () => import('/src/test-p4-strap.ts?project'),
         p7physics: () => import('/src/test-p7-physics.ts?project'),
+        p0title: () => import('/src/test-p0-title.ts?project'),
       };
       const { default: project } = await projects[q.get('project') ?? 'project']();
       window.__mc = { project, PlaybackState, Renderer };
