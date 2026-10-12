@@ -27,12 +27,12 @@
 // (shots/p4-strap-shape.ts). Jonas: IK from simple keys; every beat that will come from a Kinect
 // recording is in MOCAP_SLOTS (part seconds).
 
-import { Line, Node, Rect, Txt } from '@motion-canvas/2d';
+import { Circle, Line, Node, Rect, Txt } from '@motion-canvas/2d';
 import { all, waitFor } from '@motion-canvas/core';
 import * as THREE from 'three';
 import { BakedRod, V3, loadBake } from '../../sim';
 import {
-  A, N, PREP, PREP_T, MIC, RC, REST_R, RING_GEOM, RING_T, S_STRAP, SPEC, STRAP, TWO_T, WRAP_LAG, WRAP_PHI0, WRAP_TURNS, bottomSection, ease, gripPath,
+  A, LOOSE, N, PREP, PREP_T, MIC, RC, REST_R, RING_GEOM, RING_T, S_STRAP, SPEC, STRAP, TWO_T, WRAP_LAG, WRAP_PHI0, WRAP_TURNS, bottomSection, ease, gripPath,
   perp, pinchR, prepPlanFrom, prepRig, prepStrap, prepTrack, ramp, rigBase, ringGrip, ringPlanFrom, ringPoint, ringRig, ringTrack, strapSection, tieFrame, twoRig, twoTrack, valPath,
 } from '../../shots/p4-strap';
 import { BAND, BandPath, Section, choke, falling, held, round, zipTie } from '../../shots/p4-strap-shape';
@@ -90,10 +90,12 @@ const play = (set: SetId, id: string, from: number, to: number, speed = 1) => {
 
 /** the drop beat's own clock: the right hand to the band's end, peels it off, lets go; the bands fall or hang */
 const DROP_T = { reach: 0.6, pinch: 1.3, peel1: 2.5, let: 2.6, away: 3.6, end: 4.2 };
+/** the drop beat's camera (seconds from its start): back up from the floor */
+const DROP_CAM = { up0: 5.6, up1: 6.4 };
 /** the coiling (kinematic): two loops at teaching pace, the other four sped up */
 const FLASH = { lead: 1.2, slow: 1.6, fast0: 6.0, fast: 0.55, end: 10.0 };
 /** the wrong ties: the cable tie pulled tight, the knot pulled tight */
-const TIES_T = { reach: 0.4, pull0: 0.9, pull1: 1.7, let: 2.0, end: 6.6 };
+const TIES_T = { reach: 0.8, pull0: 1.4, pull1: 2.2, let: 2.5, end: 6.8 };
 const SLOW = 0.25;
 
 // 1 · prepare once
@@ -109,12 +111,12 @@ hold('prep', 'dipIn', PREP_T.wrap1, 0.3);
 play('prep', 'rt', PREP_T.wrap1, PREP_T.let + 0.4);
 play('prep', 'tug', PREP_T.let + 0.4, PREP_T.rest);
 hold('prep', 'tugHold', PREP_T.rest, 1.2);
-play('prep', 'pins', PREP_T.rest, PREP_T.rest + 4.4);
-play('prep', 'mic', PREP_T.rest + 4.4, PREP_T.end);
+play('prep', 'pins', PREP_T.rest, PREP_T.rest + 4.7);
+play('prep', 'mic', PREP_T.rest + 4.7, PREP_T.end);
 hold('prep', 'micHold', PREP_T.end, 2.2);
 // 2 · only wrapped round: it falls off
 play('drop', 'drop', 0, DROP_T.end);
-hold('drop', 'dropHold', DROP_T.end, 3.0);
+hold('drop', 'dropHold', DROP_T.end, 3.8);
 // 3 · start with this end
 play('start', 'flash', 0, FLASH.end);
 // 4 · close: the end up, the band round the ring, closed; both plugs outside
@@ -173,7 +175,7 @@ const CAPS: { text: string; a: number; b: number }[] = [
   { text: 'Nur drumgewickelt? Fällt ab, ist weg.', a: S('drop') + 0.25, b: E('dropHold') - 0.2 },
   { text: 'Mit diesem Ende fängst du an zu wickeln.', a: S('flash') + 0.25, b: S('flash') + 5.0 },
   { text: 'Dann ist das Band oben in deiner Hand.', a: S('flash') + 5.1, b: E('flash') - 0.1 },
-  { text: 'Leg das Band oben um den ganzen Ring.', a: S('wrapRing') + 0.0, b: S('closed') + 1.0 },
+  { text: 'Leg das Band oben um den ganzen Ring.', a: S('wrapRing') + 0.0, b: S('closed') + 1.3 },
   { text: 'Fest, aber nicht quetschen.', a: S('fit') + 0.2, b: E('fitHold') - 0.2 },
   { text: 'Lange oder schwere Ringe: zwei Bänder gegenüber.', a: S('two') + 0.25, b: E('two') - 0.2 },
   { text: 'Kein Kabelbinder, kein Knoten.', a: S('ties') + 0.25, b: E('ties') - 0.4 },
@@ -327,7 +329,7 @@ function layPath(pos: Float32Array, d1: Float32Array, s: Float64Array, from: num
  * tie's plane are pulled towards its axis, their jacket gets thinner (radius factors), within `reach`
  * of the plane along the axis.
  */
-function squeeze(pos: Float32Array, rad: Float32Array, i0: number, i1: number, sec: Section, amount: number, reach = 0.012, within = 0.04) {
+function squeeze(pos: Float32Array, rad: Float32Array, i0: number, i1: number, sec: Section, amount: number, reach = 0.018, within = 0.04) {
   for (let i = i0; i <= i1; i++) {
     const p: V3 = [pos[3 * i], pos[3 * i + 1], pos[3 * i + 2]];
     const d = sub(p, sec.c);
@@ -366,7 +368,7 @@ function drawBand(m: StrapMesh, b: BandPath) {
   m.placeEyelet(b.eye.p, b.eye.x, b.eye.y, b.eye.z);
 }
 
-const TIE_COLOR = '#74777e', TIE_INNER = '#666a71';
+const TIE_COLOR = '#8e9298', TIE_INNER = '#7a7e85';
 const newStrap = () => new StrapMesh({ color: TIE_COLOR, inner: TIE_INNER, length: STRAP.length, width: STRAP.width, thickness: STRAP.thickness, maxPoints: 200 });
 
 // ===================================================================================== people (scene-only rigs)
@@ -375,15 +377,19 @@ const SEC = strapSection('p4');
 const LEFT_COIL = (): HandRig => ({ grip: ringGrip('p4'), hold: 'coil', radius: RING_GEOM.p4.coilR, thumbAlong: 1, free: 0.3 });
 const g3 = (q: V3, along: V3, toPalm: V3): Grip => gripFrame(q, along, perp(toPalm, along));
 
-/** the drop beat: the right hand takes the band's end on the ring, peels it back, lets go */
-function dropRig(end: V3) {
+/** the drop beat: the right hand takes the band's end on the ring, peels the velcro's overlap off (the band's end where the band has it), lets go */
+const peelOf = (t: number) => ramp(t, DROP_T.pinch + 0.1, DROP_T.peel1);
+function dropRig(endAt: (o: number) => { p: V3; along: V3; out: V3 }) {
   const D = DROP_T;
-  const out = norm(add(N, [0, 0.5, 0]));
-  const atEnd = g3(end, norm(cross(A, SEC.u)), SEC.u);
-  const peeled = g3(add(end, add(mul(out, 0.07), mul(UP, 0.03))), out, SEC.u);
-  const grip = gripPath([[0, REST_R], [D.reach, REST_R], [D.pinch, atEnd], [D.pinch + 0.12, atEnd], [D.peel1, peeled], [D.let + 0.15, peeled], [D.away, REST_R]]);
+  const at = (t: number) => {
+    const e = endAt(peelOf(t));
+    return g3(e.p, e.along, e.out);
+  };
+  const before = gripPath([[0, REST_R], [D.reach, REST_R], [D.pinch, at(D.pinch)]]);
+  const after = gripPath([[D.let + 0.1, at(D.let + 0.1)], [D.away, REST_R]]);
+  const grip = (t: number) => (t < D.pinch ? before(t) : t < D.let + 0.1 ? at(t) : after(t));
   const open = valPath([[0, 1], [D.pinch - 0.1, 1], [D.pinch, 0], [D.let, 0], [D.let + 0.15, 1]]);
-  return (t: number): Rig => ({ ...rigBase(t), look: add(SEC.c, [0, -0.1 - 0.4 * ramp(t, D.let, D.let + 0.8), 0]), hands: [LEFT_COIL(), pinchR(grip(t), open(t), RC + 2 * BAND.thickness, 0.6)] });
+  return (t: number): Rig => ({ ...rigBase(t), look: add(SEC.c, [0, -0.1 - 0.5 * ramp(t, D.let, D.let + 0.6), 0]), hands: [LEFT_COIL(), pinchR(grip(t), open(t), RC + 2 * BAND.thickness, 0.6)] });
 }
 
 /** the wrong ties: the right hand pulls the cable tie's tail / the knot's end tight, lets go */
@@ -394,6 +400,24 @@ function tiesRig(which: 'zip' | 'knot' | 'ok', pull: V3, dir: V3) {
   const grip = which === 'ok' ? () => REST_R : gripPath([[0, REST_R], [T.reach, REST_R], [T.pull0 - 0.05, a], [T.pull1, b], [T.let, b], [T.let + 0.9, REST_R]]);
   const open = which === 'ok' ? () => 1 : valPath([[0, 1], [T.pull0 - 0.15, 1], [T.pull0, 0], [T.let - 0.05, 0], [T.let + 0.1, 1]]);
   return (t: number): Rig => ({ ...rigBase(t + (which === 'knot' ? 1.3 : which === 'zip' ? 0 : 2.6)), look: add(SEC.c, [0, -0.05, 0]), hands: [LEFT_COIL(), pinchR(grip(t), open(t), RC, 0.6)] });
+}
+
+/**
+ * Eyes moved `d` to his left (−x: he faces −z in every set of this part), with the body's facing
+ * instead of the head's: when he turns his head the own view keeps its place (povFollow moves the
+ * camera along the facing)
+ */
+function leftOf(e: { p: V3; f: V3; u: V3 }, d: number) {
+  return { ...e, p: add(e.p, [-d, 0, 0]), f: [0, 0, -1] as V3 };
+}
+
+/** a dashed red ring round a 3D point (it always comes with a ✗ label: red only with ✗) */
+function ringMark(view: ThreeView, target: () => V3, opacity: () => number, size = 78) {
+  const pr = () => project(view, target());
+  const n = new Node({ x: () => pr().x, y: () => pr().y, opacity: () => opacity() * pr().vis });
+  n.add(new Circle({ size: size + 6, stroke: '#ffffff', lineWidth: 9, opacity: 0.7 }));
+  n.add(new Circle({ size, stroke: C.bad, lineWidth: 5, lineDash: [11, 7] }));
+  return n;
 }
 
 // ===================================================================================== the part
@@ -450,7 +474,8 @@ export function* part(layer: Node) {
     };
     let letGo: Float32Array | null = null;
     const pose = { v: prepTr.pose(0) as Pose };
-    const NAH: Orbit = { target: mix(PREP.fist, prepPlan.p, 0.55), yaw: Math.PI - 0.55, pitch: 0.14, dist: 0.48, fov: 34 };
+    // (from his left and a little below: the cable and the tie in front of his right hand, which comes from his right)
+    const NAH: Orbit = { target: add(mix(PREP.fist, prepPlan.p, 0.68), [0, 0.0, 0]), yaw: Math.PI + 0.95, pitch: 0.02, dist: 0.43, fov: 34 };
     const WIDE: Orbit = { target: [0.42, 0.78, -0.95], yaw: -2.2, pitch: 0.17, dist: 3.5, fov: 34 };
     const o1: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
     const world = new World3D('p4-strap-prep', () => {
@@ -493,9 +518,11 @@ export function* part(layer: Node) {
         arrowPull.update({ center: sub(p0, mul(s.a, R)), axis: cross(s.a, s.u), from: s.a, radius: R, angle: 0.11, progress: ap });
       }
       // cameras
-      const eyes = (x: number) => eyesOfRig(SPEC, prepRigAt(x));
-      const look = (): V3 => add(mix(PREP.fist, prepPlan.p, 0.5), [0, -0.02, 0]);
-      povFollow(pov, eyes, look, t, { back: 0.03, up: 0.03, fov: 46, smooth: 0.25 });
+      // (his own view, moved 8 cm to his left: past his right forearm, which comes from his right)
+      const eyes = (x: number) => leftOf(eyesOfRig(SPEC, prepRigAt(x)), 0.08);
+      const look = (): V3 => add(mix(PREP.fist, prepPlan.p, 0.7), [0.01, -0.01, 0]);
+      // (the own view a little lower and further forward than the eyes: under the fist to the tie)
+      povFollow(pov, eyes, look, t, { back: -0.12, up: -0.12, fov: 42, smooth: 0.25 });
       const wide = ease((tau() - S('mic') + 0.2) / 2.0);
       orbit(ext, mixOrbit(NAH, WIDE, wide, o1));
     });
@@ -509,18 +536,22 @@ export function* part(layer: Node) {
   const ringTr = ringTrack('p4', ringPlan);
   const ringRigAt = ringRig('p4', ringPlan);
   const tf = tieFrame('p4');
-  const LOOSE_EXTRA = 0.014;
+  const LOOSE_EXTRA = LOOSE;
   // where the knot comes from: the last loop and the end (kinematic)
   const knotFrom = bOk.node(3.784);
-  // the band's end on a closed ring (the drop rig goes there)
-  const closedEnd = (() => {
+  // the band's end while the velcro is peeled off (the drop rigs' right hands go there): the ring at rest
+  const endAt = (choked: boolean) => {
     const b = new BandPath();
     bOk.at(0.5);
     const strand: Section = { c: bOk.point(S_STRAP), a: bOk.tangent(S_STRAP), u: SEC.u, r: RC };
-    round(b, strand, { ...SEC, c: tf(0.5).p }, 1, null);
-    return b.at(BAND.length - 0.006);
-  })();
-  const dropTr = new RigTrack(SPEC, dropRig(closedEnd), 0, 60);
+    const bundle: Section = { ...SEC, c: tf(0.5).p };
+    return (o: number) => {
+      round(b, strand, bundle, 1, null, { peel: o, choked });
+      const p = b.at(BAND.length - 0.008), q = b.at(BAND.length - 0.03);
+      return { p, along: norm(sub(p, q)), out: norm(sub(p, bundle.c)) };
+    };
+  };
+  const dropTr = [new RigTrack(SPEC, dropRig(endAt(false)), 0, 60), new RigTrack(SPEC, dropRig(endAt(true)), 0, 60)];
   const knotPull: V3 = add(SEC.c, [0.02, -0.16, 0.02]);
   const tiesTr = {
     zip: new RigTrack(SPEC, tiesRig('zip', add(SEC.c, add(mul(SEC.u, 0.035), mul(cross(A, SEC.u), 0.015))), norm(add(SEC.u, mul(cross(A, SEC.u), 0.4)))), 0, 60),
@@ -676,6 +707,8 @@ export function* part(layer: Node) {
     return ringPoint('p4', [0, 1.598, RING_GEOM.p4.zMid]);
   }
   const YAW = 2.42;
+  /** from his front left: the tie (on the lateral side of the fist) in front of the fist, not behind it */
+  const YAW_TIE = 3.0;
   const knotBend: V3[] = [[0, 0, 0]];
   const o2: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
   const o3: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
@@ -689,21 +722,19 @@ export function* part(layer: Node) {
     if (active('drop')) {
       // ✗ only wrapped (station 0) | ✓ on the cable (station 2): the same opening
       const d = tDrop();
-      const pose = dropTr.pose(d);
       const bt = Math.min(2.2, 0.3 * d);
       for (const k of [0, 2] as const) {
         const S0 = st[k];
         S0.group.visible = true;
+        const pose = dropTr[k === 0 ? 0 : 1].pose(d);
         S0.person.update(pose);
         S0.fromBake(bOk, bt);
         S0.draw();
         const strand = S0.strand(S_STRAP, SEC.u);
         const bundle: Section = { ...SEC, c: tf(bt).p };
         const choked = k === 2;
-        const pads = pose.body.arms?.[1].grip?.p ?? bundle.c;
-        const o = ramp(d, DROP_T.pinch + 0.1, DROP_T.peel1);
         if (d < DROP_T.let) {
-          round(S0.band, strand, bundle, 1, d > DROP_T.pinch ? pads : null, { open: o, choked });
+          round(S0.band, strand, bundle, 1, null, { peel: peelOf(d), choked });
           S0.letGo = Float32Array.from(S0.band.pts);
         } else if (!choked) {
           const p0 = S0.letGo ?? S0.band.pts;
@@ -716,10 +747,12 @@ export function* part(layer: Node) {
         }
         drawBand(S0.strap, S0.band);
         S0.zip.group.visible = false;
-        const fall = ease((d - DROP_T.let - 0.1) / 1.0);
-        const near: Orbit = { target: S0.W(add(SEC.c, [0, -0.05, 0])), yaw: YAW, pitch: 0.28, dist: 0.8, fov: 34 };
-        const far: Orbit = { target: S0.W([SEC.c[0] + 0.1, 0.55, SEC.c[2]]), yaw: YAW, pitch: 0.12, dist: 1.95, fov: 34 };
-        orbit(colCam[k], mixOrbit(near, far, fall, k === 0 ? o2 : o3));
+        // the camera: on the ring's top, down to the floor below it (where the loose band lies), back up (where the other one hangs)
+        const u = s - S('drop');
+        const down = ramp(u, DROP_T.let + 0.3, DROP_T.let + 1.1) * (1 - ramp(u, DROP_CAM.up0, DROP_CAM.up1));
+        const near: Orbit = { target: S0.W(add(SEC.c, [0, -0.05, 0])), yaw: YAW_TIE, pitch: 0.28, dist: 0.66, fov: 34 };
+        const floor: Orbit = { target: S0.W([SEC.c[0] + 0.05, 0.03, SEC.c[2] + 0.1]), yaw: YAW_TIE, pitch: 0.75, dist: 0.8, fov: 34 };
+        orbit(colCam[k], mixOrbit(near, floor, down, k === 0 ? o2 : o3));
       }
     } else if (active('start')) {
       const f = tFlash();
@@ -753,8 +786,9 @@ export function* part(layer: Node) {
       S0.draw();
       ringBand(S0, t, S0.pose);
       S0.zip.group.visible = false;
-      povFollow(povR, (x) => eyesOfRig(SPEC, ringRigAt(x)), (x) => mix(add(SEC.c, [0.01, -0.04, 0]), add(ringPlan.plugC, [0, 0.06, 0]), 0.6 * ramp(x, RING_T.reach0 - 0.3, RING_T.grab) * (1 - ramp(x, RING_T.grab + 0.3, RING_T.lift1))), t, { back: 0.04, up: 0.03, fov: 52, smooth: 0.3 });
-      const nah: Orbit = { target: add(SEC.c, [0, -0.03, 0]), yaw: YAW, pitch: 0.3, dist: 0.62, fov: 34 };
+      // (his own view, 10 cm to his right and a little forward and lower: past his right arm, which reaches across to the tie)
+      povFollow(povR, (x) => leftOf(eyesOfRig(SPEC, ringRigAt(x)), -0.1), (x) => mix(add(SEC.c, [0.01, -0.04, 0]), add(ringPlan.plugC, [0, 0.06, 0]), 0.6 * ramp(x, RING_T.reach0 - 0.3, RING_T.grab) * (1 - ramp(x, RING_T.grab + 0.3, RING_T.lift1))), t, { back: -0.08, up: -0.07, fov: 52, smooth: 0.3 });
+      const nah: Orbit = { target: add(SEC.c, [0, -0.03, 0]), yaw: YAW_TIE, pitch: 0.3, dist: 0.6, fov: 34 };
       const fetch: Orbit = { target: add(ringC, [0, -0.06, 0]), yaw: YAW, pitch: 0.2, dist: 1.0, fov: 34 };
       const u = ramp(t, RING_T.reach0 - 0.2, RING_T.reach0 + 0.5) * (1 - ramp(t, RING_T.lift1 - 0.2, RING_T.let + 0.6));
       const show = ease((s - S('closed') - 0.2) / 1.2);
@@ -777,7 +811,7 @@ export function* part(layer: Node) {
         ringBand(S0, t, pose, { squeeze: k === 0 ? 0.3 : k === 2 ? -LOOSE_EXTRA / SEC.r : 0 });
         S0.zip.group.visible = false;
         const whole: Orbit = { target: S0.W(add(ringC, [0, 0.04 * ramp(t, RING_T.release, RING_T.lifted) - 0.03, 0])), yaw: YAW, pitch: 0.16, dist: 1.05, fov: 34 };
-        const tight: Orbit = { target: S0.W(add(tf(t).p, [0, -0.02, 0])), yaw: YAW, pitch: 0.3, dist: 0.42, fov: 34 };
+        const tight: Orbit = { target: S0.W(add(tf(t).p, [0, -0.02, 0])), yaw: YAW_TIE + 0.25, pitch: 0.62, dist: 0.4, fov: 34 };
         orbit(colCam[k], k === 0 ? tight : whole);
       }
     } else if (active('ties')) {
@@ -806,7 +840,7 @@ export function* part(layer: Node) {
           ringBand(S0, bt, pose);
         }
         S0.draw();
-        orbit(colCam[k], { target: S0.W(add(SEC.c, [0.0, k === 1 ? -0.05 : -0.035, 0])), yaw: YAW, pitch: 0.3, dist: k === 1 ? 0.62 : 0.5, fov: 34 });
+        orbit(colCam[k], { target: S0.W(add(SEC.c, [0.0, k === 1 ? -0.05 : -0.025, 0])), yaw: YAW_TIE + 0.25, pitch: 0.62, dist: k === 1 ? 0.55 : 0.42, fov: 34 });
       }
     }
   });
@@ -857,7 +891,7 @@ export function* part(layer: Node) {
       else if (t < T.press1) round(b2, strand2, { ...bot, u: u2 }, t < T.wrap1 ? Math.max(0.02, Math.min(1, (handAng - 0.5) / full)) : 1, t < T.wrap1 + 0.2 ? pads : null);
       else round(b2, strand2, { ...bot, u: u2 }, 1, null);
       drawBand(s2, b2);
-      orbit(cam, { target: mix(top.c, bot.c, 0.55), yaw: YAW + 0.05, pitch: 0.16, dist: 1.25, fov: 36 });
+      orbit(cam, { target: mix(top.c, bot.c, 0.5), yaw: YAW + 0.05, pitch: 0.16, dist: 0.95, fov: 36 });
     });
     new Studio(world.scene, { focus: [0, 0.9, -0.3], focusRadius: 1.3 });
     world.scene.add(person.group, cable.group, s1.group, s2.group);
@@ -921,7 +955,7 @@ export function* part(layer: Node) {
 
   // ------------------------------------------------------------------------- labels
   // 1 · the plug with the pins (own view), the 10–30 cm (close-up), "Rutscht nicht" (close-up), the pins, the mic
-  layer.add(callout({ view: prepPov, target: () => (bPrep.at(tPrep()), bPrep.point(0.004)), at: () => { const p = project(prepPov, (bPrep.at(tPrep()), bPrep.point(0.004))); return [p.x - 170, p.y - 120] as [number, number]; }, text: 'Stecker mit Stiften', size: 34, opacity: () => win(0.6, S('dim') + 0.6) }));
+  layer.add(callout({ view: prepPov, target: () => (bPrep.at(tPrep()), bPrep.point(0.004)), at: () => { const p = project(prepPov, (bPrep.at(tPrep()), bPrep.point(0.004))); return [p.x + 230, p.y - 110] as [number, number]; }, text: 'Stecker mit Stiften', size: 34, opacity: () => win(0.6, S('dim') + 0.6) }));
   // the dimension: from the plug's boot to the band, in the close-up, as a bracket beside the cable
   {
     const pA = () => project(prepExt, (bPrep.at(tPrep()), bPrep.point(0.062)));
@@ -944,13 +978,13 @@ export function* part(layer: Node) {
     layer.add(bracket);
   }
   layer.add(callout({ view: prepExt, target: () => (bPrep.at(tPrep()), bPrep.point(S_STRAP)), at: () => { const p = project(prepExt, (bPrep.at(tPrep()), bPrep.point(S_STRAP))); return [p.x + 150, p.y + 170] as [number, number]; }, text: '✓ Rutscht nicht.', color: C.good, size: 36, opacity: () => (active('prep') ? win(S('tug') + (PREP_T.back1 - (PREP_T.let + 0.4)), E('tugHold')) : 0) }));
-  layer.add(callout({ view: prepPov, target: () => (bPrep.at(tPrep()), bPrep.point(0.0)), at: () => { const p = project(prepPov, (bPrep.at(tPrep()), bPrep.point(0.0))); return [p.x - 160, p.y - 110] as [number, number]; }, text: 'Stifte', size: 34, opacity: () => (active('prep') ? win(S('pins') + 1.0, E('pins') - 0.2) : 0) }));
+  layer.add(callout({ view: prepPov, target: () => (bPrep.at(tPrep()), bPrep.point(0.0)), at: () => { const p = project(prepPov, (bPrep.at(tPrep()), bPrep.point(0.0))); return [p.x + 170, p.y - 110] as [number, number]; }, text: 'Stifte', size: 34, opacity: () => (active('prep') ? win(S('pins') + 1.0, E('pins') - 0.2) : 0) }));
   layer.add(callout({ view: prepExt, target: () => (bPrep.at(tPrep()), bPrep.point(S_STRAP)), at: () => { const p = project(prepExt, (bPrep.at(tPrep()), bPrep.point(S_STRAP))); return [p.x - 60, p.y - 200] as [number, number]; }, text: 'Band', size: 34, opacity: () => (active('prep') ? win(S('mic') + 1.4, E('micHold')) : 0) }));
   layer.add(callout({ view: prepExt, target: () => MIC.tail, at: () => { const p = project(prepExt, MIC.tail); return [p.x + 40, p.y - 170] as [number, number]; }, text: '✓ Mikro: kein Band', color: C.good, size: 34, opacity: () => (active('prep') ? win(S('mic') + 1.4, E('micHold')) : 0) }));
 
   // 2 · ✗ falls off | ✓ stays on the cable
-  layer.add(callout({ view: dropV[0], target: () => st[0].W(st[0].band.at(0.12)), at: () => { const p = project(dropV[0], st[0].W(st[0].band.at(0.12))); return [p.x + 40, p.y - 190] as [number, number]; }, text: '✗ fällt ab', color: C.bad, size: 36, opacity: () => (active('drop') ? win(S('drop') + DROP_T.let + 1.0, E('dropHold')) : 0) }));
-  layer.add(callout({ view: dropV[1], target: () => st[2].W(st[2].band.at(0.06)), at: () => { const p = project(dropV[1], st[2].W(st[2].band.at(0.06))); return [p.x + 60, p.y + 200] as [number, number]; }, text: '✓ bleibt am Kabel', color: C.good, size: 36, opacity: () => (active('drop') ? win(S('drop') + DROP_T.let + 1.0, E('dropHold')) : 0) }));
+  layer.add(callout({ view: dropV[0], target: () => st[0].W(st[0].band.at(0.12)), at: () => { const p = project(dropV[0], st[0].W(st[0].band.at(0.12))); return [p.x + 30, p.y + 170] as [number, number]; }, text: '✗ fällt ab', color: C.bad, size: 36, opacity: () => (active('drop') ? win(S('drop') + DROP_T.let + 1.2, S('drop') + DROP_CAM.up0 + 0.2) : 0) }));
+  layer.add(callout({ view: dropV[1], target: () => st[2].W(st[2].band.at(0.06)), at: () => { const p = project(dropV[1], st[2].W(st[2].band.at(0.06))); return [p.x + 60, p.y + 200] as [number, number]; }, text: '✓ bleibt am Kabel', color: C.good, size: 36, opacity: () => (active('drop') ? win(S('drop') + DROP_CAM.up1, E('dropHold')) : 0) }));
 
   // 3 · the band at the top in the hand
   layer.add(callout({ view: ringPov, target: () => st[1].W(st[1].band.at(0.05)), at: () => { const p = project(ringPov, st[1].W(st[1].band.at(0.05))); return [p.x - 200, p.y - 150] as [number, number]; }, text: 'Band', size: 36, opacity: () => (active('start') ? win(S('flash') + FLASH.lead + 2 * FLASH.slow + 0.2, E('flash') - 0.1) : 0) }));
@@ -976,44 +1010,57 @@ export function* part(layer: Node) {
   // 4 · the columns: too tight (dent), right (holds), too loose (what slipped: measured)
   const loopsBelow = (b: BakedRod, t: number) => [0, 1, 2, 3, 4, 5].map((k) => b.track(`loop${k}`, t));
   const slipped = (() => {
-    // a loop that hangs more than 6 cm lower than in the closed ring (before the lift), or the end that dropped out
-    const t0 = RING_T.press1 + 0.5, t1 = RING_T.end - 0.05;
-    const a = loopsBelow(bLoose.b, t0), b = loopsBelow(bLoose.b, t1);
-    const drops = b.map((x, k) => x - a[k] - 0.08 * 0);
-    const okA = loopsBelow(bOk.b, t0), okB = loopsBelow(bOk.b, t1);
-    const endDrop = bLoose.b.track('endBelow', t1) - bLoose.b.track('endBelow', t0);
-    console.log('p4-strap fit check: loose loop drops (m)', JSON.stringify(drops.map((x) => +x.toFixed(3))), 'end drop', endDrop.toFixed(3), '| ok', JSON.stringify(okB.map((x, k) => +(x - okA[k]).toFixed(3))), 'ok end', (bOk.b.track('endBelow', t1) - bOk.b.track('endBelow', t0)).toFixed(3));
-    let worst = -1, w = 0.06;
+    // compared with the firm tie at the same moment: a loop hanging more than 4 cm lower, the end plug more than 6 cm lower
+    const t1 = RING_T.end - 0.05;
+    const lo = loopsBelow(bLoose.b, t1), ok = loopsBelow(bOk.b, t1);
+    const drops = lo.map((x, k) => x - ok[k]);
+    const endDrop = bLoose.b.track('endBelow', t1) - bOk.b.track('endBelow', t1);
+    let worst = -1, w = 0.04;
     drops.forEach((x, k) => {
       if (x > w) {
         w = x;
         worst = k;
       }
     });
-    return { worst, endOut: endDrop > 0.06, drops, endDrop };
+    console.log('p4-strap fit check (loose − firm, m): loops', JSON.stringify(drops.map((x) => +x.toFixed(3))), 'end plug', endDrop.toFixed(3));
+    return { worst, endOut: endDrop > 0.06 };
   })();
-  const fitLabelOn = () => (active('fit') ? win(S('fit') + (12.6 - (RING_T.press1 - 0.4)), E('fitHold')) : 0);
+  const fitLabelOn = () => (active('fit') ? win(S('fit') + (RING_T.shake1 - 0.3 - (RING_T.press1 - 0.4)), E('fitHold')) : 0);
   layer.add(callout({ view: colV[0], target: () => st[0].W(add(tf(tFit()).p, mul(SEC.u, -0.01))), at: [xCol[0], TOP + PANEL_H - 90], text: '✗ Delle im Mantel', color: C.bad, size: 34, opacity: () => (active('fit') ? win(S('fit') + 1.4, E('fitHold')) : 0) }));
   layer.add(callout({ view: colV[1], target: () => st[1].W(tf(tFit()).p), at: [xCol[1], TOP + PANEL_H - 90], text: '✓ hält', color: C.good, size: 34, opacity: fitLabelOn }));
-  if (slipped.worst >= 0 || slipped.endOut) {
-    const target = (): V3 => {
+  {
+    const loopLow = (): V3 => {
       const S2 = st[2];
-      if (slipped.worst >= 0) {
-        const [a, b] = ringLoops[slipped.worst];
-        let lo = S2.point(a), y = Infinity;
-        for (let s = a; s < b; s += 0.02) {
-          const p = S2.point(s);
-          if (p[1] < y) {
-            y = p[1];
-            lo = p;
-          }
+      const [a, b] = ringLoops[Math.max(0, slipped.worst)];
+      let low = S2.point(a), y = Infinity;
+      for (let q = a; q < b; q += 0.02) {
+        const p = S2.point(q);
+        if (p[1] < y) {
+          y = p[1];
+          low = p;
         }
-        return S2.W(lo);
       }
-      return S2.W(S2.point(bOk.total - 0.03));
+      return S2.W(low);
     };
-    layer.add(callout({ view: colV[2], target, at: [xCol[2], TOP + PANEL_H - 90], text: slipped.worst >= 0 ? '✗ Schlaufe rutscht heraus' : '✗ Ende rutscht heraus', color: C.bad, size: 32, opacity: fitLabelOn }));
+    const endPlug = (): V3 => st[2].W(st[2].point(bOk.total - 0.03));
+    const targets = [...(slipped.worst >= 0 ? [loopLow] : []), ...(slipped.endOut ? [endPlug] : [])];
+    if (targets.length) {
+      const at = { x: xCol[2], y: TOP + PANEL_H - 90 };
+      const grp = new Node({ opacity: fitLabelOn });
+      for (const tg of targets) {
+        const pr = () => project(colV[2], tg());
+        grp.add(new Node({ opacity: () => pr().vis, children: [new Line({ points: () => [[at.x, at.y], [pr().x, pr().y]], stroke: C.bad, lineWidth: 4, endArrow: true, arrowSize: 14 })] }));
+      }
+      grp.add(
+        <Rect layout padding={[9, 20]} radius={14} fill={C.bad} x={at.x} y={at.y}>
+          <Txt text={'✗ rutscht heraus'} fontFamily={FONT} fontWeight={700} fontSize={34} fill={'#fff'} />
+        </Rect>,
+      );
+      layer.add(grp);
+    }
   }
+
+  layer.add(ringMark(colV[0], () => st[0].W(tf(tFit()).p), () => (active('fit') ? win(S('fit') + 1.4, E('fitHold')) : 0), 120));
 
   // 5 · the two ties: 1 and 2, opposite
   layer.add(callout({ view: twoV, target: () => w3.s1(), at: () => { const p = project(twoV, w3.s1()); return [p.x - 260, p.y - 40] as [number, number]; }, text: 'Band 1', size: 34, opacity: () => (active('two') ? win(S('two') + 0.6, E('two')) : 0) }));
@@ -1022,7 +1069,10 @@ export function* part(layer: Node) {
   // 6 · cable tie squeezes, the knot kinks
   layer.add(callout({ view: colV[0], target: () => st[0].W(tf(RING_T.press1).p), at: [xCol[0], TOP + PANEL_H - 90], text: '✗ quetscht', color: C.bad, size: 36, opacity: () => (active('ties') ? win(S('ties') + TIES_T.pull1 + 0.2, E('ties')) : 0) }));
   layer.add(callout({ view: colV[1], target: () => knotBend[0], at: [xCol[1], TOP + PANEL_H - 90], text: '✗ knickt', color: C.bad, size: 36, opacity: () => (active('ties') ? win(S('ties') + TIES_T.pull1 + 0.2, E('ties')) : 0) }));
-  layer.add(callout({ view: colV[2], target: () => st[2].W(st[2].band.at(0.1)), at: [xCol[2], TOP + PANEL_H - 90], text: '✓ so', color: C.good, size: 36, opacity: () => (active('ties') ? win(S('ties') + TIES_T.pull1 + 0.2, E('ties')) : 0) }));
+  layer.add(callout({ view: colV[2], target: () => st[2].W(st[2].band.at(0.1)), at: [xCol[2], TOP + PANEL_H - 90], text: '✓ hält, ohne Delle', color: C.good, size: 36, opacity: () => (active('ties') ? win(S('ties') + TIES_T.pull1 + 0.2, E('ties')) : 0) }));
+
+  layer.add(ringMark(colV[0], () => st[0].W(tf(RING_T.press1).p), () => (active('ties') ? win(S('ties') + TIES_T.pull1 + 0.2, E('ties')) : 0), 110));
+  layer.add(ringMark(colV[1], () => knotBend[0], () => (active('ties') ? win(S('ties') + TIES_T.pull1 + 0.2, E('ties')) : 0), 80));
 
   // ------------------------------------------------------------------------- captions
   const cap = (<Txt y={CAPTION_Y} text={() => CAPS.find((c) => tau() >= c.a - 0.01 && tau() < c.b)?.text ?? ''} fontFamily={FONT} fontWeight={600} fontSize={46} fill={C.text} />) as Txt;

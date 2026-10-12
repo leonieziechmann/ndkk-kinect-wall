@@ -16,7 +16,7 @@
 //                  takes it), wraps the tie round the whole ring next to the fist and closes it; then
 //                  it lifts the ring by the tie, the left hand lets go, it shakes it a little and
 //                  holds it. "ok": the closed tie holds every strand it encloses (a bundle: a firmly
-//                  closed tie); "loose": the tie is a loose loop of capsules, 1.4 cm wider than the
+//                  closed tie); "loose": the tie is a loose loop of capsules, 2.6 cm wider than the
 //                  bundle, through which the strands can slide (simulated: whatever falls out does
 //                  so by itself). The tie's band is kinematic in both.
 //   p4-two         a 15 m XLR ring (16 loops, the ring of Kofi's throw) in his left hand, the first
@@ -174,9 +174,9 @@ export const pinchR = (g: Grip, open: number, radius = RC + 2 * STRAP.thickness,
 /** the scene of the first beat: the fist round the male plug's body, where the plug's tip points, the mic stand */
 export const PREP = {
   /** the middle of the left fist (round the plug's body: 3.5 cm from its tip) */
-  fist: [-0.1, 1.15, -0.32] as V3,
-  /** the plug's axis towards its tip: up, a little towards him and to his left (the pins face him) */
-  plugDir: normalize([-0.18, 0.9, 0.3]),
+  fist: [-0.12, 1.13, -0.28] as V3,
+  /** the plug's axis towards its tip: towards him, up and to his left (the pins face him); the cable leaves the fist forward and to his right, then hangs */
+  plugDir: normalize([-0.45, 0.35, 0.8]),
   /** the mic stand (x, z) and the height of its tube */
   stand: [0.95, -1.85] as [number, number],
   standH: 1.4,
@@ -209,7 +209,7 @@ export interface PrepPlan {
 export const prepPlanFrom = (v: ArrayLike<number>): PrepPlan => ({ p: [v[0], v[1], v[2]], t: [v[3], v[4], v[5]], u: [v[6], v[7], v[8]] });
 
 /** the left fist round the plug (grip frame: thumb towards the plug's tip) */
-export const prepFist = (): Grip => gripFrame(PREP.fist, PREP.plugDir, perp([-1, 0, 0.15], PREP.plugDir));
+export const prepFist = (): Grip => gripFrame(PREP.fist, PREP.plugDir, perp([-1, -0.2, 0], PREP.plugDir));
 
 /**
  * The right hand during p4-prep, and the tie's state it implies: the band's parameters for the part
@@ -357,7 +357,7 @@ const prepShot: ShotDef = {
     rod.om.fill(0);
     // the plan: the cable at the tie, now that it hangs still
     const pS = rod.pointAt(S_STRAP), tS = normalize(rod.tangentAt(S_STRAP));
-    const uS = perp([1, 0, 0.5], tS);
+    const uS = perp([1, 0, -0.4], tS);
     const planVec = Float64Array.from([...pS, ...tS, ...uS].map((v) => Math.fround(v)));
     const hand = prepHand(prepPlanFrom(planVec));
     let pin: Pinch | null = null;
@@ -386,6 +386,8 @@ const prepShot: ShotDef = {
 // ===================================================================================== p4-ring-ok / -loose
 
 export type Fit = 'ok' | 'loose';
+/** how much wider than the bundle the loose tie is (m): a band closed with a finger's width of room */
+export const LOOSE = 0.026;
 
 /** shot times of the ring shots (s) */
 export const RING_T = {
@@ -394,7 +396,7 @@ export const RING_T = {
   /** to the tie's end, round the whole ring (1.15 turns), pressed shut */
   tail0: 5.0, tail1: 5.9, wrap1: 7.8, press1: 8.4,
   /** the right hand takes the ring by the tie, the left lets go, lifts, shakes, holds */
-  take: 9.2, release: 9.4, lifted: 10.7, shake0: 10.8, shake1: 13.2,
+  take: 9.2, release: 9.4, lifted: 10.7, shake0: 10.8, shake1: 13.8,
   end: 16.0,
 };
 
@@ -421,7 +423,7 @@ export function tieFrame(kind: RingKind) {
   return (t: number): Frame => {
     const lift = 0.08 * ramp(t, T.release, T.lifted);
     const env = ramp(t, T.shake0, T.shake0 + 0.4) * (1 - ramp(t, T.shake1 - 0.5, T.shake1));
-    const sh = 0.028 * env * Math.sin(2 * Math.PI * 1.8 * (t - T.shake0));
+    const sh = 0.04 * env * Math.sin(2 * Math.PI * 1.8 * (t - T.shake0));
     const sw = 0.012 * env * Math.sin(2 * Math.PI * 0.9 * (t - T.shake0) + 0.6);
     return { p: add(sec.c, add(scale(UP, lift + sh), scale(N, sw))), q };
   };
@@ -483,7 +485,7 @@ export function ringLeft(kind: RingKind) {
   const T = RING_T;
   const grip = ringGrip(kind);
   const away = gripFrame(add(RING_AT[kind], [-0.08, -0.08, 0.1]), A, TO_PALM);
-  const down = gripFrame(add(REST_L.p, [0.02, 0.06, -0.06]), A, TO_PALM);
+  const down = gripFrame(add(REST_L.p, [-0.06, -0.06, 0.04]), A, TO_PALM);
   const path = gripPath([[T.release, grip], [T.release + 0.7, away], [T.lifted + 1.2, down]]);
   return { grip: path, open: (t: number) => ramp(t, T.release - 0.05, T.release + 0.2) };
 }
@@ -549,8 +551,8 @@ function ringShot(fit: Fit): ShotDef {
       const sec = strapSection(kind);
       const secL = { c: quatRotate(qInv, sub(sec.c, fistF.p)), a: quatRotate(qInv, sec.a) };
       let endHold: Bundle | null = null, tie: Bundle | null = null, tieOn = false, released = false, grabbed = false, given = false;
-      // the loose tie: two rings of capsules 16 mm apart (the band's width), 1.4 cm wider than the bundle
-      const LOOSE_R = sec.r + 0.014, K = 16;
+      // the loose tie: two rings of capsules 16 mm apart (the band's width), LOOSE cm wider than the bundle
+      const LOOSE_R = sec.r + LOOSE, K = 16;
       const V0 = normalize(cross(sec.a, sec.u));
       const looseCaps = (t: number): Capsule[] => {
         const f = tf(t);

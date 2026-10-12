@@ -240,7 +240,7 @@ export function choke(b: BandPath, s: Section, wrap: number, thread: number, cin
  * from its end towards the hand. `choked` false: a band only wrapped round the ring (its start lies
  * on the bundle where the eyelet would be).
  */
-export function round(b: BandPath, strand: Section, bundle: Section, k: number, hand: V3 | null, o: { open?: number; choked?: boolean; squeeze?: number } = {}) {
+export function round(b: BandPath, strand: Section, bundle: Section, k: number, hand: V3 | null, o: { open?: number; peel?: number; choked?: boolean; squeeze?: number } = {}) {
   const fs = frameOf(strand);
   const fb = frameOf({ ...bundle, u: fs.u, a: fs.a });
   const T = b.T;
@@ -262,10 +262,23 @@ export function round(b: BandPath, strand: Section, bundle: Section, k: number, 
   const openAng = Math.max(0, Math.min(1, o.open ?? 0)) * full * 0.86;
   const ang = Math.max(0.05, full * Math.max(0, Math.min(1, k)) - openAng);
   const turns = ang / (2 * Math.PI);
+  if (o.peel !== undefined) {
+    // the velcro's overlap peeled off by its end (held taut, straight off the bundle): the last PEEL rad
+    const a2 = Math.max(0.05, ang - Math.max(0, Math.min(1, o.peel)) * PEEL);
+    b.arc(fb, start, start + a2, Rw, Rw + T * (a2 / (2 * Math.PI)));
+    const th = start + a2, r = Rw + T * (a2 / (2 * Math.PI));
+    const tan = norm(add(mul(fb.u, -Math.sin(th)), mul(fb.v, Math.cos(th))));
+    const p0 = add(fb.c, add(mul(fb.u, r * Math.cos(th)), mul(fb.v, r * Math.sin(th))));
+    b.lineTo(add(p0, mul(tan, Math.max(0.001, b.L - b.length()))));
+    return b.setEye(choked ? eye : add(fb.c, mul(fb.u, Rw)), fs.a, fs.u).finish(fs.a);
+  }
   b.arc(fb, start, start + ang, Rw, Rw + T * turns);
   if (hand) b.lineTo(hand);
   return b.setEye(choked ? eye : add(fb.c, mul(fb.u, Rw)), fs.a, fs.u).finish(fs.a);
 }
+
+/** how much of the wrap opening the velcro peels off (rad): the overlap, a little less than half a turn */
+export const PEEL = 2.6;
 
 /** a plastic cable tie round a bundle: the strap round (squeezed), the head, the tail straight out of it */
 export function zipTie(b: BandPath, bundle: Section, squeeze: number) {
