@@ -3,7 +3,7 @@
   "title": "Kabel richtig aufwickeln: Motion-Capture-Aufnahmen mit der Kinect v2",
   "plan": "mocap/aufnahmeplan.md",
   "conventions": {
-    "files": "recordings/mocap/{shot}_t{take}.k2rec im Hauptcheckout (recordings/ ist git-ignoriert, nie committen oder hochladen)",
+    "files": "recordings/mocap/termin{session}/{shot}_t{take}.k2rec im Hauptcheckout (recordings/ ist git-ignoriert, nie committen oder hochladen); daneben das Sitzungslog sitzung.json von mocap/aufnahme.py. Take-Nummern sind je Shot über alle Termine eindeutig",
     "takes_out": "mocap/takes/{shot}_t{take}.json (nur Gelenkdaten, keine Bilder; die einzigen Dateien, die ins Repository dürfen, und nur mit deinem Okay)",
     "order": "Die Shots stehen in Aufnahmereihenfolge: alle Shots eines Setups hintereinander.",
     "start_countdown_s": 5,
@@ -13,6 +13,7 @@
     "sync": "Nach Startknopf und Countdown gibt das Tool das Startsignal (Ton und „Klatschen“). Du klatschst darauf einmal (Hände vor der Brust, für die Kinect sichtbar): Das ist t = 0. Davor 1 s still in der Startpose, danach 1 s still, dann los; am Ende 2 s in der Endpose bleiben. Shots mit clap = false haben kein Startsignal.",
     "cues": "cues[].t = Sekunden nach dem Startsignal; das Aufnahme-Tool zeigt den Text groß an und gibt dazu einen kurzen Ton (die Aufnahme selbst hat keinen Ton)",
     "variants": "Hat ein Shot variants, gilt variants[i] für Take i+1 (gleiche Bewegung, anderes Objekt oder andere Richtung)",
+    "alternate": "Die Shots einer Gruppe in alternate nimmt das Aufnahme-Tool abwechselnd auf: Take 1 des ersten, Take 1 des zweiten, Take 2 des ersten … (der zweite beginnt dort, wo der erste aufhört)",
     "mb_per_s": 20
   },
   "legend": {
@@ -59,6 +60,13 @@
       "setups": ["C", "D"],
       "notes": "Boden, Wurf, Heben: braucht den großen Raum, das hohe Stativ und für p6.lift.pair eine zweite Person"
     }
+  ],
+  "alternate": [
+    ["p3.wrong.same", "p5.eight.hang"],
+    ["p5.knots.pull", "p5.knots.fix"],
+    ["p2.teo.coil", "p2.teo.pull"],
+    ["p2.robin.coil", "p2.robin.pull"],
+    ["p7.ribbon.pull", "p7.ribbon.release"]
   ],
   "setups": [
     {

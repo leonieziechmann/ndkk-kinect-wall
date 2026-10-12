@@ -51,7 +51,7 @@ Beim Heben nimmst du nur eine der beiden Varianten auf (allein oder zu zweit, si
 ### Technik
 
 - **Hub:** Starte nur den Hub mit der echten Kinect (Hauptordner, `kinect-hub\target\release\kinect-hub.exe`). Prüf unter `http://127.0.0.1:8090/api/status`, dass er von der Kinect liest und 30 fps schafft. Nimm **nicht** `start-wand.cmd`: Das stellt Windows für die Ausstellung um und startet die Wand. Schließ Szenen und Browser-Tabs mit der Wand, dann fehlen keine Bilder.
-- **Aufnahme-Tool:** Es liest `shots.json`, zeigt dir pro Take, was zu tun ist, und speichert nach `recordings/mocap/<shot>_t<take>.k2rec` im Hauptordner. Ohne Tool geht es auch von Hand, aus dem Hauptordner. Nimm als Länge die Sekunden des Shots plus 10, damit du nach dem Start noch auf deine Marke gehen kannst, und klatsch dort selbst. Der Ordner wird angelegt, eine vorhandene Datei wird nie überschrieben:
+- **Aufnahme-Tool** (`mocap/aufnahme.cmd`, Anleitung in [README.md](README.md#aufnehmen)): Es liest `shots.json`, zeigt dir pro Take, was zu tun ist, und speichert nach `recordings/mocap/termin1/<shot>_t<take>.k2rec` im Hauptordner (Termin 2: `termin2/`). Ohne Tool geht es auch von Hand, aus dem Hauptordner. Nimm als Länge die Sekunden des Shots plus 10, damit du nach dem Start noch auf deine Marke gehen kannst, und klatsch dort selbst. Der Ordner wird angelegt, eine vorhandene Datei wird nie überschrieben:
   ```
   kinect-hub\target\release\kinect-hub-probe.exe record --seconds 40 --out recordings\mocap\p1.coil.teach_t1.k2rec
   ```
