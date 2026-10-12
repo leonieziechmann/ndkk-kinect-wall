@@ -673,12 +673,12 @@ Das Handzeichen ist ein Vorschlag (siehe offene Fragen): Mai zählt mit der rech
 ## Was danach passiert
 
 1. **Die Aufnahmen bleiben bei dir** in `recordings/mocap/` im Hauptordner. Dieser Ordner ist von git ausgeschlossen.
-2. **Das Auswerteskript** (wird gerade gebaut) geht jeden Take durch:
+2. **Das Auswerteskript** (`mocap/auswerten.cmd`, Anleitung in [README.md](README.md#auswerten)) geht jeden Take durch:
    - Es findet das Klatschen als Nullpunkt.
    - Auf jedem Infrarotbild sucht YOLO11x-pose dich. ViTPose++ huge und Sapiens2 1b bestimmen deine Gelenke, Sapiens auch Finger und Füße (die Modelle aus `pose-training/`). Bei 512 × 424 Pixeln sind die Finger nur grob zu erkennen; für Griff und Rollen hilft ein Handyvideo nebenher (siehe offene Fragen).
    - Mit dem Tiefenbild wird daraus 3D in Metern, geglättet und mit gefüllten Lücken.
    - Wo das Kabel zu sehen ist, wird seine Lage als Führung für die Simulation gespeichert.
-3. **Ergebnis:** je Take eine Datei `mocap/takes/<shot>_t<take>.json` mit Gelenkpositionen für jedes Bild (30 pro Sekunde), einer Sicherheit je Gelenk und dem Zeitpunkt des Klatschens. Darin sind keine Bilder und keine Tiefendaten. **Nur diese Dateien dürfen ins Repository, und nur, wenn du zustimmst** (siehe [Datenschutz](#datenschutz)).
+3. **Ergebnis:** je Take eine Datei `<shot>_t<take>.json.gz` ([Format](FORMAT.md)) mit Gelenkpositionen für jedes Bild (30 pro Sekunde), einer Sicherheit je Gelenk und dem Zeitpunkt des Klatschens. Darin sind keine Bilder und keine Tiefendaten. Sie liegt zuerst privat in `recordings/mocap/takes/`. **Nur diese Dateien dürfen ins Repository (`mocap/takes/`), und nur, wenn du zustimmst** (`auswerten.cmd --ins-repo`, siehe [Datenschutz](#datenschutz)).
 4. **Auswahl:** Pro Shot suchst du (oder wir mit einem Vorschlag) den besten Take aus.
 5. **Animation:**
    - Die Bewegung wird auf die Figur übertragen: Noor, Kofi, Ilse und alle anderen.

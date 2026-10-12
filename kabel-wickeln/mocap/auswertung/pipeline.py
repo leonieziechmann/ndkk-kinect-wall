@@ -192,6 +192,13 @@ def run_2d(src, opts, n_persons, depth_of=None, models=None, main=None):
             "created_at": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")}
 
 
+def reuse_other_2d(sig, opts):
+    """Einen 2D-Zwischenstand mit anderer Signatur trotzdem nehmen? Ja, wenn er vom selben Modell (stark/leicht) ist und
+    du keine Modelle ausdrücklich gewählt hast (--topdown, --detektor, --sapiens, --vitpose)."""
+    explicit = any(v is not None for v in (opts.topdown, opts.detektor, opts.sapiens_repo, opts.vitpose_repo))
+    return isinstance(sig, dict) and sig.get("modell") == opts.modell and not explicit
+
+
 def stem_of(rec_path):
     n = Path(rec_path).name
     for ext in (".k2rec.part", ".k2rec"):
@@ -348,10 +355,16 @@ def evaluate(rec_path, opts, out_dir, main=None, kp2d=None, models=None, truth_m
     if kp2d is None:
         cpath = kp2d_path(rec_path, opts)
         cached = load_json_gz(cpath) if cpath.exists() and not opts.neu_2d else None
-        if cached is not None and cached.get("signature", opts.signature()) != opts.signature():
-            say(opts, f"  Zwischenstand {cpath.name} stammt von anderen Modellen ({cached.get('signature')}); rechne 2D neu")
-            cached = None
-            cpath = (Path(opts.kp2d_dir) if opts.kp2d_dir else Path(rec_path).parent) / f"{stem_of(rec_path)}.kp2d-{opts.tag()}.json.gz"
+        sig = cached.get("signature", opts.signature()) if cached is not None else None
+        if cached is not None and sig != opts.signature():
+            if reuse_other_2d(sig, opts):
+                # z. B. von Colab mit --topdown sapiens oder lokal mit --every 3 gerechnet und jetzt ohne diese Optionen
+                # aufgerufen: nicht stundenlang neu rechnen, nur weil die Standard-Modelle andere wären
+                say(opts, f"  Zwischenstand {cpath.name} mit anderen Einstellungen ({sig}); nehme ihn (--neu rechnet neu)")
+            else:
+                say(opts, f"  Zwischenstand {cpath.name} stammt von anderen Modellen ({sig}); rechne 2D neu")
+                cached = None
+                cpath = (Path(opts.kp2d_dir) if opts.kp2d_dir else Path(rec_path).parent) / f"{stem_of(rec_path)}.kp2d-{opts.tag()}.json.gz"
         if cached is not None:
             kp2d = cached
             say(opts, f"  2D aus dem Zwischenstand {cpath.name} ({kp2d['models']['detector']}, {kp2d['models']['topdown']})")
@@ -422,7 +435,11 @@ def lift_person(rec, cam, world, floor, floor_note, kp2d, person, F, info, opts,
     nearest = np.where((nearest > 0) & (np.abs(times[np.maximum(nearest - 1, 0)] - g) < np.abs(times[nearest] - g)),
                        nearest - 1, nearest)
     ok_near = np.abs(times[nearest] - g) < 0.6 / FPS
-    finder = kabel.CableFinder(cam, world, dark=(opts.kabel != "hell")) if opts.kabel != "aus" else None
+    # Kabel nur suchen, wo der Plan es braucht (shots.json needs "cable"; unbekannte Shots immer): sonst bleiben nur
+    # Fehltreffer (Schuhsohlen, Kanten), z. B. in der Körper-Kalibrierung
+    needs = (info["plan"] or {}).get("needs")
+    cable_wanted = opts.kabel != "aus" and (needs is None or "cable" in needs)
+    finder = kabel.CableFinder(cam, world, dark=(opts.kabel != "hell")) if cable_wanted else None
     to_cam = kamera.invert(world)
     t_cable = time.time()
     for k in range(len(g)):
@@ -484,6 +501,7 @@ def lift_person(rec, cam, world, floor, floor_note, kp2d, person, F, info, opts,
                           "whole_recording_s": round(float(times[-1]), 3)},
                  "signal_in_recording_s": signal, "smoothing": opts.glatt, "max_gap_s": opts.max_luecke,
                  "seconds": {"2d": kp2d.get("seconds"), "total": None, "cable": round(t_cable, 1)},
+                 "cable_search": opts.kabel if cable_wanted else ("aus" if opts.kabel == "aus" else "aus: der Shot braucht kein Kabel"),
                  "radius_mm": {n: G.RADIUS[j] for j, n in enumerate(G.JOINTS) if G.RADIUS[j]}},
     }
     if plan_d:
@@ -553,7 +571,8 @@ def format_report(doc, out_path, floor_note):
         lines.append(f"  {G.GERMAN.get(n, n):19s} {j['conf']:5.2f}  {j['depth_hits'] * 100:4.0f} %  {jit}")
     hand = [n for n in G.JOINTS if "_hand_" in n]
     hc = np.mean([q["joints"][n]["conf"] for n in hand])
-    lines.append(f"  Handpunkte: mittlere Konfidenz {hc:.2f}; Kabel in {q['cable_frames'] * 100:.0f} % der Frames")
+    kab = "Kabel nicht gesucht" if doc.get("cable") is None else f"Kabel in {q['cable_frames'] * 100:.0f} % der Frames"
+    lines.append(f"  Handpunkte: mittlere Konfidenz {hc:.2f}; {kab}")
     for w in q["warnings"]:
         lines.append(f"  ! {w}")
     return "\n".join(lines)

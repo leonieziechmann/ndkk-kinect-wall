@@ -69,7 +69,8 @@ def parse_args(argv=None):
     ap.add_argument("--setup", help="nur dieser Aufbau (A, B, T, C, D), bei Ordnern")
     ap.add_argument("--alle", action="store_true", help="auch verworfene Takes (keep: false) auswerten")
     ap.add_argument("--boden", help=".k2rec des leeren Raums für den Boden (Standard: cal.<Aufbau>.empty derselben Platzierung)")
-    ap.add_argument("--knochen", help="Take-Datei, deren Knochenlängen gelten (Standard: cal.<Aufbau>.body, wenn ausgewertet)")
+    ap.add_argument("--knochen", help="Take-Datei, deren Knochenlängen gelten (Standard: die ausgewertete cal.<Aufbau>.body im "
+                                     "Zielordner, sonst die aus diesem Lauf)")
     ap.add_argument("--signal", type=float, help="Startsignal in s ab Aufnahmebeginn (Standard: aus sitzung.json)")
     ap.add_argument("--kp2d", help="2D-Ergebnis (.kp2d-*.json.gz) statt neu zu rechnen, z. B. von Colab")
     ap.add_argument("--neu", action="store_true", help="2D neu rechnen, auch wenn ein Zwischenstand da ist")
@@ -229,6 +230,12 @@ def main(argv=None):
         out_dir = Path(args.ziel) if args.ziel else main_dir / "recordings" / "mocap" / "takes"
     if not args.ins_repo and sitzung.git_ignored(main_dir, out_dir / "x.json.gz") is False and not args.ziel:
         print(f"Achtung: {out_dir} ist nicht von git ausgeschlossen.")
+    auto_knochen = False
+    if opts.knochen is None:  # schon ausgewertete Kalibrierung (z. B. aus einem früheren Lauf über den Termin-Ordner)
+        found = body_take_in(out_dir)
+        if found:
+            opts.knochen, auto_knochen = str(found), True
+            print(f"Knochenlängen aus {found.name} (schon ausgewertet; --knochen wählt eine andere)")
     print(f"{len(files)} Aufnahme(n); Modell {opts.modell} auf {device}"
           + (f", jeder {opts.every}. Frame" if opts.every > 1 else "") + f"; Take-Dateien nach {out_dir}")
     models = None
@@ -256,7 +263,8 @@ def main(argv=None):
             if tp.exists():
                 truth = vergleich.load_truth(tp)
             res = pipeline.evaluate(f, opts, out_dir, main_dir, kp2d=kp2d, models=models, truth_meta=truth)
-            body_prior(res, out_dir, opts)
+            if body_prior(res, opts, replace=auto_knochen):
+                auto_knochen = False
             summary.append((f.name, res))
             if (args.wahrheit or truth is not None) and truth and res["doc"]:
                 per = vergleich.mpjpe(res["doc"][0], truth)
@@ -279,13 +287,30 @@ def needs_models(f):
     return not shot or shot.get("persons", 1) != 0
 
 
-def body_prior(res, out_dir, opts):
-    """Nach cal.<Aufbau>.body: dessen Knochenlängen gelten für die folgenden Takes (falls nicht --knochen)."""
-    if opts.knochen is None:
+def body_prior(res, opts, replace=False):
+    """Nach cal.<Aufbau>.body: dessen Knochenlängen gelten für die folgenden Takes (falls nicht --knochen; eine früher
+    ausgewertete, automatisch gefundene ersetzt sie, replace=True). Gibt True, wenn sie jetzt gelten."""
+    if opts.knochen is None or replace:
         for p in res.get("take", []):
-            if Path(p).name.startswith("cal.") and ".body_" in Path(p).name:
+            name = Path(p).name
+            if name.startswith("cal.") and ".body_" in name and "_p2" not in name:
                 opts.knochen = str(p)
-                print(f"  Knochenlängen aus {Path(p).name} gelten für die folgenden Takes")
+                print(f"  Knochenlängen aus {name} gelten für die folgenden Takes")
+                return True
+    return False
+
+
+def body_take_in(folder):
+    """Die schon ausgewertete Körper-Kalibrierung im Ordner der Take-Dateien: Aufbau A zuerst (ganzer Körper), dann B, C,
+    D, T (am Tisch fehlen die Beine), je die neueste. None, wenn keine da ist."""
+    folder = Path(folder)
+    if not folder.is_dir():
+        return None
+    rank = {s: i for i, s in enumerate("ABCDT")}
+    found = [p for p in folder.glob("cal.*.body_t*.json.gz") if "_p2" not in p.name]
+    if not found:
+        return None
+    return min(found, key=lambda p: (rank.get(p.name.split(".")[1], 9), -p.stat().st_mtime))
 
 
 if __name__ == "__main__":

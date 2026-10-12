@@ -319,9 +319,10 @@ export class CableMesh {
 
   /**
    * Rebuilds the tube from n nodes. pos and d1: xyz per node; tint and halo: rgba per node
-   * (linear rgb, a = strength; see rgba() and paint()). Allocates nothing.
+   * (linear rgb, a = strength; see rgba() and paint()); radius: a factor on the jacket's radius per
+   * node (1 = as built; < 1 squeezes it, e.g. a dent under a tie pulled too tight). Allocates nothing.
    */
-  public update(pos: Float32Array, d1: Float32Array, n: number, tint?: Float32Array, halo?: Float32Array) {
+  public update(pos: Float32Array, d1: Float32Array, n: number, tint?: Float32Array, halo?: Float32Array, radius?: Float32Array) {
     n = Math.min(n, this.maxNodes);
     if (n < 2) {
       this.group.visible = false;
@@ -452,6 +453,7 @@ export class CableMesh {
       const ux = nx * ca + bx * sa, uy = ny * ca + by * sa, uz = nz * ca + bz * sa;
       const wx = bx * ca - nx * sa, wy = by * ca - ny * sa, wz = bz * ca - nz * sa;
       const cx = C[k3], cy = C[k3 + 1], cz = C[k3 + 2];
+      const rr = radius ? rad * (radius[i] + (radius[i + 1] - radius[i]) * u) : rad;
       // per-node colours, blended between the two nodes
       const i4 = i * 4;
       for (let j = 0; j <= S; j++) {
@@ -460,9 +462,9 @@ export class CableMesh {
         const oz = uz * cosA[j] + wz * sinA[j];
         const v = base + k * ring + j;
         const v3 = v * 3;
-        P[v3] = cx + ox * rad;
-        P[v3 + 1] = cy + oy * rad;
-        P[v3 + 2] = cz + oz * rad;
+        P[v3] = cx + ox * rr;
+        P[v3 + 1] = cy + oy * rr;
+        P[v3 + 2] = cz + oz * rr;
         Nr[v3] = ox;
         Nr[v3 + 1] = oy;
         Nr[v3 + 2] = oz;

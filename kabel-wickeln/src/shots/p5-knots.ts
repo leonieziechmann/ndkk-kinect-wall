@@ -10,22 +10,27 @@
 //             round under its bottom, up in front of the ring and back through the eye of all six
 //             loops, and hangs out of the ring's middle on the other side. This is the old coil
 //             factory's threading (wind.ts thread: true); pulled out, every unter loop ties an
-//             overhand knot (checked: the knot determinant of the ring pulled apart, see KNOT_CHECK).
+//             overhand knot (the knot determinant of the threaded ring is 27 = three overhand knots,
+//             of the free one 1: topology.ts, scratchpad p5k/ring.mjs).
 //
-// Shots (all with the XLR preset; the hands are keyframes, the mocap shots p5.knots.* replace them):
-//   knot-crate  the cause: the ring, its velcro open, dropped flat into a crate; its end, lying across
-//               the top, slides into the middle (guided: the end's way in is prescribed, everything
-//               else falls and settles by itself); then a hand lifts the ring out by its top: the end
-//               now comes out of the middle
-//   knot-pull   ✗ the threaded ring hangs in Noor's left hand; her right hand takes the end and pulls
-//               it out hand over hand, slowly; the left hand lets the loops go one after the other as
-//               the cable gets short; in every second loop an overhand knot closes (1, 2, 3); simulated
-//   knot-fix    the same as knot-pull up to the first knot; she stops, takes the end and feeds it
-//               back the way it came: through the knot and back through the middle of the ring (the
-//               end's path is the cable's own path, prescribed; the cable follows by itself); the knot
-//               opens, the end is outside again
-//   knot-ok     ✓ the same ring with both ends outside, the same hands: the loops come off without a
-//               knot
+// Shots (the XLR preset; contact radius 1.2 × KNOT_RC, 60 substeps × 4 iterations so no strand passes
+// through another in a tight knot; the hands are keyframes, the mocap shots p5.knots.* replace them):
+//   p5-knots-crate  the cause: the threaded ring, its velcro open, held flat over a crate and let go:
+//                   it falls flat onto the crate's bottom, the end through its middle (simulated; how
+//                   the end got there is not: the ring is laid out that way)
+//   p5-knots-pull   ✗ the threaded ring hangs from Noor's left fist (a bundle on the loops' tops); her
+//                   right hand (a pinch) takes the end and pulls it out hand over hand; the fist lets
+//                   the loops go one after the other when the cable between the hands gets short; in
+//                   every second loop an overhand knot closes (loop 6, then loop 4; loop 2's stays
+//                   loose within the 16 s). Fully simulated, nothing guided
+//   p5-knots-fix    she takes the end before pulling and puts it back up through the middle to the
+//                   front (the end's path is prescribed, the cable follows by itself): the knots in
+//                   the ring are gone (knot determinant 27 → 1); then she pulls as in knot-ok
+//   p5-knots-ok     ✓ the same ring with both ends outside, the same hands: the loops come off, no knot
+//
+// Knots are counted by the loop they are made of (knotSpans: 15 cm of cable inside a 3 cm ball, for
+// 0.4 s); the knot determinant of the whole cable (topology.ts, track det) says how many knots there
+// are topologically, closed or still hidden in the ring.
 //
 // World coordinates as in the other stage 5 parts: Noor stands at the origin facing -z, her right is
 // +x, the floor is y = 0. The ring hangs from her left hand in front of her left hip, its loops
@@ -402,11 +407,9 @@ export type KnotMode = 'pull' | 'ok' | 'fix';
 /** the right hand's phases, as recorded in the track 'phase' */
 export const PHASES = ['wait', 'reach', 'close', 'pull', 'open', 'stop', 'done', 'slack', 'letgo', 'toEnd', 'closeEnd', 'thread', 'outside'] as const;
 /** a knot pulled tight by hand: this much cable [m] inside a ball of this radius [m] (topology.ts tightKnots) */
-const KNOT_TIGHT = { span: 0.15, radius: 0.03 };
+const KNOT_TIGHT = { span: 0.15, radius: 0.03, hold: 0.4 };
 /** fix: how fast the hand takes the end back through the knot and the ring [m/s] */
 const FIX_SPEED = 0.25;
-/** fix: a loop that starts to close round the cable (she stops): span of cable [m] inside a ball of radius [m] */
-const FIX_SEE = { span: 0.25, radius: 0.065 };
 
 const ease5 = (u: number) => {
   const x = Math.min(1, Math.max(0, u));
@@ -498,18 +501,19 @@ function knotController(mode: KnotMode, ring: KnotRing, rod: Rod) {
     fixed: false,
     fixedAt: Infinity,
     strokesFixed: 0,
-    /** fix: the nodes of the loop that started to close round the cable when she stopped */
-    win: null as [number, number] | null,
   };
   let knotCount = 0, spans: { c: V3; i0: number; i1: number }[] = [];
   /**
    * The knots, by the loop they are made of, in the order they closed. A knot is counted when
-   * KNOT_TIGHT.span of cable fits into a ball of KNOT_TIGHT.radius (pulled tight by hand) and the
-   * middle of that cable lies in a loop that has no knot yet; it keeps its number and its place in
+   * KNOT_TIGHT.span of cable fits into a ball of KNOT_TIGHT.radius (pulled tight by hand), without a
+   * break, for KNOT_TIGHT.hold seconds, and the middle of that cable lies in a loop that has no knot
+   * yet; it keeps its number and its place in
    * the material while it loosens and tightens again (a knot does not untie by itself). "present":
    * found within the last 0.5 s.
    */
   const known: { loop: number; i: number; seen: number }[] = [];
+  /** candidates: tight for less than KNOT_TIGHT.hold so far (a passing tangle is not a knot) */
+  const maybe = new Map<number, { i: number; first: number; seen: number }>();
   const loopOf = (s: number) => ring.sLoops.findIndex(([a, b]) => s >= a && s < b);
   const knotsNow = (r: Rod, t: number) => {
     spans = knotSpans(r.x, r.n, r.L[1] ?? 0.0075, KNOT_TIGHT.span, KNOT_TIGHT.radius);
@@ -520,7 +524,18 @@ function knotController(mode: KnotMode, ring: KnotRing, rod: Rod) {
       if (k) {
         k.i = ic;
         k.seen = t;
-      } else known.push({ loop: lp, i: ic, seen: t });
+        continue;
+      }
+      const m = maybe.get(lp);
+      if (!m || t - m.seen > 0.1) maybe.set(lp, { i: ic, first: t, seen: t });
+      else {
+        m.i = ic;
+        m.seen = t;
+        if (t - m.first >= KNOT_TIGHT.hold) {
+          known.push({ loop: lp, i: ic, seen: t });
+          maybe.delete(lp);
+        }
+      }
     }
     return known.filter((k) => t - k.seen < 0.5).length;
   };
@@ -564,7 +579,14 @@ function knotController(mode: KnotMode, ring: KnotRing, rod: Rod) {
     const u = (dur: number) => (t + dt - st.t0) / dur;
     switch (st.phase) {
       case 'wait':
-        if (t >= KNOT_T.reach0) go('reach', t);
+        if (t >= KNOT_T.reach0) {
+          if (mode === 'fix') {
+            // fix: before pulling, she takes the end and puts it back through the middle
+            st.stopAt = t;
+            st.s = ring.sCable[1] - 0.025;
+            go('toEnd', t);
+          } else go('reach', t);
+        }
         break;
       case 'reach': {
         const target = padsOn(r, st.s);
@@ -605,21 +627,7 @@ function knotController(mode: KnotMode, ring: KnotRing, rod: Rod) {
         n = normalize(n);
         const target = gripFrame(p, along, n);
         next = { p, q: slerpQ(st.cur.q, target.q, 0.15) };
-        // fix: she stops as soon as a loop starts to close round the cable (FIX_SEE: looser than a
-        // counted knot), so the knot is still loose
-        if (mode === 'fix' && !st.fixed && st.stopAt === Infinity && t > 3) {
-          const seen = knotSpans(r.x, r.n, r.L[1] ?? 0.0075, FIX_SEE.span, FIX_SEE.radius);
-          if (seen.length) {
-            st.stopAt = t;
-            // (the loop's material: where the end has to go back through, whatever it looks like later)
-            const k = seen.reduce((a, b) => (b.i1 > a.i1 ? b : a));
-            st.win = [k.i0, k.i1];
-          }
-        }
-        if (st.stopAt < Infinity && !st.fixed) {
-          go('stop', t);
-          break;
-        }
+
         if (rem < 0.004 || (st.v < 0.01 && u(0.1) > 6)) {
           pin.release(0.12);
           go('open', t);
@@ -688,18 +696,6 @@ function knotController(mode: KnotMode, ring: KnotRing, rod: Rod) {
           // it to the front, and out and down in front of the ring (outside)
           const E = add(KNOT_HOLD, [0.0, -0.14, 0.0]);
           const pts: V3[] = [st.cur.p];
-          // the loop that began to close round the cable (its material, recorded when she stopped):
-          // to its end side, through its middle, on
-          if (st.win) {
-            const [i0, i1] = st.win;
-            const node = (i: number): V3 => [r.x[3 * i], r.x[3 * i + 1], r.x[3 * i + 2]];
-            let c: V3 = [0, 0, 0];
-            for (let i = i0; i <= i1; i++) c = add(c, node(i));
-            c = scale(c, 1 / (i1 - i0 + 1));
-            const exit = node(Math.min(r.n - 1, i1 + 6));
-            const dir = normalize(sub(c, exit));
-            pts.push(add(exit, scale(dir, -0.04)), exit, c, add(c, scale(dir, 0.07)));
-          }
           pts.push(add(E, scale(KNOT_N, -0.06)), E, add(E, scale(KNOT_N, 0.1)), add(add(E, scale(KNOT_N, 0.16)), [0.04, -0.12, 0]));
           st.path = pts;
           st.pathL = [0];
@@ -813,11 +809,11 @@ function knotShot(id: string, mode: KnotMode, duration: number): ShotDef {
 }
 
 /** ✗ the end through the middle, pulled out: knots in every second loop */
-export const knotPull = knotShot('p5-knots-pull', 'pull', 25);
+export const knotPull = knotShot('p5-knots-pull', 'pull', 16);
 /** ✓ both ends outside, the same pull: no knot */
 export const knotOk = knotShot('p5-knots-ok', 'ok', 20);
 /** the same as knot-pull up to the first knot; she stops and takes the end back through the knot and the middle */
-export const knotFix = knotShot('p5-knots-fix', 'fix', 21);
+export const knotFix = knotShot('p5-knots-fix', 'fix', 15);
 
 /** for the experiments: the controller on a ring in her hand */
 export function knotExperiment(mode: KnotMode) {
@@ -829,25 +825,21 @@ export function knotExperiment(mode: KnotMode) {
 // ------------------------------------------------------------------------------ the cause: the crate
 
 /** the wire crate on the floor in front of Noor (props.ts cableCrate): centre, size; the top of its bottom grid */
-export const CRATE = { x: 0.04, z: -0.52, width: 0.6, depth: 0.4, height: 0.32, floor: 0.0145 };
-/** the ring lying flat: the factory's up (toward the fist) toward Noor (+z), the stack's front (the last loop) up */
-const Q_FLAT: Quat = [0, Math.SQRT1_2, Math.SQRT1_2, 0];
+export const CRATE = { x: 0.04, z: -0.52, width: 0.8, depth: 0.55, height: 0.32, floor: 0.0145 };
+/**
+ * the ring lying flat: the stack's front (the last loop) up, its top (where a hand holds it) to her
+ * left, the end, through the middle, out to her right (the crate's long side)
+ */
+const Q_FLAT: Quat = quatMul(quatFromAxisAngle(0, 1, 0, -Math.PI / 2), [0, Math.SQRT1_2, Math.SQRT1_2, 0]);
+/** the ring's middle in the crate: a little to her left of the crate's middle, so the end has room */
+const RING_DX = -0.1;
 /** where Noor holds the flat ring before she lets it go, and where she lifts it to */
 const DROP_H = 0.62;
 export const CRATE_T = {
-  /** she lets go: the ring falls flat into the crate, its end, under the ring's middle, lands in the middle */
-  drop: 0.25, land: 0.7,
-  /** her hand closes on the top of the ring again (she has squatted down to it) */
-  grab: 2.6,
-  /** she lifts it out, standing up; it hangs from her hand */
-  lift0: 2.8, lift1: 4.9,
-  end: 5.9,
+  /** she lets go: the ring falls flat into the crate; its end, through the middle, lands under it */
+  drop: 0.25, land: 0.75,
+  end: 2.2,
 };
-/** the hand's frame while she lifts: straight up out of the crate first, then toward her left hip; turned so the ring hangs */
-const LIFT_UP = 0.66;
-const LIFT_TO: V3 = [CRATE.x - 0.04, 0.97, CRATE.z + 0.27];
-const Q_LIFT: Quat = quatFromAxisAngle(1, 0, 0, -Math.PI / 2);
-
 /** the crate's walls as rows of thin capsules (inside faces) */
 function crateCaps(): Capsule[] {
   const out: Capsule[] = [];
@@ -862,10 +854,9 @@ function crateCaps(): Capsule[] {
 /**
  * The cause: the ring with its end through the middle (the threaded ring of knot-pull), its velcro
  * open, lying flat in Noor's hand over the crate; she lets it go and it falls flat onto the
- * crate's bottom (simulated). Its end, which had fallen through the middle, lies under the ring's
- * middle. (How the end got through the middle is not simulated: the ring is made that way, see
- * layout().) Then her hand takes the ring's top again and lifts it out, turning it so that it
- * hangs: the end now comes out of the middle.
+ * crate's bottom (simulated); its end, through the middle, lands under the ring. How the end got
+ * through the middle is not simulated (the ring is made that way, see layout()), nor how she
+ * lifts the ring out again (the part cuts to the ring in her hand: knot-pull).
  */
 export const knotCrate: ShotDef = {
   id: 'p5-knots-crate',
@@ -884,7 +875,7 @@ export const knotCrate: ShotDef = {
       }
       return scale(c, 1 / m);
     };
-    const rod = knotRod(ring, placeKnotRing(ring.state, sub([CRATE.x, CRATE.floor + DROP_H, CRATE.z], mid(tmp)), Q_FLAT, CRATE.floor));
+    const rod = knotRod(ring, placeKnotRing(ring.state, sub([CRATE.x + RING_DX, CRATE.floor + DROP_H, CRATE.z], mid(tmp)), Q_FLAT, CRATE.floor));
     const e = rod.n - 1;
     rod.setCapsules(crateCaps());
     /** the middle of the ring's top (what the factory's fist held) */
@@ -902,33 +893,17 @@ export const knotCrate: ShotDef = {
     // (held flat: no gravity until she lets go; a flat ring in two hands does not sag)
     const g = rod.opts.gravity;
     rod.opts.gravity = [0, 0, 0];
-    let dropped = false, grabbed = false;
-    let J0: V3 = hand.p;
+    let dropped = false;
     return {
       rod,
-      script: (r, t) => {
-        if (!dropped && t >= CRATE_T.drop) {
+      script: (r) => {
+        if (!dropped && r.time >= CRATE_T.drop) {
           dropped = true;
           r.opts.gravity = g;
           fist.release(-Infinity, Infinity, 0.04);
         }
-        // (while the hand is empty its frame stays on the ring's top: no jump when it takes it again,
-        // which the hand calming, holdDamping, would feel as a violent hand motion)
-        if (dropped && !grabbed && t > CRATE_T.drop + 0.2) hand.p = topOf(r);
-        if (!grabbed && t >= CRATE_T.grab) {
-          grabbed = true;
-          J0 = topOf(r);
-          hand.p = J0;
-          hand.q = [0, 0, 0, 1];
-          for (const [a, b] of ring.held) fist.add(a, b, 0.2);
-        }
-        if (grabbed) {
-          const u = (t + 1 / 60 - CRATE_T.lift0) / (CRATE_T.lift1 - CRATE_T.lift0);
-          // straight up out of the crate (the ring clear of its walls), then toward her
-          const up: V3 = [J0[0], LIFT_UP, J0[2]];
-          hand.p = u < 0.55 ? lerpV(J0, up, ease5(u / 0.55)) : lerpV(up, LIFT_TO, ease5((u - 0.55) / 0.45));
-          hand.q = slerpQ([0, 0, 0, 1], Q_LIFT, ease5(u / 0.7));
-        }
+        // (while the hand is empty its frame stays on the ring's top)
+        if (dropped && r.time > CRATE_T.drop + 0.2) hand.p = topOf(r);
       },
       tracks: {
         plugX: (r) => r.x[3 * e], plugY: (r) => r.x[3 * e + 1], plugZ: (r) => r.x[3 * e + 2],

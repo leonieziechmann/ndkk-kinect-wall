@@ -5,8 +5,15 @@ rem   auswerten.cmd C:\Pfad\zu\ndkk-kinect-wall\recordings\mocap\termin1        
 rem   auswerten.cmd --modell leicht ...\termin1\p1.coil.teach_t1.k2rec              schneller Test (nur Koerper)
 rem   auswerten.cmd --device dml --every 2 ...\termin1                              Grafik des Notebooks, jeder 2. Frame
 rem   auswerten.cmd --help
+rem Oder im Explorer den Termin-Ordner (oder eine .k2rec) auf auswerten.cmd ziehen.
 rem Anleitung: mocap\README.md, Abschnitt "Auswerten".
 setlocal
+rem Doppelklick oder Ordner/Datei per Maus auf diese Datei gezogen: am Ende warten, damit das Fenster offen bleibt.
+setlocal EnableDelayedExpansion
+set "CL=!cmdcmdline!"
+set "X="
+if /i not "!CL:/c =!"=="!CL!" set "X=1"
+endlocal & set "VOM_EXPLORER=%X%"
 set "PYTHONUTF8=1"
 set "PY="
 where py >nul 2>nul && set "PY=py -3"
@@ -20,4 +27,6 @@ if not defined PY (
   exit /b 1
 )
 %PY% "%~dp0auswerten.py" %*
-if "%~1"=="" pause
+set "RC=%ERRORLEVEL%"
+if defined VOM_EXPLORER pause
+exit /b %RC%

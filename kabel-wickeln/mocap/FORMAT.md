@@ -2,7 +2,7 @@
 
 Der Vertrag zwischen der Auswertung (`auswerten.py`: `.k2rec` → Gelenke), der synthetischen Testaufnahme (`synthetic/generate.ts`: bekannte Bewegung → `.k2rec` + Wahrheit in diesem Format) und dem Retargeting (Gelenke → Figuren der Animation). Wer etwas ändert, ändert es hier und in allen drei zugleich und erhöht `version`.
 
-Version 1. Angelegt mit der synthetischen Testaufnahme; `synthetic/pruefen.py` liest es. Die Auswertung schreibt dazu einige **optionale** Felder (Abschnitt „Was die Auswertung zusätzlich schreibt“); sie ändern nichts an den Pflichtfeldern, Leser übergehen Felder, die sie nicht kennen. Prüfen: `auswertung/take.py` (`check()`).
+Version 1. Angelegt mit der synthetischen Testaufnahme; `synthetic/pruefen.py` liest es. Die Auswertung schreibt dazu einige **optionale** Felder (Abschnitt „Was die Auswertung zusätzlich schreibt“); sie ändern nichts an den Pflichtfeldern, Leser übergehen Felder, die sie nicht kennen. Prüfen: `auswertung/take.py` (`check()`). Die Kreuzprobe `tests/test_format.py` hält die drei zusammen: gleiche Gelenkliste in Python, `src/mocap/joints.ts` und `synthetic/generate.ts`; was Python schreibt, liest `src/mocap/take.ts` gleich (auch im Browser-Weg über `DecompressionStream`); Pixel → KAMERA → WELT, oben und links/rechts stimmen mit der synthetischen Wahrheit.
 
 ## Datei
 
@@ -87,7 +87,7 @@ Das Retargeting rechnet die Zeit relativ zum Klatschen: `t − markers.clap`.
 - `conf`: 2D-Konfidenz des Modells × Faktor nach `how` (D 1, B 0,7, I 0,45 und weniger, je länger die Lücke).
 - Gelenkmitten: die Tiefe sieht die Haut; die Auswertung schiebt den Punkt entlang der Sichtlinie um einen festen Abstand nach hinten (`meta.radius_mm`: Schulter 50, Ellbogen 40, Handgelenk 25, Hüfte 90, Knie 55, Knöchel 45, Fingergelenke 10, Fingerspitzen 0 …).
 - Abgeleitete Gelenke: `pelvis` = Mitte der Hüften; `neck` = Mitte der Schultern, 0,11 Schulterbreiten zum Kopf hin (entlang Becken → Schultern); `head` = Mitte der Ohren (fehlen sie: Mitte der Augen, 8 cm nach −z). So liegen sie auch in der Wahrheit.
-- `cable`: `null`, wenn die Kabelsuche aus war (`--kabel aus`), sonst je Frame die Polylinien (Punkte etwa 2 cm auseinander) mit `conf` aus Kontrast, Länge und Tiefenanteil. Experimentell: Lage nahe den Händen und darunter, keine Zuordnung der Linien von Frame zu Frame.
+- `cable`: `null`, wenn die Kabelsuche aus war (`--kabel aus`, oder der Shot braucht laut `shots.json` kein Kabel: `needs` ohne `cable`, z. B. die Körper-Kalibrierung; `meta.cable_search` sagt, warum), sonst je Frame die Polylinien (Punkte etwa 2 cm auseinander) mit `conf` aus Kontrast, Länge und Tiefenanteil. Experimentell: Lage nahe den Händen und darunter, keine Zuordnung der Linien von Frame zu Frame.
 - `markers.clap`: Minimum des Abstands der Hände nach schneller Annäherung, zwischen den Frames verfeinert; `null`, wenn keins gefunden wurde. `start`/`end`: Näherung aus der Bewegung (erste Bewegung nach der Ruhe nach dem Klatschen, letzte Bewegung vor der Endpose).
 - `floor.source`, `floor.measured`: aus welcher Aufnahme der Boden kommt (leerer Raum `cal.<Aufbau>.empty` derselben Platzierung oder der Take selbst). `world.mark_mm` ist die **geplante** Marke aus `shots.json` (`world.mark_note` sagt das), nicht gemessen.
 
@@ -98,7 +98,7 @@ Zusätzliche Felder:
 | `person` | nur ab der zweiten Person: `2` (fehlt = 1, die Hauptperson) |
 | `hands` | je Frame `{"left": …, "right": …}`, je Hand `null` (fehlt) oder `{"origin": [x, y, z] (mm, WELT, = Handgelenk), "axes": [9 ganze Zahlen] (x-, y-, z-Achse als Einheitsvektoren × 1000, nacheinander), "curl": [Daumen, Zeige-, Mittel-, Ring-, kleiner Finger] (0 gestreckt … 100 Faust, `null` = unbekannt), "conf": 0 … 100 (kleinste Konfidenz von wrist, index_mcp, middle_mcp, pinky_mcp), "low": true/false (conf < 40)}`. Achsen: x vom Handgelenk zu `middle_mcp`; y zur Daumenseite (`index_mcp − pinky_mcp`, senkrecht zu x); z aus dem Handrücken heraus (rechte Hand x × y, linke y × x). Handfläche oben ⇔ z zeigt nach unten. Krümmung: Summe der Beugewinkel (Finger: Mittelhand→Grundglied, PIP, DIP, ohne Spreizen; Daumen: MCP, IP) durch 270° (Daumen 150°). |
 | `quality` | außer `joints` (dort zusätzlich `outliers`: verworfene Messungen): `frames_recorded`, `frames_skipped_by_hub`, `person_found` (Anteil der gerechneten Frames mit Person), `cable_frames`, `floor` (`pitch_deg`, `roll_deg`, `inliers`, `angle_vs_take`: Boden des leeren Raums gegen den des Takes), `clap` (`time`, `gap_mm`, `speed_m_s`, `searched`, …), `activity` (Schwelle für Beginn/Ende), `bones_fixed`, `warnings` (Text, deutsch) |
-| `meta` | `program`, `models` (Detektor, Top-down-Modelle, Gerät), `every`, `flip`, `person`, `bones_mm` (Knochenlängen der Person, `"<eltern>-<kind>"`), `trim`, `signal_in_recording_s`, `smoothing`, `max_gap_s`, `seconds`, `radius_mm` |
+| `meta` | `program`, `models` (Detektor, Top-down-Modelle, Gerät), `every`, `flip`, `person`, `bones_mm` (Knochenlängen der Person, `"<eltern>-<kind>"`), `trim`, `signal_in_recording_s`, `smoothing`, `max_gap_s`, `seconds`, `cable_search`, `radius_mm` |
 
 `jitter_mm` in `quality.joints` ist bei der Auswertung die robuste Streuung der Messungen um die geglättete Kurve (1,48 × Median der Abstände).
 

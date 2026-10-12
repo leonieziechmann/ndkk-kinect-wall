@@ -2,6 +2,34 @@
 
 Alle Bewegungen des Videos nimmst du mit der Kinect auf; große Pose-Modelle machen daraus Gelenkdaten, die Figuren bewegen sich dann wie du. Was aufgenommen wird und wie die Kinect steht: [`aufnahmeplan.md`](aufnahmeplan.md), maschinenlesbar in [`shots.json`](shots.json).
 
+## Kurz: der erste Take
+
+Alles auf dem Notebook, im Hauptordner (`C:\Pfad\zu\ndkk-kinect-wall` steht für deinen Pfad). Die Abschnitte darunter erklären jeden Schritt genauer.
+
+1. **Einmal:** Python 3.10 oder neuer von python.org (Haken „Add python.exe to PATH“). Dann in einem cmd-Fenster:
+   `py -3 -m pip install numpy onnxruntime pillow imageio-ffmpeg`
+2. **Hub starten**, in einem eigenen cmd-Fenster, das offen bleibt:
+   ```
+   cd /d C:\Pfad\zu\ndkk-kinect-wall
+   kinect-hub\target\release\kinect-hub.exe
+   ```
+3. **Kinect für Aufbau A aufstellen** ([`aufnahmeplan.md`](aufnahmeplan.md), Aufbau A), Marken kleben.
+4. **Aufnehmen**, in einem zweiten cmd-Fenster:
+   ```
+   cd /d C:\Pfad\zu\ndkk-kinect-wall\kabel-wickeln\mocap
+   aufnahme.cmd --shot A4
+   ```
+   Das Tool fragt einmal nach deinem Einverständnis und führt dich zuerst durch die Kalibrierung von Aufbau A (leerer Raum, Kabel am Boden, Körper), dann durch Take 1 von A4 (`p1.coil.teach`, Wickeln im Lehrtempo). Nach diesem Take `q` und Enter (behalten); die übrigen Takes von A4 kommen beim nächsten Start dran.
+5. **Schnell auswerten** (leichtes Testmodell, nur Körper, etwa 0,4 s je Bild, für Kalibrierung und Take zusammen etwa 15 min):
+   ```
+   auswerten.cmd --modell leicht C:\Pfad\zu\ndkk-kinect-wall\recordings\mocap\termin1
+   ```
+   Dann im Ordner `recordings\mocap\termin1` das Kontrollvideo `p1.coil.teach_t1.auswertung.mp4` anschauen (liegt das Skelett auf dir?) und im Bericht `p1.coil.teach_t1.auswertung.txt` nachsehen, ob das Klatschen gefunden wurde. Die Take-Datei liegt in `recordings\mocap\takes\` (privat).
+6. **Mit den großen Modellen** (Hände, Füße; [einrichten](#einmal-einrichten-windows)): ohne `--modell leicht`, auf dem Notebook nur für die Körper-Kalibrierung und den besten Take, über Nacht (viele Stunden auf der CPU):
+   `auswerten.cmd --every 3 --topdown sapiens --shot cal.A.body,p1.coil.teach C:\Pfad\zu\ndkk-kinect-wall\recordings\mocap\termin1`
+   Den Boden nimmt es aus dem leeren Raum (`cal.A.empty`), die Knochenlängen aus `cal.A.body`.
+7. **Für die Animation** freigeben (fragt nach deinem Okay, committet nichts): denselben Befehl mit `--ins-repo`. Dann liegt die Datei in `kabel-wickeln\mocap\takes\` und eine Szene lädt sie (Abschnitt [In die Animation](#in-die-animation)).
+
 ## Aufnehmen
 
 Das Aufnahme-Tool `aufnahme.py` (Doppelklick: `aufnahme.cmd`) führt dich Take für Take durch den Plan: Aufbau zeigen, Bild prüfen, Countdown mit Tönen, Startsignal zum Klatschen, zeitgesteuerte Ansagen, automatisches Ende. Aufgenommen wird mit `kinect-hub-probe record` vom laufenden Hub, nie direkt von der Kinect.
@@ -134,7 +162,7 @@ Aus dem Hauptordner, Länge = Sekunden des Shots plus 10; klatsch selbst auf der
 ```
 kinect-hub\target\release\kinect-hub-probe.exe record --seconds 40 --out recordings\mocap\termin1\p1.coil.teach_t1.k2rec
 ```
-Das Tool zählt solche Dateien bei den Take-Nummern mit, trägt sie aber nicht ins Sitzungslog ein.
+Das Tool zählt solche Dateien bei den Take-Nummern mit, trägt sie aber nicht ins Sitzungslog ein. Ohne Startsignal sucht die Auswertung das Klatschen nur in den ersten 8 s; klatschst du später, gib die Zeit beim Auswerten mit `--signal` an (Sekunden ab Aufnahmebeginn).
 
 ### Testen ohne Kinect
 
@@ -145,7 +173,7 @@ Das Tool zählt solche Dateien bei den Take-Nummern mit, trägt sie aber nicht i
   kinect-hub\target\release\kinect-hub.exe --source replay recordings\<aufnahme>.k2rec --bind 127.0.0.1:8091
   kabel-wickeln\mocap\aufnahme.cmd --hub http://127.0.0.1:8091 --ziel C:\Pfad\zu\ndkk-kinect-wall\recordings\mocap-probelauf --shot A4
   ```
-  Das Tool warnt, dass der Hub nicht von der Kinect liest; mit `j` geht es weiter.
+  Das Tool warnt, dass der Hub nicht von der Kinect liest; mit `j` geht es weiter. Noch keine eigene Aufnahme? Dann eine synthetische abspielen (in `kabel-wickeln`: `node mocap\synthetic\erzeugen.mjs coil-a`, Datei `kabel-wickeln\output\synthetic\synth-coil-a.k2rec`, siehe unten) und danach den Probelauf-Ordner mit `auswerten.cmd --modell leicht` auswerten. Der Replay-Hub spielt die Aufnahme in einer Schleife; ihr Klatschen trifft das Startsignal nur zufällig, „Klatschen nicht gefunden“ ist dabei also kein Fehler.
 
 ## Synthetische Testaufnahme
 
@@ -187,13 +215,13 @@ kinect-hub\target\release\kinect-hub.exe --source replay kabel-wickeln\output\sy
 
 ## Auswerten
 
-`auswerten.py` (Doppelklick oder cmd: `auswerten.cmd`) macht aus jeder Aufnahme eine Take-Datei mit deinen Gelenken in 3D, 30 Bilder pro Sekunde, im Format von [`FORMAT.md`](FORMAT.md). Pro Take:
+`auswerten.py` (im cmd-Fenster `auswerten.cmd <Ordner>`, oder den Termin-Ordner im Explorer auf `auswerten.cmd` ziehen) macht aus jeder Aufnahme eine Take-Datei mit deinen Gelenken in 3D, 30 Bilder pro Sekunde, im Format von [`FORMAT.md`](FORMAT.md). Pro Take:
 
 1. **2D:** YOLO11x-pose findet dich in jedem Infrarotbild (und verfolgt dich über den Take, auch wenn kurz jemand anderes durchs Bild läuft). Sapiens2 1b setzt im Ausschnitt um dich Körper, Füße und je 21 Punkte pro Hand, ViTPose++ huge den Körper ein zweites Mal; jedes Modell sieht das Bild auch gespiegelt, die Ergebnisse werden gemittelt. Wo Sapiens2 sicher ist, entscheidet es; wo nicht, springen die anderen ein. Dieser Schritt ist teuer und wird neben der Aufnahme zwischengespeichert (`<name>.kp2d-stark.json.gz`): Ein zweiter Lauf rechnet nur noch 3D.
 2. **3D:** An jedem Gelenk die Tiefe der Kinect, robust gegen Kanten, fliegende Pixel und Dinge davor (Hände, Ring, Kabel vor der Hüfte), geprüft am Körperbau. Daraus der Punkt im Raum, zur Gelenkmitte nach hinten versetzt. Der Boden kommt aus dem leeren Raum (`cal.<Aufbau>.empty` derselben Kinect-Platzierung) oder aus der Aufnahme selbst. Deine Knochenlängen werden über den Take geschätzt (oder aus `cal.<Aufbau>.body`) und halten Gelenke, deren Tiefe fehlt, auf ihrem Sichtstrahl. Vertauschte Seiten (linkes und rechtes Bein in der Seitenansicht) werden erkannt. Dann geglättet, ohne schnelle Bewegungen zu verschleifen, Lücken bis 1 s gefüllt, genau 30 fps.
 3. **Klatschen** als Nullpunkt (gesucht um das Startsignal aus `sitzung.json`), Beginn und Ende der Aktion; alles vor „Klatschen − 1 s“ fällt weg.
 4. **Hände:** je Hand ein Koordinatensystem (Handgelenk, Zeige-, Mittel-, Kleinfinger-Grundgelenk) und die Krümmung jedes Fingers, mit Sicherheit.
-5. **Kabel** (experimentell): die dünne dunkle Linie um und unter den Händen, in 3D, als Polylinien.
+5. **Kabel** (experimentell): die dünne dunkle Linie um und unter den Händen, in 3D, als Polylinien; nur bei Shots, die laut Plan das Kabel brauchen (in der Körper-Kalibrierung gäbe es nur Fehltreffer).
 
 ### Einmal einrichten (Windows)
 
@@ -234,9 +262,9 @@ auswerten.cmd --every 3 --topdown sapiens ...                                 bi
 auswerten.cmd --help                                                          alle Optionen
 ```
 
-- Ein **Ordner** wertet alle Takes darin aus, die du in `sitzung.json` behalten hast (`--alle`: auch die verworfenen). Kalibrierung zuerst: `cal.X.empty` liefert den Boden, `cal.X.body` die Knochenlängen für die folgenden Takes (beides automatisch, über die Platzierung aus `sitzung.json`; von Hand: `--boden`, `--knochen`).
+- Ein **Ordner** wertet alle Takes darin aus, die du in `sitzung.json` behalten hast (`--alle`: auch die verworfenen). Kalibrierung zuerst: `cal.X.empty` liefert den Boden, `cal.X.body` die Knochenlängen für die folgenden Takes (beides automatisch, über die Platzierung aus `sitzung.json`; von Hand: `--boden`, `--knochen`). Wertest du später einen **einzelnen Take** aus, nimmt er den Boden ebenso aus `cal.X.empty` und die Knochenlängen aus der schon ausgewerteten `cal.X.body` im Ordner der Take-Dateien.
 - **Zwei Personen** (`p6.lift.pair`): die zweite landet in `<shot>_t<take>_p2.json.gz`.
-- **Weiterrechnen:** Nochmal starten genügt; was im 2D-Zwischenstand steht, wird nicht neu gerechnet (`--neu` erzwingt es; mit anderen Modellen rechnet es von selbst neu). Strg+C bricht ab; fertige Takes bleiben.
+- **Weiterrechnen:** Nochmal starten genügt; was im 2D-Zwischenstand steht, wird nicht neu gerechnet, auch wenn er mit anderen Einstellungen entstand (`--every`, auf Colab mit `--topdown sapiens`). `--neu` erzwingt es; wählst du ausdrücklich andere Modelle (`--topdown`, `--detektor`, `--sapiens`, `--vitpose`) oder das andere `--modell`, rechnet es von selbst neu. Strg+C bricht ab; fertige Takes bleiben.
 - Die Auswertung läuft mit niedriger CPU-Priorität, damit Hub und Aufnahme vorgehen (`--volle-prioritaet` schaltet das ab). Während einer Aufnahme trotzdem besser nicht mit den großen Modellen rechnen.
 - Hilfreich: `--every N` (Modelle nur auf jedem n-ten Frame, 2D dazwischen interpoliert, die Tiefe aber in jedem Frame), `--ohne-spiegel` (halbe Zeit), `--kabel hell` (helles Kabel) oder `aus`, `--ganz` (nicht kürzen), `--glatt 0.7` (weniger glätten), `--max-luecke 0.5`, `--ohne-video`, `--signal 3.2` (Startsignal von Hand, wenn ohne Tool aufgenommen).
 
@@ -314,7 +342,10 @@ Mit den wahren 2D-Pixeln liegen Arme und Beine bei 2–14 mm, die Hände (42 Pun
 
 ```
 python kabel-wickeln\mocap\tests\test_auswerten.py
+python kabel-wickeln\mocap\tests\test_format.py
 ```
+
+`test_format.py` ist die Kreuzprobe des Take-Formats: Was Python schreibt, liest `src/mocap/take.ts` Zahl für Zahl gleich (auch über `DecompressionStream` wie im Browser), die 68 Gelenknamen sind in Python, `joints.ts` und `generate.ts` gleich, und Pixel, Kamera, WELT, oben und links/rechts passen zur synthetischen Wahrheit (braucht Node und `npm install` in `kabel-wickeln`).
 
 Einzeltests (Leser, Kamera, Boden, Glättung, Hände, Take-Format, Klatschen) laufen ohne Daten in einer Sekunde. Mit den synthetischen Aufnahmen (`node mocap\synthetic\erzeugen.mjs`) kommen dazu: die wahren 2D-Pixel durch die ganze 3D-Kette, das leichte Modell auf `synth-coil`, das Kabel, ein Termin-Ordner mit `sitzung.json` (zusammen etwa 3 min). `python auswerten.py --modell leicht ..\output\synthetic` vergleicht jede synthetische Aufnahme mit ihrer Wahrheit und druckt die Fehler je Gelenk.
 

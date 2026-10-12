@@ -126,14 +126,20 @@ export class StrapMesh {
 
   /**
    * Lays the band along a path of n points (xyz) starting at the eyelet (pose() spaces them over
-   * the band's length); `side` is the direction of the band's width. Allocates nothing.
+   * the band's length); `side` is the direction of the band's width, or per point (`sides`, xyz
+   * per point: a band that turns, e.g. hanging down from a cable). Allocates nothing.
    */
-  public update(path: Float32Array, n: number, side: V3) {
+  public update(path: Float32Array, n: number, side: V3, sides?: Float32Array) {
     n = Math.min(n, this.maxPoints);
     const P = this.pos, Nr = this.nrm;
     const hw = this.width / 2, ht = this.thickness / 2;
-    const sx = side[0], sy = side[1], sz = side[2];
+    let sx = side[0], sy = side[1], sz = side[2];
     for (let k = 0; k < n; k++) {
+      if (sides) {
+        sx = sides[k * 3];
+        sy = sides[k * 3 + 1];
+        sz = sides[k * 3 + 2];
+      }
       const a = Math.max(0, k - 1) * 3, b = Math.min(n - 1, k + 1) * 3;
       let tx = path[b] - path[a], ty = path[b + 1] - path[a + 1], tz = path[b + 2] - path[a + 2];
       const tl = Math.hypot(tx, ty, tz) || 1;
@@ -182,6 +188,12 @@ export class StrapMesh {
       att.addUpdateRange(0, (8 + n * 8) * 3);
       att.needsUpdate = true;
     }
+  }
+
+  /** puts the eyelet at p: its x along the band's width, y outward (radial), z along the band */
+  public placeEyelet(p: V3, x: V3, y: V3, z: V3) {
+    this.eyelet.matrix.set(x[0], y[0], z[0], p[0], x[1], y[1], z[1], p[1], x[2], y[2], z[2], p[2], 0, 0, 0, 1);
+    this.eyelet.matrixWorldNeedsUpdate = true;
   }
 
   /** wraps the tie around a bundle (see the file header); allocates nothing */

@@ -4,7 +4,7 @@
   "plan": "mocap/aufnahmeplan.md",
   "conventions": {
     "files": "recordings/mocap/termin{session}/{shot}_t{take}.k2rec im Hauptcheckout (recordings/ ist git-ignoriert, nie committen oder hochladen); daneben das Sitzungslog sitzung.json von mocap/aufnahme.py. Take-Nummern sind je Shot über alle Termine eindeutig",
-    "takes_out": "mocap/takes/{shot}_t{take}.json (nur Gelenkdaten, keine Bilder; die einzigen Dateien, die ins Repository dürfen, und nur mit deinem Okay)",
+    "takes_out": "{shot}_t{take}.json.gz (Format: mocap/FORMAT.md; nur Gelenkdaten, keine Bilder). auswerten.py schreibt sie nach recordings/mocap/takes/ im Hauptcheckout (privat); nach mocap/takes/ nur mit --ins-repo und deinem Okay: die einzigen Dateien aus der Aufnahme, die ins Repository dürfen",
     "order": "Die Shots stehen in Aufnahmereihenfolge: alle Shots eines Setups hintereinander.",
     "start_countdown_s": 5,
     "pre_roll_s": 2,

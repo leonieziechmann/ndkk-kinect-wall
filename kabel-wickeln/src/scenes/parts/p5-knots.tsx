@@ -24,7 +24,7 @@ import * as THREE from 'three';
 import { BakedRod, Frame, Quat, V3, loadBake, quatMul, quatRotate, smooth } from '../../sim';
 import { CRATE, CRATE_T, KNOT_HOLD, KNOT_T } from '../../shots/p5-knots';
 import { NOOR } from '../../people/cast';
-import { Grip, HandRig, Rig, RigTrack, eyesOfRig, gripFrame, squat, stand } from '../../people/rig';
+import { Grip, HandRig, Rig, RigTrack, eyesOfRig, gripFrame, stand } from '../../people/rig';
 import { CAPTION_Y, GAP, PANEL_H, PanelTitle, TOP, clock, readTime, splitPerson, viewLayers } from '../../lib/kit';
 import { C, FONT, OVER, UNDER } from '../../lib/theme';
 import { Mark, StageChip } from '../../lib/ui';
@@ -41,12 +41,13 @@ import { ThreeView, World3D } from '../../three/view';
 /**
  * Shot times read off the bakes (scratchpad p5k/ana.mjs, tight.mjs); the part checks them against
  * the bakes when it runs and prints any difference ("[render] p5-knots checks").
- *   pull: the knots close (k1 loop 6, k2 loop 4, k3 loop 2), she stops pulling (done)
- *   fix:  she stops (a loop starts to close round the cable), the end is outside again, the end of
- *         the pull that follows (both ends outside: no knot)
+ *   pull: the knots close (k1 in loop 6, k2 in loop 4; the third, in loop 2, stays loose in the
+ *         simulation and is not shown, see the report), where the part stops showing the pull (done)
+ *   fix:  she takes the end (stop), the end is outside again (fixed), the end of the pull that
+ *         follows (both ends outside: no knot)
  */
-export const PULL_K = { k1: 5.6, k2: 11.6, k3: 17.5, done: 18.5 };
-export const FIX_K = { stop: 4.6, fixed: 12.6, end: 21 };
+export const PULL_K = { k1: 6.0, k2: 12.15, done: 14.6 };
+export const FIX_K = { stop: 0.62, fixed: 5.98, end: 13.2 };
 export const OK_K = { end: 20 };
 
 // ===================================================================================== the plan
@@ -84,31 +85,30 @@ const play = (id: string, shot: Shot, from: number, to: number, speed = 1) => {
 
 const CT = CRATE_T;
 const K = PULL_K, F = FIX_K;
-// 0 · the cause: dropped into the crate (slow motion, then real time), lifted out: the end comes out of the middle
+// 0 · the cause: she drops the ring, its velcro open, into the crate (slow motion, then real time);
+//     its end has fallen through the middle
 hold('in', 'crate', 0, 0.8);
-play('drop', 'crate', 0, CT.drop);
-play('fall', 'crate', CT.drop, CT.land + 0.3, SLOW);
+play('drop', 'crate', 0, CT.drop - 0.05);
+play('fall', 'crate', CT.drop - 0.05, CT.land + 0.25, SLOW);
 cut();
-play('fallRT', 'crate', 0, CT.land + 0.5);
-play('lift', 'crate', CT.land + 0.5, CT.end);
-// 1 · in her hand: the end comes out of the middle
+play('fallRT', 'crate', CT.drop - 0.2, CT.end);
+hold('land', 'crate', CT.end, 1.6);
+// 1 · in her hand (lifted out): the end comes out of the middle
 cut('split');
-hold('diag', 'pull', 0, 2.6);
-// 2 · she pulls: in every second loop a knot closes (1, 2, 3); between them twice as fast
+hold('diag', 'pull', 0, 3.4);
+// 2 · she pulls: in every second loop a knot closes (1, 2); between them twice as fast
 play('pull1', 'pull', 0, K.k1 + 1.4);
 play('fast1', 'pull', K.k1 + 1.4, K.k2 - 1.2, FAST);
-play('pull2', 'pull', K.k2 - 1.2, K.k2 + 1.4);
-play('fast2', 'pull', K.k2 + 1.4, K.k3 - 1.2, FAST);
-play('pull3', 'pull', K.k3 - 1.2, K.done + 0.4);
-hold('knots', 'pull', K.done + 0.4, 1.6);
-// 3 · stop when the first knot starts to close, the end back through the middle
+play('pull2', 'pull', K.k2 - 1.2, K.done + 0.4);
+hold('knots', 'pull', K.done + 0.4, 1.8);
+// 3 · back to the first knot: stop (a still); then the end back through the middle, the cable comes out without a knot
 cut();
-hold('stopCap', 'fix', F.stop - 1.4, 1.2);
-play('stop', 'fix', F.stop - 1.4, F.stop + 1.2);
-play('back', 'fix', F.stop + 1.2, F.fixed);
-hold('backOk', 'fix', F.fixed, 1.2);
-play('fixPull', 'fix', F.fixed, F.end, FAST);
-hold('fixOk', 'fix', F.end, 1.0);
+hold('stopCap', 'pull', K.k1 + 0.3, 3.0);
+cut();
+play('back', 'fix', F.stop - 0.2, F.fixed + 0.3);
+hold('backOk', 'fix', F.fixed + 0.3, 1.0);
+play('fixPull', 'fix', F.fixed + 0.3, F.end, FAST);
+hold('fixOk', 'fix', F.end, 1.4);
 // 4 · beside it: ✓ both ends outside, the same ring, the same hand, no knot (fast)
 cut('cmp');
 hold('cmpIn', 'ok', 0, 0.8);
@@ -126,7 +126,7 @@ function seg(id: string): Seg {
 }
 const S = (id: string) => seg(id).at;
 // (every id the picture uses, checked when the module loads: a typo fails loudly here, not silently in a signal)
-['in', 'drop', 'fall', 'fallRT', 'lift', 'diag', 'pull1', 'fast1', 'pull2', 'fast2', 'pull3', 'knots', 'stopCap', 'stop', 'back', 'backOk', 'fixPull', 'fixOk', 'cmpIn', 'cmp', 'cmpHold', 'out'].forEach(seg);
+['in', 'drop', 'fall', 'fallRT', 'land', 'diag', 'pull1', 'fast1', 'pull2', 'knots', 'stopCap', 'back', 'backOk', 'fixPull', 'fixOk', 'cmpIn', 'cmp', 'cmpHold', 'out'].forEach(seg);
 const E = (id: string) => seg(id).at + seg(id).len;
 
 function segAt(tau: number): Seg {
@@ -152,8 +152,8 @@ const takeStart = (k: number) => (SEGS.find((x) => x.take === k) ?? SEGS[0]).at;
 // ------------------------------------------------------------------------------------ captions
 
 const CAPS: { text: string; a: number; b: number }[] = [
-  { text: 'Kommt das Ende aus der Mitte? Dann falsche Seite.', a: E('lift') - 1.2, b: S('pull1') + 3.6 },
-  { text: 'Knoten? Stopp. Ende zurück durch die Mitte, nicht reißen.', a: S('stopCap') + 0.1, b: S('back') + 3.3 },
+  { text: 'Kommt das Ende aus der Mitte? Dann falsche Seite.', a: S('diag') + 0.2, b: S('pull1') + 2.4 },
+  { text: 'Knoten? Stopp. Ende zurück durch die Mitte, nicht reißen.', a: S('stopCap') + 0.2, b: S('back') + 3.8 },
   { text: 'Richtig: Beide Enden außen – auseinanderziehen oder werfen.', a: S('cmpIn') + 0.1, b: S('cmp') + 6.2 },
 ];
 const CAP_IN = 0.35, CAP_OUT = 0.3;
@@ -177,11 +177,12 @@ const captionProblems = (() => {
  * seconds). Until then Noor moves by the keyframes below.
  */
 export const MOCAP_SLOTS = [
-  { shot: 'p5.knots.cause', role: 'Noor', from: S('in'), to: E('lift'), note: 'Ring mit offenem Band flach über die Kiste halten, fallen lassen (Zeitlupe und Echtzeit aus derselben Aufnahme), in die Hocke, Ring oben greifen, herausheben; die linke Hand treibt dann den Griff der Simulation (lh)' },
-  { shot: 'p5.knots.pull', role: 'Noor', from: S('diag'), to: E('knots'), note: 'Ring links, Ende kommt aus der Mitte; rechte Hand zieht Hand über Hand nach rechts, die linke lässt die Schlaufen nacheinander los; Knoten in Schlaufe 6, 4, 2; Zeitraffer zwischen den Knoten aus derselben Aufnahme' },
-  { shot: 'p5.knots.fix', role: 'Noor', from: S('stopCap'), to: E('fixOk'), note: 'derselbe Zug bis zum ersten Knoten, Stopp, Ende nehmen, zurück durch den Knoten und die Mitte, dann beide Enden außen auseinanderziehen (Zeitraffer)' },
+  { shot: 'p5.knots.cause', role: 'Noor', from: S('in'), to: E('land'), note: 'Ring mit offenem Band flach über die Kiste halten und fallen lassen (Zeitlupe und Echtzeit aus derselben Aufnahme); das Herausheben aus der Kiste (Ende der Aufnahme) wird in der Rohfassung übersprungen: Schnitt auf den Ring in der Hand' },
+  { shot: 'p5.knots.pull', role: 'Noor', from: S('diag'), to: E('knots'), note: 'Ring links, Ende kommt aus der Mitte; rechte Hand zieht Hand über Hand nach rechts, die linke lässt die Schlaufen nacheinander los; Knoten in Schlaufe 6 und 4 (der dritte, in Schlaufe 2, bleibt in der Simulation locker); Zeitraffer zwischen den Knoten aus derselben Aufnahme' },
+  { shot: 'p5.knots.pull', role: 'Noor', from: S('stopCap'), to: E('stopCap'), note: 'Standbild beim ersten Knoten (derselbe Take, „Stopp“)' },
+  { shot: 'p5.knots.fix', role: 'Noor', from: S('back'), to: E('fixOk'), note: 'Ende nehmen, zurück durch die Mitte (die Hand führt dann das Ende in der Simulation), beide Enden außen, auseinanderziehen (Zeitraffer). In der Rohfassung ohne vorher zugezogenen Knoten, siehe Bericht' },
   { shot: 'p5.knots.pull', role: 'Noor', from: S('cmpIn'), to: E('out'), note: '✗-Feld des Vergleichs: derselbe Take wie oben, 2,5 × schneller' },
-  { shot: 'p5.knots.fix', role: 'Noor', from: S('cmpIn'), to: E('out'), note: '✓-Feld des Vergleichs (Ring mit beiden Enden außen, derselbe Zug): die zweite Hälfte von p5.knots.fix (auseinanderziehen); kein eigener Shot mit vollem Ring' },
+  { shot: 'p5.knots.fix', role: 'Noor', from: S('cmpIn'), to: E('out'), note: '✓-Feld des Vergleichs (beide Enden außen, derselbe Zug): die zweite Hälfte von p5.knots.fix; kein eigener Shot mit vollem Ring von Anfang an' },
 ];
 
 // ===================================================================================== helpers
@@ -259,52 +260,32 @@ function holdRig(b: BakedRod, t: number, s: number): Rig {
   return { ...base, look, hands: [left, right] };
 }
 
-/** the left hand's grip relative to the crate shot's hand frame: palm up under the ring's top, thumb along it to her left */
-const GRIP_FLAT = gripFrame([0, 0, 0], [-1, 0, 0], norm3([0, -0.8, 0.6]));
+/** the left hand's grip relative to the crate shot's hand frame: palm up under the ring's top (at its left), thumb along it, forward */
+const GRIP_FLAT = gripFrame([0, 0, 0], [0, 0, -1], norm3([-0.6, -0.8, 0]));
 const REST_R: Grip = gripFrame([0.24, 0.8, -0.06], norm3([0.1, -1, -0.15]), norm3([-0.4, 0, -1]));
+const REST_L: Grip = gripFrame([-0.24, 0.8, -0.04], norm3([-0.1, -1, -0.15]), norm3([0.4, 0, -1]));
 
-type Stance = Pick<Rig, 'pos' | 'yaw' | 'feet' | 'drop' | 'lean'>;
-function mixStance(a: Stance, b: Stance, u: number): Stance {
-  const feet = a.feet.map((fa, i) => {
-    const fb = b.feet[i];
-    if ('kneel' in fa || 'kneel' in fb) return u < 0.5 ? fa : fb;
-    return { ankle: mixV(fa.ankle, fb.ankle, u), dir: norm3(mixV(fa.dir, fb.dir, u)), knee: fa.knee && fb.knee ? norm3(mixV(fa.knee, fb.knee, u)) : (fb.knee ?? fa.knee) };
-  }) as Rig['feet'];
-  return { pos: [a.pos[0] + (b.pos[0] - a.pos[0]) * u, a.pos[1] + (b.pos[1] - a.pos[1]) * u], yaw: a.yaw, feet, drop: (a.drop ?? 0) + ((b.drop ?? 0) - (a.drop ?? 0)) * u, lean: (a.lean ?? 0) + ((b.lean ?? 0) - (a.lean ?? 0)) * u };
-}
 
 /**
- * Noor at the crate: she holds the ring flat over it and lets it go; squats down, takes the ring's
- * top again and stands up with it (the hand frame lh from the bake while she holds it).
+ * Noor at the crate: she holds the ring flat over it (bending a little), lets it go, her hand opens
+ * and goes back to her side; she watches it land.
  */
 function crateRig(b: BakedRod, t: number, s: number): Rig {
-  const up = stand(NOOR, [0, 0], 0, { width: 0.28, stagger: 0.04 });
-  const down = squat(NOOR, [0, 0.02], 0, 0.85);
-  const q = ramp(t, 1.0, CT.grab - 0.3) * (1 - ramp(t, CT.lift0 + 0.2, CT.lift1));
-  const st = mixStance(up, down, q);
+  const st = stand(NOOR, [0, 0.04], 0, { width: 0.28, stagger: 0.04 });
   const id = idle(s);
-  const handGrip = (tt: number): Grip => {
-    const f = b.frame('lh', tt);
-    return { p: f.p, q: quatMul(f.q, GRIP_FLAT.q) };
-  };
-  const atDrop = handGrip(0);
-  const atGrab = handGrip(CT.grab);
-  // after letting go: up and a little back; then down into the crate to the ring's top
-  const away: Grip = { p: add3(atDrop.p, [0.0, 0.12, 0.1]), q: atDrop.q };
-  let grip: Grip, open = 0;
-  if (t < CT.drop) grip = atDrop;
-  else if (t < CT.grab - 1.1) {
-    grip = mixGrip(atDrop, away, ramp(t, CT.drop, CT.drop + 0.5));
-    open = Math.min(1, (t - CT.drop) / 0.12);
-  } else if (t < CT.grab) {
-    const hover: Grip = { p: add3(atGrab.p, [0, 0.07, 0.04]), q: atGrab.q };
-    grip = t < CT.grab - 0.35 ? mixGrip(away, hover, ramp(t, CT.grab - 1.1, CT.grab - 0.35)) : mixGrip(hover, atGrab, ramp(t, CT.grab - 0.35, CT.grab));
-    open = 1 - ramp(t, CT.grab - 0.12, CT.grab + 0.08);
-  } else grip = handGrip(t);
-  const left: HandRig = { grip, hold: 'coil', radius: COIL_R, thumbAlong: 1, free: 0.4, open };
+  const f0 = b.frame('lh', 0);
+  const atDrop: Grip = { p: f0.p, q: quatMul(f0.q, GRIP_FLAT.q) };
+  // after letting go: up and back toward her, then down to her side (an open hand)
+  const away: Grip = { p: add3(atDrop.p, [0.0, 0.14, 0.14]), q: atDrop.q };
+  let left: HandRig;
+  if (t < CT.drop) left = { grip: atDrop, hold: 'coil', radius: COIL_R, thumbAlong: 1, free: 0.4, open: 0 };
+  else if (t < CT.drop + 0.6) left = { grip: mixGrip(atDrop, away, ramp(t, CT.drop, CT.drop + 0.6)), hold: 'coil', radius: COIL_R, thumbAlong: 1, free: 0.4, open: Math.min(1, (t - CT.drop) / 0.12) };
+  else left = { grip: mixGrip(away, REST_L, ramp(t, CT.drop + 0.6, CT.drop + 1.5)), hold: 'coil', radius: COIL_R, thumbAlong: 1, free: 0.6, open: 1 };
   const right: HandRig = { grip: REST_R, hold: 'pinch', radius: RC, open: 1, free: 0.8 };
-  const look: V3 = [CRATE.x, 0.05 + 0.6 * ramp(t, CT.lift0, CT.lift1), CRATE.z + 0.05];
-  return { ...st, lean: (st.lean ?? 0) + 0.12 + id.lean * 0.5, bend: id.bend, twist: id.twist, drop: (st.drop ?? 0) + id.drop, reach: 1, look, hands: [left, right] };
+  const look: V3 = [CRATE.x, 0.1, CRATE.z + 0.04];
+  // (bent forward over the crate while she holds the ring low, upright again after)
+  const bendOver = 0.32 * (1 - ramp(t, CT.drop + 0.3, CT.drop + 1.4));
+  return { ...st, lean: 0.06 + bendOver + id.lean * 0.4, bend: id.bend, twist: id.twist, drop: id.drop + 0.05 * (1 - ramp(t, CT.drop + 0.3, CT.drop + 1.4)), reach: 1, look, hands: [left, right] };
 }
 
 // ===================================================================================== cameras
@@ -357,10 +338,10 @@ export function* part(layer: Node) {
   const kPull = knotTimes(B.pull), kFix = knotTimes(B.fix), kOk = knotTimes(B.ok);
   const fixEnd = { knots: tr(B.fix, 'knotsEver', FIX_K.end), stop: tr(B.fix, 'stopAt', FIX_K.end), fixed: tr(B.fix, 'fixedAt', FIX_K.end) };
   /** the loop (1 … 6) each knot of the pull is made of */
-  const knotLoops = [1, 2, 3].map((k) => Math.round(tr(B.pull, `knot${k}L`, B.pull.duration)) + 1);
+  const knotLoops = [1, 2, 3].map((k) => Math.round(tr(B.pull, `knot${k}L`, PULL_K.done)) + 1).filter((l) => Number.isFinite(l));
   const truth = {
-    threeKnots: kPull.length >= 3,
-    everySecond: knotLoops.every((l) => l % 2 === 0),
+    twoKnots: kPull.filter((x) => x <= PULL_K.done).length >= 2,
+    everySecond: knotLoops.length >= 2 && knotLoops.every((l) => l % 2 === 0),
     fixNoKnot: fixEnd.knots === 0 && Number.isFinite(fixEnd.fixed),
     okNone: kOk.length === 0,
   };
@@ -415,7 +396,6 @@ export function* part(layer: Node) {
   const camKeys: { at: number; dur: number; cam: Orbit }[] = [
     { at: 0, dur: 0, cam: CRATE_WIDE },
     { at: S('fall'), dur: 0, cam: CRATE_CLOSE },
-    { at: S('lift'), dur: 1.4, cam: CRATE_WIDE },
     { at: S('diag'), dur: 0, cam: EXT },
   ];
   const extOrbit = (): Orbit => {
@@ -518,17 +498,17 @@ export function* part(layer: Node) {
   badge(root, 'Zeitlupe', () => win(S('fall'), E('fall'), 0.2, 0.2), bxCrate);
   badge(root, 'Echtzeit', () => win(S('fallRT'), E('fallRT'), 0.2, 0.2), bxCrate);
   // (over her view in the split screen, over the middle in the comparison)
-  const fastOn = () => Math.max(win(S('fast1'), E('fast1'), 0.2, 0.2), win(S('fast2'), E('fast2'), 0.2, 0.2), win(S('fixPull'), E('fixPull'), 0.2, 0.2));
+  const fastOn = () => Math.max(win(S('fast1'), E('fast1'), 0.2, 0.2), win(S('fixPull'), E('fixPull'), 0.2, 0.2));
   badge(root, 'Zeitraffer 2×', fastOn, xL + wL / 2);
   badge(root, 'Zeitraffer 2,5×', () => win(S('cmp'), E('cmp'), 0.2, 0.2), 0, TOP + 96);
   // the fix: what this is
   root.add(
-    <Rect x={xL + wL - 24} y={TOP + 24} offset={[1, -1]} padding={[8, 20]} radius={30} fill={C.plate} opacity={() => win(S('stopCap'), E('backOk'), 0.4, 0.4)} layout>
+    <Rect x={xL + wL - 24} y={TOP + 24} offset={[1, -1]} padding={[8, 20]} radius={30} fill={C.plate} opacity={() => win(S('stopCap'), E('stopCap'), 0.3, 0.3)} layout>
       <Txt text={'Beim ersten Knoten'} fontFamily={FONT} fontWeight={700} fontSize={32} fill={C.text} />
     </Rect>,
   );
   root.add(
-    <Rect x={xL + wL / 2} y={TOP + 24} offset={[0, -1]} padding={[8, 24]} radius={30} fill={C.text} opacity={() => win(S('stop') + 1.35, S('back') + 0.6, 0.2, 0.3)} layout>
+    <Rect x={xL + wL / 2} y={TOP + 24} offset={[0, -1]} padding={[8, 24]} radius={30} fill={C.text} opacity={() => win(S('stopCap') + 0.4, E('stopCap'), 0.2, 0.3)} layout>
       <Txt text={'Stopp'} fontFamily={FONT} fontWeight={800} fontSize={36} fill={'#fff'} />
     </Rect>,
   );
@@ -555,7 +535,7 @@ export function* part(layer: Node) {
     );
   };
   const pullShown = () => (cur().shot === 'pull' || cur().shot === 'fix' ? 1 : 0);
-  for (const k of [1, 2, 3]) {
+  for (const k of [1, 2]) {
     ringOn(extView, () => (cur().shot === 'fix' ? B.fix : B.pull), k, () => splitOp() * pullShown());
     ringOn(povView, () => (cur().shot === 'fix' ? B.fix : B.pull), k, () => splitOp() * pullShown());
     ringOn(cmpViews[0], () => B.pull, k, cmpOp);
@@ -598,7 +578,7 @@ export function* part(layer: Node) {
   );
   root.add(loopsTally);
   // what the tally shows, once the knots are there (only if the bake says so)
-  if (truth.everySecond && truth.threeKnots)
+  if (truth.everySecond && truth.twoKnots)
     root.add(
       <Rect x={xR + wR - 24} y={TOP + 150} offset={[1, -1]} padding={[8, 20]} radius={30} fill={UNDER} layout opacity={() => win(S('knots') - 0.4, E('knots'), 0.3, 0.3)}>
         <Txt text={'Knoten in jeder 2. Schlaufe'} fontFamily={FONT} fontWeight={700} fontSize={32} fill={'#fff'} />
@@ -609,12 +589,13 @@ export function* part(layer: Node) {
   const label = (o: { view: ThreeView; target: () => V3; at: [number, number]; text: string; color?: string; on: () => number }) =>
     root.add(callout({ view: o.view, target: o.target, at: o.at, text: o.text, color: o.color, size: 34, arrow: true, opacity: o.on }));
   const plugTip = (b: BakedRod) => () => b.nodeAt(t(), b.n - 1, [0, 0, 0]);
-  label({ view: crateView, target: plugTip(B.crate), at: [-960 + GAP + fullW / 2 + 420, TOP + 170], text: 'Ende durch die Mitte gefallen', on: () => win(S('fall') + 0.6, E('fallRT'), 0.4, 0.3) });
-  label({ view: crateView, target: plugTip(B.crate), at: [-960 + GAP + fullW / 2 + 430, TOP + 600], text: 'Ende kommt aus der Mitte', on: () => win(E('lift') - 1.6, E('lift'), 0.4, 0.2) });
+  label({ view: crateView, target: plugTip(B.crate), at: [-960 + GAP + fullW / 2 + 430, TOP + 170], text: 'Ende durch die Mitte gefallen', on: () => win(S('fall') + 0.8, E('land'), 0.4, 0.3) });
+  label({ view: crateView, target: () => B.crate.nodeAt(t(), Math.round(B.crate.track('tieNode', 0)), [0, 0, 0]), at: [-960 + GAP + fullW / 2 - 430, TOP + 170], text: 'Klettband offen', on: () => win(S('in') + 0.1, E('drop') + 0.6, 0.3, 0.3) });
   label({ view: extView, target: plugTip(B.pull), at: [xR + wR / 2, TOP + 660], text: 'Ende kommt aus der Mitte', on: () => win(S('diag') + 0.2, S('pull1') + 1.0, 0.4, 0.3) });
+  label({ view: povView, target: plugTip(B.pull), at: [xL + wL / 2 + 180, TOP + 700], text: 'Ende kommt aus der Mitte', on: () => win(S('diag') + 0.4, S('pull1') + 1.0, 0.4, 0.3) });
   const k1s = kPull.length ? sceneOf('pull', kPull[0]) : NaN;
   label({ view: extView, target: () => knotPos(B.pull, 1, t()) ?? KNOT_HOLD, at: [xR + 190, TOP + 170], text: 'Knoten', color: UNDER, on: () => (cur().shot === 'pull' && Number.isFinite(k1s) ? win(k1s + 0.1, k1s + 2.6, 0.3, 0.3) : 0) });
-  label({ view: extView, target: () => mixV(KNOT_HOLD, plugTip(B.fix)(), 0.5), at: [xR + 200, TOP + 170], text: 'Schlaufe zieht sich zu', color: UNDER, on: () => win(S('stop') + 0.6, S('back') + 0.4, 0.3, 0.3) });
+  label({ view: extView, target: plugTip(B.fix), at: [xR + 170, TOP + 420], text: 'Ende', on: () => win(S('back') + 0.3, E('back') - 1.2, 0.3, 0.3) });
   if (Number.isFinite(fixEnd.fixed)) label({ view: extView, target: plugTip(B.fix), at: [xR + wR / 2, TOP + 170], text: 'Ende wieder außen', on: () => win(E('back') - 0.6, E('backOk'), 0.4, 0.3) });
   if (truth.fixNoKnot) label({ view: extView, target: () => B.fix.frame('rh', t()).p, at: [xR + wR / 2, TOP + 640], text: '✓ kein Knoten', on: () => win(E('fixPull') - 0.8, E('fixOk'), 0.3, 0.3) });
   if (truth.okNone) label({ view: cmpViews[1], target: plugTip(B.ok), at: [xC[1] + wC / 2, TOP + 160], text: '✓ kein Knoten', on: () => win(S('cmpHold'), E('cmpHold'), 0.4, 0.3) });

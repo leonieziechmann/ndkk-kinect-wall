@@ -1,7 +1,7 @@
 """Tests der Auswertung (mocap/auswerten.py, Paket mocap/auswertung).
 
     python kabel-wickeln/mocap/tests/test_auswerten.py            alle (die synthetischen nur, wenn es sie gibt)
-    python kabel-wickeln/mocap/tests/test_auswerten.py -v Einheit  nur die schnellen Einzeltests
+    python kabel-wickeln/mocap/tests/test_auswerten.py -k Einheit  nur die schnellen Einzeltests
 
 Braucht numpy; der Test des leichten Modells zusätzlich onnxruntime. Die synthetischen Aufnahmen kommen aus
 `node mocap/synthetic/erzeugen.mjs` (output/synthetic/, ~640 MB); fehlen sie, werden diese Tests übersprungen.
@@ -559,6 +559,29 @@ class Kommandozeile(Tmp):
                            input="nein\n", capture_output=True, text=True, encoding="utf-8", env=dict(os.environ, PYTHONUTF8="1"))
         self.assertEqual(r.returncode, 1)
         self.assertEqual(list(self.tmp.glob("*.zip")), [])
+
+    def test_body_calibration_found_for_single_takes(self):
+        """Ein einzelner Take nimmt die Knochenlängen der schon ausgewerteten cal.<Aufbau>.body (A vor T)."""
+        sys.path.insert(0, str(MOCAP))
+        import auswerten
+        self.assertIsNone(auswerten.body_take_in(self.tmp))
+        for name in ("cal.T.body_t1.json.gz", "cal.A.body_t1_p2.json.gz", "cal.A.body_t2.json.gz", "p1.coil.teach_t1.json.gz"):
+            (self.tmp / name).write_bytes(b"")
+        self.assertEqual(auswerten.body_take_in(self.tmp).name, "cal.A.body_t2.json.gz")
+        opts = auswerten.pipeline.Options(knochen=str(self.tmp / "cal.A.body_t2.json.gz"))
+        res = {"take": [self.tmp / "cal.B.body_t1.json.gz"]}
+        self.assertFalse(auswerten.body_prior(res, opts))            # --knochen von Hand bleibt
+        self.assertTrue(auswerten.body_prior(res, opts, replace=True))  # automatisch gefundene: die neue gilt
+        self.assertEqual(Path(opts.knochen).name, "cal.B.body_t1.json.gz")
+
+    def test_cached_2d_from_other_settings(self):
+        """Ein 2D-Zwischenstand von Colab (--topdown sapiens) oder mit --every wird ohne ausdrückliche Modellwahl benutzt."""
+        from auswertung import pipeline
+        colab = pipeline.Options(modell="stark", topdown=["sapiens"]).signature()
+        self.assertTrue(pipeline.reuse_other_2d(colab, pipeline.Options(modell="stark")))
+        self.assertFalse(pipeline.reuse_other_2d(colab, pipeline.Options(modell="stark", topdown=["sapiens", "vitpose"])))
+        self.assertFalse(pipeline.reuse_other_2d(colab, pipeline.Options(modell="leicht")))
+        self.assertFalse(pipeline.reuse_other_2d(None, pipeline.Options(modell="stark")))
 
 
 if __name__ == "__main__":
