@@ -907,7 +907,7 @@ export function* part(layer: Node) {
     const px = R - 470, py = TOP + 70;
     loopPanel.add(<Rect x={px} y={py} offset={[-1, -1]} width={450} height={680} radius={28} fill={C.plate} />);
     loopPanel.add(<Txt x={px + 225} y={py + 40} text={'Schlaufe'} fontFamily={FONT} fontWeight={700} fontSize={34} fill={C.text} />);
-    const rows: [string, number, number][] = [['Ladekabel', 10, 0.4], ['XLR', 25, 6.4], ['Starkstrom', 45, 16]];
+    const rows: [string, number, number][] = [['Ladekabel', 10, 4], ['XLR', 25, 6.4], ['Starkstrom', 45, 16]];
     const k = 3.4; // px per cm of loop diameter
     let y = py + 90;
     rows.forEach(([name, cm, mm]) => {
@@ -993,7 +993,7 @@ export function* part(layer: Node) {
     root.add(new Rect({ x: bx, y: () => y() + 8, offset: [-1, -1], width: () => Math.max(0.001, yel()), height: 26, radius: 6, fill: '#f2c230', opacity: bandOn }));
     root.add(new Rect({ x: () => bx + yel(), y: () => y() + 8, offset: [-1, -1], width: () => Math.max(0.001, len() - yel()), height: 26, radius: 6, fill: OVER, opacity: bandOn }));
     // the numbers at the end, right of the bar
-    root.add(new Rect({ x: bx + 4 * UNIT + 16, y: () => y() + 21, offset: [-1, 0], padding: [4, 14], radius: 24, fill: C.plate, layout: true, opacity: numsOn, children: [new Txt({ text: () => (k === 'over' && t() > BAND.t.release + 0.4 && cur().beat === 'band' ? 'losgelassen: 0' : NUMS[k]), fontFamily: FONT, fontWeight: 700, fontSize: 32, fill: C.text })] }));
+    root.add(new Rect({ x: bx + 4 * UNIT + 16, y: () => y() + 21, offset: [-1, 0], padding: [4, 14], radius: 24, fill: C.plate, layout: true, opacity: numsOn, children: [new Txt({ text: () => (k === 'over' && t() > REL.b + 0.05 && cur().beat === 'band' ? 'losgelassen: 0' : NUMS[k]), fontFamily: FONT, fontWeight: 700, fontSize: 32, fill: C.text })] }));
   });
   // the legend of the bars
   root.add(

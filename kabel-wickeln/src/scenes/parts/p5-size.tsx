@@ -640,9 +640,11 @@ export function* part(layer: Node) {
   // ------------------------------------------------------------------------- the picture
   const root = new Node({ opacity: () => smooth(tau() / 0.5) * (1 - smooth((tau() - S('out')) / 0.6)) });
   layer.add(root);
-  const opA = () => win(S('in') - 0.01, E('ghost'), 0.4, 0.45);
-  const opB = () => win(S('ringsIn'), E('ringsHold'), 0.45, 0.45);
-  const opE = () => win(S('moreIn'), LENGTH + 1, 0.45, 0.3);
+  // (cross-fades: the next beat fades in over the last one, which stays until it is covered)
+  const XF = 0.45;
+  const opA = () => win(S('in') - 0.01, E('ghost') + XF + 0.2, 0.4, 0.2);
+  const opB = () => win(S('ringsIn'), E('ringsHold') + XF + 0.2, XF, 0.2);
+  const opE = () => win(S('moreIn'), LENGTH + 1, XF, 0.3);
 
   // A
   const nodeA = new Node({ opacity: opA });
@@ -681,9 +683,10 @@ export function* part(layer: Node) {
     root.add(callout({ view: o.view, target: o.target, at: o.at, text: o.text, color: o.color, size: 34, arrow: true, opacity: o.on }));
   // A: the bows; the circle's size
   const bowPoint = (): V3 => add3(fit.c, mul3(norm3([0.5, 0, 0.8]), fit.R));
+  const rimTmp = new Float32Array(3 * 9);
   if (truth.bows) {
     label({ view: extViewS, target: bowPoint, at: [xR + wR / 2 + 60, TOP + 690], text: 'liegt in Bögen', on: () => win(S('settle') - 0.3, S('circle') + 0.6, 0.4, 0.3) });
-    label({ view: povViewS, target: () => ghostAt(t(), tau()).c, at: [xL + wL / 2 + 230, TOP + 170], text: `Ø ${diamCm} cm`, on: () => win(S('circle') + 0.9, E('ghost'), 0.4, 0.35) });
+    label({ view: povViewS, target: () => { const g = ghostAt(t(), tau()); const n = circlePoints(rimTmp, 9, g.c, ghostR, GHOST_N, g.theta); return [rimTmp[3 * (n - 1) - 3 * 2], rimTmp[3 * (n - 1) - 3 * 2 + 1], rimTmp[3 * (n - 1) - 3 * 2 + 2]] as V3; }, at: [xL + wL / 2 + 230, TOP + 170], text: `Ø ${diamCm} cm`, on: () => win(S('circle') + 0.9, E('ghost'), 0.4, 0.35) });
   }
   // B: what each ring does (only what the bakes show)
   const [rs, rb, rr] = ringWorlds;
