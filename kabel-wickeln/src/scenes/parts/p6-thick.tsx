@@ -23,7 +23,7 @@
 // sag). Everything on screen is a function of one scene clock (tau): SEGS map it to a shot and its
 // time (holds, slow motion, time-lapse, cuts back for real-time replays).
 
-import { Layout, Node, Rect, Txt } from '@motion-canvas/2d';
+import { Node, Rect, Txt } from '@motion-canvas/2d';
 import { easeInOutCubic } from '@motion-canvas/core';
 import * as THREE from 'three';
 import { BakedRod, Frame, POWER_5G16, POWER_5G2_5, V3, loadBake, smooth } from '../../sim';
@@ -274,7 +274,6 @@ export function* part(layer: Node) {
   };
   const cur = () => segAt(tau());
   const t = () => shotAt(tau());
-  const inSegs = (...ids: string[]) => ids.includes(cur().id);
 
   // ------------------------------------------------------------------------- what the bakes say
   const loops = [0, 1, 2].map((k) => B.coil.track(`loop${k}`, COIL_T.end));
@@ -383,10 +382,6 @@ export function* part(layer: Node) {
   viewLayers(povA, 'pov');
   const extA = makeCamera(40);
   viewLayers(extA, 'ext');
-  const ringTop = (tt: number) => {
-    const f = ringFist(tt);
-    return f.p;
-  };
   const drawCable = (mesh: CableMesh, b: BakedRod, tt: number, pos: Float32Array, d1: Float32Array) => {
     b.frameSample(tt, pos, d1);
     const [i0, i1] = cableRange(b);
@@ -633,8 +628,9 @@ export function* part(layer: Node) {
   label({ view: topViewB, target: () => add3(lobeNow(1)(), [0, 0.2, -0.24]), at: [xR + wR - 150, TOP + 150], text: '↻ rechtsherum', on: () => win(S('e4') + 1.6, E('e5'), 0.4, 0.4) });
   label({ view: topViewB, target: () => add3(lobeNow(-1)(), [0, 0.2, -0.24]), at: [xR + 160, TOP + 150], text: '↺ linksherum', on: () => win(S('e4') + 5.4, E('e5'), 0.4, 0.4) });
   if (truth.stripeCalm) {
-    const sStripe = eightStart(STACK.before) + 0.35 + 0.4 * STACK.R * (Math.PI + 2 * STACK.alpha) + 0.4;
-    label({ view: topViewB, target: nodeOf(B.eights, () => nodeAtS(B.eights, POWER_5G16, sStripe + B.eights.track('sDep', 0) - depositAt(0))), at: [xR + wR / 2 + 60, TOP + PANEL_H - 110], text: 'Streifen bleibt ruhig', on: () => win(S('e5') + 0.4, E('eEnd'), 0.4, 0.4) });
+    // (on the left lobe: from above her body hides the right one while she lays the next eight)
+    const sStripe = eightStart(STACK.before) + 3 * 0.35 + 1.5 * STACK.R * (Math.PI + 2 * STACK.alpha);
+    label({ view: topViewB, target: nodeOf(B.eights, () => nodeAtS(B.eights, POWER_5G16, sStripe + B.eights.track('sDep', 0) - depositAt(0))), at: [xR + 190, TOP + PANEL_H - 110], text: 'Streifen bleibt ruhig', on: () => win(S('e5') + 0.4, E('eEnd'), 0.4, 0.4) });
   }
   // the gauge
   label({ view: topViewB, target: () => add3(lobeCentre(STACK.before + 1, 1), [10 * POWER_5G16.od * 0.5, 0.22, 0]), at: [xR + wR / 2, TOP + 150], text: 'r ≥ 10 × Ø = 30 cm', color: C.text, on: () => win(S('gauge') + 1.0, E('gauge'), 0.4, 0.3) });
@@ -665,9 +661,6 @@ export function* part(layer: Node) {
     return { text: '', op: 0 };
   };
   root.add(<Txt y={CAPTION_Y} text={() => capNow().text} opacity={() => capNow().op} fontFamily={FONT} fontWeight={600} fontSize={46} fill={C.text} />);
-  void Layout;
-  void inSegs;
-  void ringTop;
 
   yield* run();
 

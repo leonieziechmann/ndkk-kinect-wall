@@ -36,8 +36,8 @@ export class RibbonMesh {
   private readonly pos: Float32Array;
   private readonly nrm: Float32Array;
   private readonly sub: number;
-  private readonly hw: number;
-  private readonly ht: number;
+  private hw: number;
+  private ht: number;
   private readonly capIdx: number;
 
   public constructor(o: RibbonOptions) {
@@ -93,6 +93,12 @@ export class RibbonMesh {
     this.mesh.castShadow = true;
     this.mesh.receiveShadow = true;
     this.mesh.frustumCulled = false;
+  }
+
+  /** changes the section (m) for the next update(), e.g. a round cable flattening into the band */
+  public setSize(width: number, thickness: number) {
+    this.hw = width / 2;
+    this.ht = thickness / 2;
   }
 
   /** pos, d1: xyz per node (d1 across the band; the top face looks along d2 = t × d1). Allocates nothing. */

@@ -17,8 +17,10 @@ import { WHY_SHOTS } from './p2-why';
 import { P5_KNOTS_SHOTS } from './p5-knots';
 import { P4_SHOTS } from './p4-strap';
 import { P6_SHOTS } from './p6-thick';
+import { P7_SHOTS } from './p7-physics';
+import { P5_SIZE_SHOTS } from './p5-size';
 
-const SHOT_LIST: ShotDef[] = [exampleTwist, ...COIL_SHOTS, knotPull, eightSnap, eightOk, eightRoll, eightSwivel, eightReverse, kinkShot, throwShot, deployPull, ...PHYS_SHOTS, ...P3_SHOTS, ...WHY_SHOTS, ...P5_KNOTS_SHOTS, ...P4_SHOTS, ...P6_SHOTS];
+const SHOT_LIST: ShotDef[] = [exampleTwist, ...COIL_SHOTS, knotPull, eightSnap, eightOk, eightRoll, eightSwivel, eightReverse, kinkShot, throwShot, deployPull, ...PHYS_SHOTS, ...P3_SHOTS, ...WHY_SHOTS, ...P5_KNOTS_SHOTS, ...P4_SHOTS, ...P6_SHOTS, ...P7_SHOTS, ...P5_SIZE_SHOTS];
 
 export const SHOTS: Readonly<Record<string, ShotDef>> = (() => {
   const out: Record<string, ShotDef> = {};
