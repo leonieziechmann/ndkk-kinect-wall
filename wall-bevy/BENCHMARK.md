@@ -1,5 +1,9 @@
 # Browser-Ausgabe gegen wall-bevy: Messung
 
+> **Historisch:** Die Browser-Ausgabe (`web/`) und das Messskript `bench/compare.mjs` sind seit dem
+> Umstieg auf wall-bevy entfernt; beides liegt in der Git-Historie. Diese Seite hält fest, worauf der
+> Umstieg beruht.
+
 Stand: 11.10.2026, wall-bevy-Release-Build mit Single-Threaded-Executor. Die echte Antwort liefert die
 Messung auf dem Ausstellungs-Notebook mit `bench/compare.mjs` (siehe README). Diese Messung lief auf
 einer Linux-VM **ohne GPU**. Was darauf übertragbar ist, steht unten.

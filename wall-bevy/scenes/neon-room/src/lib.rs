@@ -20,9 +20,9 @@ use wall::params::{ParamSpec, Params, boolean, color, num};
 use wall::persons::{MAX_PERSONS, PERSON_COLORS, RawPerson, RoomFrame, hex_rgb, room_frame};
 use wall::scene::{FrameCtx, Scene, SceneDef, SetupCtx, exact, no_cap, no_projection};
 
-const POINTS_WGSL: &str = include_str!("../../../../web/scenes/neon-room/points.wgsl");
-const ROOM_WGSL: &str = include_str!("../../../../web/scenes/neon-room/room.wgsl");
-const GLOW_WGSL: &str = include_str!("../../../../web/scenes/neon-room/glow.wgsl");
+const POINTS_WGSL: &str = include_str!("points.wgsl");
+const ROOM_WGSL: &str = include_str!("room.wgsl");
+const GLOW_WGSL: &str = include_str!("glow.wgsl");
 
 const DEG: f64 = std::f64::consts::PI / 180.0;
 /// ctx.camera.zoom after its reset()

@@ -82,7 +82,7 @@ pub fn create(root: &Path, name: &str) -> Result<String, String> {
         && !name.contains("--")
         && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
     if !ok {
-        return Err(format!("--new-scene {name}: Name aus a-z, 0-9 und -, mit einem Buchstaben am Anfang (wie die Szenen in web/scenes/)"));
+        return Err(format!("--new-scene {name}: Name aus a-z, 0-9 und -, mit einem Buchstaben am Anfang (wie die Ordner in scenes/)"));
     }
     let scenes = root.join("scenes");
     if !root.join("Cargo.toml").is_file() || !scenes.is_dir() {

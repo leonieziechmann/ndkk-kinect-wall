@@ -206,7 +206,7 @@ pub static DEFS: [SceneDef; 4] = [
         persons: live,
         streams: no_streams,
         max_fps: no_cap,
-        make: |ctx| make(ctx, include_str!("../../../../web/scenes/wand-spiegel/shade.wgsl"), true, on_wall, Labels::None),
+        make: |ctx| make(ctx, include_str!("wand-spiegel.wgsl"), true, on_wall, Labels::None),
     },
     SceneDef {
         name: "person-mask",
@@ -216,7 +216,7 @@ pub static DEFS: [SceneDef; 4] = [
         persons: exact,
         streams: ir_stream,
         max_fps: no_cap,
-        make: |ctx| make(ctx, include_str!("../../../../web/scenes/person-mask/shade.wgsl"), false, person_mask_status, Labels::Tags),
+        make: |ctx| make(ctx, include_str!("person-mask.wgsl"), false, person_mask_status, Labels::Tags),
     },
     SceneDef {
         name: "person-skeleton",
@@ -226,7 +226,7 @@ pub static DEFS: [SceneDef; 4] = [
         persons: skeleton_persons,
         streams: no_streams,
         max_fps: no_cap,
-        make: |ctx| make(ctx, include_str!("../../../../web/scenes/person-skeleton/shade.wgsl"), true, person_skeleton_status, Labels::Greetings),
+        make: |ctx| make(ctx, include_str!("person-skeleton.wgsl"), true, person_skeleton_status, Labels::Greetings),
     },
     SceneDef {
         name: "depth-shader",
@@ -236,7 +236,7 @@ pub static DEFS: [SceneDef; 4] = [
         persons: no_persons,
         streams: depth_streams,
         max_fps: no_cap,
-        make: |ctx| make(ctx, include_str!("../../../../web/scenes/depth-shader/shade.wgsl"), true, empty, Labels::None),
+        make: |ctx| make(ctx, include_str!("depth-shader.wgsl"), true, empty, Labels::None),
     },
 ];
 

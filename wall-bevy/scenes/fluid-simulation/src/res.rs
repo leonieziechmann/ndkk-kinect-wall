@@ -15,10 +15,10 @@ use wall::kinect_gpu::{KH, KW, KinectGpu};
 use wall::persons::{BONES, NPOINTS, POINTS};
 use wall::map::wall_wgsl;
 
-const COMMON: &str = include_str!("../../../../web/scenes/fluid-simulation/common.wgsl");
-const KINECT: &str = include_str!("../../../../web/scenes/fluid-simulation/kinect.wgsl");
-const CAMERA: &str = include_str!("../../../../web/scenes/fluid-simulation/camera.wgsl");
-const SIM: &str = include_str!("../../../../web/scenes/fluid-simulation/sim.wgsl");
+const COMMON: &str = include_str!("common.wgsl");
+const KINECT: &str = include_str!("kinect.wgsl");
+const CAMERA: &str = include_str!("camera.wgsl");
+const SIM: &str = include_str!("sim.wgsl");
 
 /// the uniforms, all f32; struct Uni in WGSL is generated from this list
 pub const FIELDS: [&str; 46] = [

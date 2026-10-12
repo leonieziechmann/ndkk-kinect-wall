@@ -37,12 +37,12 @@ läuft die alte Version weiter.
   `--hub 8099` dazu (drei erfundene Personen, die gehen, winken und springen), oder ein Replay-Hub mit
   einer Aufnahme (`CLAUDE.md`).
 - **Während der Show:** Die Ausgabe lädt neu gebaute Szenen auch ohne `--watch`. Läuft die Show mit
-  `start-wand.cmd -Bevy`, genügt ein `cargo build --release` in `wall-bevy/`: Die Szene, die gerade
+  `start-wand.cmd`, genügt ein `cargo build --release` in `wall-bevy/`: Die Szene, die gerade
   läuft, wird ausgetauscht, die anderen spielt die Show beim nächsten Mal in der neuen Version. Das
   gilt, solange `wall/` und `src/` unverändert sind (siehe Regeln).
-- **Neue Szene in der Show:** Eine Szene mit dem Namen einer Browser-Szene ersetzt diese in der Show
-  (ein Port). Eine Szene, die es nur hier gibt, listet die Steuerzentrale noch nicht (sie kennt die
-  Szenen aus `web/scenes/`); zeigen lässt sie sich mit `--scene NAME`.
+- **Neue Szene in der Show:** Sobald die Ausgabe ihre Bibliothek geladen hat, steht die Szene in der
+  Steuerzentrale (Tab „Show“, Liste „Szenen“, mit ihren Parametern): ▶ zeigt sie sofort, + nimmt sie
+  in die Show.
 
 ## Wie eine Szene aussieht
 
@@ -91,13 +91,13 @@ alle außer `name`, `title` und `sketch` sind optional:
 
 | Feld | |
 |---|---|
-| `name` | eindeutig, Kleinbuchstaben und `-`; der Name einer Browser-Szene macht sie zu deren Port |
+| `name` | eindeutig, Kleinbuchstaben und `-` (unter diesem Namen steht sie in Show und Steuerzentrale) |
 | `title` | der Titel in der Steuerzentrale |
 | `params: [...]` | was die Steuerzentrale einstellt: `num(key, wert, min, max, schritt, label)`, `boolean(key, wert, label)`, `color(key, "#rrggbb", label)`, `select(key, wert, &["a", "b"], label)`, `text(key, wert, label)` |
 | `persons: live` / `exact` | die Personen: so früh wie möglich (`live`) oder genau, etwas später (`exact`); ohne: keine Personen |
 | `streams: ["depth", "ir"]` | Kinect-Rohdaten (für eigene GPU-Arbeit) |
 | `max_fps: 30` | Bildrate begrenzen (die Ausgabe zeigt trotzdem jedes Anzeigebild) |
-| `projection: { ... }` | Wünsche an die Projektion wie `projection` in `main.js`, z. B. `{ "edge": "soft", "margin": 0.35 }` |
+| `projection: { ... }` | Wünsche an die Projektion ([`WALL.md`](WALL.md), „The projection“), z. B. `{ "edge": "soft", "margin": 0.35 }` |
 | `sketch: Typ` | der Typ, der `Sketch` implementiert |
 
 **`setup(s)`** läuft einmal, in einem eigenen Thread (die Show spielt weiter): Bilder laden, Töne
@@ -178,6 +178,9 @@ abgebildet (Steuerzentrale → Projektionen), in LED-Pixeln. Je Person ein `Body
 | `center`, `height` | Mitte auf der Wand, Größe in Pixeln (höchstes bis tiefstes Gelenk) |
 | `entered`, `age` | in diesem Bild gekommen, Sekunden seit das Tracking sie sieht |
 | `vx`, `near` | Geschwindigkeit quer zur Wand (px/s), Nähe (1 vorne in der Zone, 0 hinten) |
+
+Mehr (Gelenke in Metern, Raum-Koordinaten, Masken, live und exakt, Shader): [`PERSONS.md`](PERSONS.md);
+die Abbildung auf die Wand selbst: `f.ctx.wall` ([`WALL.md`](WALL.md)).
 
 ## UI-Bausteine
 

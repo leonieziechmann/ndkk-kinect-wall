@@ -5,10 +5,9 @@ kinect-hub/onnxruntime/
 fn2/bin/
 __pycache__/
 *.pyc
-web/node_modules/
-web/dist/
-# thumbnails, check screenshots, dev server info (show the room / people)
-web/.cache/
+# leftovers of the removed browser workshop web/ (node_modules, .cache: may show the room / people;
+# wall-bevy takes the wall documents over from web/.cache/wall/ once)
+web/
 
 # third-party sources and builds: recreated by third_party/setup.sh
 third_party/*
@@ -23,8 +22,9 @@ snapshots/
 fn2/logs/
 *.csv
 *.log
-# wall-bevy (native output): build output
+# wall-bevy (native output): build output; its data folder (setup, projections, show, pairing code)
 wall-bevy/target/
+wall-bevy/data/
 
 # agent worktrees (Claude Code)
 .claude/worktrees/

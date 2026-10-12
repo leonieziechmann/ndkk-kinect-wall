@@ -25,7 +25,7 @@ use game::{FxKind, Game, GameParams, Player, World, neon};
 use grid::WallGrid;
 use sound::Sound;
 
-const RENDER: &str = include_str!("../../../../web/scenes/blasen-platzen/render.wgsl");
+const RENDER: &str = include_str!("render.wgsl");
 
 /// silhouette colors per slot: neon, no yellow or green (dim, they look olive)
 const PALETTE: [&str; 10] = ["#29e6ff", "#ff3fd0", "#9a6bff", "#4d8dff", "#ff5c7a", "#3dffc0", "#c58bff", "#a8e6ff", "#ff8be8", "#00c2b8"];

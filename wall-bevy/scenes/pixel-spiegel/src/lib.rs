@@ -96,7 +96,7 @@ impl Scene for PixelSpiegel {
 }
 
 fn make(ctx: &SetupCtx) -> Result<Box<dyn Scene>, String> {
-    let shade = format!("{}{}", palette_wgsl(), include_str!("../../../../web/scenes/pixel-spiegel/shade.wgsl"));
+    let shade = format!("{}{}", palette_wgsl(), include_str!("shade.wgsl"));
     let pass = ShaderPass::new(&ctx.gpu, &ctx.kgpu, &ctx.wall_buf, [ctx.width, ctx.height], ctx.name, &ctx.params.specs, &shade, true)?;
     let sparks = sparks::Sparks::new(&ctx.gpu)?;
     Ok(Box::new(PixelSpiegel { pass, sparks }))

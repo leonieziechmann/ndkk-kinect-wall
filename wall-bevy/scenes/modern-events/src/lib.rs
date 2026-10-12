@@ -43,7 +43,7 @@ const FADE: f64 = 0.8;
 /// empty tracking results after which the body field is settled (kicks below 0.45^40)
 const SETTLED: u32 = 40;
 
-const PEOPLE: &str = include_str!("../../../../web/scenes/modern-events/people.wgsl");
+const PEOPLE: &str = include_str!("people.wgsl");
 
 /// Math.round
 fn js_round(x: f64) -> f64 {

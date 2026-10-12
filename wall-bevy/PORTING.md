@@ -1,11 +1,12 @@
-# Porting a browser scene to wall-bevy
+# The scene API in detail (and how the browser scenes were ported)
 
-A scene of `web/scenes/<name>/` becomes the crate `wall-bevy/scenes/<name>/` (`Cargo.toml` and
-`src/lib.rs`, built into a scene library the output loads and swaps while it runs) with the **same
-name, params (keys, defaults, ranges, labels), projection wishes, persons options and render cap**, so
-the control center's show entries play it unchanged. It should look and behave like the browser scene.
-Read this whole file first. A new scene that exists only here is easier with the sketch API: see
-[`SCENES.md`](SCENES.md).
+This file was the guide for porting the browser scenes (`web/scenes/<name>/`, removed since; they are
+in the git history) to the crates `wall-bevy/scenes/<name>/`, with the **same name, params (keys,
+defaults, ranges, labels), projection wishes, persons options and render cap**, so the show entries
+played them unchanged. All of them are ported. It stays as the reference of the full scene API
+(`wall::Scene`, `FrameCtx`, `WallMap`, GPU, Canvas): the left columns give the browser's names, which
+help with old code and with [`WALL.md`](WALL.md) and [`PERSONS.md`](PERSONS.md). A new scene is easier
+with the sketch API: see [`SCENES.md`](SCENES.md).
 
 Start with `./target/debug/wall-bevy --new-scene <name>` (the crate from the template; replace its
 sketch with your port) and develop it with `--watch --scene <name>` (it is rebuilt and swapped in each
@@ -60,7 +61,7 @@ invaders-tracking).
 | `ctx.track(obj)`, `ctx.onDispose` | not needed (Drop) |
 | sounds (`sound.js`, WebAudio) | `ctx.audio.play(&pcm, volume)` with PCM made once in `make` by `wall::audio::{render, osc, noise, exp_ramp, lin_ramp, Biquad, OnePole, mix}` |
 | `Math.random()` | `wall::common::rand::{Rng, random}` (a seeded `Rng` per instance is nicer) |
-| `localStorage.getItem/setItem(key, …)` | `wall::store::get(key)` / `wall::store::set(key, value)` (same key; kept in `web/.cache/wall/bevy-store.json`, written by a thread of its own) |
+| `localStorage.getItem/setItem(key, …)` | `wall::store::get(key)` / `wall::store::set(key, value)` (same key; kept in `bevy-store.json` of the data folder, written by a thread of its own) |
 | `ctx.scene` (name, for labels) | `ctx.name` in `make` / your `DEF.name` |
 | `ctx.wall.pointer` (mouse on the preview page), `ctx.params.mouse`, `ctx.on(window, 'pointerdown'/'keydown', …)` | none in the output: no pointer, no keyboard (the LED wall has no mouse). Behave as with `pointer.inside == false`; audio needs no unlock. Keep the param itself (show entries may carry it). |
 | DOM overlays (`ctx.dom`, HTML elements on top of the canvas) | the output shows them on the wall: draw them (`wall::common::overlay::TextOverlay` for text labels, or `wall::draw::Draw` on top: `finish_into`); leave out what only the dev page showed |
@@ -76,7 +77,7 @@ Same math as `lib/wall.js` (and its WGSL is the same `struct Wall`): `from_world
 - `gpu.shader(key, wgsl)` compiles once per key for the whole run (naga first: readable errors). **Every pipeline goes through `gpu.render_pipeline(key, |device| …)` / `gpu.compute_pipeline`**, key unique per scene and pipeline (e.g. `"fluid-simulation advect"`). The runtime sets up every scene once at the start (warm-up), so a switch in the show never compiles.
 - Create textures, buffers, bind groups in `make` (or once when the size changes), never per frame. Reuse CPU buffers (`Vec`s) too; nothing big allocated per frame.
 - `gpu::layout::{uniform, storage, float_tex, uint_tex, sampler, storage_tex}`, `gpu.bind_group_layout(key, entries)`, `gpu.linear_sampler()`, `gpu.nearest_sampler()`, `gpu.texture(...)`, `gpu.target(label, w, h, format)` (render target, sampled, copyable), `gpu.uniform_buffer`, `gpu.storage_buffer`, `gpu.write_texture(tex, bytes, bytes_per_pixel)`, `gpu::begin_pass(enc, label, view)` (clears to black), `gpu::FULLSCREEN_WGSL` (`vs_fullscreen`).
-- WGSL: if the browser's `.wgsl` file runs unchanged under naga, include it with `include_str!("../../../../web/scenes/<name>/x.wgsl")` from `scenes/<name>/src/` (one source for both outputs). Inline WGSL in JS → a Rust string (`r"..."`). If naga needs a change, copy the file into your crate's `src/` and say why in a comment.
+- WGSL: a scene's `.wgsl` files live in its crate's `src/` (`include_str!("x.wgsl")`; `--watch` rebuilds on their changes too). Inline WGSL in JS → a Rust string (`r"..."`).
 - wgpu 30 wraps optional entries: `bind_group_layouts: &[Some(&bgl)]`, `buffers: &[Some(wgpu::VertexBufferLayout { .. })]`, `targets: &[Some(ColorTargetState { .. })]`; `immediate_size: 0`, `multiview_mask: None`, `cache: None` in the descriptors (copy them from `scenes/pixel-spiegel/src/sparks.rs` or `wall/src/shader_pass.rs`).
 - WebGPU → wgpu: `copy_buffer_to_texture` needs `bytes_per_row` a multiple of 256 (`write_texture` does not); bind group layouts must match exactly (filterable vs unfilterable float: `r32float`/`rg32float` are unfilterable unless `gpu.float32_filterable`); `@builtin(position)` etc. the same; naga rejects some things Tint accepts (e.g. `let` shadowing in the same scope is fine, but check `const` arrays indexed by runtime values: use `var` copies).
 - `createShaderPass(ctx, { shade, feedback })` → `wall::shader_pass::ShaderPass::new(&gpu, &kgpu, &wall_buf, [w, h], name, &params.specs, shade, feedback)`, then `pass.render(ctx)` in `frame`. The prelude is identical (F, P, kinectUv, personMask, wallPerson, …).
@@ -93,7 +94,7 @@ Pixel layers the scenes keep as `Uint8ClampedArray`/`Float32Array` → a `Vec<u8
 
 ## Rules
 
-- Same behavior and look. Port the logic faithfully (constants, thresholds, timings); keep the German comments' meaning in English comments as in the JS. No new features, no "improvements" of the design.
+- When porting old code: same behavior and look. Port the logic faithfully (constants, thresholds, timings); keep the German comments' meaning in English comments as in the JS. No new features, no "improvements" of the design.
 - Performance: the output must never stutter. Per frame: bounded CPU work, no allocations of GPU objects, no blocking, no `println!` in the frame loop. Heavy one-time work (painting backdrops, building sprites, synthesizing sounds) belongs in `make` (it runs in a worker thread).
 - Errors: return `Err(String)` from `make`/`frame` instead of panicking; avoid `unwrap()` on anything that can fail at run time (indexing with checked bounds where the input comes from the hub).
 - Only add files under `scenes/<name>/` (your crate); tell me if you need a change in the framework (`wall/`) or the output (`src/`), don't make it silently. A change there needs every scene rebuilt and the output restarted.
@@ -117,7 +118,3 @@ What does carry over to the real machine is the output's own CPU time per frame:
 as `cpu` (p50/p95/p99/max in ms, without the time in the GPU driver's submits, where lavapipe draws:
 that is `submit`), per scene as `cpuByScene`, and the frames over 8 ms with time and scene as `slowCpu`
 (`+first` = a new scene's first frame). Keep your scene's p95 low (most scenes: 1–5 ms on this machine).
-A reference picture of the browser scene from the same fake hub (headless Chromium, WebGPU in SwiftShader):
-`node <scratch>/ref/ref.mjs http://127.0.0.1:5199 <name> 8099 8 /tmp/ref-<name>.png` (a Vite dev server of the main
-checkout runs on 5199). Scenes that use `wallPerson()` render black there (SwiftShader limitation), the others
-work. `python3 <scratch>/pngdiff.py a.png b.png [diff.png]` compares two pictures of the same moment (with `--freeze`).

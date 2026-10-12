@@ -1,13 +1,14 @@
-# wall-bevy: die LED-Wand-Ausgabe als native App
+# wall-bevy: die LED-Wand als native App
 
-`wall-bevy` ist das Ausgabefenster der LED-Wand (`/wall/` im Browser) als eigenes Programm in Rust
-(Bevy 0.20, wgpu). Es spielt dieselbe Show mit denselben Szenen: gleiche Namen, Parameter,
-Projektionen und Personen-Einstellungen. Die Steuerzentrale bleibt im Browser und steuert es über
-den Dev-Server wie das Browser-Fenster: Show, Weiter/Zurück, Szene ansehen, Blackout, Testbilder,
-Parameter, Projektion, Wand-Setup, Vorschau und Status.
+`wall-bevy` ist alles, was die LED-Wand braucht, in einem Programm (Rust, Bevy 0.20, wgpu): die
+Ausgabe auf dem Wand-Bildschirm, die Show, die Szenen und die **Steuerzentrale**, die das Programm
+selbst ausliefert, am Notebook und als Fernbedienung auf Handy oder Tablet im selben Netz. Kein
+Browser-Fenster, kein Node, kein Dev-Server.
 
-Warum: Das Bild soll nie ruckeln. Im Browser teilen sich die Szene, der Compositor, die
-Garbage Collection und die Steuerzentrale einen Takt; hier gehört der Takt der Ausgabe allein.
+Warum nativ: Das Bild soll nie ruckeln. Im Browser teilten sich die Szene, der Compositor, die
+Garbage Collection und die Steuerzentrale einen Takt; hier gehört der Takt der Ausgabe allein
+(Messung: [`BENCHMARK.md`](BENCHMARK.md)). Wie die Wand gedacht ist (Setup, Projektion, Sperrzonen,
+Show-Regeln): [`WALL.md`](WALL.md); die Personen: [`PERSONS.md`](PERSONS.md).
 
 ## Bauen (einmal je Checkout)
 
@@ -26,31 +27,26 @@ geladen werden.
 
 ## Starten
 
-Für die Ausstellung mit dem Launcher, der Rest bleibt wie gewohnt (Hub, Dev-Server, Steuerzentrale,
-Wächter, Optimierungen):
+Für die Ausstellung mit dem Launcher im Projektordner: Er startet den Hub und `wall-bevy` auf dem
+Wand-Bildschirm, öffnet die Steuerzentrale als Fenster auf dem Notebook, startet neu, was ausfällt,
+und stimmt Windows für die Show ab.
 
 ```
-start-wand.cmd -Bevy
+start-wand.cmd
 ```
 
-`start-wand` startet dann statt des Chrome-Kiosk-Fensters `wall-bevy.exe` auf dem Wand-Bildschirm,
-öffnet es wieder, wenn es zugeht, und schließt es, falls es auf dem Notebook-Bildschirm landet. Ist
-`wall-bevy` nicht gebaut, nimmt es wie bisher das Browser-Fenster. Die Ausgaben von `wall-bevy`
-stehen in den Logs (`L` im Launcher). Allein, ohne Launcher:
+Allein, ohne Launcher (der Hub muss laufen):
 
 ```
 wall-bevy\target\release\wall-bevy.exe
 ```
 
-Ohne Optionen: Hub `127.0.0.1:8090` (oder `KINECT_HUB`), der `web/`-Ordner neben dem Programm,
-der Dev-Server aus `web/.cache/dev-server.json` (die Steuerzentrale), Setup und Projektionen aus
-`web/.cache/wall/` des Haupt-Checkouts (oder `KINECT_WALL_DIR`), die Show aus
-`web/.cache/wall/show.json`. Die Ausgabe geht randlos auf den Bildschirm der Wand: den aus dem
-Wand-Setup (in der Steuerzentrale gewählt), sonst den linkesten, der nicht der Hauptbildschirm ist.
-Ohne zweiten Bildschirm öffnet sich ein Fenster auf dem Hauptbildschirm, bis einer angeschlossen
-wird. Schließen: Alt+F4 oder „Ausgabe schließen“ in der Steuerzentrale.
-
-Es darf nur **eine** Ausgabe laufen: entweder das Browser-Fenster `/wall/` oder `wall-bevy`.
+Ohne Optionen: Hub `127.0.0.1:8090` (oder `KINECT_HUB`), die Dokumente der Wand im Datenordner
+(siehe unten), die Steuerzentrale auf Port 8095. Die Ausgabe geht randlos auf den Bildschirm der
+Wand: den aus dem Wand-Setup (in der Steuerzentrale gewählt), sonst den linkesten, der nicht der
+Hauptbildschirm ist. Ohne zweiten Bildschirm öffnet sich ein Fenster auf dem Hauptbildschirm, bis
+einer angeschlossen wird. Beenden: Alt+F4 im Ausgabefenster (oder `quit.flag` im Launcher, siehe
+`start-wand.ps1`).
 
 | Option | |
 |---|---|
@@ -58,25 +54,66 @@ Es darf nur **eine** Ausgabe laufen: entweder das Browser-Fenster `/wall/` oder 
 | `--scene NAME [-p key=wert ...]` | nur diese Szene statt der Show |
 | `--windowed` | normales Fenster (zum Ausprobieren auf einem Bildschirm) |
 | `--monitor N\|NAME`, `--screen X,Y,B,H` | Bildschirm erzwingen (Nummer, Name oder Desktop-Rechteck) |
-| `--fps N` | Bildrate begrenzen (wie `?fps=` im Browser) |
+| `--fps N` | Bildrate begrenzen |
 | `--vsync fifo\|mailbox\|immediate` | Darstellung; Standard `fifo` (gleichmäßig, nie Risse) |
-| `--web DIR`, `--dev URL` | `web/`-Ordner bzw. Dev-Server von Hand |
-| `--mute`, `--no-bus` | ohne Ton, ohne Steuerzentrale |
+| `--data DIR` | Datenordner (Standard: `KINECT_WALL_DIR`, sonst `wall-bevy/data/` des Haupt-Checkouts) |
+| `--control-port N`, `--control-bind IP` | Port der Steuerzentrale (Standard 8095, 0 = keine) und wo sie lauscht (Standard `0.0.0.0` = auch im Netz; `127.0.0.1` = nur dieser Rechner) |
+| `--control-dir DIR` | die Seite der Steuerzentrale aus `DIR` statt der eingebauten (zum Bearbeiten: `--control-dir control`, Neuladen im Browser genügt) |
+| `--mute`, `--no-control` | ohne Ton, ohne Steuerzentrale |
 | `--shots DIR --seconds S [--shot-every T]` | Test: S Sekunden spielen, Bilder und Bildzeiten nach DIR (als Fenster in LED-Größe; mit `--monitor`/`--screen` randlos auf dem Bildschirm) |
 | `--list-scenes` | alle Szenen-Deklarationen als JSON ausgeben und beenden |
 | `--watch [DIR]` | Szenen beim Speichern selbst neu bauen und im laufenden Bild austauschen (DIR: der Workspace `wall-bevy/`, Standard: der, aus dem das Programm gebaut ist) |
 | `--new-scene NAME` | neue Szene aus der Vorlage anlegen (`scenes/NAME/`) und beenden |
 
+## Steuerzentrale
+
+Die Steuerzentrale ist eine Seite, die `wall-bevy` selbst ausliefert (HTTP und WebSocket in eigenen
+Threads; die Dateien unter `control/` sind ins Programm eingebaut). Am Rechner der Ausgabe:
+**`http://127.0.0.1:8095/`** (der Launcher öffnet sie als App-Fenster). Ist 8095 belegt, nimmt die
+Ausgabe den nächsten freien Port und schreibt die Adresse ins Log und nach `control.json` im
+Datenordner.
+
+- **Show:** Ablauf mit Werten je Eintrag, Szenen-Liste (▶ sofort zeigen, + in die Show), Weiter/Zurück,
+  Blackout, automatisch weiter mit Wartezeiten, Übergänge.
+- **Live:** Vorschau des LED-Bilds (etwa 5 Bilder/s, nur solange eine Seite sie zeigt), was läuft,
+  Personen, Kinect, Bildrate.
+- **Projektion, Wand-Setup, Testbilder, Status:** wie in [`WALL.md`](WALL.md) beschrieben.
+- **Tasten** am Rechner: `→`/`←` weiter/zurück, `B` Blackout.
+
+**Fernbedienung:** Ein Handy oder Tablet im selben Netz öffnet dieselbe Seite (schmal angeordnet). Im
+Tab „Fernbedienung“ steht ein QR-Code mit Adresse und Code: einmal scannen, und das Gerät bleibt
+gekoppelt (Cookie, 400 Tage), bis dort „Neuen Code erzeugen“ gedrückt wird (nur am Rechner der
+Ausgabe; das meldet alle gekoppelten Geräte ab). Ohne Kamera: Adresse öffnen, Code eintippen. Nach
+10 falschen Codes von einer Adresse ist 10 Minuten Pause. Seiten am Rechner selbst
+(`127.0.0.1`/`localhost`) brauchen keinen Code.
+
+**Windows-Firewall:** Beim ersten Start fragt Windows, ob `wall-bevy` im Netzwerk erreichbar sein darf:
+„Private Netzwerke“ erlauben. Wer keine Fernbedienung will: `--control-bind 127.0.0.1`.
+
+**Datenordner** (`wall-bevy/data/` des Haupt-Checkouts, eine Wand für alle Worktrees; nicht in git):
+
+| Datei | |
+|---|---|
+| `setup.json`, `projection.json`, `show.json` | Wand-Setup, Projektionen, Show (die Steuerzentrale schreibt sie über die Ausgabe) |
+| `bevy-store.json` | was Szenen sich merken (z. B. Bestenlisten) |
+| `control-code.txt` | der Kopplungs-Code der Fernbedienung |
+| `control.json` | Adresse und Port der Steuerzentrale, solange die Ausgabe der Show läuft (für `start-wand`; Testfenster mit `--windowed`, `--scene` oder `--watch` schreiben sie nicht) |
+
+Die Ausgabe schreibt die Dokumente kurz nach einer Änderung (atomar) und merkt, wenn ein anderes
+Programm sie ändert. Beim ersten Start übernimmt sie Setup, Projektionen und Show der früheren
+Browser-Ausgabe aus `web/.cache/wall/`, falls es den Ordner noch gibt. Mit `--shots` (Test) bleiben
+die Dokumente unangetastet und die Steuerzentrale aus.
+
 ## Was es gegen Ruckler tut
 
 - **Ein fester Takt:** Vsync (`fifo`), höchstens zwei Bilder unterwegs. Szenen mit Bildraten-Grenze
-  (`maxFps: 30`) rendern jedes zweite Anzeigebild, immer im gleichen Abstand; die Ausgabe zeigt
+  (`max_fps: 30`) rendern jedes zweite Anzeigebild, immer im gleichen Abstand; die Ausgabe zeigt
   trotzdem jedes Anzeigebild.
 - **Nichts Schweres im Takt:** Hub-Verbindung und das Entpacken der Tiefenbilder und Personen-Masken
   laufen in einem eigenen Thread (Puffer werden wiederverwendet), das Einrichten einer Szene in
-  einem Worker-Thread (die laufende spielt weiter), JPEG-Vorschauen und Testbilder werden
-  asynchron gelesen und in einem eigenen Thread kodiert, Dokumente (Show, Setup, Projektion) in
-  einem eigenen Thread beobachtet.
+  einem Worker-Thread (die laufende spielt weiter), JPEG-Vorschauen werden asynchron gelesen und in
+  einem eigenen Thread kodiert. Die Steuerzentrale (Netz, Dokumente, Speichern) läuft in eigenen
+  Threads; die Ausgabe reicht ihr nur Nachrichten weiter und wartet nie auf sie.
 - **Keine Shader-Übersetzung beim Szenenwechsel:** Beim Start wird jede Szene einmal eingerichtet
   und ein paar Bilder lang unsichtbar gerendert; alle Pipelines liegen danach im Cache.
 - **Personen im Takt der Anzeige:** Die Personen werden nach der Aufnahmezeit des Sensors
@@ -86,7 +123,7 @@ Es darf nur **eine** Ausgabe laufen: entweder das Browser-Fenster `/wall/` oder 
 - **Fehler halten die Show nicht an:** Jede Szene läuft in einem eigenen GPU-Fehlerbereich; eine
   Szene mit Fehlern wird nach 2 s neu versucht und nach drei Fehlern in 30 s übersprungen. Ein
   verlorenes GPU-Gerät wird neu aufgebaut. Unter Windows läuft die Ausgabe mit Priorität „höher als
-  normal“ und ohne Energiespar-Drosselung (wie Hub und Kiosk-Browser in `start-wand`).
+  normal“ und ohne Energiespar-Drosselung (wie der Hub in `start-wand`).
 - **Wenig CPU neben der Show:** Bevys eigene Systeme laufen ohne Thread-Pool (sie sind winzig; der
   Pool kostete nur das Wecken seiner Threads, gemessen rund 10 % eines Kerns). Die CPU bleibt für Hub,
   Tiefenberechnung und Posenmodell. `WALL_EXECUTOR=multi` schaltet Bevys Standard zum Vergleich ein.
@@ -98,23 +135,18 @@ Ausgabe lädt beim Start alle, die neben ihr liegen, und lädt eine Bibliothek n
 ist: Die laufende Szene wird im Bild ausgetauscht, ohne dass die Ausgabe beendet wird. Eine Bibliothek,
 die gegen einen anderen Stand des Frameworks gebaut ist, lädt sie nicht (Build-ID).
 
-Alle 19 Szenen aus `web/scenes/` haben hier ein Gegenstück (gleicher Name, gleiche Parameter, gleiche
-Projektionswünsche): blasen-platzen, cyberspiegel, depth-shader,
-fluid-simulation, fruit-ninja, invaders-tracking, leonie-ziechmann, live-exakt, llg-sakura,
-modern-events, neon-room, person-mask, person-skeleton, pixel-jump-run, pixel-spiegel, pointcloud,
-space-invaders, three-points, wand-spiegel. Die WGSL-Dateien der Browser-Szenen werden, wo es geht,
-unverändert eingebunden (`include_str!`), die Logik ist Zeile für Zeile nachgebaut, auch die
-Zufallsgeneratoren mit ihren Startwerten (Kulissen und Wälder sind pixelgleich). Was sich nur mit
-der Maus auf der Szenenseite bedienen ließ, fehlt (die Wand hat keine Maus). Der Ton ist mono (im
-Browser stellenweise links/rechts verteilt).
+Die Szenen: blasen-platzen, cyberspiegel, depth-shader, fluid-simulation, fruit-ninja, hallo-wand,
+invaders-tracking, leonie-ziechmann, live-exakt, llg-sakura, modern-events, neon-room, person-mask,
+person-skeleton, pixel-jump-run, pixel-spiegel, pointcloud, space-invaders, three-points,
+wand-spiegel. Bis auf `hallo-wand` (die Beispielszene) sind sie aus dem Browser portiert: Logik und
+Shader Zeile für Zeile, auch die Zufallsgeneratoren mit ihren Startwerten. Die Browser-Fassung
+(`web/`) ist entfernt; sie liegt in der Git-Historie.
 
-`wall-bevy --list-scenes` gibt die Deklarationen aller Szenen als JSON aus (Name, Titel, Parameter,
-Projektionswünsche, Personen-Optionen, Bildraten-Grenze); so lässt sich prüfen, ob sie noch zu den
-Browser-Szenen passen.
-
-Eine Szene, die es nur im Browser gibt (eine neue), überspringt die Show mit einer Fehlermeldung in
-der Steuerzentrale. Ändert sich eine Browser-Szene, folgt ihr Port nicht von selbst: wie eine Szene
-hierher kommt, steht in [`PORTING.md`](PORTING.md).
+Die Steuerzentrale listet jede geladene Szene mit Titel und Parametern (sie fragt die Ausgabe, nicht
+den Quelltext); eine neu gebaute erscheint dort, sobald die Ausgabe sie geladen hat. Ein Show-Eintrag
+mit einer Szene, die es nicht gibt, ist dort rot markiert und wird übersprungen.
+`wall-bevy --list-scenes` gibt dieselben Deklarationen als JSON aus (Name, Titel, Parameter,
+Projektionswünsche, Personen-Optionen, Bildraten-Grenze).
 
 ### Szenen hier entwickeln
 
@@ -130,7 +162,8 @@ Szenen, die jemand anderes baut (`cargo build --release`), genauso; so lässt si
 laufenden Show austauschen. Ändert sich das Framework (`wall/`) oder die Ausgabe (`src/`), muss die
 Ausgabe neu gebaut und gestartet werden. Wie eine Szene geschrieben wird (Deklaration, `setup`,
 `frame`, Zeichnen, Personen, UI-Bausteine, Ton): [`SCENES.md`](SCENES.md); die Beispielszene ist
-`scenes/hallo-wand`.
+`scenes/hallo-wand`. Alles Weitere der Szenen-API (eigene Shader, Kinect-Daten auf der GPU):
+[`PORTING.md`](PORTING.md).
 
 ## Testen ohne Kinect
 
@@ -153,22 +186,9 @@ gezeichnet hat, Überblendung, Einrichten, erstes Bild).
 
 ## Vergleich mit der Browser-Ausgabe
 
-`bench/compare.mjs` misst beide Ausgaben nacheinander auf diesem Rechner, mit derselben Show, demselben
-Hub und auf demselben Bildschirm: Bildrate und Bildabstände der Szene, Ruckler, Arbeit je Bild im
-Hauptthread, CPU aller Prozesse der Ausgabe, Speicher, unter Windows auch die GPU-Last je Prozess und
-die CPU der ganzen Maschine. Die Browser-Ausgabe läuft dabei mit den Flags des Kiosk-Fensters.
-
-```
-start-wand.cmd -NoWall                                   # Hub, Dev-Server, Steuerzentrale, keine Ausgabe
-node wall-bevy\bench\compare.mjs                          # die aktuelle Show, je Ausgabe 60 s
-node wall-bevy\bench\compare.mjs --scenes space-invaders,fruit-ninja --seconds 30
-```
-
-Es darf keine andere Ausgabe laufen, und während der Messung sollte niemand den Rechner benutzen. Ohne
-`--scenes` spielen beide die Show, wie sie ist; mit `--scenes` wird jede Szene allein gemessen (die
-Show wird dafür kurz ersetzt und danach zurückgeschrieben). Die Ausgabe geht auf den Bildschirm aus dem
-Wand-Setup (oder `--screen x,y,b,h`). Ergebnisse: Tabelle im Terminal, alle Zahlen in
-`web/.cache/bench/`. Eine erste Messung (ohne GPU, auf einer VM) steht in [`BENCHMARK.md`](BENCHMARK.md).
+Wie sich `wall-bevy` gegen die frühere Browser-Ausgabe schlägt, steht in [`BENCHMARK.md`](BENCHMARK.md)
+(gemessen, bevor der Browser-Teil entfernt wurde; das Messskript `bench/compare.mjs` liegt in der
+Git-Historie).
 
 ## Aufbau
 
@@ -178,7 +198,9 @@ Ausgabe und Szenen teilen) und die Szenen (`scenes/*`, je eine Bibliothek).
 | Datei | |
 |---|---|
 | `src/main.rs` | Fenster, Bildschirmwahl, Bevy-Plugins |
-| `src/output.rs` | die Ausgabe: Show, Übergänge, Blackout, Testbilder, Steuerzentrale, Telemetrie |
+| `src/output.rs` | die Ausgabe: Show, Übergänge, Blackout, Testbilder, Telemetrie |
+| `src/control/` | Server der Steuerzentrale: HTTP, WebSocket, Kopplung, die Dokumente im Datenordner |
+| `control/` | die Seite der Steuerzentrale (HTML, JS, CSS ohne Build-Schritt, ins Programm eingebaut) |
 | `src/scenes.rs`, `src/devbuild.rs`, `src/newscene.rs` | Szenen-Bibliotheken laden und austauschen, `--watch`, `--new-scene` |
 | `src/compositor.rs` | bringt das fertige LED-Bild ins Fenster (1:1, gestreckt oder eingepasst) |
 | `src/audio.rs`, `src/patterns.rs` | Tonausgabe, Testbilder |
@@ -187,6 +209,6 @@ Ausgabe und Szenen teilen) und die Szenen (`scenes/*`, je eine Bibliothek).
 | `wall/src/draw.rs`, `ui.rs`, `particles.rs`, `people.rs` | 2D auf der GPU, UI-Bausteine, Partikel, Personen in LED-Pixeln |
 | `wall/src/hub.rs`, `kinect.rs`, `kinect_gpu.rs` | Hub-Client, Kinect-Daten, Ausspielen der Personen, GPU-Texturen |
 | `wall/src/persons.rs`, `map.rs`, `wall_persons.rs` | Personen, Wand-Abbildung (Projektionen), Personen auf der Wand |
-| `wall/src/shader_pass.rs` | `createShaderPass` mit demselben WGSL-Vorspann |
+| `wall/src/shader_pass.rs` | Shader-Pass mit dem WGSL-Vorspann für Kinect, Personen und Wand |
 | `wall/src/canvas.rs`, `audio.rs`, `common/` | 2D auf der CPU, Ton erzeugen, Helfer der Szenen |
 | `scenes/<name>/` | die Szenen |

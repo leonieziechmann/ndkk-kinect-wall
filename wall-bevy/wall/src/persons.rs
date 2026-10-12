@@ -1,6 +1,6 @@
 //! The tracked persons as scenes see them (port of web/lib/persons.js, personView/makePerson):
 //! named points in world, room and image space, smoothed with a One-Euro filter, plus the raw
-//! entries of the hub (camera frame, mm). See web/PERSONS.md.
+//! entries of the hub (camera frame, mm). See PERSONS.md.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;

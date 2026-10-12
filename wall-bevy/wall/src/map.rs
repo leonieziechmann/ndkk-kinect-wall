@@ -1,4 +1,4 @@
-//! The LED wall (port of web/lib/wall.js, see web/WALL.md): one setup for every scene, a
+//! The LED wall (port of the browser's wall.js, see WALL.md): one setup for every scene, a
 //! projection per scene, and the mapping from the Kinect to the wall. The uniform buffer has the
 //! same layout as `struct Wall` in WGSL, so the scenes' shaders run unchanged.
 
