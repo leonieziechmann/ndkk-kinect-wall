@@ -32,7 +32,7 @@ import { C, FONT, OVER, UNDER } from '../../lib/theme';
 import { Mark, StageChip } from '../../lib/ui';
 import { ADA, MAI } from '../../people/cast';
 import { Rig, RigTrack, eyesOfRig } from '../../people/rig';
-import { COIL, COIL_T, EIGHTS_T, FAIL_T, RING_T, STACK, UNROLL_T, coilBeat, coilFist, depositAt, depositTime, eightStart, lobeCentre, ringFist, stackPlane, stackWorld } from '../../shots/p6-thick';
+import { COIL, COIL_T, EIGHTS_T, FAIL, FAIL_T, RING_T, STACK, UNROLL_T, coilBeat, coilFist, depositAt, depositTime, eightStart, lobeCentre, ringFist, stackPlane, stackWorld } from '../../shots/p6-thick';
 import { CARRY, CARRY_T, STRAPS_T, STRAP_AT, carryCount, carryOffset, carryRig, coilRig, eightsRig, failRig, ringRig, strapsRig, unrollRig } from '../../shots/p6-thick-rig';
 import { ArcArrow, GhostPath } from '../../three/arrows';
 import { CableMesh } from '../../three/cable';
@@ -231,22 +231,28 @@ const CEE_SCALE_16 = 1.0, CEE_SCALE_63 = 1.5;
 const STRIPE = 0.045;
 
 // cameras (Mai stands at the origin facing -z in the coil and ring beats)
-/** coil, outside: KONZEPT: on her side of the ring, to her right and a little behind, above the hands, looking down */
-const COIL_EXT: Orbit = { target: [0.05, 0.78, -0.3], yaw: 0.95, pitch: 0.36, dist: 2.35, fov: 40 };
-/** ring: from her right, she walks forward past the camera */
-const RING_CAM: Orbit = { target: [-0.22, 0.85, -0.65], yaw: 1.4, pitch: 0.16, dist: 3.1, fov: 40 };
-/** fail: in front of her, to her right: the loop between her hands, the cable on the floor running off to her right */
-const FAIL_CAM: Orbit = { target: [0.25, 0.65, -0.45], yaw: Math.PI - 0.55, pitch: 0.2, dist: 3.4, fov: 40 };
-/** eights: from above (her side at the bottom of the picture) */
-const TOP_CAM: Orbit = { target: [0.0, 0.0, STACK.C[2] + 0.12], yaw: 0, pitch: 1.36, dist: 3.15, fov: 42 };
+/**
+ * coil, outside: in front of her, to her right, a little above the hands. (KONZEPT's rule for the
+ * coiling stages puts the camera to her right and a little behind; Mai's big loops hang in front of
+ * her left hip and her body hides them from there, see the report.)
+ */
+const COIL_EXT: Orbit = { target: [-0.12, 0.74, -0.32], yaw: Math.PI - 0.75, pitch: 0.26, dist: 2.5, fov: 40 };
+/** ring: from her left (the ring's side), she walks forward past the camera */
+const RING_CAM: Orbit = { target: [-0.3, 0.85, -0.65], yaw: -1.45, pitch: 0.16, dist: 3.2, fov: 40 };
+/** fail: in front of her: the loop between her hands, the cable on the floor running off to her right */
+const FAIL_CAM: Orbit = { target: [0.1, 0.55, -0.45], yaw: Math.PI - 0.22, pitch: 0.42, dist: 3.4, fov: 40 };
+/** fail, slow motion: closer on the loop */
+const FAIL_CLOSE: Orbit = { target: [0.05, 0.6, -0.5], yaw: Math.PI - 0.22, pitch: 0.4, dist: 2.4, fov: 40 };
+/** eights: from above, over her shoulder (her side at the bottom of the picture) */
+const TOP_CAM: Orbit = { target: [0.0, 0.0, STACK.C[2] - 0.1], yaw: 0, pitch: 1.12, dist: 3.4, fov: 42 };
 /** the gauge: closer, above the right lobe */
 const GAUGE_CAM: Orbit = { target: [STACK.C[0] + 0.45, 0.0, STACK.C[2] + 0.02], yaw: 0, pitch: 1.4, dist: 1.85, fov: 40 };
-/** straps: from her side, above */
-const STRAP_CAM: Orbit = { target: [0.0, 0.15, STACK.C[2] + 0.1], yaw: 0.35, pitch: 0.62, dist: 3.0, fov: 40 };
+/** straps: from the stack's far side, above: she works at the near side, facing the camera */
+const STRAP_CAM: Orbit = { target: [0.0, 0.35, STACK.C[2] + 0.15], yaw: Math.PI - 0.3, pitch: 0.5, dist: 3.9, fov: 40 };
 /** carrying: from the side, both in profile */
 const CARRY_CAM: Orbit = { target: [0.3, 0.62, STACK.C[2]], yaw: 0.12, pitch: 0.14, dist: 4.4, fov: 40 };
-/** unrolling: above and to the side; she walks away to the right */
-const UNROLL_CAM: Orbit = { target: [0.9, 0.3, STACK.C[2] + 0.2], yaw: 0.25, pitch: 0.55, dist: 4.6, fov: 40 };
+/** unrolling: above and to the side; it follows her as she walks away to the right */
+const UNROLL_CAM: Orbit = { target: [0.9, 0.3, STACK.C[2] + 0.2], yaw: 0.25, pitch: 0.5, dist: 4.4, fov: 40 };
 
 // ===================================================================================== the part
 
@@ -282,7 +288,7 @@ export function* part(layer: Node) {
     const [i0, i1] = cableRange(B.eights);
     const P = Array.from({ length: B.eights.n }, (_, i) => B.eights.nodeAt(end, i, [0, 0, 0]));
     let rMin = Infinity, at = 0;
-    const k = 3;
+    const k = 6;
     for (let i = i0 + k + 2; i <= i1 - k - 30; i++) {
       const a = P[i - k], b = P[i], c = P[i + k];
       const ab = Math.hypot(b[0] - a[0], b[2] - a[2]), bc = Math.hypot(c[0] - b[0], c[2] - b[2]), ac = Math.hypot(c[0] - a[0], c[2] - a[2]);
@@ -299,11 +305,20 @@ export function* part(layer: Node) {
   let twOutMax = 0;
   for (let x = UNROLL_T.walk0; x < UNROLL_T.end; x += 0.1) twOutMax = Math.max(twOutMax, Math.abs(B.unroll.track('twOut', x)));
   const failBend = { held: B.fail.track('bend', FAIL_T.letGo - 0.1), after: B.fail.track('bend', FAIL_T.letGo + 1.0) };
+  // the loop's two ends: how far apart they are while she holds them, and once the right hand has let go
+  const failOpen = (() => {
+    const iR = Math.round(FAIL.sR / POWER_5G16.segment), iL = Math.round(FAIL.sL / POWER_5G16.segment);
+    const d = (tt: number) => {
+      const a = B.fail.nodeAt(tt, iR, [0, 0, 0]), b = B.fail.nodeAt(tt, iL, [0, 0, 0]);
+      return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    };
+    return { held: d(FAIL_T.letGo - 0.1), after: d(FAIL_T.letGo + 0.8) };
+  })();
   // what may be claimed (the labels and ticks appear only if the bakes show it)
   const truth = {
     loops40: loopD.every((d) => d >= 38 && d <= 52),
-    springsOpen: failBend.after > 1.5 * failBend.held,
-    stripeCalm: Math.abs(eTw.e4) < 0.35 && Math.abs(eTw.e5) < 0.35,
+    springsOpen: failOpen.after > 2 * failOpen.held,
+    stripeCalm: Math.abs(eTw.e4) < 0.5 && Math.abs(eTw.e5) < 0.5 && eTw.maxE4 < 0.6,
     bendOk: stackBend.r >= 0.27,
     unrollCalm: twOutMax < 0.6,
   };
@@ -311,7 +326,7 @@ export function* part(layer: Node) {
     length: +LENGTH.toFixed(2),
     segs: SEGS.map((x) => `${x.id} ${x.at.toFixed(2)}`).join(' | '),
     loops: loops.map((l) => +l.toFixed(3)), loopD: loopD.map((d) => +d.toFixed(1)),
-    eTw, E4: +E4.toFixed(2), E5: +E5.toFixed(2), stackBend, unrollEnd, twOutMax, failBend, truth, captionProblems,
+    eTw, E4: +E4.toFixed(2), E5: +E5.toFixed(2), stackBend, unrollEnd, twOutMax, failBend, failOpen, truth, captionProblems,
   }));
 
   // ------------------------------------------------------------------------- the people: one RigTrack per take
@@ -333,7 +348,7 @@ export function* part(layer: Node) {
       case 'carry':
         return carryRig(who, st, sc);
       case 'unroll':
-        return unrollRig(st, sc, frameOf(B.unroll, 'fist', st));
+        return unrollRig(st, sc, (x) => frameOf(B.unroll, 'fist', x));
     }
   };
   const tracks = new Map<string, RigTrack>();
@@ -400,9 +415,10 @@ export function* part(layer: Node) {
       const look = (x: number): V3 => {
         const st = shotAt(Math.min(E('coil'), Math.max(S('cIn'), x)));
         const r = frameOf(B.coil, 'right', st).p;
-        return mixV(add3(coilFist(st).p, [0.1, -0.22, 0]), r, 0.3);
+        return mixV(add3(coilFist(st).p, [0.12, -0.3, -0.05]), r, 0.25);
       };
-      povFollow(povA, maiEyes, look, tau(), { back: 0.05, up: 0.03, fov: 62, smooth: 0.3 });
+      // (a little behind and above her eyes: her own upper arms would otherwise fill the picture)
+      povFollow(povA, maiEyes, look, tau(), { back: 0.0, up: 0.2, fov: 58, smooth: 0.3 });
     } else orbit(extA, RING_CAM);
   });
   new Studio(worldA.scene, { focus: [0, 0.6, -0.3], focusRadius: 1.8 });
@@ -421,7 +437,8 @@ export function* part(layer: Node) {
   const gauge = new GhostPath({ maxPoints: 97, radius: 0.006, color: '#ffffff', dash: 0.04, opacity: 0.95 });
   const gaugeLine = new GhostPath({ maxPoints: 2, radius: 0.005, color: '#ffffff', dash: 0.03, opacity: 0.95 });
   const gaugePts = new Float32Array(3 * 97), linePts = new Float32Array(6);
-  const straps = [0, 1].map(() => new StrapMesh({ length: 0.62, width: 0.04, thickness: 0.003, color: '#1d1e21', maxPoints: 200 }));
+  // (mid grey, so they show on the black cable)
+  const straps = [0, 1].map(() => new StrapMesh({ length: 0.62, width: 0.04, thickness: 0.003, color: '#7b7f86', inner: '#5d6168', eyelet: '#3a3c40', maxPoints: 200 }));
   const maiB = splitPerson(MAI, trackOf(0, 2).pose(0));
   const adaB = splitPerson(ADA, carryRigPose());
   const povB = makeCamera(60);
@@ -476,7 +493,8 @@ export function* part(layer: Node) {
         restD1.set([0, 1, 0], 3 * i);
       }
       failRest.update(restPos, restD1, REST_N);
-      orbit(extB, FAIL_CAM);
+      const close = Math.max(win(S('fSlow') - 0.6, E('fRest') - 0.5, 0.8, 0.8), win(S('fReal'), E('fReal'), 0.01, 0.01));
+      orbit(extB, mixOrbit(FAIL_CAM, FAIL_CLOSE, easeInOutCubic(close), { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 }));
     } else if (shot === 'eights' || shot === 'unroll') {
       const b = shot === 'eights' ? B.eights : B.unroll;
       drawCable(stackCable, b, tt, posB, d1B);
@@ -487,8 +505,13 @@ export function* part(layer: Node) {
           const f = frameOf(B.eights, 'fist', st).p;
           return [f[0] * 0.8, 0.05, f[2] + 0.05];
         };
-        povFollow(povB, maiEyes, look, tau(), { back: 0.04, up: 0.03, fov: 66, smooth: 0.35 });
-      } else orbit(extB, UNROLL_CAM);
+        povFollow(povB, maiEyes, look, tau(), { back: 0.12, up: 0.3, fov: 60, smooth: 0.35 });
+      } else {
+        // following her: between the stack and her fist
+        const f = frameOf(B.unroll, 'fist', tt).p;
+        const tx = Math.max(UNROLL_CAM.target[0], (STACK.C[0] + 0.4 + f[0]) / 2);
+        orbit(extB, { ...UNROLL_CAM, target: [tx, 0.3, UNROLL_CAM.target[2]], dist: UNROLL_CAM.dist + 0.35 * Math.max(0, tx - UNROLL_CAM.target[0]) });
+      }
     } else {
       // straps and carry: the finished stack, moved rigidly
       const P = shot === 'carry' ? stackHere(tt) : stackPos;
@@ -578,14 +601,12 @@ export function* part(layer: Node) {
   const label = (o: { view: ThreeView; target: () => V3; at: [number, number]; text: string; color?: string; on: () => number }) =>
     root.add(callout({ view: o.view, target: o.target, at: o.at, text: o.text, color: o.color, size: 34, arrow: true, opacity: o.on }));
   const nodeOf = (b: BakedRod, i: () => number) => () => b.nodeAt(t(), Math.max(0, Math.min(b.n - 1, i())), [0, 0, 0]);
-  const sNode = (b: BakedRod, s: number) => Math.round((s / b.track('iC1', 0)) * 0) + 0;
-  void sNode;
   /** the node nearest material s (nodes are evenly spaced along the bake's cable) */
   const nodeAtS = (b: BakedRod, spec: typeof POWER_5G16, s: number) => Math.round(s / spec.segment);
 
   // 1 · the cable's facts, the loop size (measured)
-  plate(root, () => '5G2,5 · 15 m · ≈ 5 kg', xR + wR / 2, TOP + 110, () => win(S('cIn') + 0.3, S('coil') + 4.5, 0.4, 0.4), 32);
-  if (truth.loops40) label({ view: extViewA, target: nodeOf(B.coil, () => nodeAtS(B.coil as BakedRod, POWER_5G2_5, B.coil.track('loopS0', COIL_T.end) + 0.5 * loops[0])), at: [xR + wR / 2, TOP + PANEL_H - 120], text: `Schlaufe Ø ≈ ${Math.round(loopD[0] / 5) * 5} cm`, on: () => win(S('coil') + coilBeat(0).give + 0.3, S('coil') + coilBeat(1).slide1, 0.4, 0.3) });
+  plate(root, () => '5G2,5 · 15 m · ≈ 5 kg', xR + wR / 2, TOP + PANEL_H - 60, () => win(S('cIn') + 0.3, S('coil') + 3.0, 0.4, 0.4), 32);
+  if (truth.loops40) label({ view: extViewA, target: nodeOf(B.coil, () => nodeAtS(B.coil as BakedRod, POWER_5G2_5, B.coil.track('loopS0', COIL_T.end) + 0.5 * loops[0])), at: [xR + wR / 2, TOP + PANEL_H - 120], text: `Schlaufe Ø ≈ ${Math.round(loopD[0])} cm`, on: () => win(S('coil') + coilBeat(0).give + 0.3, S('coil') + coilBeat(1).slide1, 0.4, 0.3) });
   // tally of the loops (ü u ü), lit as each is given to the left fist
   const kinds = COIL.kinds;
   root.add(
@@ -621,8 +642,9 @@ export function* part(layer: Node) {
   if (truth.bendOk) plate(root, () => `✓ hier: r ≥ ${Math.floor(stackBend.r * 100)} cm`, xL + wL / 2, TOP + PANEL_H - 70, () => win(S('gauge') + 2.4, E('gauge'), 0.4, 0.3), 32, C.good, '#fff');
 
   // 3 · straps
-  label({ view: fullViewB, target: () => add3(STRAP_AT[0], [0, 0.15, 0]), at: [520, TOP + 170], text: 'Klettband', on: () => win(S('straps') + STRAPS_T.a1, E('straps'), 0.4, 0.3) });
-  label({ view: fullViewB, target: () => add3(STRAP_AT[1], [0, 0.15, 0]), at: [-520, TOP + 170], text: 'Klettband', on: () => win(S('straps') + STRAPS_T.b1, E('straps'), 0.4, 0.3) });
+  // (seen from the far side: the right end of the stack is on the left of the picture)
+  label({ view: fullViewB, target: () => add3(STRAP_AT[0], [0, 0.15, 0]), at: [-560, TOP + 170], text: 'Klettband', on: () => win(S('straps') + STRAPS_T.a1, E('straps'), 0.4, 0.3) });
+  label({ view: fullViewB, target: () => add3(STRAP_AT[1], [0, 0.15, 0]), at: [560, TOP + 170], text: 'Klettband', on: () => win(S('straps') + STRAPS_T.b1, E('straps'), 0.4, 0.3) });
 
   // 4 · the count: Mai's hand sign
   const countAt = () => {

@@ -173,6 +173,13 @@ function eightPoint(s: number, k: number): { X: number; F: number; tX: number; t
 /** the stack's path in the plane at material coordinate s (0 = the start plug's tip) */
 export function stackPlane(s: number): { X: number; F: number; tX: number; tF: number; eight: number; lobe: 0 | 1 | -1; u: number } {
   const { lead, per, alpha } = STACK;
+  if (EIGHTS_CFG.rings && s >= lead) {
+    // the control (experiments only): the same cable laid in circles, always clockwise
+    const R = STACK.R + 0.1, L = 2 * Math.PI * R;
+    const k = Math.floor((s - lead) / L);
+    const th = Math.PI - (s - lead - k * L) / R;
+    return { X: R * Math.cos(th) + R, F: R * Math.sin(th), tX: Math.sin(th), tF: -Math.cos(th), eight: k, lobe: 1, u: 0 };
+  }
   if (s < lead) {
     const ca = Math.cos(alpha), sa = Math.sin(alpha);
     const e = eightPoint(0, 0);
@@ -284,7 +291,7 @@ const EIGHTS_CLIMB = 0.04;
 /** the pre-roll of p6-eights starts at this shot time [s] */
 const EIGHTS_PRE = -1.5;
 /** settings the experiments vary (scratchpad p6/exp-*.mjs); the shots use them as they are */
-export const EIGHTS_CFG = { laid: 2e-4, conv: 2e-4, convOn: true };
+export const EIGHTS_CFG = { laid: 2e-4, conv: 2e-4, convOn: true, rings: false };
 /** her fist runs this far ahead of the laying point (material) and this high */
 const FIST_AHEAD = 0.3, FIST_Y = 0.42;
 /** her fist does not go over the far half of the stack (she stands at the near side): beyond this (plane F) it follows only a fifth as far */
@@ -955,7 +962,7 @@ export const FAIL = {
   length: 8,
   /** where the fists take it (material from the plug's tip) */
   sL: 0.32,
-  sR: 2.05,
+  sR: 1.6,
 };
 export const FAIL_T = { reachL: 0.5, gripL: 1.4, upL: 2.5, reachR: 2.7, gripR: 3.6, loop0: 3.8, loop1: 5.3, letGo: 5.9, down0: 6.9, down1: 7.9, open: 8.0, end: 9.4 };
 
@@ -978,7 +985,7 @@ function buildFail(): FailBuilt {
   // the left fist: down to the cable, takes it, stands up with the end; at the end puts it down
   const pL = rod.pointAt(FAIL.sL);
   const fistOver = (p: V3): Frame => gripFrame(p, [1, 0, 0], UP);
-  const hipL: V3 = [-0.33, 0.95, -0.36];
+  const hipL: V3 = [-0.12, 0.95, -0.42];
   const leftPos = pathKeys([
     [0, [-0.35, 0.75, -0.25]],
     [T.reachL, [-0.35, 0.75, -0.25]],
@@ -996,12 +1003,12 @@ function buildFail(): FailBuilt {
   };
   // the right fist: where the cable lies at T.reachR (sim in the loop), then up and round to the left fist
   let grabP: V3 | null = null, grabT: V3 = [1, 0, 0];
-  const restR: V3 = [0.3, 0.8, -0.2];
+  const restR: V3 = [0.32, 0.8, -0.25];
   const right = (t: number): Frame => {
     if (!grabP || t < T.reachR) return fistOver(restR);
     // she brings the loop up next to the left fist (a hand's width off), then tries to close it
-    const near: V3 = add(hipL, [0.26, 0.04, 0.02]);
-    const shut: V3 = add(hipL, [0.13, 0.04, 0.03]);
+    const near: V3 = add(hipL, [0.3, 0.04, 0.02]);
+    const shut: V3 = add(hipL, [0.15, 0.04, 0.03]);
     const top: V3 = add(mix(grabP, near, 0.55), [0, 0.25, 0]);
     if (t < T.gripR + 0.15) return gripFrame(mix(restR, grabP, ramp(t, T.reachR, T.gripR)), grabT, UP);
     const upIn: V3 = norm([-0.45, 0.9, 0.05]);
@@ -1078,6 +1085,8 @@ export const failShot: ShotDef = {
 
 /** p6-unroll: Mai takes the end on top of the stack, lifts it and walks away to her right with it */
 export const UNROLL_T = { grip: 0.6, lift: 1.4, walk0: 1.6, walk1: 12.0, end: 12.6 };
+/** how far she walks away with the end [m] */
+export const UNROLL_WALK = 5.0;
 /** the stack's top end at the start (material from the start: the end plug and 25 cm of cable) */
 const UNROLL_HOLD = 0.32;
 
@@ -1105,10 +1114,9 @@ function buildUnroll(): UnrollBuilt {
   const fist = (t: number): Frame => {
     if (t < T.grip) return gripFrame(add(p0, [0, 0.08 * (1 - ramp(t, 0, T.grip)), 0]), t0, UP);
     if (t < T.walk0) return gripFrame(mix(p0, lifted, ramp(t, T.grip + 0.1, T.lift)), norm(mix(t0, [1, 0.3, 0], ramp(t, T.grip + 0.1, T.lift))), UP);
-    // walking away at about 0.5 m/s (eased in over the first second)
-    const v = 0.5, u = Math.min(t, T.walk1) - T.walk0;
-    const d = u < 1 ? (v * u * u) / 2 : v * (u - 0.5);
-    return gripFrame(add(lifted, mul(norm(dir), Math.max(0, d))), norm([1, 0.3, 0.1]), UP);
+    // walking away 5 m (eased in and out as people/rig.ts walk() moves between two waypoints, so her body and her fist go together)
+    const u = Math.min(1, Math.max(0, (t - T.walk0) / (T.walk1 - T.walk0)));
+    return gripFrame(add(lifted, mul(norm(dir), UNROLL_WALK * (1 - Math.cos(Math.PI * u)) / 2)), norm([1, 0.3, 0.1]), UP);
   };
   let g: number | null = null;
   const script = (r: Rod, t: number) => {

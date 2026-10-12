@@ -8,18 +8,15 @@
 
 import type { Frame, V3 } from '../sim';
 import { ADA, MAI } from '../people/cast';
-import { Grip, HandRig, LegRig, Rig, gripFrame, kneel, squat, stand, walk } from '../people/rig';
-import { COIL, FAIL_T, RING_T, STACK, UNROLL_T, coilBeat, coilFist, ease, eightsFist, stackPlane, stackWorld } from './p6-thick';
+import { Grip, HandRig, LegRig, Rig, gripFrame, squat, stand, walk } from '../people/rig';
+import { COIL, FAIL_T, RING_T, STACK, UNROLL_T, coilBeat, coilFist, ease, eightsFist, stackWorld } from './p6-thick';
 
 const add = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const mul = (a: V3, s: number): V3 => [a[0] * s, a[1] * s, a[2] * s];
 const mix = (a: V3, b: V3, u: number): V3 => [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
 const norm = (a: V3): V3 => mul(a, 1 / (Math.hypot(a[0], a[1], a[2]) || 1));
-const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const lerp = (a: number, b: number, u: number) => a + (b - a) * u;
 const ramp = (t: number, a: number, b: number) => ease((t - a) / Math.max(1e-6, b - a));
-const UP: V3 = [0, 1, 0];
 
 /** a little breathing and weight shift (scene time s): never quite still */
 function idle(s: number, seed = 0) {
@@ -120,7 +117,7 @@ export function failRig(t: number, s: number, left: (t: number) => Frame, right:
     x += a.x / 5;
     depth += a.depth / 5;
   }
-  const st = squat(MAI, [x, 0.08], 0, depth);
+  const st = squat(MAI, [x, -0.12], 0, depth);
   const L: HandRig = usesL ? { grip: left(t) as Grip, hold: 'fist', radius: 0.015, free: 0.4, open: holdsL ? 0 : 0.8 } : hangingHand(st.pos, 0, -1, 0.82 - 0.4 * depth);
   const R: HandRig = usesR ? { grip: right(t) as Grip, hold: 'fist', radius: 0.015, free: 0.4, open: holdsR ? 0 : 0.9 } : hangingHand(st.pos, 0, 1, 0.82 - 0.4 * depth);
   // straining: the back a little more forward while the loop fights her
@@ -146,9 +143,10 @@ export function eightsRig(t: number, s: number, fist: Frame, open: number): Rig 
   // she follows her fist sideways, a little behind it, with small steps (smoothed)
   const sm = (dt: number) => eightsFist(t + dt).p[0];
   const fx = (sm(-0.6) + sm(-0.3) + sm(0) + sm(0.3) + sm(0.6)) / 5;
-  const x = Math.max(-0.75, Math.min(0.75, 0.75 * fx + 0.12));
+  const x = Math.max(-1.0, Math.min(1.0, fx + 0.1));
   const st = stand(MAI, [x, EIGHTS_Z], 0, { width: 0.42, stagger: 0.1 * Math.sin(1.2 * t) });
-  const right: HandRig = { grip: fist as Grip, hold: 'fist', radius: 0.015, free: 0.5, open: 0.15 + 0.85 * open };
+  // after letting go of the end the hand comes back and rests on her right thigh
+  const right: HandRig = open < 0.5 ? { grip: fist as Grip, hold: 'fist', radius: 0.015, free: 0.5, open: 0.15 + 0.85 * open } : { wrist: [x + 0.2, 0.5, EIGHTS_Z - 0.3], dir: norm([-0.15, -0.6, -0.8]), palm: [-0.2, -0.9, 0.2], curl: 0.35 };
   // the left hand on her left thigh, supporting the bent-over back
   const left: HandRig = { wrist: [x - 0.2, 0.5, EIGHTS_Z - 0.3], dir: norm([0.15, -0.6, -0.8]), palm: [0.2, -0.9, 0.2], curl: 0.35 };
   const rig: Rig = { ...st, drop: 0.26, lean: 0.85, twist: 0.25 * Math.max(-1, Math.min(1, (fist.p[0] - x) / 0.5)), look: add(fist.p, [0, -0.3, -0.05]), reach: 1, hands: [left, right] };
@@ -159,31 +157,34 @@ export function eightsRig(t: number, s: number, fist: Frame, open: number): Rig 
 
 /** the straps: where they go round the stack (the outer ends of both lobes) */
 export const STRAP_AT: V3[] = [stackWorld(STACK.D + STACK.R - 0.02, 0.0, 0.0), stackWorld(-(STACK.D + STACK.R - 0.02), 0.0, 0.0)];
-export const STRAPS_T = { kneel: 0.6, a0: 1.0, a1: 2.6, b0: 3.2, b1: 4.8, up: 5.4, end: 6.2 };
+export const STRAPS_T = { down: 0.7, a0: 1.0, a1: 2.6, up0: 2.8, walk0: 3.2, walk1: 4.4, b0: 4.8, b1: 6.4, up: 6.7, end: 7.6 };
 
-/** Mai kneeling at the stack, closing the two straps (kinematic): t = time in the straps beat */
+/** Mai at the stack, closing the two straps (kinematic): squats at the right end, then walks to the left end; t = time in the straps beat */
 export function strapsRig(t: number, s: number): Rig {
   const T = STRAPS_T;
-  const which = t < T.b0 - 0.3 ? 0 : 1;
+  const which = t < (T.walk0 + T.walk1) / 2 ? 0 : 1;
   const at = STRAP_AT[which];
-  const goB = ramp(t, T.a1 + 0.1, T.b0);
-  const x = lerp(STRAP_AT[0][0] - 0.25, STRAP_AT[1][0] + 0.25, goB);
-  const kneelDown = ramp(t, 0, T.kneel) * (1 - ramp(t, T.up, T.end));
-  const pos: [number, number] = [x, STACK.C[2] + 0.45];
-  const st = kneelDown > 0.5 ? kneel(MAI, pos, 0, 'R') : stand(MAI, pos, 0, { width: 0.3 });
-  const working = t > T.a0 - 0.2 && t < T.b1 + 0.2 && Math.abs(goB - Math.round(goB)) < 0.02;
-  const u = (t - (which ? T.b0 : T.a0)) / (T.a1 - T.a0);
-  const wrap = Math.max(0, Math.min(1, u));
-  // the hands go round the bundle with the strap: under (near side), up over the top
-  const near: V3 = add(at, [0, 0.06, 0.12]);
-  const top: V3 = add(at, [0, 0.22, 0.0]);
+  const x = lerp(STRAP_AT[0][0] - 0.22, STRAP_AT[1][0] + 0.22, ramp(t, T.walk0, T.walk1));
+  const down = ramp(t, 0.1, T.down) * (1 - ramp(t, T.up0, T.walk0)) + ramp(t, T.walk1, T.b0 - 0.1) * (1 - ramp(t, T.up, T.end));
+  const pos: [number, number] = [x, STACK.C[2] + 0.5];
+  const st = squat(MAI, pos, 0, 0.95 * down);
+  const [a, b] = which ? [T.b0, T.b1] : [T.a0, T.a1];
+  const wrap = Math.max(0, Math.min(1, (t - a) / (b - a)));
+  const working = t > a - 0.25 && t < b + 0.15;
+  // the hands go round the bundle with the strap: under on the near side, up over the top
+  const near: V3 = add(at, [0, 0.1, 0.12]);
+  const top: V3 = add(at, [0, 0.2, 0.02]);
+  const hy = 0.82 - 0.4 * down;
   const hand = (side: -1 | 1): HandRig => {
     const p = add(mix(near, top, Math.sin((wrap * Math.PI) / 2)), [side * 0.07, 0, 0]);
-    return { wrist: add(p, [0, 0.03, 0.09]), dir: norm([0, -0.5, -1]), palm: [0, -1, 0.2], curl: 0.5 };
+    // (reaching in from the hanging hand and back out)
+    const k = ramp(t, a - 0.25, a) * (1 - ramp(t, b, b + 0.15));
+    const hang = hangingHand(pos, 0, side, hy).wrist as V3;
+    return { wrist: mix(hang, add(p, [0, 0.03, 0.09]), k), dir: norm([0, -0.5, -1]), palm: [0, -1, 0.2], curl: 0.5 };
   };
-  const hy = 0.82 - 0.38 * kneelDown;
   const hands: [HandRig | null, HandRig | null] = working ? [hand(-1), hand(1)] : [hangingHand(pos, 0, -1, hy), hangingHand(pos, 0, 1, hy)];
-  const rig: Rig = { ...st, lean: (st.lean ?? 0) + 0.35 * kneelDown, look: at, reach: 1, hands };
+  const walking = ramp(t, T.walk0, T.walk0 + 0.3) * (1 - ramp(t, T.walk1 - 0.3, T.walk1));
+  const rig: Rig = { ...st, lean: (st.lean ?? 0) + 0.12 * down + 0.04 * walking, look: at, reach: 1, hands };
   return withIdle(rig, s, 0.4);
 }
 
@@ -196,7 +197,7 @@ export function strapsRig(t: number, s: number): Rig {
  */
 export const CARRY_T = { squat: 1.4, grip: 2.2, sign: 5.2, count: 0.7, lift0: 7.6, lift1: 9.0, walk0: 9.4, walk1: 12.0, down0: 12.4, down1: 13.6, end: 14.4 };
 /** the stack's ends (where the hands hold it) at rest, and how far it travels */
-export const CARRY = { ends: [-(STACK.D + STACK.R) - 0.02, STACK.D + STACK.R + 0.02], travel: 0.6, lift: 0.55 };
+export const CARRY = { ends: [-(STACK.D + STACK.R) - 0.02, STACK.D + STACK.R + 0.02], travel: 0.6, lift: 0.7 };
 
 /** where the stack is during the carry: offset (x travel, y lift) at time t */
 export function carryOffset(t: number): V3 {
@@ -270,16 +271,17 @@ export function carryRig(who: 0 | 1, t: number, s: number): Rig {
   const st = shuffle(spec, x0, x0 + CARRY.travel, zC, yaw, t, T.walk0, T.walk1, depth);
   // the hands under the stack's end, either side of it, close to the body
   const handAt = (side: -1 | 1): V3 => [end + off[0] + (who ? 0.02 : -0.02), 0.12 + off[1], zC + side * 0.1];
-  const grips = t >= T.grip - 0.6 && t < T.down1 + 0.35;
+  const grips = t >= 0.4 && t < T.down1 + 0.35;
   const toHand = (side: -1 | 1): HandRig => {
     const p = handAt(side);
-    const reachIn = ramp(t, T.squat - 0.4, T.grip);
-    const away: V3 = add(p, [who ? 0.25 : -0.25, 0.25, side * 0.08]);
+    const reachIn = ramp(t, 0.4, T.grip);
+    const away: V3 = [end + (who ? 0.3 : -0.3), 0.78, zC + side * 0.22];
     const at = mix(away, p, reachIn);
     // a fist round the strands at the end of the stack, from below and the side
     return { grip: gripFrame(at, [0, 0, side * 1], norm([who ? 0.6 : -0.6, -0.8, 0])), hold: 'fist', radius: 0.03, free: 0.6, open: 1 - ramp(t, T.grip - 0.3, T.grip) };
   };
-  let hands: [HandRig | null, HandRig | null] = grips ? [toHand(who ? 1 : -1), toHand(who ? -1 : 1)] : [hangingHand(st.pos, yaw, -1), hangingHand(st.pos, yaw, 1)];
+  const hy = 0.82 - 0.42 * depth;
+  let hands: [HandRig | null, HandRig | null] = grips ? [toHand(who ? 1 : -1), toHand(who ? -1 : 1)] : [hangingHand(st.pos, yaw, -1, hy), hangingHand(st.pos, yaw, 1, hy)];
   // Mai's hand sign: the right hand up at her shoulder, towards Ada, then back to the load
   if (!who && t >= T.sign - 0.6 && t < T.sign + 3 * T.count + 0.4) {
     const n = carryCount(t) || (t < T.sign ? 3 : 1);
@@ -287,8 +289,10 @@ export function carryRig(who: 0 | 1, t: number, s: number): Rig {
     const f: V3 = [1, 0, 0];
     const shoulder: V3 = [st.pos[0] + 0.02, 0.95 - 0.35 * (1 - up), zC + 0.2];
     const fingers: [number, number, number, number] = n >= 3 ? [0, 0, 0, 1] : n === 2 ? [0, 0, 1, 1] : [0, 1, 1, 1];
-    const sign: HandRig = { wrist: add(shoulder, mul(f, 0.25)), dir: norm([0.3, 1, 0]), palm: [1, 0, 0], fingers, curl: 0.2 };
-    if (up > 0.05) hands = [hands[0], up > 0.5 ? sign : hands[1]];
+    // (from the load up to the sign and back: the wrist goes the whole way, the hand opens on the way)
+    const load = handAt(1);
+    const sign: HandRig = { wrist: mix(add(load, [-0.06, 0.03, 0.03]), add(shoulder, mul(f, 0.25)), up), dir: norm(mix([0.6, -0.8, 0], [0.3, 1, 0], up)), palm: [1, 0, 0], fingers: up > 0.6 ? fingers : [0.7, 0.7, 0.7, 0.7], curl: 0.2 };
+    if (up > 0.02) hands = [hands[0], sign];
   }
   const other: V3 = who ? [CARRY.ends[0] - 0.3 + off[0], 1.1, zC] : [CARRY.ends[1] + 0.3 + off[0], 1.1, zC];
   const look = t < T.lift0 && (who === 1 || t > T.sign - 0.8) ? other : add([end + off[0], 0.1 + off[1], zC], [who ? -0.4 : 0.4, 0, 0]);
@@ -298,31 +302,35 @@ export function carryRig(who: 0 | 1, t: number, s: number): Rig {
 
 // ===================================================================================== unroll
 
-/** Mai taking the end off the stack and walking away with it; fist = the sim's fist frame */
-export function unrollRig(t: number, s: number, fist: Frame): Rig {
+/** Mai taking the end off the stack and walking away with it; fist = the sim's fist frame (a function of shot time) */
+export function unrollRig(t: number, s: number, fist: (t: number) => Frame): Rig {
   const T = UNROLL_T;
-  // she stands by the end, bends to take it, then walks away to her right (+x), the end in her right hand
-  const p0 = fist.p;
-  const start: [number, number] = [stackPlane(STACK.total).X + STACK.C[0] - 0.05, STACK.C[2] + 0.62];
-  const bendDown = ramp(t, 0, T.grip) * (1 - ramp(t, T.grip + 0.1, T.lift));
+  const f0 = fist(0).p;
+  // she stands by the end (on its near side, a little to its left), bends to take it, then walks
+  // away to her right (+x) with the end in her right hand, the hand a little behind her hip
+  // (she stands right of the end, beside the stack's right lobe, facing it)
+  const yaw0 = -Math.PI / 2 + 0.35;
+  const start: [number, number] = [Math.max(f0[0] + 0.42, STACK.C[0] + STACK.D + STACK.R + 0.3), f0[2] + 0.12];
+  // (crouched at the end from the start: the hand goes to it)
+  const bendDown = 1 - ramp(t, T.grip + 0.1, T.lift);
+  const right: HandRig = { grip: fist(t) as Grip, hold: 'fist', radius: 0.015, free: 0.6, open: 1 - ramp(t, T.grip - 0.2, T.grip) };
   if (t < T.walk0) {
-    const st = squat(MAI, start, Math.PI / 2 - 0.9, 0.55 * bendDown);
-    const right: HandRig = { grip: fist as Grip, hold: 'fist', radius: 0.015, free: 0.5, open: 1 - ramp(t, T.grip - 0.2, T.grip) };
-    return withIdle({ ...st, lean: (st.lean ?? 0) + 0.15 * bendDown, look: p0, reach: 1, hands: [hangingHand(st.pos, Math.PI / 2 - 0.9, -1), right] }, s, 1.7);
+    const st = squat(MAI, start, yaw0, 0.75 * bendDown);
+    return withIdle({ ...st, lean: (st.lean ?? 0) + 0.2 * bendDown, look: fist(t).p, reach: 1, hands: [hangingHand(st.pos, yaw0, -1, 0.82 - 0.4 * bendDown), right] }, s, 1.7);
   }
+  // the walk: the fist at her right side, a little behind (facing +x: right = +z); the shot moves
+  // the fist between the same two times with walk()'s ease, so the hand stays where the body takes it
+  const fA = fist(T.walk0).p, fB = fist(T.walk1).p;
   const path = [
-    { t: T.walk0, x: start[0], z: start[1], yaw: Math.PI / 2 - 0.9 },
-    { t: T.walk0 + 0.7, x: start[0] + 0.2, z: start[1] - 0.05 },
-    { t: T.walk1, x: p0[0] - 0.2, z: p0[2] + 0.25 },
+    { t: T.walk0 - 0.4, x: start[0], z: start[1], yaw: yaw0 },
+    { t: T.walk0, x: fA[0] - 0.1, z: fA[2] - 0.24 },
+    { t: T.walk1, x: fB[0] - 0.1, z: fB[2] - 0.24 },
   ];
   const w = walk(MAI, path, Math.min(t, T.walk1 + 0.5), 4);
-  const right: HandRig = { grip: fist as Grip, hold: 'fist', radius: 0.015, free: 0.7 };
   // she looks back at the stack now and then
   const back = 0.5 + 0.5 * Math.sin(1.1 * t);
-  const look = mix(add(p0, [1.2, 0.5, 0]), [STACK.C[0], 0.1, STACK.C[2]], back);
-  void dot;
-  void sub;
-  return withIdle({ ...w, look, reach: 0.8, hands: [null, right] }, s, 1.7);
+  const look = mix(add(fist(t).p, [1.5, 0.6, 0]), [STACK.C[0], 0.1, STACK.C[2]], back);
+  return withIdle({ ...w, look, reach: 0.8, hands: [null, { ...right, open: 0 }] }, s, 1.7);
 }
 
 export { ADA, MAI };
