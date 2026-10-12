@@ -22,7 +22,7 @@
 //
 // Coordinates as in stage 1 and 5.2: Noor stands at the origin facing −z, her right is +x, y up.
 
-import { Bundle, Capsule, Frame, Quat, Rod, V3, XLR, add, buildCable, cross, dot, length, lerp3, normalize, quatFromAxisAngle, quatRotate, scale, smooth, sub } from '../sim';
+import { Bundle, Capsule, Quat, Rod, V3, XLR, add, buildCable, cross, dot, length, lerp3, normalize, quatFromAxisAngle, quatRotate, scale, sub } from '../sim';
 import { FIST, Ring, RingSpec, placeRing, ringRod, windRing } from './deploy-ring';
 import type { ShotBuild, ShotDef } from './types';
 

@@ -304,15 +304,6 @@ function fitBows(b: BakedRod, t: number) {
   return { c: [cx, 0.004, cz] as V3, R, turn: best.turn, bows: bows.map((r) => r.turn), onFloor: P.length * seg };
 }
 
-/** a small dark chip (like the "Zeitlupe" badge), with any text */
-function chip(layer: Node, text: string, visible: () => number, x: number, y = TOP + 24, fill: string = C.text) {
-  layer.add(
-    <Rect x={x} y={y} offset={[0, -1]} padding={[8, 20]} radius={30} fill={fill} opacity={visible} layout>
-      <Txt text={text} fontFamily={FONT} fontWeight={700} fontSize={32} fill={'#fff'} />
-    </Rect>,
-  );
-}
-
 const G = EIGHT_GEOM;
 const N8 = G.N;
 /** the loop as it hangs below the fist (stage 5.2's geometry) */
