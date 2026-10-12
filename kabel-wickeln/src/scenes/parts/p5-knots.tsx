@@ -293,7 +293,7 @@ function crateRig(b: BakedRod, t: number, s: number): Rig {
 /** the crate: from in front of her, to her right, from above (her face, her hands, into the crate) */
 const CRATE_WIDE: Orbit = { target: [0.02, 0.7, -0.3], yaw: 2.45, pitch: 0.3, dist: 3.0, fov: 38 };
 /** the crate from above, close: the end and the ring's middle */
-const CRATE_CLOSE: Orbit = { target: [CRATE.x, 0.06, CRATE.z], yaw: 2.7, pitch: 1.0, dist: 0.8, fov: 36 };
+const CRATE_CLOSE: Orbit = { target: [CRATE.x - 0.08, 0.2, CRATE.z], yaw: 2.7, pitch: 0.92, dist: 1.25, fov: 36 };
 /**
  * to her right, a little in front of her, from above: KONZEPT's outside camera stands a little behind
  * her, but the ring hangs at her left hip and her body would hide it and the knots; from here the
@@ -413,7 +413,7 @@ export function* part(layer: Node) {
     const sg = segAt(sc);
     if (sg.shot === 'crate') return [CRATE.x, 0.1, CRATE.z];
     const rh = B[sg.shot === 'ok' ? 'pull' : sg.shot].frame('rh', shotAt(sc)).p;
-    return mixV(add3(KNOT_HOLD, [0.03, -0.24, 0.02]), rh, 0.35);
+    return mixV(add3(KNOT_HOLD, [0.03, -0.3, 0.02]), rh, 0.35);
   };
 
   const world = new World3D('p5-knots', () => {

@@ -32,7 +32,7 @@ import { all, waitFor } from '@motion-canvas/core';
 import * as THREE from 'three';
 import { BakedRod, V3, loadBake } from '../../sim';
 import {
-  A, N, PREP, PREP_T, MIC, RC, REST_R, RING_GEOM, RING_T, S_STRAP, SPEC, STRAP, TO_PALM, TWO_T, WRAP_LAG, WRAP_PHI0, WRAP_TURNS, bottomSection, ease, gripPath,
+  A, N, PREP, PREP_T, MIC, RC, REST_R, RING_GEOM, RING_T, S_STRAP, SPEC, STRAP, TWO_T, WRAP_LAG, WRAP_PHI0, WRAP_TURNS, bottomSection, ease, gripPath,
   perp, pinchR, prepPlanFrom, prepRig, prepStrap, prepTrack, ramp, rigBase, ringGrip, ringPlanFrom, ringPoint, ringRig, ringTrack, strapSection, tieFrame, twoRig, twoTrack, valPath,
 } from '../../shots/p4-strap';
 import { BAND, BandPath, Section, choke, falling, held, round, zipTie } from '../../shots/p4-strap-shape';
@@ -108,6 +108,7 @@ hold('prep', 'dipOut', PREP_T.cinch1, 0.3);
 hold('prep', 'dipIn', PREP_T.wrap1, 0.3);
 play('prep', 'rt', PREP_T.wrap1, PREP_T.let + 0.4);
 play('prep', 'tug', PREP_T.let + 0.4, PREP_T.rest);
+hold('prep', 'tugHold', PREP_T.rest, 1.2);
 play('prep', 'pins', PREP_T.rest, PREP_T.rest + 4.4);
 play('prep', 'mic', PREP_T.rest + 4.4, PREP_T.end);
 hold('prep', 'micHold', PREP_T.end, 2.2);
@@ -140,15 +141,6 @@ function seg(id: string): Seg {
 /** scene time where segment id starts / ends */
 const S = (id: string) => seg(id).at;
 const E = (id: string) => seg(id).at + seg(id).len;
-/** the segment at scene time tau */
-function segAt(tau: number): Seg {
-  let s = SEGS[0];
-  for (const x of SEGS) {
-    if (tau < x.at) break;
-    s = x;
-  }
-  return s;
-}
 /** the set's clock at tau (while the set is on; outside it, its first or last value) */
 function clockOf(set: SetId, tau: number): number {
   const list = SEGS.filter((x) => x.set === set);
@@ -502,10 +494,7 @@ export function* part(layer: Node) {
       }
       // cameras
       const eyes = (x: number) => eyesOfRig(SPEC, prepRigAt(x));
-      const look = (x: number): V3 => {
-        const base = add(mix(PREP.fist, prepPlan.p, 0.5), [0, -0.02, 0]);
-        return mix(base, add(MIC.c, [0, -0.2, 0]), ramp(x, PREP_T.rest + 4.0, PREP_T.end - 0.5) * 0.0);
-      };
+      const look = (): V3 => add(mix(PREP.fist, prepPlan.p, 0.5), [0, -0.02, 0]);
       povFollow(pov, eyes, look, t, { back: 0.03, up: 0.03, fov: 46, smooth: 0.25 });
       const wide = ease((tau() - S('mic') + 0.2) / 2.0);
       orbit(ext, mixOrbit(NAH, WIDE, wide, o1));
@@ -688,12 +677,15 @@ export function* part(layer: Node) {
   }
   const YAW = 2.42;
   const knotBend: V3[] = [[0, 0, 0]];
-  let dropFall: [Float32Array | null, Float32Array | null] = [null, null];
   const o2: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
   const o3: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
   const wRing = new World3D('p4-strap-ring', () => {
     const s = tau();
-    for (const x of st) x.group.visible = false;
+    for (const x of st) {
+      x.group.visible = false;
+      x.strap.group.visible = true;
+      x.zip.group.visible = false;
+    }
     if (active('drop')) {
       // ✗ only wrapped (station 0) | ✓ on the cable (station 2): the same opening
       const d = tDrop();
@@ -712,7 +704,6 @@ export function* part(layer: Node) {
         const o = ramp(d, DROP_T.pinch + 0.1, DROP_T.peel1);
         if (d < DROP_T.let) {
           round(S0.band, strand, bundle, 1, d > DROP_T.pinch ? pads : null, { open: o, choked });
-          dropFall[k === 0 ? 0 : 1] = null;
           S0.letGo = Float32Array.from(S0.band.pts);
         } else if (!choked) {
           const p0 = S0.letGo ?? S0.band.pts;
@@ -730,7 +721,6 @@ export function* part(layer: Node) {
         const far: Orbit = { target: S0.W([SEC.c[0] + 0.1, 0.55, SEC.c[2]]), yaw: YAW, pitch: 0.12, dist: 1.95, fov: 34 };
         orbit(colCam[k], mixOrbit(near, far, fall, k === 0 ? o2 : o3));
       }
-      void dropFall;
     } else if (active('start')) {
       const f = tFlash();
       const S0 = st[1];
@@ -930,9 +920,8 @@ export function* part(layer: Node) {
   badge('Zeitraffer', () => (active('start') ? win(S('flash') + FLASH.fast0 - 0.2, S('flash') + FLASH.fast0 + 4 * FLASH.fast + 0.3, 0.2, 0.3) : 0), xL + wL / 2);
 
   // ------------------------------------------------------------------------- labels
-  const W1 = (p: () => V3) => p;
   // 1 · the plug with the pins (own view), the 10–30 cm (close-up), "Rutscht nicht" (close-up), the pins, the mic
-  layer.add(callout({ view: prepPov, target: W1(() => { bPrep.at(tPrep()); return bPrep.point(0.004); }), at: () => { const p = project(prepPov, (bPrep.at(tPrep()), bPrep.point(0.004))); return [p.x - 170, p.y - 120] as [number, number]; }, text: 'Stecker mit Stiften', size: 34, opacity: () => win(0.6, S('dim') + 0.6) }));
+  layer.add(callout({ view: prepPov, target: () => (bPrep.at(tPrep()), bPrep.point(0.004)), at: () => { const p = project(prepPov, (bPrep.at(tPrep()), bPrep.point(0.004))); return [p.x - 170, p.y - 120] as [number, number]; }, text: 'Stecker mit Stiften', size: 34, opacity: () => win(0.6, S('dim') + 0.6) }));
   // the dimension: from the plug's boot to the band, in the close-up, as a bracket beside the cable
   {
     const pA = () => project(prepExt, (bPrep.at(tPrep()), bPrep.point(0.062)));
@@ -954,7 +943,7 @@ export function* part(layer: Node) {
     bracket.add(plate);
     layer.add(bracket);
   }
-  layer.add(callout({ view: prepExt, target: () => (bPrep.at(tPrep()), bPrep.point(S_STRAP)), at: () => { const p = project(prepExt, (bPrep.at(tPrep()), bPrep.point(S_STRAP))); return [p.x + 150, p.y + 170] as [number, number]; }, text: '✓ Rutscht nicht.', color: C.good, size: 36, opacity: () => (active('prep') ? win(S('tug') + (PREP_T.back1 - (PREP_T.let + 0.4)), E('tug') + 0.2) : 0) }));
+  layer.add(callout({ view: prepExt, target: () => (bPrep.at(tPrep()), bPrep.point(S_STRAP)), at: () => { const p = project(prepExt, (bPrep.at(tPrep()), bPrep.point(S_STRAP))); return [p.x + 150, p.y + 170] as [number, number]; }, text: '✓ Rutscht nicht.', color: C.good, size: 36, opacity: () => (active('prep') ? win(S('tug') + (PREP_T.back1 - (PREP_T.let + 0.4)), E('tugHold')) : 0) }));
   layer.add(callout({ view: prepPov, target: () => (bPrep.at(tPrep()), bPrep.point(0.0)), at: () => { const p = project(prepPov, (bPrep.at(tPrep()), bPrep.point(0.0))); return [p.x - 160, p.y - 110] as [number, number]; }, text: 'Stifte', size: 34, opacity: () => (active('prep') ? win(S('pins') + 1.0, E('pins') - 0.2) : 0) }));
   layer.add(callout({ view: prepExt, target: () => (bPrep.at(tPrep()), bPrep.point(S_STRAP)), at: () => { const p = project(prepExt, (bPrep.at(tPrep()), bPrep.point(S_STRAP))); return [p.x - 60, p.y - 200] as [number, number]; }, text: 'Band', size: 34, opacity: () => (active('prep') ? win(S('mic') + 1.4, E('micHold')) : 0) }));
   layer.add(callout({ view: prepExt, target: () => MIC.tail, at: () => { const p = project(prepExt, MIC.tail); return [p.x + 40, p.y - 170] as [number, number]; }, text: '✓ Mikro: kein Band', color: C.good, size: 34, opacity: () => (active('prep') ? win(S('mic') + 1.4, E('micHold')) : 0) }));

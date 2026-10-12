@@ -32,7 +32,6 @@ import { Bundle, Capsule, Frame, Pinch, Quat, Rod, V3, XLR, add, buildCable, cro
 import { JONAS } from '../people/cast';
 import { Grip, HandRig, Rig, RigTrack, gripFrame, stand } from '../people/rig';
 import { capsulesOf } from '../people/body3d';
-import type { Pose } from '../people/people';
 import type { ShotDef } from './types';
 import { FIST, Ring, RingSpec, placeRing, ringRod, windRing } from './deploy-ring';
 
@@ -549,7 +548,7 @@ function ringShot(fit: Fit): ShotDef {
       const tf = tieFrame(kind);
       const sec = strapSection(kind);
       const secL = { c: quatRotate(qInv, sub(sec.c, fistF.p)), a: quatRotate(qInv, sec.a) };
-      let endHold: Bundle | null = null, tie: Bundle | null = null, tieOn = false, released = false;
+      let endHold: Bundle | null = null, tie: Bundle | null = null, tieOn = false, released = false, grabbed = false, given = false;
       // the loose tie: two rings of capsules 16 mm apart (the band's width), 1.4 cm wider than the bundle
       const LOOSE_R = sec.r + 0.014, K = 16;
       const V0 = normalize(cross(sec.a, sec.u));
@@ -576,12 +575,17 @@ function ringShot(fit: Fit): ShotDef {
         return Math.abs(along) < 0.012 && radial < sec.r + 0.012;
       };
       const script = (r: Rod, t: number) => {
-        if (!endHold && t >= T.grab) {
-          // the right fist round the end plug's body
+        if (!grabbed && t >= T.grab) {
+          // the right hand's pads round the end plug's body
+          grabbed = true;
           endHold = r.bundle({ frame: (tt) => hand.grip(tt), hand: 1, blend: 0.12 });
           endHold.add(L - 0.06, L);
         }
-        if (endHold && t >= T.give && !fist.holds(L - 0.075)) fist.add(L - 0.095, L - 0.06, 0.15);
+        if (!given && t >= T.give) {
+          // the left hand takes the cable just below the plug, beside the fist
+          given = true;
+          fist.add(L - 0.095, L - 0.06, 0.15);
+        }
         if (endHold && t >= T.let) {
           endHold.remove();
           endHold = null;
