@@ -56,7 +56,7 @@ const landing = (t: number): V3 => {
  * Noor's rig for the sink at shot time t (scene time s for the idle motion). Her right hand is a
  * loosely closed fist round the cable, which runs down through it; the left hand holds the cable
  * from the floor loosely, so it slides through; she watches where it lands; then the left hand
- * goes down to her hip (where the ghost loop will hang).
+ * comes to the front of her belly (the ghost loop will hang from it).
  */
 export function sinkRig(t: number, s: number): Rig {
   // (she turns a little to her right as the right hand moves along)
@@ -68,9 +68,9 @@ export function sinkRig(t: number, s: number): Rig {
   // left: the cable runs through the loose fist (palm under it), toward the right hand
   const along = supplyDir(t, lh);
   const toPalm = norm(sub([0, -1, 0.25], mul(along, dot([0, -1, 0.25], along))));
-  const left: HandRig = { grip: gripFrame(lh, mul(along, -1), toPalm), hold: 'fist', radius: RC, thumbAlong: 1, open: 0.4, wrap: 0.3, free: 0.6 };
+  const left: HandRig = { grip: gripFrame(lh, mul(along, -1), toPalm), hold: 'fist', radius: RC, thumbAlong: 1, open: 0.4, wrap: 0.3, free: 0.85 };
   const lookFloor = landing(t);
-  const lookHip: V3 = add(SINK.lhHip, [0, -0.15, -0.05]);
+  const lookHip: V3 = add(SINK.lhShow, [0, -0.12, -0.02]);
   const look = lerp(lookFloor, lookHip, ramp(t, SINK_T.lift0 - 0.3, SINK_T.lift0 + 0.6));
   const lean = base.lean + 0.1 * (1 - ramp(t, SINK_T.lift0, SINK_T.lift1));
   return { ...base, lean, look, hands: [left, right] };
@@ -100,7 +100,7 @@ function qx(): V3 {
  */
 export function ringRig(kind: RingKind, t: number, s: number): Rig {
   const base = { ...stand(NOOR, [0, 0], 0, { width: 0.26, stagger: 0.0 }), ...idle(s), reach: 0.6 };
-  const left: HandRig = { grip: ringGrip(t), hold: 'coil', radius: kind === 'small' ? 0.016 : 0.013, thumbAlong: 1, free: 0.3 };
+  const left: HandRig = { grip: ringGrip(t), hold: 'coil', radius: kind === 'small' ? 0.016 : 0.013, thumbAlong: 1, free: 0.5 };
   const foot = rightFoot(kind, t);
   const feet = base.feet;
   const f1 = { ankle: foot.ankle, dir: foot.dir };

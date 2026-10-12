@@ -28,12 +28,12 @@ import { EIGHT_GEOM, OK_T, SNAP_T, earlierLoops, layPads, roundLoop } from '../.
 import { eightRig } from '../../shots/p5-eight-rig';
 import { NOOR } from '../../people/cast';
 import { Rig, RigTrack, eyesOfRig } from '../../people/rig';
-import { CAPTION_Y, GAP, PANEL_H, PanelTitle, TOP, clock, readTime, splitPerson, viewLayers } from '../../lib/kit';
+import { CAPTION_Y, GAP, LAYER, PANEL_H, PanelTitle, TOP, clock, readTime, splitPerson, viewLayers } from '../../lib/kit';
 import { C, FONT, OVER, UNDER } from '../../lib/theme';
 import { Mark, StageChip } from '../../lib/ui';
 import { ArcArrow, GhostPath } from '../../three/arrows';
 import { CableMesh } from '../../three/cable';
-import { Orbit, makeCamera, orbit, povFollow } from '../../three/camera';
+import { Orbit, makeCamera, mixOrbit, orbit, povFollow } from '../../three/camera';
 import { callout } from '../../three/overlay';
 import { Studio } from '../../three/studio';
 import { ThreeView, World3D } from '../../three/view';
@@ -184,6 +184,7 @@ const cross3 = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a
 const norm3 = (v: V3): V3 => mul3(v, 1 / (Math.hypot(v[0], v[1], v[2]) || 1));
 const mixV = (a: V3, b: V3, u: number): V3 => [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
+const easeInOut = (u: number) => u * u * (3 - 2 * u);
 const ease = (u: number) => {
   const x = clamp01(u);
   return x * x * x * (10 - 15 * x + 6 * x * x);
@@ -319,11 +320,13 @@ const LOOP_C: V3 = add3(add3(G.F, mul3(G.E1, 0.035)), [0, -0.13, 0]);
 
 // cameras (Noor stands at the origin facing -z)
 /** the sink, outside: to her right and a little behind her, above, looking down at the floor in front of her */
-const EXT_SINK: Orbit = { target: [0.12, 0.42, -0.5], yaw: 0.95, pitch: 0.52, dist: 2.55, fov: 40 };
+const EXT_SINK: Orbit = { target: [0.12, 0.5, -0.45], yaw: 2.05, pitch: 0.6, dist: 2.9, fov: 40 };
 /** the rings: all three panels, the same camera, the loops face-on from her front right */
-const RING_CAM: Orbit = { target: [-0.1, 0.58, -0.4], yaw: Math.atan2(RING_N[0], RING_N[2]) + 0.12, pitch: 0.12, dist: 2.25, fov: 40 };
-/** her loops (C, D), outside: as in stage 5.2 (to her right, a little behind, above) */
-const EXT8: Orbit = { target: [LOOP_C[0] + 0.04, LOOP_C[1] + 0.02, LOOP_C[2]], yaw: 1.15, pitch: 0.55, dist: 1.35, fov: 38 };
+const RING_CAM: Orbit = { target: [-0.1, 0.58, -0.38], yaw: Math.atan2(RING_N[0], RING_N[2]) + 0.1, pitch: 0.1, dist: 1.8, fov: 40 };
+/** her loops (C, D), outside: from her right, a little in front, above: the loop against the light floor, not her dark clothes */
+const EXT8: Orbit = { target: [LOOP_C[0], LOOP_C[1] - 0.02, LOOP_C[2]], yaw: 1.62, pitch: 0.42, dist: 1.2, fov: 38 };
+/** the ghost loop in her hand faces her (a little to her right): her view sees it open */
+const GHOST_N: V3 = norm3([0.15, 0, 1]);
 
 /**
  * A dashed circle of radius R about c, tilted from the floor (theta 0) up into the vertical plane
@@ -343,9 +346,9 @@ function circlePoints(out: Float32Array, M: number, c: V3, R: number, N: V3, the
 }
 
 /** two dashed tubes, dark and light (readable on the light floor and in front of the dark cable) */
-function ghostMeshes(M: number) {
-  const dark = new GhostPath({ maxPoints: M, radius: 0.0042, color: '#2b2f36', dash: 0.03, opacity: 0.75 });
-  const light = new GhostPath({ maxPoints: M, radius: 0.0027, color: '#ffffff', dash: 0.03, opacity: 0.95 });
+function ghostMeshes(M: number, r = 0.0065) {
+  const dark = new GhostPath({ maxPoints: M, radius: r, color: '#2b2f36', dash: 0.035, opacity: 0.8 });
+  const light = new GhostPath({ maxPoints: M, radius: 0.62 * r, color: '#ffffff', dash: 0.035, opacity: 0.95 });
   dark.mesh.renderOrder = 5;
   light.mesh.renderOrder = 6;
   return {
@@ -441,11 +444,17 @@ export function* part(layer: Node) {
   const nS = B.sink.n;
   const i0S = Math.round(B.sink.track('i0', 0));
   const posS = new Float32Array(3 * nS), d1S = new Float32Array(3 * nS);
+  // (her view: the real 6.4 mm; outside, a wide shot: drawn 10 mm, as KONZEPT allows for a Totale)
   const cableS = new CableMesh({ maxNodes: nS, radius: RC, plugStart: 'xlr-female', plugEnd: 'xlr-male', stripeWidth: 0.05 });
+  const cableSW = new CableMesh({ maxNodes: nS, radius: 0.005, plugStart: 'xlr-female', plugEnd: 'xlr-male', stripeWidth: 0.05, plugScale: 1.3 });
+  cableS.group.traverse((o) => o.layers.set(LAYER.FIRST));
+  cableSW.group.traverse((o) => o.layers.set(LAYER.OUTSIDE));
   const noorS = splitPerson(NOOR, trackOf(0).pose(0));
   const GM = 97;
   const ghostPts = new Float32Array(3 * GM);
-  const ghostS = ghostMeshes(GM);
+  const ghostS = ghostMeshes(GM, 0.008);
+  const orbitTmp: Orbit = { target: [0, 0, 0], yaw: 0, pitch: 0, dist: 1 };
+  let wideNow = true;
   const povS = makeCamera(62);
   viewLayers(povS, 'pov');
   const extS = makeCamera(40);
@@ -453,7 +462,7 @@ export function* part(layer: Node) {
   /** the ghost loop at shot time tt and scene time s: drawn onto the bow, then lifted into her left hand */
   const ghostAt = (tt: number, s: number) => {
     const u = ease((tt - SINK_T.lift0) / (SINK_T.lift1 - SINK_T.lift0));
-    const hang = add3(add3(sinkLH(tt), [0, -ghostR - 0.012, 0]), mul3(RING_N, 0.03));
+    const hang = add3(add3(sinkLH(tt), [0, -ghostR - 0.012, 0]), mul3(GHOST_N, 0.03));
     // (it rises a little more than straight: an arc up from the floor)
     const c = mixV(fit.c, hang, u);
     c[1] += 0.12 * Math.sin(Math.PI * u);
@@ -465,7 +474,7 @@ export function* part(layer: Node) {
     const sc = Math.min(LENGTH, Math.max(0, s));
     const tt = shotAt(sc);
     const r = sinkRH(tt);
-    const land: V3 = [r[0] + 0.02, 0.05, r[2] - 0.1];
+    const land: V3 = [r[0] - 0.02, 0.05, r[2] - 0.22];
     const g = ghostAt(tt, sc).c;
     return mixV(land, g, smooth((sc - S('circle')) / 0.8));
   };
@@ -474,15 +483,26 @@ export function* part(layer: Node) {
     const tt = t();
     B.sink.frameSample(tt, posS, d1S);
     cableS.update(posS.subarray(3 * i0S), d1S.subarray(3 * i0S), nS - i0S);
+    cableSW.update(posS.subarray(3 * i0S), d1S.subarray(3 * i0S), nS - i0S);
     noorS.update(poseNow());
     const g = ghostAt(tt, tau());
-    const n = circlePoints(ghostPts, GM, g.c, ghostR, RING_N, g.theta, g.drawn);
+    const n = circlePoints(ghostPts, GM, g.c, ghostR, GHOST_N, g.theta, g.drawn);
     ghostS.update(ghostPts, n, ghostOnS());
-    orbit(extS, EXT_SINK);
+    // (outside: the wide shot; then in front of her, close on the ghost loop in her hand)
+    const gEnd = add3(add3(sinkLH(SINK_T.lift1), [0, -ghostR - 0.012, 0]), mul3(GHOST_N, 0.03));
+    const toGhost = easeInOut(clamp01((tau() - S('lift') - 0.3) / 1.8));
+    orbit(extS, toGhost > 0 ? mixOrbit(EXT_SINK, { target: gEnd, yaw: Math.PI - 0.4, pitch: 0.22, dist: 1.45, fov: 36 }, toGhost, orbitTmp) : EXT_SINK);
+    // (the thick wide-shot cable only while the outside camera is wide; close up both views show the real one)
+    const wide = toGhost < 0.5;
+    if (wide !== wideNow) {
+      wideNow = wide;
+      cableSW.group.visible = wide;
+      cableS.group.traverse((o) => o.layers.set(wide ? LAYER.FIRST : 0));
+    }
     povFollow(povS, (x) => eyesOfRig(NOOR, rigAt(x)), lookS, tau(), { back: 0.05, up: 0.04, fov: 64, smooth: 0.35 });
   });
   new Studio(worldS.scene, { focus: [0.1, 0.4, -0.4], focusRadius: 1.3 });
-  worldS.scene.add(cableS.group, noorS.person.group, ...ghostS.meshes);
+  worldS.scene.add(cableS.group, cableSW.group, noorS.person.group, ...ghostS.meshes);
 
   // ------------------------------------------------------------------------- B · three rings
   const ringCam = makeCamera(40);
@@ -496,7 +516,7 @@ export function* part(layer: Node) {
     const track = new RigTrack(NOOR, (x) => ringRig(kind, Math.min(RING_T.end, Math.max(0, x)), x + 30), 0, 30);
     const noor = splitPerson(NOOR, track.pose(0));
     const gp = new Float32Array(3 * GM);
-    const ghost = ghostMeshes(GM);
+    const ghost = ghostMeshes(GM, 0.0055);
     const world = new World3D(`p5-size-ring-${kind}`, () => {
       if (cur().shot !== 'rings') return;
       const tt = t();
@@ -547,7 +567,7 @@ export function* part(layer: Node) {
     const P = pf.p;
     const grow = ease((tt - MORE_T.letOut0) / (MORE_T.letOut1 - MORE_T.letOut0));
     const L = MORE_L.short + (MORE_L.long - MORE_L.short) * grow;
-    const a = 0.032 * ease((tt - MORE_T.bulge0) / (MORE_T.bulge1 - MORE_T.bulge0)) * (1 - grow);
+    const a = 0.05 * ease((tt - MORE_T.bulge0) / (MORE_T.bulge1 - MORE_T.bulge0)) * (1 - grow);
     const tail: V3[] = [];
     for (let k = 0; k <= 14; k++) tail.push(add3(G.F, mul3(N8, -0.035 * (1 - k / 14))));
     const loop = roundLoop(G.F, P, L, 140).slice(1);
@@ -557,7 +577,7 @@ export function* part(layer: Node) {
       const u = k / (loop.length - 1);
       const bump = Math.exp(-(((u - 0.3) / 0.11) ** 2));
       const outward = norm3(sub3(p, c));
-      loop[k] = add3(p, mul3(add3(outward, mul3(N8, 0.55)), a * bump));
+      loop[k] = add3(p, mul3(add3(outward, mul3(N8, 0.3)), a * bump));
     });
     // beyond the pads: on along the pads' direction, down to the floor, along it to the plug
     const d3 = norm3(sub3(P, loop[loop.length - 2]));
@@ -662,7 +682,7 @@ export function* part(layer: Node) {
   // A: the bows; the circle's size
   const bowPoint = (): V3 => add3(fit.c, mul3(norm3([0.5, 0, 0.8]), fit.R));
   if (truth.bows) {
-    label({ view: extViewS, target: bowPoint, at: [xR + wR / 2 + 40, TOP + 170], text: 'liegt in Bögen', on: () => win(S('settle') - 0.3, S('circle') + 0.6, 0.4, 0.3) });
+    label({ view: extViewS, target: bowPoint, at: [xR + wR / 2 + 60, TOP + 690], text: 'liegt in Bögen', on: () => win(S('settle') - 0.3, S('circle') + 0.6, 0.4, 0.3) });
     label({ view: povViewS, target: () => ghostAt(t(), tau()).c, at: [xL + wL / 2 + 230, TOP + 170], text: `Ø ${diamCm} cm`, on: () => win(S('circle') + 0.9, E('ghost'), 0.4, 0.35) });
   }
   // B: what each ring does (only what the bakes show)

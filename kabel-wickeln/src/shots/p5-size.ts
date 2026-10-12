@@ -40,7 +40,7 @@ export const MEMORY = { loop: 0.75, overUnder: true } as const;
 // ===================================================================================== the sink
 
 /** settings the experiments vary (scratchpad p5s/run.mjs); the shot uses them as they are */
-export const SINK_CFG = { restore: true, compliance: 1e-7, plugs: 'start' as 'both' | 'start' };
+export const SINK_CFG = { memory: true, restore: true, compliance: 1e-7, plugs: 'start' as 'both' | 'start' };
 /** the cable gets its coil memory back over this last stretch before it leaves the hand [m] */
 const RESTORE = 0.08;
 
@@ -50,7 +50,7 @@ export const SINK_T = {
   feed0: 0.8,
   /** and stops */
   feed1: 11.2,
-  /** the left hand goes down to her hip (where a coil hangs) */
+  /** the left hand comes to the front of her belly (where she shows the size) */
   lift0: 12.6,
   lift1: 14.4,
   end: 15.2,
@@ -61,15 +61,15 @@ export const SINK = {
   /** feed speed through the right hand [m/s] */
   v: 0.24,
   /** the right hand (the cable runs down through it) moves slowly from rh0 to rh1 while it feeds */
-  rh0: [-0.04, 1.17, -0.44] as V3,
-  rh1: [0.5, 1.15, -0.4] as V3,
+  rh0: [0.0, 1.13, -0.52] as V3,
+  rh1: [0.48, 1.11, -0.48] as V3,
   /** the left hand holds the cable loosely (it slides through), at her left */
-  lh: [-0.24, 1.08, -0.3] as V3,
-  /** after: the left hand at her hip, where she would hold the coil */
-  lhHip: [-0.12, 0.95, -0.4] as V3,
+  lh: [-0.3, 1.02, -0.4] as V3,
+  /** after: the left hand in front of her belly, where she shows the size (the ghost loop hangs from it) */
+  lhShow: [-0.08, 1.0, -0.44] as V3,
   /** where the cable from the left hand reaches the floor, and the way it lies there (to her left and back) */
-  floorAt: [-0.42, RC + 0.003, -0.18] as V3,
-  floorDir: normalize([-0.55, 0, 0.84]),
+  floorAt: [-0.56, RC + 0.003, -0.3] as V3,
+  floorDir: normalize([-0.5, 0, 0.86]),
   /** the free end at the start: from below the right hand along the floor (forward) */
   lie: 0.22,
   lieDir: normalize([0.25, 0, -1]),
@@ -89,7 +89,7 @@ function glide(t: number, t0: number, t1: number, r: number) {
 /** the right hand (pads' middle: where the cable leaves it downward) at shot time t */
 export const sinkRH = (t: number): V3 => lerp3(SINK.rh0, SINK.rh1, glide(t, SINK_T.feed0, SINK_T.feed1, 0.8));
 /** the left hand at shot time t */
-export const sinkLH = (t: number): V3 => lerp3(SINK.lh, SINK.lhHip, ease((t - SINK_T.lift0) / (SINK_T.lift1 - SINK_T.lift0)));
+export const sinkLH = (t: number): V3 => lerp3(SINK.lh, SINK.lhShow, ease((t - SINK_T.lift0) / (SINK_T.lift1 - SINK_T.lift0)));
 
 /** Chaikin corner cutting (keeps the ends) */
 function chaikin(P: V3[], passes: number): V3[] {
@@ -182,7 +182,7 @@ export const sinkShot: ShotDef = {
   iterations: XLR.iterations,
   build(): ShotBuild {
     const { pts, free } = sinkStart();
-    const { rod, cable } = buildCable(XLR, pts, { plugs: SINK_CFG.plugs, memory: MEMORY });
+    const { rod, cable } = buildCable(XLR, pts, { plugs: SINK_CFG.plugs, memory: SINK_CFG.memory ? MEMORY : null });
     const S = rod.sNode;
     const sHand0 = S[rod.segmentAt(free)];
     const feed = (t: number) => sinkFeed(sHand0, t);
