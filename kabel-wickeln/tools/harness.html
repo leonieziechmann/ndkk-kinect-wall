@@ -14,7 +14,10 @@
         ik: () => import('/src/test-ik.ts?project'),
         coil: () => import('/src/test-coil.ts?project'),
         deploy: () => import('/src/test-deploy.ts?project'),
+        p2why: () => import('/src/test-p2-why.ts?project'),
         p5eight: () => import('/src/test-p5-eight.ts?project'),
+        p5knots: () => import('/src/test-p5-knots.ts?project'),
+        mocap: () => import('/src/test-mocap.ts?project'),
       };
       const { default: project } = await projects[q.get('project') ?? 'project']();
       window.__mc = { project, PlaybackState, Renderer };

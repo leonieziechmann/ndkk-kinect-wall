@@ -4,34 +4,39 @@
 //
 // Where the twist comes from (no fake): the rings are the over-under / same-way rings of the ring
 // factory (deploy-ring.ts windRing: the loops laid on a rod, the crossings woven as the winding
-// leaves them, no twist along the cable), pressed and stored, and they are pulled apart the way the
-// factory's own check does it (deploy-ring.ts pullApart, the test that gives over-under ≈ 0 and
-// same-way ≈ one turn per loop): both ends held so they cannot turn ("Enden fest": the start end in
-// the left hand, the end in the right fist), the loops let go at once, the ends pulled apart in the
-// ring's plane, forearms beyond the ends so no loop slips off over an end. Nothing in the
-// simulation is told to twist: a same-way loop pulled straight becomes one turn of twist (writhe →
-// twist, the linking number of the cable between the hands stays), an über and an unter loop turn
-// opposite ways. The counters of the scene are the measured twist (track "tw", turns between the
-// hands). Then both hands come 40 cm together: the stored twist is free to become writhe again (a
-// curl, then the two halves wrap round each other); Teo pulls again (the curl closes into a kink,
-// kept by the strand friction: plastic memory) and lets go loosely.
+// leaves them, no twist along the cable), pressed and stored. Both ends are held so they cannot turn
+// ("Enden fest"): the start end and the ring's top in the left hand, the end in the right fist. The
+// right hand draws the end out of the ring and the hands pull apart in the ring's plane; the loops
+// leave the left hand one after the other, the front one first, each when the cable already out is
+// almost taut between the hands (the left hand loosens); forearms beyond the ends keep any loop
+// from slipping off over an end (as the factory's own check, deploy-ring.ts pullApart, does). The
+// demos (one loop, one pair) let their loops go at once, as pullApart. Nothing in the simulation is
+// told to twist: a loop pulled straight becomes a turn of twist (writhe → twist: the linking number
+// of the cable between the hands stays), an über and an unter loop opposite ways. The counters of
+// the scene are the measured twist (track "tw", turns between the hands). Then both hands come
+// 40 cm together: the stored twist is free to become writhe again (a curl, then the two halves wrap
+// round each other); Teo pulls again (the curl closes into a kink, kept by the strand friction:
+// plastic memory) and lets go loosely.
 //
 // The cable: the user's XLR preset (Ø 6.4 mm, 42 g/m, strand friction, damping, its GJ 0.8e-4 N m²),
-// with one change from the taut hold on (RING_T.stiff): the torsional stiffness becomes that of the
-// stuck strands, 0.8 × (EI + frictionEI) = 1.6e-3 N m² (WHY_GJ, the value the physics report
-// proposes). Why two values (the tests are in the report of this part):
-//   - with the preset's GJ the loops come out as twist, as they should (Teo ≈ 6 turns between the
-//     hands when taut, Robin ≈ 0), but 6 turns of twist then sit in a slack cable without a single
-//     curl: the twisting moment (GJ·τ ≈ 2.4e-3 N m) never beats the stuck strands' bending (yield
-//     3e-3 N m), which no stage cable does;
-//   - with 1.6e-3 from the start every loop turns into a curl that tightens into a kink under the
-//     pull (a cheap plastic hinge against an expensive extra turn of twist), and the solver lets some
-//     of those tight kinks pass through themselves: 2-3 turns instead of 6 when taut.
-// No single GJ does both in this model, so the loops come out with the preset's and the hold, the
-// slack and the kink run with the stuck strands' (switched while the cable is straight and taut,
-// where it changes nothing visible). The demos (p2-one, p2-under, p2-pair) use the preset only.
+// with one change from the moment the hands start to come together (RING_T.stiff, the cable straight
+// and taut, so nothing visible changes): a torsional stiffness of 1.2e-3 N m² (WHY_CFG.GJ_HOLD), the
+// order of the stuck strands' bending stiffness (the physics report proposes 0.8 × (EI + frictionEI)
+// = 1.68e-3, WHY_GJ). Why two values (the tests are in the report of this part):
+//   - with the preset's GJ the loops come out as twist, as they should (Teo 5.5 turns between the
+//     hands when taut, Robin -0.2), but those turns then sit in a slack cable without a single curl:
+//     the twisting moment (GJ·τ ≈ 2.2e-3 N m) never beats the stuck strands' bending (yield 3e-3
+//     N m), which no stage cable does;
+//   - with a stuck-strand GJ from the start the loops that come out turn into curls that tighten
+//     into kinks under the pull (a cheap plastic hinge against an expensive extra turn of twist),
+//     and the solver lets some of those tight kinks pass through themselves: 2-4 turns instead of 6
+//     when taut; switched at the taut hold, the cable buckles while still held taut.
+// No single GJ does both in this model, so the loops come out with the preset's and the slack and
+// the kink run with 1.2e-3 (1.68e-3 throws more curls but let the plectoneme pass through itself in
+// the tests). The demos (p2-one, p2-under, p2-pair) use the preset only.
 // Contacts are resolved finer than the preset's default (5 mm segments, contact radius 3.6 mm, 3
-// iterations, 40 substeps): a curl pulled tight is where coarse contacts let a strand slip through.
+// solver iterations, 10 from just before Teo pulls again, 40 substeps): a curl pulled tight is where
+// coarse contacts let a strand slip through another (track lkJump says whether one did).
 //
 // The people's arms (RigTrack) reach for the same frames the simulation's ends follow; the
 // simulation sees forearm capsules beyond the plugs (as pullApart) and the body, not the fingers.
@@ -40,7 +45,7 @@
 // -z (yaw 0, their right is +x), hands at chest height in front. The ring's face looks at the camera
 // in front of the person; the start end sticks out of the left hand to the left.
 
-import { Bundle, Capsule, Frame, Quat, Rod, V3, XLR, add, length as len, normalize, quatFromAxisAngle, quatFromTo, quatRotate, quatSlerp, scale, smooth, sub } from '../sim';
+import { Bundle, Capsule, Frame, Quat, Rod, V3, XLR, add, cross, dot, length as len, normalize, quatFromAxisAngle, quatFromTo, quatMul, quatRotate, quatSlerp, scale, smooth, sub } from '../sim';
 import { ROBIN, TEO } from '../people/cast';
 import type { PersonSpec, Pose } from '../people/people';
 import { Grip, HandRig, Rig, RigTrack, gripFrame, stand } from '../people/rig';
@@ -49,14 +54,14 @@ import { tightestBend } from './kink';
 import type { ShotDef } from './types';
 import { FIST, RingSpec, placeRing, ringRod, windRing } from './deploy-ring';
 
-/** torsional stiffness of the stuck strands (see the header): 0.8 × (EI + frictionEI) of the XLR preset */
+/** torsional stiffness of the stuck strands as the physics report proposes it: 0.8 × (EI + frictionEI) of the XLR preset (for comparison; see the header) */
 export const WHY_GJ = 0.8 * (XLR.EI + (XLR.plastic?.frictionEI ?? 0));
 /**
  * The settings (the tests change them before building a shot): torsional stiffness while the loops
  * come out and from the taut hold on, segment length, contact radius, solver iterations, substeps
- * per 1/60 s
+ * per 1/60 s, how much shorter than the cable between the holds the demos' hands end up (m)
  */
-export const WHY_CFG = { GJ: XLR.GJ, GJ_HOLD: WHY_GJ, SEG: 0.005, RC: 0.0036, ITER: 3, SUB: 40 };
+export const WHY_CFG = { GJ: XLR.GJ, GJ_HOLD: 1.2e-3, SEG: 0.005, RC: 0.0036, ITER: 3, ITER_KINK: 10, SUB: 40, SEQ: 1, DEMO_SLACK: 0.012 };
 
 /**
  * A 1.56 m patch cable in six loops of 19 cm (Ø 5.9 cm): 16 cm before the first loop (the start end:
@@ -92,7 +97,7 @@ const isDemo = (kind: WhyKind) => kind === 'one' || kind === 'under' || kind ===
  * together, (Teo) pulled again, loosely together. The cues of the recordings p2.teo.pull /
  * p2.robin.pull (2 / 6 / 9 / 12 / 15 / 17 s) are stretched to these.
  */
-export const RING_T = { side0: 0.3, side1: 1.2, free: 1.3, pull0: 2.0, pull1: 6.0, stiff: 6.6, tog0: 12.5, tog1: 13.9, re0: 18.0, re1: 19.3, loose0: 20.3, loose1: 21.3, end: 28.0 };
+export const RING_T = { side0: 0.3, side1: 1.2, free: 1.3, pull0: 2.0, pull1: 6.0, stiff: 12.2, tog0: 12.5, tog1: 13.9, re0: 18.0, re1: 19.6, loose0: 20.3, loose1: 21.3, end: 28.0 };
 /** the demo of one loop / one pair (p2.oneloop) */
 export const DEMO_T = { side0: 0.1, side1: 0.6, free: 0.65, pull0: 0.8, pull1: 2.6, end: 3.6 };
 const timesOf = (kind: WhyKind) => (isDemo(kind) ? DEMO_T : RING_T);
@@ -101,15 +106,16 @@ const ease = (t: number, a: number, b: number) => smooth((t - a) / (b - a));
 const mix3 = (a: V3, b: V3, u: number): V3 => [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
 
 /** chest-height centre between the hands, person-local */
-const centre = (spec: PersonSpec): V3 => [0, 0.655 * spec.height, -0.34];
+const centre = (spec: PersonSpec): V3 => [0, 0.67 * spec.height, -0.26];
 
 /**
  * The plan recorded in the bake (the scene builds the same rig from it): the start of both holds
  * (frame points), the cable direction into the cable at each (from the plug), where the end comes out
  * of the ring to (side), the cable between the holds, the first node of every loop (and the node
- * after the last loop), the ring's top.
+ * after the last loop), the ring's top; the demos also: how far the right hand turns the plug about
+ * the cable while it draws the end out (roll, rad; see holdsOf).
  */
-const SLOTS = { a0: 0, b0: 3, dA: 6, dB: 9, side: 12, between: 15, loops: 16, top: 23, size: 26 } as const;
+const SLOTS = { a0: 0, b0: 3, dA: 6, dB: 9, side: 12, between: 15, loops: 16, top: 23, roll: 26, size: 27 } as const;
 export type Plan = Float64Array;
 const v3 = (p: Plan, k: number): V3 => [p[k], p[k + 1], p[k + 2]];
 
@@ -124,8 +130,9 @@ export const loopsOf = (kind: WhyKind) => (kind === 'one' || kind === 'under' ? 
 export function spanOf(kind: WhyKind, p: Plan) {
   const between = p[SLOTS.between];
   const s0 = len(sub(v3(p, SLOTS.side), v3(p, SLOTS.a0)));
-  const TAUT = between - 0.03, TOG = TAUT - 0.4, RE = TOG + 0.3, LOOSE = TOG + 0.08;
-  if (isDemo(kind)) return (t: number) => s0 + (TAUT - s0) * ease(t, DEMO_T.pull0, DEMO_T.pull1);
+  const TAUT = between - 0.03, TOG = TAUT - 0.4, RE = TOG + 0.2, LOOSE = TOG + 0.06;
+  const TAUT_D = between - WHY_CFG.DEMO_SLACK;
+  if (isDemo(kind)) return (t: number) => s0 + (TAUT_D - s0) * ease(t, DEMO_T.pull0, DEMO_T.pull1);
   const T = RING_T, re = kind === 'teo';
   return (t: number) => {
     if (t < T.tog0) return s0 + (TAUT - s0) * ease(t, T.pull0, T.pull1);
@@ -156,7 +163,11 @@ export function holdsOf(kind: WhyKind, p: Plan) {
   const span = spanOf(kind, p);
   const A0 = v3(p, SLOTS.a0), B0 = v3(p, SLOTS.b0), S = v3(p, SLOTS.side);
   const dA = v3(p, SLOTS.dA), dB = v3(p, SLOTS.dB);
-  const qA = quatFromTo(dA, [1, 0, 0]), qB = quatFromTo(dB, [-1, 0, 0]);
+  // (the demos: the right hand holds its plug the same way up as the left one once the cable is
+  // straight, as one does showing the loop: the turn about the cable it gives the plug for that is
+  // in the plan, roll; without it the two plugs end 50° apart and a loop reads 310° instead of 360°)
+  const roll = isDemo(kind) ? (p[SLOTS.roll] ?? 0) : 0;
+  const qA = quatFromTo(dA, [1, 0, 0]), qB = quatMul(quatFromAxisAngle(1, 0, 0, roll), quatFromTo(dB, [-1, 0, 0]));
   const I: Quat = [0, 0, 0, 1];
   const u0 = normalize(sub(S, A0)), m0 = scale(add(A0, S), 0.5);
   /** the line the hands pull along: from where they are towards the chest line (+x) */
@@ -211,6 +222,8 @@ export function whyRig(kind: WhyKind, p: Plan) {
       twist: 0.025 * Math.sin(0.33 * t + 2 * ph),
       look,
       hands: [left, right],
+      // (the upper body helps a little where the arms are short: hands 1.25 m apart)
+      reach: 0.6,
     };
   };
 }
@@ -277,6 +290,15 @@ function makeShot(kind: WhyKind, id: string): ShotDef {
       ring.loops.forEach(([a], k) => (plan[SLOTS.loops + k] = a));
       plan[SLOTS.loops + N] = ring.loops[N - 1][1] + 1;
       plan.set(top, SLOTS.top);
+      // the demos: the right plug's turn that makes both plugs' stripes point the same way once the
+      // cable runs straight along +x (the material frames of the held pieces turned as the holds turn them)
+      if (demo) {
+        const d1A = rod.segmentFrame(iA).d1, d1B = rod.segmentFrame(iB - 1).d1;
+        const X: V3 = [1, 0, 0];
+        const flat = (v: V3) => normalize(sub(v, scale(X, dot(v, X))));
+        const a = flat(quatRotate(quatFromTo(dA, X), d1A)), b = flat(quatRotate(quatFromTo(dB, [-1, 0, 0]), d1B));
+        plan[SLOTS.roll] = -Math.atan2(dot(X, cross(a, b)), dot(a, b));
+      }
       for (let k = 0; k < SLOTS.size; k++) plan[k] = Math.fround(plan[k]);
 
       const h = holdsOf(kind, plan);
@@ -298,7 +320,9 @@ function makeShot(kind: WhyKind, id: string): ShotDef {
       holdA.add(0, sA);
       const holdB: Bundle = rod.bundle({ frame: (t) => h.right(Math.max(0, t)), hand: 1, blend: 0.001 });
       holdB.add(sB, rod.totalLength);
-      const fingers: Bundle = rod.bundle({ frame: { p: [...top] as V3, q: [0, 0, 0, 1] }, blend: 0.001 });
+      // (SEQ: the fingers are the left hand: the ring moves with it and the loops leave it one by one)
+      const seq = WHY_CFG.SEQ > 0 && !demo;
+      const fingers: Bundle = rod.bundle({ frame: seq ? (t) => h.left(Math.max(0, t)) : { p: [...top] as V3, q: [0, 0, 0, 1] }, blend: 0.001 });
       for (const [a, b] of ring.held) if (b > sA + 0.005) fingers.add(Math.max(a, sA + 0.005), b);
       // forearms beyond the plugs (as pullApart: no loop slips off over an end) and the body
       const tipA0 = P(0), tipB0 = P(n - 1);
@@ -309,7 +333,8 @@ function makeShot(kind: WhyKind, id: string): ShotDef {
       };
       rod.setCapsules((t) => {
         const tt = Math.max(0, t);
-        const body = capsulesOf(poseAt(tt)).filter((cc) => cc.part === 'torso' || cc.part === 'legL' || cc.part === 'legR');
+        // (the body moves slowly: its capsules once per frame)
+        const body = capsulesOf(poseAt(Math.round(tt * 60) / 60)).filter((cc) => cc.part === 'torso' || cc.part === 'legL' || cc.part === 'legR');
         return [arm(h.left(tt), tipA0, A0), arm(h.right(tt), tipB0, B0), ...body];
       });
       // pre-roll: the ring settles in the fingers, both ends held
@@ -319,19 +344,35 @@ function makeShot(kind: WhyKind, id: string): ShotDef {
       rod.om.fill(0);
 
       let letGo = false, stiff = demo;
+      const gone = new Array<boolean>(N).fill(false), goneAt = new Array<number>(N).fill(0);
       const [c0, c1] = ring.cable;
       const plugJoint = (k: number) => k < c0 - 1 || k >= c1;
       const script = (r: Rod, t: number) => {
         // (quickly: pieces a bundle still holds do not collide with each other)
-        if (!letGo && t >= T.free) {
+        if (!seq && !letGo && t >= T.free) {
           fingers.release(-Infinity, Infinity, 0.06);
           letGo = true;
         }
-        // the ring shots: from the taut hold on, the torsional stiffness of the stuck strands (header)
+        if (seq) {
+          const span = len(sub(h.right(t).p, h.left(t).p));
+          for (let k = N - 1; k >= 0; k--) {
+            if (gone[k]) continue;
+            const ready = k === N - 1 ? t >= T.pull0 : gone[k + 1] && t - goneAt[k + 1] > 0.25 && span > 0.92 * (sB - ring.sLoops[k + 1][0]);
+            if (ready) {
+              fingers.release(ring.sLoops[k][0] - (k === 0 ? 1 : 0), ring.sLoops[k][1] + (k === N - 1 ? 1 : 0), 0.06);
+              gone[k] = true;
+              goneAt[k] = t;
+            }
+            break;
+          }
+        }
+        // the ring shots: from the moment the hands come together, the stiffer torsion (header)
         if (!stiff && t >= RING_T.stiff) {
           r.setStiffness({ GJ: (k) => (plugJoint(k) ? 1000 : 1) * WHY_CFG.GJ_HOLD });
           stiff = true;
         }
+        // the curl pulled tight: more solver iterations, so the tight strands keep their contacts
+        if (!demo && t >= RING_T.re0 - 0.2) r.opts.iterations = Math.max(WHY_CFG.ITER, WHY_CFG.ITER_KINK);
       };
       // twist between the hands (the counters), writhe, their sum, and the largest jump of the sum
       // between two frames once the ring hangs free (a strand passing through another changes it by 2 at once)

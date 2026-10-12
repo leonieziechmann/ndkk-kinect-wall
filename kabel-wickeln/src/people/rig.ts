@@ -129,6 +129,12 @@ export interface HandRig {
   palm?: V3;
   /** free hand: finger curl 0 … 1 (default 0.25, relaxed) */
   curl?: number;
+  /** free hand: each finger's own curl (index, middle, ring, little; 0 … 1), instead of curl/pinch (recorded hands, src/mocap) */
+  fingers?: [number, number, number, number];
+  /** free hand: the thumb tip in the hand frame (m, a hand of size 1; body/hand.ts thumbChain), instead of the one from curl/pinch */
+  thumbTip?: V3;
+  /** free hand with thumbTip: the direction of the thumb's last bone in the hand frame (HandPose.thumbDir) */
+  thumbDir?: V3;
   /** the direction the elbow should point to (default: where it is most comfortable) */
   elbow?: V3;
   /** how much the elbow wish counts (default 1) */
@@ -273,13 +279,14 @@ export function handFromGrip(spec: PersonSpec, side: number, h: HandRig & { grip
   return { wrist, fd, palm, curl: g.curl, spread: g.spread, thumb: g.thumb, thumbDir: g.thumbDir, thumbNail: g.thumbNail, q };
 }
 
-/** a relaxed or curled free hand; fd and palm are made orthonormal */
-function freeHand(q: number, wrist: V3, fd: V3, palm: V3, curl: number, pinch: number): HandPose {
+/** a relaxed or curled free hand; fd and palm are made orthonormal; `fingers`/`thumbTip` (recorded hands) replace the shape from curl and pinch */
+function freeHand(q: number, wrist: V3, fd: V3, palm: V3, curl: number, pinch: number, fingers?: HandPose['curl'], thumbTip?: V3, thumbDir?: V3): HandPose {
   const c = clamp(curl);
   const p = clamp(pinch);
   // a pinch curls the index finger towards the thumb
   const index = lerp(c * 0.92, Math.max(c, 0.6), p);
-  return { wrist, fd, palm: across(palm, fd), curl: [index, c, c * 1.04, c * 1.1].map((x) => clamp(x)) as HandPose['curl'], spread: 0.15 * (1 - p), thumb: freeThumb(c, p, index), q };
+  const curls = (fingers ?? [index, c, c * 1.04, c * 1.1]).map((x) => clamp(x)) as HandPose['curl'];
+  return { wrist, fd, palm: across(palm, fd), curl: curls, spread: 0.15 * (1 - p), thumb: thumbTip ?? freeThumb(c, p, index), thumbDir: thumbTip ? thumbDir : undefined, q };
 }
 
 // ---------------------------------------------------------------- the torso
@@ -485,7 +492,7 @@ function solveSide(spec: PersonSpec, g: Rig, c: Core, i: 0 | 1, ik?: RigIK, fixe
     arm.pads = frame(shape.pads);
     return { hand: holdingHand(sol, shape, q), arm, sol };
   }
-  return { hand: freeHand(q, sol.wrist, sol.hand.fd, sol.hand.palm, h.curl ?? 0.25, h.pinch ?? 0), arm, sol };
+  return { hand: freeHand(q, sol.wrist, sol.hand.fd, sol.hand.palm, h.curl ?? 0.25, h.pinch ?? 0, h.fingers, h.thumbTip, h.thumbDir), arm, sol };
 }
 
 /** the furthest a hand target is beyond the arm's reach (m, ≤ 0 = reachable), for the torso's help */

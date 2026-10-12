@@ -354,6 +354,36 @@ class EinheitMarker(unittest.TestCase):
         self.assertIsNone(marker.find_clap(t, pos, conf, signal_s=4.5)["time"])  # außerhalb des Suchfensters
 
 
+class EinheitVerfolgung(unittest.TestCase):
+    @staticmethod
+    def det(x, s=0.9, w=100):
+        kp = np.zeros((G.J, 3), np.float32)
+        kp[:17, 2] = 0.8
+        return {"box": np.array([x, 50, x + w, 350], np.float32), "score": s, "kp": kp}
+
+    def test_main_person_stable(self):
+        from auswertung import verfolgung
+        # Hauptperson in der Mitte; jemand läuft am Rand durchs Bild; ein Frame ohne Hauptperson (verdeckt)
+        frames = list(range(0, 300, 3))
+        dets = {}
+        for f in frames:
+            d = [] if f == 150 else [self.det(200 + f * 0.1)]
+            if 90 <= f < 180:
+                d.append(self.det(20 + (f - 90) * 0.5, 0.95, 70))
+            dets[f] = d
+        main = verfolgung.select_persons(dets, frames, 1)[0]
+        self.assertEqual(len(main), len(frames) - 1)
+        self.assertTrue(all(p["box"][0] > 150 for p in main.values()))
+        two = verfolgung.select_persons(dets, frames, 2)
+        self.assertEqual(sorted(two[1]), [f for f in frames if 90 <= f < 180])
+
+    def test_large_every(self):
+        from auswertung import verfolgung
+        frames = list(range(0, 600, 60))  # --every 60
+        dets = {f: [self.det(200 + f * 0.05)] for f in frames}
+        self.assertEqual(sorted(verfolgung.select_persons(dets, frames, 1)[0]), frames)
+
+
 # ---------------------------------------------------------------------------------------- Synthetisch
 
 def run_truth2d(test, name, frames=None, cable=False):

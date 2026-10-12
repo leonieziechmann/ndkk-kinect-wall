@@ -101,3 +101,17 @@ Zusätzliche Felder:
 | `meta` | `program`, `models` (Detektor, Top-down-Modelle, Gerät), `every`, `flip`, `person`, `bones_mm` (Knochenlängen der Person, `"<eltern>-<kind>"`), `trim`, `signal_in_recording_s`, `smoothing`, `max_gap_s`, `seconds`, `radius_mm` |
 
 `jitter_mm` in `quality.joints` ist bei der Auswertung die robuste Streuung der Messungen um die geglättete Kurve (1,48 × Median der Abstände).
+
+## Was das Retargeting liest
+
+`src/mocap/take.ts` (Leser) und `src/mocap/retarget.ts` (Take → Figur der Animation) brauchen nur die Pflichtfelder; die optionalen der Auswertung (`hands`, `quality` außer `joints`, `meta` außer `bones_mm`) ignorieren sie, die Hände rechnen sie aus den 21 Punkten selbst.
+
+- Zeit: `t`, Nullpunkt `markers.clap` (fehlt es, der erste Frame). Die Platzierung zählt in s nach dem Klatschen.
+- `pos`/`conf`/`how`: Gelenke nach Namen (andere Reihenfolge und zusätzliche Gelenke gehen); `how = "-"` heißt fehlt, egal was in `pos` steht. `conf` gewichtet alles; unter 0,2 zählt ein Wert nicht, ab 0,7 ganz.
+- `world.sensor_mm`: Richtung, aus der die Kinect schaut (wie sicher Linien quer zur Sicht sind: Hüften, Schultern). Fehlt es, (0, `kinect.height_m`, 0).
+- `kinect.yaw_deg`: schwacher Hinweis, wohin die Person schaut, wenn Hüften und Schultern unsicher sind (Seitenansicht).
+- `meta.bones_mm`: Ersatz für Arm- und Beinlängen, wenn zu wenige Frames sie zeigen.
+- `cable`: nur zum Anzeigen (`Take.cableAt`).
+- `truth.rig_to_world` (nur synthetisch): Tests legen damit die Figur genau auf die ursprüngliche Bewegung.
+
+Geprüft mit `node tools/simtest/mocap-retarget.mjs` (liest die Wahrheit und Takes der Auswertung; `takeJointsOf` in `src/mocap/joints.ts` muss gleich `jointsOf` in `synthetic/generate.ts` bleiben, der Test vergleicht beide).

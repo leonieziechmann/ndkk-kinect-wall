@@ -14,8 +14,9 @@ import { deployPull } from './deploy-pull';
 import { PHYS_SHOTS } from './phys-tests';
 import { P3_SHOTS } from './p3-steps-twist';
 import { WHY_SHOTS } from './p2-why';
+import { P5_KNOTS_SHOTS } from './p5-knots';
 
-const SHOT_LIST: ShotDef[] = [exampleTwist, ...COIL_SHOTS, knotPull, eightSnap, eightOk, eightRoll, eightSwivel, eightReverse, kinkShot, throwShot, deployPull, ...PHYS_SHOTS, ...P3_SHOTS, ...WHY_SHOTS];
+const SHOT_LIST: ShotDef[] = [exampleTwist, ...COIL_SHOTS, knotPull, eightSnap, eightOk, eightRoll, eightSwivel, eightReverse, kinkShot, throwShot, deployPull, ...PHYS_SHOTS, ...P3_SHOTS, ...WHY_SHOTS, ...P5_KNOTS_SHOTS];
 
 export const SHOTS: Readonly<Record<string, ShotDef>> = (() => {
   const out: Record<string, ShotDef> = {};

@@ -212,7 +212,7 @@ py -3 -m pip install "transformers>=5.10" accelerate ultralytics
 
 Beim ersten Start laden sich die Modelle selbst: YOLO11x-pose (113 MB) nach `<Hauptordner>\recordings\mocap\modelle\`, Sapiens2 1b (≈ 6 GB) und ViTPose++ huge (≈ 2,5 GB) in den Hugging-Face-Speicher (`%USERPROFILE%\.cache\huggingface`; woanders hin mit der Umgebungsvariable `HF_HOME`). Sapiens2 braucht im Speicher etwa 6 GB RAM (float32 auf der CPU).
 
-**Grafik des Notebooks (DirectML), noch nicht ausprobiert:** `py -3 -m pip install torch-directml onnxruntime-directml` und `--device dml`. Sapiens2 und ViTPose laufen dann über torch-directml in float16; falls ein Operator fehlt, bricht es mit einer Meldung ab, dann `--device cpu`. Ultralytics kann kein DirectML: Für den Detektor YOLO11x-pose einmal als ONNX exportieren und mitgeben:
+**Grafik des Notebooks (DirectML), noch nicht ausprobiert:** am besten in einer eigenen Umgebung (`py -3 -m venv C:\mocap-dml`, dann deren `python.exe` statt `py -3`), weil torch-directml seine eigene torch-Version mitbringt und onnxruntime-directml das normale onnxruntime ersetzt: `python -m pip install torch-directml onnxruntime-directml numpy pillow imageio-ffmpeg "transformers>=5.10" accelerate ultralytics`, dann `--device dml`. Sapiens2 und ViTPose laufen dann über torch-directml in float16; falls ein Operator fehlt, bricht es mit einer Meldung ab, dann `--device cpu`. Ultralytics kann kein DirectML: Für den Detektor YOLO11x-pose einmal als ONNX exportieren und mitgeben:
 
 ```
 py -3 -c "from ultralytics import YOLO; YOLO(r'C:\Pfad\zu\ndkk-kinect-wall\recordings\mocap\modelle\yolo11x-pose.pt').export(format='onnx', imgsz=(640, 768), opset=17)"
@@ -256,14 +256,14 @@ Was du im Bericht prüfst: Klatschen gefunden (sonst ist der Take nicht synchron
 
 ### Wie lange es dauert
 
-Gemessen hier im Linux-Container mit 4 CPU-Kernen (keine GPU), je Frame mit Spiegel-Mittelung:
+Gemessen hier im Linux-Container mit 4 CPU-Kernen (keine GPU, nebenher stark belastet; auf einem freien Rechner schneller), je Frame mit Spiegel-Mittelung:
 
 | Schritt | Zeit je Frame |
 |---|---|
 | leicht: YOLO11s-ONNX | ≈ 0,3–0,5 s |
-| YOLO11x-pose (Ultralytics, 640) | ≈ 10–25 s |
-| ViTPose++ huge | AUSSTEHEND |
-| Sapiens2 1b | AUSSTEHEND |
+| YOLO11x-pose (Ultralytics, 640) | ≈ 2 s (CPU frei) bis 25 s (belastet) |
+| ViTPose++ huge | ≈ 8 s (belastet) |
+| Sapiens2 1b | ≈ 150 s (belastet; 0.4b auf freier CPU ≈ 45 s) |
 | 3D, Hände, Klatschen | ≈ 0,01 s |
 | Kabel | ≈ 0,15 s |
 | Kontrollvideo | ≈ 0,05 s |
@@ -296,7 +296,19 @@ Dafür müssen die **Infrarotbilder** (dein Gesicht ist darauf erkennbar) zu Goo
 
 ### Genauigkeit (synthetische Aufnahmen)
 
-AUSSTEHEND
+Mittlerer Abstand der sichtbaren Körpergelenke (COCO 17) zu den wahren Gelenkmitten, in mm (Mittel / Median):
+
+| Aufnahme | wahre 2D-Pixel → 3D | leichtes Modell (YOLO11s) |
+|---|---|---|
+| `synth-coil` (frontal, 2 m) | 12 / 7 | 39 / 31 |
+| `synth-coil-a` (Aufbau A) | 12 / 8 | 38 / 37 |
+| `synth-tpose` (Aufbau A) | 9 / 5 | 33 / 25 |
+| `synth-tpose-b` (Aufbau B) | 10 / 10 | 73 / 64 (Person nur in 49 % gefunden) |
+| `synth-throw` (Aufbau D, seitlich) | 17 / 8 | 54 / 37 |
+
+Die großen Modelle (YOLO11x + Sapiens2 1b + ViTPose++ huge) habe ich hier auf der CPU nur auf 16 Frames von `synth-tpose` gerechnet (jeder 30. Frame). In diesen Frames: Körper 22 / 15 mm (leicht 35 / 26, wahre Pixel 11 / 6), Arme 29 / 16, Beine 15 / 12, Hände 54 / 21 mm; im Bild liegen Sapiens2s Punkte 2,4–4,5 px (Median) neben den wahren.
+
+Mit den wahren 2D-Pixeln liegen Arme und Beine bei 2–14 mm, die Hände (42 Punkte) bei 10–19 mm, der Boden auf 0,1° und 2 mm, das Klatschen auf 0,03 s: Die 3D-Kette ist genau, die Fehler kommen aus dem 2D-Modell. Sapiens2 setzt die Punkte auf den synthetischen Figuren auf 2–3 px genau (Körper, Füße, Hände), YOLO11s auf 3–11 px. Verdeckte Gelenke (der ferne Arm in der Seitenansicht) bleiben Schätzungen und sind in `how` als `B`/`I` markiert. Die Drehung der Hand (Handrücken-Achse) ist mit wahren 2D-Pixeln auf 5–12° (Median) richtig, Handfläche oben/unten in 87–95 % der Frames; mit Sapiens2 rechts 18°, links 70°: Bei 512 × 424 ist eine Hand nur 30–50 px groß, 2–3 px Fehler an den Grundgelenken kippen die Tiefe. Für Handfläche oben/unten hilft das Kreppband auf dem Handrücken (Aufnahmeplan). Das Kabel: 72–76 % der Kabelpunkte nahe den Händen gefunden, 92–99 % der gefundenen liegen am Kabel, 3D-Abstand im Median 13 mm. Echte Aufnahmen werden schlechter sein (echte Hände, echtes Kabel mit 1–2 px).
 
 ### Testen
 
@@ -305,3 +317,38 @@ python kabel-wickeln\mocap\tests\test_auswerten.py
 ```
 
 Einzeltests (Leser, Kamera, Boden, Glättung, Hände, Take-Format, Klatschen) laufen ohne Daten in einer Sekunde. Mit den synthetischen Aufnahmen (`node mocap\synthetic\erzeugen.mjs`) kommen dazu: die wahren 2D-Pixel durch die ganze 3D-Kette, das leichte Modell auf `synth-coil`, das Kabel, ein Termin-Ordner mit `sitzung.json` (zusammen etwa 3 min). `python auswerten.py --modell leicht ..\output\synthetic` vergleicht jede synthetische Aufnahme mit ihrer Wahrheit und druckt die Fehler je Gelenk.
+
+## In die Animation
+
+Aus einem Take wird eine Bewegung der Figuren (`src/mocap/take.ts`, `src/mocap/retarget.ts`). Die Figur darf andere Maße haben als du: Wege und Beckenhöhe werden mit den Beinlängen skaliert (wer steht, steht; wer in die Hocke geht, geht in die Hocke), die Hände relativ zu den Schultern mit den Armlängen. Hände, die bei dir zusammen sind (Klatschen, Ring in beiden Händen), bleiben zusammen. Füße, die stehen, kleben am Boden und gehen nie durch ihn hindurch; Knie beugen sich nur nach vorn und höchstens 155°. Die Arme macht die Arm-IK mit ihren Gelenkgrenzen; Ellbogenrichtung, Handdrehung, Finger und Daumen kommen aus der Aufnahme, soweit sie sicher sind. Wo nicht (verdeckter Arm, Hände mit dem leichten Modell), nimmt sie das Sichere aus den Nachbar-Frames oder eine ruhige Haltung, und die Hand dreht sich bequem weiter, statt Rauschen zu folgen.
+
+In einer Szene oder einem Bake (das ist dieselbe Quelle für beide, wie bei den Choreographien von Hand):
+
+```ts
+import { loadTake, readTakeSync } from '../mocap/take';
+import { Mocap } from '../mocap/retarget';
+
+const take = (yield loadTake('/mocap/takes/p1.coil.teach_t2.json.gz'));   // Szene (Browser)
+const take = readTakeSync('mocap/takes/p1.coil.teach_t2.json.gz');          // Bake (Node)
+
+const mc = new Mocap(take, NOOR, {
+  pos: [0, 0], yaw: 0,          // wo die Figur steht und wohin sie schaut (beim Klatschen bzw. bei `anchor`)
+  from: 1.5, to: 9,             // welcher Teil des Takes, s nach dem Klatschen
+  at: 12,                       // Szenenzeit, zu der `from` läuft
+  speed: 0.5,                   // Zeitlupe; oder warp: [[Szenenzeit, Take-Zeit], …] zum Strecken
+  mirror: false,                // true: Linkshänder-Variante (links und rechts getauscht)
+}, {
+  holds: [{ side: 'right', from: 2.0, to: 7.5, hold: 'pinch' },            // die Hand hält das Kabel
+          { side: 'left', from: 1.0, to: 9, hold: 'coil', radius: 0.012 }],
+});
+const track = mc.track();        // RigTrack: track.pose(t) in jedem Simulationsschritt und in jedem Frame
+person.update(track.pose(t));
+if (mc.holding(t, 1)) pinch = track.pose(t).body.arms[1].grip;   // Griff-Frame für die Kabelsimulation (PinchSpec.roll = 0)
+console.log(mc.report());         // Maße, Sicherheit je Körperteil, Warnungen
+```
+
+- **Wo die Takes liegen:** Szenen laden sie aus `kabel-wickeln/mocap/takes/` (dorthin mit `auswerten.cmd --ins-repo`, das fragt nach deinem Okay; committet wird dabei nichts). Die privaten unter `recordings\` erreicht der Vite-Server nicht.
+- **Griffe:** `holds` sagt, wann eine Hand hält (`pinch`, `fist`, `coil`; Zeiten nach dem Klatschen). Die Hand nimmt dann die Griffform an der Stelle und in der Drehung an, die deine Hand hatte; die Finger gehen 0,2 s vorher in die Griffform. Kennt die Aufnahme die Handdrehung nicht (leichtes Modell), gib die Kabelrichtung mit `along` vor. `suggestHolds(take, 1)` schlägt Zeiten aus den Fingern vor.
+- **Hände am Tisch oder am Boden:** `handsWorld: 1` (oder eine Funktion der Zeit) setzt die Hände dorthin, wo deine im Raum waren, statt sie mit den Armen zu skalieren.
+- **Testen:** `node tools\simtest\mocap-retarget.mjs` vergleicht mit den synthetischen Aufnahmen (Wahrheit auf dieselbe Figur: Handgelenke ≈ 2 mm, Winkel < 1°; Auswertung mit 2D-Rauschen: so genau wie die Daten selbst, Handgelenke ≈ 14 mm). Die Testszene: `node tools\render.mjs stills --project mocap --scene mocap 3.75` (Wahrheit, Auswertung, leichtes Modell nebeneinander auf Noor; danach der Wurf auf Kofi und auf Noor).
+- **Grenzen:** Wo die Kinect nur eine Seite sieht (Aufbau D), ist der ferne Arm geraten. Wohin die Handfläche zeigt, ist aus 512 × 424 Pixeln oft unsicher (die Fingerrichtung ist gut); dann dreht die IK die Hand bequem. Der Kopf kann nicht seitlich kippen. Gelenkgrenzen der Beine (außer den Knien) und Kontakte mit dem eigenen Körper prüft das Retargeting nicht.

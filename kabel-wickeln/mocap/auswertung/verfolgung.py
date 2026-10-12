@@ -82,7 +82,8 @@ def track_weight(items, dets, depth_of=None):
 
 def select_persons(dets, frames, n=1, depth_of=None):
     """Die n wichtigsten Personen: Liste (je Person) von {frame: Person-dict}; Personen nach Gewicht sortiert."""
-    tracks = build_tracks(dets, frames)
+    step = int(np.median(np.diff(frames))) if len(frames) > 1 else 1  # --every
+    tracks = build_tracks(dets, frames, max_gap=max(30, 2 * step))
     if not tracks:
         return [{} for _ in range(n)]
     weights = [track_weight(t, dets, depth_of) for t in tracks]
@@ -101,6 +102,7 @@ def select_persons(dets, frames, n=1, depth_of=None):
             taken[f].add(k)
     # Spuren derselben Person zusammenfügen (zerrissen durch Verdeckung): passt ein freier Kasten zum
     # nächstgelegenen bekannten Kasten der Person, gehört er zu ihr
+    import bisect
     for items in chosen:
         known = sorted(items)
         if not known:
@@ -108,10 +110,10 @@ def select_persons(dets, frames, n=1, depth_of=None):
         for f in frames:
             if f in items:
                 continue
-            j = int(np.searchsorted(known, f))
+            j = bisect.bisect_left(known, f)
             near = [known[i] for i in (j - 1, j) if 0 <= i < len(known)]
             ref = min(near, key=lambda g: abs(g - f))
-            if abs(ref - f) > 90:
+            if abs(ref - f) > max(90, 3 * step):
                 continue
             rb = dets[ref][items[ref]]["box"]
             best, bk = 0.3, None
@@ -124,6 +126,7 @@ def select_persons(dets, frames, n=1, depth_of=None):
             if bk is not None:
                 items[f] = bk
                 taken[f].add(bk)
+                bisect.insort(known, f)
     out = []
     for items in chosen:
         out.append({f: dets[f][k] for f, k in sorted(items.items())})
