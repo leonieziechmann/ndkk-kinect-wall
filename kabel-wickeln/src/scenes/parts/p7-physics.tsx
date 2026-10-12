@@ -32,7 +32,7 @@ import { easeInOutCubic } from '@motion-canvas/core';
 import * as THREE from 'three';
 import { BakedRod, V3, coilPoints, loadBake, smooth } from '../../sim';
 import { BAND, BAND_KINDS, BAND_ORDER, BandKind, EDGE, EDGE_SPEC, EdgeKind, KNOB, MEM, RING, TABLE, TENSION, knobRot, ringTurns } from '../../shots/p7-physics';
-import { BOOK, EDGE_DX, SEATS, SLED, Seat, TRAY, bandRig, crankHandle, edgeRig, holdRig, introRig, knobRig } from '../../shots/p7-physics-rig';
+import { BOOK, EDGE_DX, SEATS, SLED, Seat, TRAY, bandRig, crankHandle, edgeRig, edgeTake, holdRig, introRig, knobRig } from '../../shots/p7-physics-rig';
 import { ILSE } from '../../people/cast';
 import { Rig, RigTrack } from '../../people/rig';
 import { yawFrame } from '../../people/people';
@@ -761,7 +761,7 @@ export function* part(layer: Node) {
       const hand = pose.body.arms?.[1]?.grip?.p as V3 | undefined;
       kinds.forEach((k, i) => {
         const at = EDGE.clampAt[k];
-        const prevDone = i === 0 ? 0.5 : EDGE.clampAt[kinds[i - 1]] + 0.7;
+        const take = edgeTake(i);
         const c = clips[i];
         if (tt >= at - 0.15) {
           const bk = B.edge[k], n = bk.n;
@@ -769,7 +769,7 @@ export function* part(layer: Node) {
           const dir = norm3(sub3(p, q));
           c.position.set(p[0] - dir[0] * 0.006, p[1] - dir[1] * 0.006 + 0.002, p[2] - dir[2] * 0.006);
           c.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), new THREE.Vector3(dir[0], dir[1], dir[2]));
-        } else if (tt > prevDone + 0.4 && hand) {
+        } else if (tt > take && hand) {
           c.position.set(hand[0] - EDGE_DX, hand[1] - 0.018, hand[2]);
           c.quaternion.identity();
         } else {

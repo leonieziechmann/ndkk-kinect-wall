@@ -78,6 +78,12 @@ export const BOOK: V3 = [EDGE.edgeX + EDGE_DX + 0.12, TOP, 0.39];
 /** where the clamps wait before she takes them (a little tray) */
 export const TRAY: V3 = [EDGE.edgeX + EDGE_DX + 0.3, TOP, 0.3];
 
+/** when her right hand sets off with clip k (the clip is in her hand from then on) */
+export const edgeTake = (k: number) => {
+  const at = [EDGE.clampAt.charging, EDGE.clampAt.xlr, EDGE.clampAt.power];
+  return k === 0 ? 0.5 : at[k - 1] + 0.45;
+};
+
 /**
  * The edge: the left hand on the book, the right takes a clamp from the tray and puts it on each
  * tip in turn (EDGE.clampAt). tips(kind, t) = the tip node from the bake (the hand follows it down
@@ -94,30 +100,30 @@ export function edgeRig(t: number, s: number, tip: (k: number, t: number) => V3)
   let look: V3 = lerp(TRAY, [EDGE.edgeX + EDGE_DX - 0.08, TOP - 0.06, 0.39], 0.6);
   for (const k of kinds) {
     const a = at[k];
-    const take0 = (k === 0 ? 0.5 : at[k - 1] + 0.7), take1 = a - 0.9;
+    // she takes the next clip and brings it over (the first from the tray, the others she already holds)
+    const take0 = edgeTake(k), take1 = a - 0.35;
     if (t < take0) break;
     const tp = (tt: number) => add(tip(k, tt), [0, 0.022, 0]);
     if (t < take1) {
-      // from the last tip (or rest) down to the tray, then up and over to the next tip
-      const from = k === 0 ? above(TRAY, 0.05) : above(tp(at[k - 1] + 0.7), 0.03);
+      const from = k === 0 ? above(TRAY, 0.05) : above(tp(at[k - 1] + 0.45), 0.03);
+      const to = above(tp(a - 0.3), 0.05);
       const u = ramp(t, take0, take1);
-      const mid = above(TRAY, 0.02);
-      right = { ...pinch(u < 0.5 ? lerp(from, mid, ramp(u, 0, 0.5)) : lerp(mid, above(tp(a - 0.3), 0.05), ramp(u, 0.5, 1))), open: u > 0.4 && u < 0.6 ? 0.6 : 0 };
-    } else if (t < a + 0.7) {
-      // onto the tip, the clamp closes, the hand lets go slowly (the clamp's weight grows), opens, up
-      const u = ramp(t, take1, a - 0.15);
-      const p = t < a ? lerp(above(tp(a - 0.3), 0.05), tp(t), u) : add(tp(Math.min(t, a + 0.4)), [0, 0.03 * ramp(t, a + 0.35, a + 0.7), 0]);
-      right = { ...pinch(p), open: ramp(t, a + 0.3, a + 0.55) };
-    } else right = { ...pinch(above(tp(a + 0.7), 0.03 + 0.03 * ramp(t, a + 0.7, a + 1.1))), open: 1 };
-    look = lerp(look, tip(k, Math.min(t, a + 0.5)), ramp(t, take1 - 0.6, take1));
+      // a little arc up on the way
+      right = { ...pinch(add(lerp(from, to, u), [0, 0.05 * Math.sin(Math.PI * u), 0])), open: 0 };
+    } else if (t < a + 0.45) {
+      // onto the tip, the clip closes, the hand lets go slowly (the clip's weight grows), opens, up
+      const u = ramp(t, take1, a - 0.1);
+      const p = t < a ? lerp(above(tp(a - 0.3), 0.05), tp(t), u) : add(tp(Math.min(t, a + 0.4)), [0, 0.03 * ramp(t, a + 0.3, a + 0.45), 0]);
+      right = { ...pinch(p), open: ramp(t, a + 0.25, a + 0.4) };
+    } else right = { ...pinch(above(tp(a + 0.45), 0.03 + 0.03 * ramp(t, a + 0.45, a + 0.9))), open: 1 };
+    look = lerp(look, tip(k, Math.min(t, a + 0.5)), ramp(t, take0 - 0.3, take0 + 0.2));
   }
-  // after the last clamp: back to the table
-  const last = at[2] + 1.1;
+  // after the last clip: the hand goes to her lap (the pieces stay in view)
+  const last = at[2] + 0.9, lap = lapAt('edge', -1);
   if (t > last) {
-    const u = ramp(t, last, last + 0.9);
-    const p0 = add(tip(2, last), [0, 0.06, 0]);
-    // (to her lap: the pieces stay in view)
-    right = u >= 1 ? lapAt('edge', -1) : { ...pinch(lerp(p0, add(TRAY, [0.12, 0.08, -0.12]), u)), open: 1 };
+    const u = ramp(t, last, last + 1.0);
+    const p0 = add(tip(2, last), [0, 0.07, 0]);
+    right = u >= 1 ? lap : { ...pinch(lerp(p0, add(lap.wrist as V3, [0.02, 0.03, 0.05]), u)), open: 1 };
     look = lerp(look, [EDGE.edgeX + EDGE_DX - 0.06, TOP - 0.05, 0.39], u);
   }
   return { ...base('edge', s, look, 0.8), hands: [left, right] };
@@ -143,7 +149,9 @@ export function knobRig(t: number, s: number, low: () => V3): Rig {
   const reach = ramp(t, 0.1, KNOB.t0 - 0.1);
   const done = ramp(t, KNOB.t0 + KNOB.turns / KNOB.rate + 0.5, KNOB.t0 + KNOB.turns / KNOB.rate + 1.4);
   const g = fist(h, a, norm(sub(add(KNOB.crank, mul(a, 0.1)), h)), { radius: 0.007, free: 1 });
-  const right: HandRig = reach < 1 ? (reach < 0.05 ? restR : { ...g, grip: gripFrame(lerp(add(KNOB.crank, [0.06, -0.12, -0.18]), h, reach), a, [0, -1, 0]), open: 1 - reach }) : done > 0 ? (done < 1 ? { ...g, open: done, grip: gripFrame(add(h, [0, 0.04 * done, -0.05 * done]), a, [0, -1, 0]) } : restR) : g;
+  // (between the rest on the table and the handle the open hand glides, so the switch is small)
+  const restP = add(restR.wrist as V3, [0, 0.03, 0.04]);
+  const right: HandRig = reach < 1 ? (reach < 0.05 ? restR : { ...g, grip: gripFrame(lerp(restP, h, reach), a, [0, -1, 0]), open: 1 - reach }) : done > 0 ? (done < 1 ? { ...g, open: Math.min(1, 3 * done), grip: gripFrame(lerp(h, restP, done), a, [0, -1, 0]) } : restR) : g;
   // the left hand rests by the vise
   const left = restOn([KNOB.vise[0] + 0.05, TOP + 0.035, KNOB.z - 0.12], 1);
   const look = lerp(add(KNOB.crank, [0.05, -0.05, 0]), low(), ramp(t, KNOB.t0 + 1, KNOB.t0 + 3));
