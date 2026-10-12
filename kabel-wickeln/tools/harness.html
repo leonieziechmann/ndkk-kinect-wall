@@ -14,6 +14,7 @@
         ik: () => import('/src/test-ik.ts?project'),
         coil: () => import('/src/test-coil.ts?project'),
         deploy: () => import('/src/test-deploy.ts?project'),
+        p5eight: () => import('/src/test-p5-eight.ts?project'),
       };
       const { default: project } = await projects[q.get('project') ?? 'project']();
       window.__mc = { project, PlaybackState, Renderer };

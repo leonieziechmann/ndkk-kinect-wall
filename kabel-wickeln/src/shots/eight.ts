@@ -1,174 +1,543 @@
-// Stage 5.2 "Die verdrehte Schlaufe – sie schlägt eine Acht", in clips that chain:
-//   eight-snap   a loop held by both hands carries ~2.85 turns of trapped twist (the cable comes
-//                from a ring that was always wound the same way; the hanging cable is twisted
-//                too). While the right hand still shapes it (guides) it is round; as soon as the
-//                shaping stops it twists into an eight (the lower lobe turns over). The fingers
-//                push it back into the round loop (soft guides), let go, and it springs back into
-//                the eight (sperrig).
-//   eight-roll   fix 1: the right hand rolls the cable back between its fingers (-2.85 turns);
-//                the loop falls flat and round.
-//   eight-swivel fix 3: the right hand opens to a loose fist (the cable may turn in it) and the
-//                free end hangs instead of lying on the floor: the twist runs out, the plug spins,
-//                the loop falls flat.
-//   eight-ok     the same loop without stored twist: it stays flat (the comparison).
-// eight-roll and eight-swivel start from the last frame of eight-snap (Rod.saveState).
+// Stage 5.2 "Die verdrehte Schlaufe – sie schlägt eine Acht" (KONZEPT), the simulated cable for the
+// part p5-eight. The user's XLR (sim/cables.ts XLR preset: strand friction, damping, plug mass) with
+// ONE change, the torsional stiffness (EIGHT_GJ below), held by Noor's hands (pinch and fist frames
+// below; the part poses her arms on the same frames).
 //
-// Coordinates: the hands hold the loop at height H in the x-y plane (Noor looks along -z), left
-// fist at x < 0, right fist at x > 0; the cable before the loop goes back into the coil (-z), the
-// cable after it runs toward Noor (+z) and down to the floor.
+// The situation: the cable comes from a ring that was always wound the same way, so the cable to
+// the floor already carries twist (SUPPLY turns per metre, the stripe winds). Noor has two loops in
+// her left hand and lays the next one. What is prescribed and what is simulated:
+//   - prescribed: the twist in the cable when the shot starts. The new loop holds LOOP_TWIST.over
+//     turns: the linking number its cable brings from the twisted supply minus the writhe of the
+//     loop as it is laid (a flat loop is ±1 turn of writhe, KONZEPT stage 2/7). Laid one way (here
+//     "über") that leaves 2.2 turns of twist in it; laid the other way, 2 turns less (0.2). The
+//     hands' paths are keyframes (the mocap shots replace them later).
+//   - pseudo-simulation (KONZEPT "Führungskräfte"): while the right hand brings the loop to the
+//     left hand, soft guides keep it round (the hand shapes it); while Noor presses the eight flat,
+//     a soft guide pushes the loop into the ring's plane (her flat fingers).
+//   - simulated: everything the cable does by itself: the loop twisting into an eight as soon as
+//     the guides let go, standing out of the ring, popping out again after the press, opening when
+//     the twist is rolled out, the hanging cable untwisting and the plug spinning when the end
+//     hangs free.
+//
+// Shots (all 120 fps for the slow motions, 15 substeps = the preset's 30 per 1/60 s):
+//   eight-snap     ✗ the over loop with 2.2 turns: laid, given to the fist, let go → eight; pressed
+//                  into the ring's plane, let go → it pops out again
+//   eight-ok       ✓ the comparison: the same loop in a cable without twist stays flat
+//   eight-reverse  fix 2: the same twisted cable, the loop laid the other way (unter): 0.2 turns, flat
+//   eight-roll     fix 1: laid as in eight-snap, but the pads keep the loop's end; it starts to turn
+//                  into an eight; four strokes of the thumb roll two turns out; it falls flat; then
+//                  the fist takes it
+//   eight-swivel   fix 3: from the end of eight-snap: the left hand lifts the ring to chest height,
+//                  the plug comes off the floor and hangs free, the fist lets the last strand turn:
+//                  the twist runs out at the free end (the plug spins)
+//
+// Coordinates as in stage 1 (coiling.ts GEOM): Noor stands at the origin facing −z, her right is +x.
+// The loops hang below the left fist in planes facing forward and to her right (axis N); every new
+// loop lies in front of the others (+N). Material order: a short tail inside the fist (from the
+// earlier loops), the new loop, the strand into the right hand's pads, the cable to the floor, the
+// female XLR plug lying on the floor.
 
-import { Frame, Quat, Rod, RodState, V3, quatFromAxisAngle, quatFromFrame, quatMul, smooth } from '../sim';
+import { Capsule, Frame, Rod, RodState, TAU, V3, XLR, buildCable, frameTrack, gripFrame, quatFromAxisAngle, quatMul, quatRotate, smooth } from '../sim';
+import type { Pinch } from '../sim';
 import type { ShotBuild, ShotDef } from './types';
 
-/** XLR in a close-up / POV: 7 mm, contact radius 1.2 r */
-export const EIGHT_CABLE = { radius: 0.0035, collisionRadius: 0.0042, linearDensity: 0.05, EI: 2e-3, GJ: 1.5e-3, damping: 1, angularDamping: 2 };
-const SEG = 0.01;
-/** loop length (Ø ≈ 25 cm), gap between the fists, height of the fists */
-const LOOP = 0.78, GAP = 0.12, H = 1.15;
-/** stored twist in the loop [turns], twist density of the hanging cable [turns/m] */
-export const EIGHT_TWIST = 2.85;
-const SUPPLY_TWIST = 1.2;
-/** lengths: into the coil behind the left fist, the right fist, toward Noor, hanging down */
-const TAIL = 0.12, FIST = 0.04, OUT = 0.1;
-const DROP = H - 0.03;
+// ------------------------------------------------------------------------------------- vectors
 
-/** Node indices: the loop runs from LOOP_A (in the left fist) to LOOP_B (entering the right fist). */
-const TAIL_N = Math.round(TAIL / SEG), LOOP_N = Math.round(LOOP / SEG), FIST_N = Math.round(FIST / SEG);
-export const LOOP_A = TAIL_N, LOOP_B = TAIL_N + LOOP_N;
-const R_A = LOOP_B, R_B = LOOP_B + FIST_N;
+const add = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const mul = (a: V3, s: number): V3 => [a[0] * s, a[1] * s, a[2] * s];
+const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const len = (a: V3) => Math.hypot(a[0], a[1], a[2]);
+const norm = (a: V3): V3 => mul(a, 1 / (len(a) || 1));
+const mix = (a: V3, b: V3, u: number): V3 => [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u, a[2] + (b[2] - a[2]) * u];
+const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
+/** minimum-jerk ease 0 → 1 */
+export const ease = (u: number) => {
+  const x = clamp01(u);
+  return x * x * x * (10 - 15 * x + 6 * x * x);
+};
 
-/** times of eight-snap: the shaping stops; the fingers push it round, hold it, let go; the clip ends */
-export const EIGHT_TIMES = { release: 0.8, press: 2.3, pressed: 3.1, letGo: 3.6, end: 5 };
+// ------------------------------------------------------------------------------------ geometry
 
-/** The loop: an ellipse arc from the left fist down, round and up into the right fist. */
-function loopShape(): { pts: V3[]; tA: V3; tB: V3 } {
-  let rx = 0.13, ry = 0.15, pts: V3[] = [];
-  for (let iter = 0; iter < 30; iter++) {
-    const p0 = Math.asin(GAP / 2 / rx), yc = H - ry * Math.cos(p0);
-    const ell = (p: number): V3 => [-rx * Math.sin(p), yc + ry * Math.cos(p), 0];
-    // arc length by fine sampling, then nodes at equal arc length
-    const M = 2000, acc = [0];
+const D = Math.PI / 180;
+const UP: V3 = [0, 1, 0];
+/** the coil's axis: forward, 55° to her right (coiling.ts GEOM.N): the loops face this way */
+const N: V3 = norm([Math.sin(55 * D), 0, -Math.cos(55 * D)]);
+/** across the loops, from the loop's start (lateral: out to her left and forward) to its end (medial) */
+const E1: V3 = norm([-N[2], 0, N[0]]);
+
+const RC = XLR.od / 2;
+/** the new loop: cable length from the fist round to the fist [m] (Ø ≈ 23 cm) */
+export const LOOP = 0.75;
+/** at the hand-over: the loop's end lies this far from its start across the fist [m] */
+const GAP = 0.07;
+/** height/width of the round loop (hanging loops are a little taller than wide) */
+const ASPECT = 1.08;
+/** the tail inside the fist, the strand from the loop's end to the pads' middle [m] */
+const TAIL = 0.035, TO_PADS = 0.04;
+/** cable beyond the pads: straight on, hanging down, lying on the floor up to the plug tip [m] */
+const BEYOND = 0.03, FLOOR = 0.15;
+/** the cable to the floor lies this way on the floor (to her right and forward) */
+const FLOOR_DIR: V3 = norm([0.55, 0, -0.45]);
+
+/** the twist prescribed at the start [turns]: in the new loop (laid "über" / laid the other way), and per metre in the cable to the floor */
+export const LOOP_TWIST = { over: 2.2, under: 0.2 };
+export const SUPPLY = 1.8;
+
+/**
+ * The torsional stiffness of the eight shots [N m²]: 3e-4 instead of the XLR preset's 0.8e-4.
+ * The preset's GJ is an estimate (sim/cables.ts, physics report: "twist is untested against
+ * reality") from the slipping strands alone; with it the strand friction holds a loop with 2.85
+ * turns round (it tilts 5 cm) and only ~6 turns creep into an eight after 1.3 s, which is not what a
+ * real XLR does. Twisting a stranded cable also shears its stuck strands and the braid; 3e-4
+ * (0.14 × (EI + frictionEI)) is the smallest of the tested values with which 2.85 turns flip within
+ * a second and 0.85 turns stay flat (scratchpad p5e/sweep*.log: 0.8e-4 / 2e-4 / 3e-4 / 4e-4 / 8e-4
+ * / 1.7e-3). Everything else is the preset.
+ */
+export const EIGHT_GJ = 3e-4;
+
+/** settings the experiments vary (tools: scratchpad p5e/exp.mjs); the shots use them as they are */
+export const EIGHT_CFG = { GJ: EIGHT_GJ, over: LOOP_TWIST.over, supply: SUPPLY };
+
+/**
+ * Where everything is. F: the cable's axis where the loop starts in the left fist; E: where its end
+ * comes in at the hand-over; pads: the right hand's pads at the hand-over (über: 3.5 cm on Noor's
+ * side of the new loop, so the cable to the floor hangs between her and the loop; unter: 3 cm in
+ * front of it, the cable to the floor hangs behind the loop); hip: the right hand slid out.
+ */
+export const EIGHT_GEOM = (() => {
+  const F: V3 = [-0.1, 0.94, -0.3];
+  const E = add(F, mul(E1, GAP));
+  const padsAt = (depth: number) => add(E, add(mul(E1, 0.036), mul(N, depth)));
+  return {
+    N,
+    E1,
+    up: UP,
+    F,
+    E,
+    pads: { over: padsAt(-0.035), under: padsAt(0.03) },
+    hip: [0.36, 0.84, -0.1] as V3,
+    /** the left fist raised to chest height and held out in front (fix 3): the plug hangs free, clear of her legs */
+    chest: [-0.05, 1.28, -0.42] as V3,
+    loop: LOOP,
+    gap: GAP,
+    floorDir: FLOOR_DIR,
+  };
+})();
+
+/**
+ * Points of a round loop of arc length `l` hanging from a to b (an ellipse arc below the chord, in
+ * the plane of the chord and the vertical), `n` + 1 points at equal arc length. The bottom of the
+ * loop is ASPECT times as deep as the loop is wide.
+ */
+export function roundLoop(a: V3, b: V3, l: number, n: number): V3[] {
+  const c = sub(b, a);
+  const g = len(c);
+  const u = g > 1e-9 ? mul(c, 1 / g) : E1;
+  // down, perpendicular to the chord
+  const dn = norm(sub([0, -1, 0], mul(u, -u[1])));
+  const m = mul(add(a, b), 0.5);
+  let rx = Math.max(g / 2 + 1e-4, l / (2 * Math.PI)), pts: V3[] = [];
+  for (let iter = 0; iter < 40; iter++) {
+    const ry = ASPECT * rx;
+    const p0 = Math.asin(Math.min(1, g / 2 / rx));
+    const at = (p: number): V3 => add(m, add(mul(u, -rx * Math.sin(p)), mul(dn, ry * (Math.cos(p0) - Math.cos(p)))));
+    const M = 600, acc = [0];
+    let prev = at(p0);
+    const span = 2 * Math.PI - 2 * p0;
     for (let k = 1; k <= M; k++) {
-      const a = ell(p0 + ((2 * Math.PI - 2 * p0) * (k - 1)) / M), b = ell(p0 + ((2 * Math.PI - 2 * p0) * k) / M);
-      acc.push(acc[k - 1] + Math.hypot(b[0] - a[0], b[1] - a[1]));
+      const q = at(p0 + (span * k) / M);
+      acc.push(acc[k - 1] + len(sub(q, prev)));
+      prev = q;
     }
-    const len = acc[M];
-    if (Math.abs(len - LOOP) < 1e-5) {
+    const L = acc[M];
+    if (Math.abs(L - l) < 2e-5 || iter === 39) {
       pts = [];
       let k = 0;
-      for (let i = 0; i <= LOOP_N; i++) {
-        const s = (i / LOOP_N) * len;
-        while (k < M && acc[k + 1] < s) k++;
-        const u = (s - acc[k]) / (acc[k + 1] - acc[k] || 1);
-        pts.push(ell(p0 + ((2 * Math.PI - 2 * p0) * (k + u)) / M));
+      for (let i = 0; i <= n; i++) {
+        const s = (i / n) * L;
+        while (k < M - 1 && acc[k + 1] < s) k++;
+        const w = (s - acc[k]) / (acc[k + 1] - acc[k] || 1);
+        pts.push(at(p0 + (span * (k + w)) / M));
       }
       break;
     }
-    rx *= LOOP / len;
-    ry *= LOOP / len;
+    rx = Math.max(g / 2 + 1e-4, rx * (l / L));
   }
-  const dir = (a: V3, b: V3): V3 => {
-    const l = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
-    return [(b[0] - a[0]) / l, (b[1] - a[1]) / l, (b[2] - a[2]) / l];
+  return pts;
+}
+
+/** dense points along a polyline at spacing h (keeps the corners) */
+function densify(P: V3[], h: number): V3[] {
+  const out: V3[] = [P[0]];
+  for (let i = 1; i < P.length; i++) {
+    const a = P[i - 1], b = P[i], d = len(sub(b, a)), k = Math.max(1, Math.round(d / h));
+    for (let j = 1; j <= k; j++) out.push(mix(a, b, j / k));
+  }
+  return out;
+}
+
+/** a few passes of neighbour averaging: rounds the corners between the pieces (radius ~1–2 cm) */
+function relax(P: V3[], passes: number, keep: (i: number) => boolean): V3[] {
+  let A = P.map((p) => [...p] as V3);
+  for (let r = 0; r < passes; r++) {
+    const B = A.map((p) => [...p] as V3);
+    for (let i = 1; i < A.length - 1; i++) if (!keep(i)) B[i] = mix(A[i], mul(add(A[i - 1], A[i + 1]), 0.5), 0.5);
+    A = B;
+  }
+  return A;
+}
+
+/** the cable as Noor holds it at the hand-over (über or unter), and where its parts are */
+interface Built {
+  rod: Rod;
+  /** nodes: loop start (in the fist), loop end (enters the fist), the pads' middle, the first node of the plug */
+  iF: number;
+  iE: number;
+  iP: number;
+  iPlug: number;
+  sP: number;
+  /** the plug's segments and mass (re-added after Rod.fromState) */
+  plugSegs: [number, number];
+}
+
+function buildEight(kind: 'over' | 'under', loopTwist: number, supply: number): Built {
+  const G = EIGHT_GEOM;
+  const pads = G.pads[kind];
+  const h = 0.0025;
+  const pieces: V3[][] = [];
+  // the tail: from the earlier loops (Noor's side) into the fist
+  pieces.push(densify([sub(G.F, mul(N, TAIL)), G.F], h));
+  // the loop
+  const loopPts = roundLoop(G.F, G.E, LOOP, Math.round(LOOP / h));
+  pieces.push(loopPts.slice(1));
+  // up into the pads, a little further, then down to the floor and along it
+  const dir = norm(sub(pads, G.E));
+  const after = add(pads, mul(dir, BEYOND));
+  const bend = 0.05;
+  const low: V3 = [after[0], RC + bend, after[2]];
+  const onFloor: V3 = add([after[0], RC, after[2]], mul(FLOOR_DIR, bend));
+  pieces.push(densify([G.E, pads, after, low, onFloor], h).slice(1));
+  // on the floor: a gentle S to the plug
+  const side = norm(cross(UP, FLOOR_DIR));
+  const fl: V3[] = [];
+  const K = Math.round(FLOOR / h);
+  for (let k = 1; k <= K; k++) {
+    const s = (k / K) * FLOOR;
+    fl.push(add(add(onFloor, mul(FLOOR_DIR, s)), mul(side, 0.06 * Math.sin((Math.PI * s) / FLOOR))));
+  }
+  pieces.push(fl);
+  let P = pieces.flat();
+  // markers before relaxing: F, E, pads (kept in place)
+  const near = (q: V3) => {
+    let b = 0, d = Infinity;
+    P.forEach((p, i) => {
+      const e = len(sub(p, q));
+      if (e < d) { d = e; b = i; }
+    });
+    return b;
   };
-  return { pts, tA: dir(pts[0], pts[1]), tB: dir(pts[LOOP_N - 1], pts[LOOP_N]) };
-}
-
-/** Grip frame at p with cable direction t and d1 toward +z rotated by roll about t. */
-function frameAt(p: V3, t: V3, roll = 0): Frame {
-  const up: V3 = Math.abs(t[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0];
-  const k = up[0] * t[0] + up[1] * t[1] + up[2] * t[2];
-  let d1: V3 = [up[0] - k * t[0], up[1] - k * t[1], up[2] - k * t[2]];
-  const l = Math.hypot(...d1);
-  d1 = [d1[0] / l, d1[1] / l, d1[2] / l];
-  const d2: V3 = [t[1] * d1[2] - t[2] * d1[1], t[2] * d1[0] - t[0] * d1[2], t[0] * d1[1] - t[1] * d1[0]];
-  const q = quatMul(quatFromAxisAngle(t[0], t[1], t[2], roll), quatFromFrame(d1, d2, t));
-  return { p, q };
-}
-
-const shape = loopShape();
-/** The fists: the left one holds the start of the loop, the right one its end (rolled by `roll`). */
-export const EIGHT_FISTS = {
-  left: frameAt(shape.pts[0], shape.tA),
-  right: (roll: number) => {
-    const b = shape.pts[LOOP_N], t = shape.tB;
-    return frameAt([b[0] + (t[0] * FIST) / 2, b[1] + (t[1] * FIST) / 2, b[2] + (t[2] * FIST) / 2], t, roll);
-  },
-};
-
-/** The cable at rest before anything happens, with `twist` turns stored in the loop. */
-function startRod(twist: number): Rod {
-  const { pts, tB } = shape;
-  const a = pts[0], b = pts[LOOP_N];
-  const all: V3[] = [];
-  for (let i = TAIL_N; i > 0; i--) all.push([a[0], a[1], a[2] - i * SEG]);
-  all.push(...pts);
-  for (let i = 1; i <= FIST_N; i++) all.push([b[0] + tB[0] * i * SEG, b[1] + tB[1] * i * SEG, b[2] + tB[2] * i * SEG]);
-  const r = all[all.length - 1];
-  for (let i = 1; i * SEG <= OUT; i++) all.push([r[0], r[1], r[2] + i * SEG]);
-  const top = all[all.length - 1];
-  for (let i = 1; i * SEG <= DROP; i++) all.push([top[0], top[1] - i * SEG, top[2]]);
-  // twist: uniform over the loop, a little in the hanging cable (both from the same ring)
-  const loopStart = TAIL_N * SEG, loopEnd = loopStart + LOOP;
+  const kF = near(G.F), kE = near(G.E), kP = near(pads);
+  P = relax(P, 14, (i) => Math.abs(i - kF) < 2 || Math.abs(i - kP) < 3 || (i > kF + 4 && i < kE - 4));
+  const sAt = (k: number) => {
+    let s = 0;
+    for (let i = 1; i <= k; i++) s += len(sub(P[i], P[i - 1]));
+    return s;
+  };
+  const sF = sAt(kF), sE = sAt(kE), sP0 = sAt(kP);
+  // twist: none in the tail; LOOP_TWIST spread evenly over the loop; SUPPLY per metre beyond it
   const turnsAt = (s: number) => {
-    if (s <= loopStart) return 0;
-    if (s <= loopEnd) return (twist * (s - loopStart)) / LOOP;
-    return twist + (twist === 0 ? 0 : SUPPLY_TWIST * (s - loopEnd));
+    if (s <= sF) return 0;
+    if (s <= sE) return (loopTwist * (s - sF)) / (sE - sF);
+    return loopTwist + supply * (s - sE);
   };
-  return Rod.fromPolyline(all, { ...EIGHT_CABLE, groundY: 0, twist: (s) => 2 * Math.PI * turnsAt(s) });
+  const built = buildCable(XLR, P, { plugs: 'end', GJ: EIGHT_CFG.GJ, twist: (s) => TAU * turnsAt(s) });
+  const rod = built.rod;
+  const seg = (s: number) => rod.segmentAt(s);
+  const iF = seg(sF), iE = seg(sE), iP = seg(sP0);
+  return { rod, iF, iE, iP, iPlug: built.cable[1], sP: rod.sNode[iP] + rod.L[iP] / 2, plugSegs: [built.cable[1], rod.ns] };
 }
 
-/** The plug end lies on the floor (held: it cannot turn). */
-const floorEnd = (rod: Rod): Frame => {
-  const e = rod.n - 1;
-  return { p: [rod.x[3 * e - 3], rod.x[3 * e - 2], rod.x[3 * e - 1]], q: [0, 0, 0, 1] };
-};
+/** puts the plug's mass back on its segments (it is not part of RodState) */
+function plugMass(rod: Rod, segs: [number, number]) {
+  const mass = XLR.plug?.mass ?? 0;
+  let l = 0;
+  for (let j = segs[0]; j < segs[1]; j++) l += rod.L[j];
+  for (let j = segs[0]; j < segs[1]; j++) rod.addMass(j, mass * (rod.L[j] / l) - rod.m[j]);
+}
+
+// ------------------------------------------------------------------------------------- hands
+
+/** the left fist's frame (the sim holds what it grips in the pose it had relative to it) */
+const fistQ = gripFrame(EIGHT_GEOM.F, mul(N, 1), mul(E1, -1)).q;
+export const fistFrame = (p: V3): Frame => ({ p, q: fistQ });
 
 /**
- * eight-snap and eight-ok: the loop is shaped round (guides), then let go; with `press`, the
- * fingers later push the eight back into the round loop and let go again.
+ * The two loops Noor already has in her left hand (over-under, laid before; not simulated): round
+ * loops like the new one, 9 and 18 mm behind it (on her side). The new loop's cable collides with
+ * them (capsules), and the part draws them from the same points. `at` is the fist's point F.
  */
-function snapBuild(twist: number, press: boolean): ShotBuild {
-  const rod = startRod(twist);
-  const n = rod.n;
-  rod.addGrip({ nodes: [0, LOOP_A + 2], keepShape: true, frame: () => EIGHT_FISTS.left });
-  rod.addGrip({ nodes: [R_A, R_B], frame: () => EIGHT_FISTS.right(0) });
-  const f = floorEnd(rod);
-  rod.addGrip({ nodes: [n - 3, n - 1], keepShape: true, frame: () => f });
-  // the round loop as the right hand laid it: held until `release`, and (press) pushed back into
-  // that shape by Noor's fingers from `press` to `pressed`, held, and let go at `letGo`
-  const x0 = rod.x.slice();
-  const { release, press: p0, pressed, letGo } = EIGHT_TIMES;
-  rod.addGuide({
-    nodes: [LOOP_A + 3, LOOP_B - 1],
-    compliance: 1e-4,
-    weight: (t) => {
-      if (t < p0 || !press) return 1 - smooth((t - release) / 0.12);
-      // the push grows from barely touching to firm (compliance 10 → 0.01 m/N), then lets go
-      const u = Math.min(1, Math.max(0, (t - p0) / (pressed - p0)));
-      return u === 0 ? 0 : 1e-5 * 1000 ** u * (1 - smooth((t - letGo) / 0.1));
-    },
-    target: (i) => [x0[3 * i], x0[3 * i + 1], x0[3 * i + 2]],
+export function earlierLoops(at: V3 = EIGHT_GEOM.F): V3[][] {
+  return [0.018, 0.009].map((d) => {
+    const a = sub(at, mul(N, d));
+    return roundLoop(a, add(a, mul(E1, GAP)), LOOP, 60);
   });
-  return { rod, tracks: loopTracks() };
 }
 
-/** Tracks for the counters: twist and writhe of the loop, and how far the loop stands out of its plane. */
-function loopTracks() {
-  return {
-    twist: (r: Rod) => r.twistTurns(LOOP_A, LOOP_B),
-    writhe: (r: Rod) => r.writhe(LOOP_A, LOOP_B + 1),
-    outOfPlane: (r: Rod) => {
-      let m = 0;
-      for (let i = LOOP_A; i <= LOOP_B; i++) m = Math.max(m, Math.abs(r.x[3 * i + 2]));
-      return m;
-    },
-    /** turns the plug end has made (twist between the right fist and the end, for the plug's spin) */
-    endTwist: (r: Rod) => r.twistTurns(R_B, r.ns - 1),
+/** capsules along the earlier loops (r = the cable's radius: the simulation adds the moving cable's own) */
+function loopCapsules(at: V3): Capsule[] {
+  const out: Capsule[] = [];
+  for (const L of earlierLoops(at)) for (let i = 2; i < L.length - 2; i++) out.push({ a: L[i], b: L[i + 1], r: RC, mu: XLR.selfFriction });
+  return out;
+}
+
+/** the pads at p, the cable running through them along `along` (increasing s), the index finger toward `palm` */
+const padsFrame = (p: V3, along: V3, palm: V3 = UP, roll = 0): Frame => {
+  const f = gripFrame(p, along, palm);
+  return roll ? { p, q: quatMul(f.q, quatFromAxisAngle(0, 0, 1, roll)) } : f;
+};
+
+/** keyframed point: [t, p] pairs, eased between them */
+function pathKeys(k: [number, V3][]): (t: number) => V3 {
+  return (t) => {
+    if (t <= k[0][0]) return k[0][1];
+    for (let i = 1; i < k.length; i++) if (t < k[i][0]) return mix(k[i - 1][1], k[i][1], ease((t - k[i - 1][0]) / (k[i][0] - k[i - 1][0])));
+    return k[k.length - 1][1];
   };
 }
 
-/** Runs a clip the way bake() does, without recording, and returns the end state. */
+// ------------------------------------------------------------------------------------ timings
+
+/** eight-snap's beats [s]: lay the loop, give it to the fist, the eight, the press, the spring back */
+export const SNAP_T = {
+  /** the right hand at the hip starts back toward the fist */
+  back0: 0.4,
+  /** above the fist: the loop hangs round */
+  back1: 1.55,
+  /** the fist takes the strand */
+  give: 1.7,
+  /** the pads open */
+  open: 1.8,
+  /** the hand stops shaping the loop: from here it is on its own */
+  free: 1.95,
+  /** the hand goes back to her side */
+  away0: 2.05,
+  away1: 2.9,
+  /** Noor's fingers reach the eight and press it flat (the hand sets off 0.9 s before) */
+  press0: 5.4,
+  pressed: 6.3,
+  /** she lets go */
+  letGo: 7.0,
+  end: 9.0,
+};
+
+/** eight-ok and eight-reverse: lay and let go, then watch */
+export const OK_T = { ...SNAP_T, end: 4.6 };
+
+/** the twist of a simulation-in-the-loop clip that continues from eight-snap's end */
+const SIM_FPS = 120, SIM_SUB = 15;
+
+// ------------------------------------------------------------------------------------ tracks
+
+interface Parts {
+  iF: number;
+  iE: number;
+  iPlug: number;
+}
+
+/** how far the loop's cable is out of the loop plane (through the fist, normal N) [m] */
+function outOfPlane(r: Rod, a: number, b: number) {
+  let m = 0;
+  for (let i = a; i <= b; i++) m = Math.max(m, Math.abs(dot(sub([r.x[3 * i], r.x[3 * i + 1], r.x[3 * i + 2]], EIGHT_GEOM.F), N)));
+  return m;
+}
+
+/** the counters and checks every eight shot records */
+function eightTracks(p: Parts, extra: Record<string, (r: Rod, t: number) => number> = {}) {
+  let spin = 0;
+  let last: V3 | null = null;
+  return {
+    /** twist in the loop [turns] (from its start in the fist to its end) */
+    twLoop: (r: Rod) => r.twistTurns(p.iF, p.iE),
+    /** writhe of the loop (open curve from fist to fist) */
+    wrLoop: (r: Rod) => r.writhe(p.iF, p.iE + 1),
+    /** twist from the loop's end to the plug [turns]: the cable to the floor */
+    twHang: (r: Rod) => r.twistTurns(p.iE, r.ns - 1),
+    /** twist from the loop's start to the plug [turns]: everything below the fist */
+    twAll: (r: Rod) => r.twistTurns(p.iF, r.ns - 1),
+    /** the loop out of its plane [m]: the eight stands out of the ring */
+    out: (r: Rod) => outOfPlane(r, p.iF, p.iE),
+    /** the lowest point of the plug above the floor [m] */
+    plugY: (r: Rod) => {
+      let y = Infinity;
+      for (let i = p.iPlug; i < r.n; i++) y = Math.min(y, r.x[3 * i + 1]);
+      return y - RC;
+    },
+    /** turns the plug has made about its own axis since the clip began (frame to frame, unwrapped) */
+    plugSpin: (r: Rod) => {
+      const fr = r.segmentFrame(r.ns - 1);
+      if (last) spin += Math.atan2(dot(cross(last, fr.d1), fr.d3), dot(last, fr.d1)) / TAU;
+      last = fr.d1;
+      return spin;
+    },
+    ...extra,
+  };
+}
+
+// --------------------------------------------------------------------------------- the shots
+
+/** the right hand's pads during eight-snap / -ok / -reverse: out at the hip, back to the fist, holding (then they open) */
+export function layPads(kind: 'over' | 'under') {
+  const G = EIGHT_GEOM, T = SNAP_T;
+  const along = norm(sub(G.pads[kind], G.E));
+  const pos = pathKeys([
+    [T.back0, G.hip],
+    [T.back1, G.pads[kind]],
+  ]);
+  // at the hip the cable comes up from the loop and goes down to the floor: the pads hold it level
+  const hipAlong = norm([E1[0], -0.15, E1[2]]);
+  return (t: number): Frame => {
+    const u = ease((t - T.back0) / (T.back1 - T.back0));
+    return padsFrame(pos(t), norm(mix(hipAlong, along, u)), UP);
+  };
+}
+
+/** the pre-roll path of the pads: from the hand-over point out to the hip (unrecorded, before shot time 0) */
+const PRE = { t0: -2.6, out0: -2.4, out1: -1.2 };
+
+interface LayClip {
+  b: ShotBuild;
+  parts: Built;
+}
+
+/**
+ * eight-snap / -ok / -reverse / -roll: the cable is made as laid (loop round between the fist and
+ * the pads), the pads carry it out to the hip before the shot starts (the loop opens into a U by
+ * itself), then the shot: back to the fist (guides keep the loop round), the fist takes the
+ * strand, the pads open, the guides let go. With `press`, her fingers later press the eight flat
+ * and let go again. With `roll`, the pads keep the loop's end when the guides let go (the loop
+ * starts to turn), roll the cable between thumb and index (ROLL_T), and only then give it to the
+ * fist.
+ */
+function layClip(kind: 'over' | 'under', loopTwist: number, supply: number, o: { press?: boolean; roll?: boolean } = {}): LayClip {
+  const press = !!o.press, roll = !!o.roll;
+  const parts = buildEight(kind, loopTwist, supply);
+  const { rod, iF, iE, iP } = parts;
+  const G = EIGHT_GEOM, T = SNAP_T;
+  const pads = layPads(kind);
+  const along = norm(sub(G.pads[kind], G.E));
+  // before the shot: from the hand-over point out to the hip
+  const prePos = pathKeys([
+    [PRE.out0, G.pads[kind]],
+    [PRE.out1, G.hip],
+  ]);
+  const hipAlong = norm([E1[0], -0.15, E1[2]]);
+  const padsAt = (t: number): Frame => {
+    if (t < 0) {
+      const u = ease((t - PRE.out0) / (PRE.out1 - PRE.out0));
+      return padsFrame(prePos(t), norm(mix(along, hipAlong, u)), UP);
+    }
+    return pads(t);
+  };
+  const fist = fistFrame(G.F);
+  rod.time = PRE.t0;
+  const caps = loopCapsules(G.F);
+  rod.setCapsules(caps);
+  rod.addGrip({ nodes: [0, iF + 1], keepShape: true, frame: () => fist, blend: 0.01 });
+  const pin: Pinch = rod.pinch({ frame: padsAt, mode: 'held', hand: 1, s: parts.sP, blend: 0.01, roll: roll ? (t) => rollAt(t) : 0 });
+  // the plug's end on the floor rests where it lies (nothing holds it: floor friction)
+  const fps = 60;
+  for (let f = 0; f < Math.round(-PRE.t0 * fps); f++) rod.step(1 / fps, XLR.substeps);
+  rod.time = 0;
+  // the cable has hung like this for a moment: that is the shape its strands remember
+  rod.rememberShape();
+
+  // the loop's guides: round between its two held ends while the hands bring it together (from
+  // barely touching to firm as the chord closes), off when the hand lets go
+  const ga = iF + 2, gb = iE - 3;
+  const nLoop = gb - ga;
+  /** the fist takes the strand, the pads open */
+  const give = roll ? ROLL_T.give : T.give, open = roll ? ROLL_T.open : T.open;
+  const sB = rod.sNode[gb + 1];
+  let shape: V3[] = [];
+  let shapeT = -1;
+  /** the guided loop's ends: in the fist; at the pads (until the fist has the strand) */
+  const ends = (t: number): [V3, V3] => {
+    const a: V3 = [rod.x[3 * (ga - 1)], rod.x[3 * (ga - 1) + 1], rod.x[3 * (ga - 1) + 2]];
+    if (t >= give + 0.15) return [a, [rod.x[3 * (gb + 1)], rod.x[3 * (gb + 1) + 1], rod.x[3 * (gb + 1) + 2]]];
+    const f = padsAt(t);
+    return [a, sub(f.p, mul(quatRotate(f.q, [0, 0, 1]), parts.sP - sB))];
+  };
+  rod.addGuide({
+    nodes: [ga, gb],
+    compliance: 0.02,
+    weight: (t) => {
+      // rolling: the hand that holds the loop's end still keeps it open a little (weak) until the fist has it
+      if (roll && t >= T.free) return 1 - 0.97 * smooth((t - T.free) / 0.25) - 0.03 * smooth((t - give) / 0.25);
+      if (t >= T.free) return 1 - smooth((t - T.free) / 0.12);
+      const [a, b] = ends(t);
+      const close = smooth((0.36 - len(sub(b, a))) / 0.2);
+      return close > 0 ? 10 ** (-3 * (1 - close)) : 0;
+    },
+    target: (i, t) => {
+      if (shapeT !== t) {
+        shapeT = t;
+        const [a, b] = ends(t);
+        shape = roundLoop(a, b, sB - rod.sNode[ga - 1], nLoop + 2);
+      }
+      return shape[i - ga + 1];
+    },
+  });
+  // the press: her flat fingers push the eight into the ring's plane (each node of the loop toward
+  // its own foot on the plane, from the shape it had when the fingers touched it), firmer and
+  // firmer, hold, let go. The strands only move across the plane, never through each other.
+  let pressed: Float64Array | null = null;
+  if (press) {
+    rod.addGuide({
+      nodes: [ga, gb],
+      compliance: 1e-4,
+      weight: (t) => {
+        if (t < T.press0 || !pressed) return 0;
+        // the push grows from barely touching to firm (compliance 10 → 0.03 m/N), then lets go
+        const u = clamp01((t - T.press0) / (T.pressed - T.press0));
+        return u === 0 ? 0 : 1e-5 * 300 ** u * (1 - smooth((t - T.letGo) / 0.08));
+      },
+      target: (i, t) => {
+        if (!pressed) return null;
+        const u = ease((t - T.press0) / (T.pressed - T.press0));
+        const p: V3 = [pressed[3 * i], pressed[3 * i + 1], pressed[3 * i + 2]];
+        const w = dot(sub(p, G.F), N);
+        return sub(p, mul(N, w * u));
+      },
+    });
+  }
+
+  let gave = false, opened = false;
+  const script = (r: Rod, t: number) => {
+    if (!gave && t >= give) {
+      gave = true;
+      // the fist closes over the loop's end strand
+      r.addGrip({ nodes: [iE - 2, iE + 3], keepShape: true, frame: () => fist, blend: 0.12 });
+    }
+    if (!opened && t >= open) {
+      opened = true;
+      pin.release(0.12);
+    }
+    if (press && !pressed && t >= T.press0) pressed = r.x.slice();
+    if (opened && t >= open + 0.2 && !pin.done) pin.remove();
+  };
+  void iP;
+  const b: ShotBuild = {
+    rod,
+    script,
+    tracks: { ...eightTracks(parts), iF: () => iF, iE: () => iE, iPlug: () => parts.iPlug, ...(roll ? { roll: (_r: Rod, t: number) => rollAt(t) / TAU } : {}) },
+    vectors: { fist: frameTrack(() => fist), pads: frameTrack((_r, t) => padsAt(t)) },
+  };
+  return { b, parts };
+}
+
+/** runs a clip the way bake() does, without recording, and returns the end state */
 function runClip(b: ShotBuild, duration: number, fps: number, substeps: number): RodState {
   const F = Math.round(duration * fps) + 1;
   for (let f = 0; f < F; f++) {
@@ -179,64 +548,174 @@ function runClip(b: ShotBuild, duration: number, fps: number, substeps: number):
   return b.rod.saveState();
 }
 
-const SNAP_FPS = 120, SNAP_SUB = 30;
-let snapEnd: RodState | null = null;
-/** The state at the end of eight-snap (simulated once per process). */
-function afterSnap(): RodState {
-  if (!snapEnd) snapEnd = runClip(snapBuild(EIGHT_TWIST, true), EIGHT_TIMES.end, SNAP_FPS, SNAP_SUB);
+let snapEnd: { state: RodState; parts: Built } | null = null;
+/** the state at the end of eight-snap (simulated once per process) */
+export function afterSnap() {
+  if (!snapEnd) {
+    const c = layClip('over', EIGHT_CFG.over, EIGHT_CFG.supply, { press: true });
+    snapEnd = { state: runClip(c.b, SNAP_T.end, SIM_FPS, SIM_SUB), parts: c.parts };
+  }
   return snapEnd;
 }
 
-/** A rod continuing from the end of eight-snap at shot time 0, held as at the end of it. */
-function continueRod(): Rod {
-  const rod = Rod.fromState(afterSnap());
+/** a rod continuing from the end of eight-snap at shot time 0, the fist holding the loop as before */
+function continueRod() {
+  const { state, parts } = afterSnap();
+  const rod = Rod.fromState(state);
+  plugMass(rod, parts.plugSegs);
   rod.time = 0;
-  return rod;
+  return { rod, parts };
 }
 
 export const eightSnap: ShotDef = {
   id: 'eight-snap',
-  duration: EIGHT_TIMES.end,
-  fps: SNAP_FPS,
-  substeps: SNAP_SUB,
-  build: () => snapBuild(EIGHT_TWIST, true),
+  duration: SNAP_T.end,
+  fps: SIM_FPS,
+  substeps: SIM_SUB,
+  iterations: XLR.iterations,
+  build: () => layClip('over', EIGHT_CFG.over, EIGHT_CFG.supply, { press: true }).b,
 };
 
 export const eightOk: ShotDef = {
   id: 'eight-ok',
-  duration: 2.5,
-  build: () => snapBuild(0, false),
+  duration: OK_T.end,
+  fps: SIM_FPS,
+  substeps: SIM_SUB,
+  iterations: XLR.iterations,
+  build: () => layClip('over', 0, 0).b,
 };
 
-/** fix 1: the right fist rolls the stored twist back out of the loop in ROLL_TIME seconds */
-export const ROLL_TIME = 2.5;
+export const eightReverse: ShotDef = {
+  id: 'eight-reverse',
+  duration: OK_T.end,
+  fps: SIM_FPS,
+  substeps: SIM_SUB,
+  iterations: XLR.iterations,
+  build: () => layClip('under', EIGHT_CFG.over - 2, EIGHT_CFG.supply).b,
+};
+
+// ------------------------------------------------------------------------------- fix 1: roll
+
+/**
+ * eight-roll's beats [s]: laid as in eight-snap; the hand stops shaping the loop at SNAP_T.free but
+ * keeps its end; the loop starts to turn; four strokes of the thumb along the index finger roll
+ * the cable half a turn each (two turns: the loop's 2.2 down to 0.2); then the fist takes it
+ */
+export const ROLL_T = {
+  /** the strokes: π each (half a turn), from the moment the loop is at the fist (it starts to turn as soon as the hand stops shaping it, SNAP_T.free) */
+  stroke0: 1.6,
+  strokes: 4,
+  stroke: 0.3,
+  /** between two strokes the thumb goes back (the cable stays) */
+  back: 0.12,
+  get rolled() {
+    return this.stroke0 + this.strokes * (this.stroke + this.back) - this.back;
+  },
+  get give() {
+    return this.rolled + 0.7;
+  },
+  get open() {
+    return this.give + 0.1;
+  },
+  get end() {
+    return this.open + 2.0;
+  },
+};
+
+/** the roll of the cable in the pads at time t [rad] (cumulative: the strokes add up; −: the loop's twist goes down) */
+export function rollAt(t: number): number {
+  const T = ROLL_T;
+  let r = 0;
+  for (let k = 0; k < T.strokes; k++) {
+    const t0 = T.stroke0 + k * (T.stroke + T.back);
+    r -= Math.PI * smooth((t - t0) / T.stroke);
+  }
+  return r;
+}
+
+/** the visible thumb roll (rad, within ±π/2 of the hand's range): rolls π per stroke, slides back between */
+export function thumbRollAt(t: number): number {
+  const T = ROLL_T;
+  for (let k = 0; k < T.strokes; k++) {
+    const t0 = T.stroke0 + k * (T.stroke + T.back);
+    if (t < t0) return k === 0 ? -(Math.PI / 2) * smooth((t - (T.stroke0 - 0.3)) / 0.3) : -Math.PI / 2;
+    if (t < t0 + T.stroke) return -Math.PI / 2 + Math.PI * smooth((t - t0) / T.stroke);
+    if (k < T.strokes - 1 && t < t0 + T.stroke + T.back) return Math.PI / 2 - Math.PI * smooth((t - t0 - T.stroke) / T.back);
+  }
+  return (Math.PI / 2) * (1 - smooth((t - T.rolled) / 0.3));
+}
+
+/** the thumb is off the cable while it slides back between two strokes (0 … 1) */
+export function thumbOpenAt(t: number): number {
+  const T = ROLL_T;
+  for (let k = 0; k < T.strokes - 1; k++) {
+    const t0 = T.stroke0 + k * (T.stroke + T.back) + T.stroke;
+    if (t >= t0 && t < t0 + T.back) return Math.sin((Math.PI * (t - t0)) / T.back);
+  }
+  return 0;
+}
+
 export const eightRoll: ShotDef = {
   id: 'eight-roll',
-  duration: ROLL_TIME + 1.5,
-  build() {
-    const rod = continueRod(), n = rod.n;
-    rod.addGrip({ nodes: [0, LOOP_A + 2], keepShape: true, frame: () => EIGHT_FISTS.left });
-    rod.addGrip({ nodes: [R_A, R_B], frame: (t) => EIGHT_FISTS.right(-2 * Math.PI * EIGHT_TWIST * smooth((t - 0.3) / ROLL_TIME)) });
-    const f = floorEnd(rod);
-    rod.addGrip({ nodes: [n - 3, n - 1], keepShape: true, frame: () => f });
-    return { rod, tracks: loopTracks() };
-  },
+  duration: ROLL_T.end,
+  fps: SIM_FPS,
+  substeps: SIM_SUB,
+  iterations: XLR.iterations,
+  build: () => layClip('over', EIGHT_CFG.over, EIGHT_CFG.supply, { roll: true }).b,
 };
 
-/** fix 3: the right fist loosens (swivel) and the plug end is lifted to hang free (swivel) */
+// ----------------------------------------------------------------------------- fix 3: let it hang
+
+/** eight-swivel's beats [s]: the fist loosens on the last strand and lifts the ring to chest height; the plug spins */
+export const HANG_T = { loosen: 0.3, lift0: 0.5, lift1: 1.9, end: 9.0 };
+
+export function hangFist(): (t: number) => Frame {
+  const G = EIGHT_GEOM, T = HANG_T;
+  const pos = pathKeys([
+    [T.lift0, G.F],
+    [T.lift1, G.chest],
+  ]);
+  return (t) => fistFrame(pos(t));
+}
+
 export const eightSwivel: ShotDef = {
   id: 'eight-swivel',
-  duration: 5,
+  duration: HANG_T.end,
+  fps: SIM_FPS,
+  substeps: SIM_SUB,
+  iterations: XLR.iterations,
   build() {
-    const rod = continueRod(), n = rod.n;
-    rod.addGrip({ nodes: [0, LOOP_A + 2], keepShape: true, frame: () => EIGHT_FISTS.left });
-    rod.addGrip({ nodes: [R_A, R_B], swivel: true, frame: () => EIGHT_FISTS.right(0) });
-    const f = floorEnd(rod);
-    // the end is lifted 25 cm off the floor so it hangs (the plug, no longer on the floor, spins)
-    rod.addGrip({ nodes: [n - 3, n - 1], swivel: true, frame: (t) => ({ p: [f.p[0], f.p[1] + 0.25 * smooth(t / 0.6), f.p[2]], q: hangDown }) });
-    return { rod, tracks: loopTracks() };
+    const { rod, parts } = continueRod();
+    const fist = hangFist();
+    rod.setCapsules((t) => loopCapsules(fist(t).p));
+    rod.addGrip({ nodes: [0, parts.iF + 1], keepShape: true, frame: fist, blend: 0.01 });
+    const gripB = rod.addGrip({ nodes: [parts.iE - 2, parts.iE + 3], keepShape: true, frame: fist, blend: 0.01 });
+    // the strand where the fist holds it, as a frame that moves with the fist (it only translates)
+    const jB = parts.iE;
+    const pB: V3 = [rod.c[3 * jB], rod.c[3 * jB + 1], rod.c[3 * jB + 2]];
+    const tB = norm(sub([rod.c[3 * jB + 3], rod.c[3 * jB + 4], rod.c[3 * jB + 5]], [rod.c[3 * jB - 3], rod.c[3 * jB - 2], rod.c[3 * jB - 1]]));
+    const strand = gripFrame(pB, tB, mul(N, -1));
+    const f0 = fist(0).p;
+    const strandAt = (t: number): Frame => ({ p: add(strand.p, sub(fist(t).p, f0)), q: strand.q });
+    let loose = false;
+    const script = (r: Rod, t: number) => {
+      if (!loose && t >= HANG_T.loosen) {
+        loose = true;
+        // the fist loosens on the last strand: it keeps it in place but lets it turn (the twist can leave the loop)
+        r.releaseGrip(gripB);
+        r.pinch({ frame: strandAt, mode: 'held', rolls: false, hand: 0, s: r.sNode[jB] + r.L[jB] / 2, blend: 0.05, pad: 0.012 });
+      }
+    };
+    return {
+      rod,
+      script,
+      tracks: { ...eightTracks(parts), iF: () => parts.iF, iE: () => parts.iE, iPlug: () => parts.iPlug },
+      vectors: { fist: frameTrack((_r, t) => fist(t)) },
+    };
   },
 };
 
-/** frame of a hanging end: cable direction (d3) straight down */
-const hangDown: Quat = quatFromAxisAngle(1, 0, 0, Math.PI / 2);
+/** the old export, kept for tools/simtest/derisk-eight.mjs: the cable's radius */
+export const EIGHT_CABLE = { radius: RC };
+
+export const EIGHT_SHOTS: ShotDef[] = [eightSnap, eightOk, eightReverse, eightRoll, eightSwivel];

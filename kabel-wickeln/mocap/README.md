@@ -184,3 +184,124 @@ kinect-hub\target\release\kinect-hub.exe --source replay kabel-wickeln\output\sy
 ```
 
 **Grenzen:** Die Figuren sind low-poly mit flachen Flächen; die Pose-Modelle sehen darin vielleicht andere Menschen als in echten Infrarotbildern. Die Testaufnahme prüft deshalb vor allem die Geometrie (2D → 3D, Boden, Welt, Verdeckung, Retargeting), weniger, wie gut ein Modell echte Hände findet. Die Gelenke der Wahrheit sind Gelenkmitten im Körper (die Haut liegt an Schultern und Hüften 6–9 cm davor). Das Kabel ist gezeichnet, nicht simuliert. Bei den Drehungen der Kalibrierung gleiten die Füße. Kein Mehrwegeffekt, kein Sonnenlicht, keine Bewegungsunschärfe.
+
+## Auswerten
+
+`auswerten.py` (Doppelklick oder cmd: `auswerten.cmd`) macht aus jeder Aufnahme eine Take-Datei mit deinen Gelenken in 3D, 30 Bilder pro Sekunde, im Format von [`FORMAT.md`](FORMAT.md). Pro Take:
+
+1. **2D:** YOLO11x-pose findet dich in jedem Infrarotbild (und verfolgt dich über den Take, auch wenn kurz jemand anderes durchs Bild läuft). Sapiens2 1b setzt im Ausschnitt um dich Körper, Füße und je 21 Punkte pro Hand, ViTPose++ huge den Körper ein zweites Mal; jedes Modell sieht das Bild auch gespiegelt, die Ergebnisse werden gemittelt. Wo Sapiens2 sicher ist, entscheidet es; wo nicht, springen die anderen ein. Dieser Schritt ist teuer und wird neben der Aufnahme zwischengespeichert (`<name>.kp2d-stark.json.gz`): Ein zweiter Lauf rechnet nur noch 3D.
+2. **3D:** An jedem Gelenk die Tiefe der Kinect, robust gegen Kanten, fliegende Pixel und Dinge davor (Hände, Ring, Kabel vor der Hüfte), geprüft am Körperbau. Daraus der Punkt im Raum, zur Gelenkmitte nach hinten versetzt. Der Boden kommt aus dem leeren Raum (`cal.<Aufbau>.empty` derselben Kinect-Platzierung) oder aus der Aufnahme selbst. Deine Knochenlängen werden über den Take geschätzt (oder aus `cal.<Aufbau>.body`) und halten Gelenke, deren Tiefe fehlt, auf ihrem Sichtstrahl. Vertauschte Seiten (linkes und rechtes Bein in der Seitenansicht) werden erkannt. Dann geglättet, ohne schnelle Bewegungen zu verschleifen, Lücken bis 1 s gefüllt, genau 30 fps.
+3. **Klatschen** als Nullpunkt (gesucht um das Startsignal aus `sitzung.json`), Beginn und Ende der Aktion; alles vor „Klatschen − 1 s“ fällt weg.
+4. **Hände:** je Hand ein Koordinatensystem (Handgelenk, Zeige-, Mittel-, Kleinfinger-Grundgelenk) und die Krümmung jedes Fingers, mit Sicherheit.
+5. **Kabel** (experimentell): die dünne dunkle Linie um und unter den Händen, in 3D, als Polylinien.
+
+### Einmal einrichten (Windows)
+
+Python 3.10 oder neuer (python.org, Haken „Add python.exe to PATH“). Dann in einem cmd-Fenster:
+
+```
+py -3 -m pip install numpy onnxruntime pillow imageio-ffmpeg
+```
+
+Das reicht für den **leichten Testmodus** (`--modell leicht`: das Pose-Modell des Hubs, YOLO11s als ONNX, nur Körper, keine Hände und Füße). Für die **großen Modelle** (`--modell stark`, Standard) zusätzlich:
+
+```
+py -3 -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+py -3 -m pip install "transformers>=5.10" accelerate ultralytics
+```
+
+Beim ersten Start laden sich die Modelle selbst: YOLO11x-pose (113 MB) nach `<Hauptordner>\recordings\mocap\modelle\`, Sapiens2 1b (≈ 6 GB) und ViTPose++ huge (≈ 2,5 GB) in den Hugging-Face-Speicher (`%USERPROFILE%\.cache\huggingface`; woanders hin mit der Umgebungsvariable `HF_HOME`). Sapiens2 braucht im Speicher etwa 6 GB RAM (float32 auf der CPU).
+
+**Grafik des Notebooks (DirectML), noch nicht ausprobiert:** `py -3 -m pip install torch-directml onnxruntime-directml` und `--device dml`. Sapiens2 und ViTPose laufen dann über torch-directml in float16; falls ein Operator fehlt, bricht es mit einer Meldung ab, dann `--device cpu`. Ultralytics kann kein DirectML: Für den Detektor YOLO11x-pose einmal als ONNX exportieren und mitgeben:
+
+```
+py -3 -c "from ultralytics import YOLO; YOLO(r'C:\Pfad\zu\ndkk-kinect-wall\recordings\mocap\modelle\yolo11x-pose.pt').export(format='onnx', imgsz=(640, 768), opset=17)"
+auswerten.cmd --device dml --detektor C:\Pfad\zu\ndkk-kinect-wall\recordings\mocap\modelle\yolo11x-pose.onnx ...
+```
+
+Lizenzen: YOLO (Ultralytics) AGPL-3.0, ViTPose++ Apache-2.0, Sapiens2 eigene Lizenz (nicht-kommerziell, für dieses Projekt passend, siehe `pose-training/README.md`).
+
+### Starten
+
+```
+cd /d C:\Pfad\zu\ndkk-kinect-wall\kabel-wickeln\mocap
+auswerten.cmd C:\Pfad\zu\ndkk-kinect-wall\recordings\mocap\termin1            alle behaltenen Takes von Termin 1
+auswerten.cmd --setup B ..\..\recordings\mocap\termin1                        nur Aufbau B
+auswerten.cmd --shot p1.coil.teach,p3.pair.slow ..\..\recordings\mocap\termin1
+auswerten.cmd ..\..\recordings\mocap\termin1\p1.coil.teach_t2.k2rec           ein einzelner Take
+auswerten.cmd --modell leicht ..\..\recordings\mocap\termin1                  schneller Test, nur Körper
+auswerten.cmd --every 3 --topdown sapiens ...                                 billiger: jeder 3. Frame, ohne ViTPose
+auswerten.cmd --help                                                          alle Optionen
+```
+
+- Ein **Ordner** wertet alle Takes darin aus, die du in `sitzung.json` behalten hast (`--alle`: auch die verworfenen). Kalibrierung zuerst: `cal.X.empty` liefert den Boden, `cal.X.body` die Knochenlängen für die folgenden Takes (beides automatisch, über die Platzierung aus `sitzung.json`; von Hand: `--boden`, `--knochen`).
+- **Zwei Personen** (`p6.lift.pair`): die zweite landet in `<shot>_t<take>_p2.json.gz`.
+- **Weiterrechnen:** Nochmal starten genügt; was im 2D-Zwischenstand steht, wird nicht neu gerechnet (`--neu` erzwingt es; mit anderen Modellen rechnet es von selbst neu). Strg+C bricht ab; fertige Takes bleiben.
+- Die Auswertung läuft mit niedriger CPU-Priorität, damit Hub und Aufnahme vorgehen (`--volle-prioritaet` schaltet das ab). Während einer Aufnahme trotzdem besser nicht mit den großen Modellen rechnen.
+- Hilfreich: `--every N` (Modelle nur auf jedem n-ten Frame, 2D dazwischen interpoliert, die Tiefe aber in jedem Frame), `--ohne-spiegel` (halbe Zeit), `--kabel hell` (helles Kabel) oder `aus`, `--ganz` (nicht kürzen), `--glatt 0.7` (weniger glätten), `--max-luecke 0.5`, `--ohne-video`, `--signal 3.2` (Startsignal von Hand, wenn ohne Tool aufgenommen).
+
+### Was herauskommt
+
+| Datei | wo | was |
+|---|---|---|
+| `<shot>_t<take>.json.gz` | `<Hauptordner>\recordings\mocap\takes\` (privat) | die Take-Datei: 68 Gelenke je Frame (mm, WELT), Sicherheit, wie gemessen (D Tiefe / B Knochenlänge / I interpoliert), Hände, Kabel, Klatschen, Beginn, Ende, Qualität, Boden und Kamera ([`FORMAT.md`](FORMAT.md)) |
+| `<name>.auswertung.mp4` | neben der Aufnahme | Kontrollvideo: links das Infrarotbild mit dem Skelett (grün aus der Tiefe, orange über die Knochenlänge, gelb interpoliert), Händen und Kabel (violett), rechts die Gelenke in 3D von vorn und von der Seite. Zeigt dich: bleibt in `recordings\` |
+| `<name>.auswertung.txt` | neben der Aufnahme | der Bericht: je Gelenk Sicherheit, Anteil mit Tiefe, Zittern; Klatschen; Warnungen wie „rechtes Handgelenk: 30 % der Zeit unsicher oder interpoliert“ |
+| `<name>.kp2d-stark.json.gz` | neben der Aufnahme | 2D-Zwischenstand der Modelle (Pixel, keine Bilder) |
+| `<name>.boden.json` | neben der Aufnahme | die gemessene Bodenebene |
+
+Ins Repository (`kabel-wickeln\mocap\takes\`) kommen Take-Dateien nur mit `--ins-repo`, und das fragt vorher nach deinem Okay. Committet wird dabei noch nichts.
+
+Was du im Bericht prüfst: Klatschen gefunden (sonst ist der Take nicht synchronisierbar; Startsignal mit `--signal` angeben), Person in fast allen Frames gefunden, keine Warnung zu den Gelenken, die der Shot braucht. Im Video: Liegt das Skelett auf dir, springt es nicht, sieht die Seitenansicht wie ein Mensch aus?
+
+### Wie lange es dauert
+
+Gemessen hier im Linux-Container mit 4 CPU-Kernen (keine GPU), je Frame mit Spiegel-Mittelung:
+
+| Schritt | Zeit je Frame |
+|---|---|
+| leicht: YOLO11s-ONNX | ≈ 0,3–0,5 s |
+| YOLO11x-pose (Ultralytics, 640) | ≈ 10–25 s |
+| ViTPose++ huge | AUSSTEHEND |
+| Sapiens2 1b | AUSSTEHEND |
+| 3D, Hände, Klatschen | ≈ 0,01 s |
+| Kabel | ≈ 0,15 s |
+| Kontrollvideo | ≈ 0,05 s |
+
+Ein Take von 30 s hat etwa 1000 Frames, beide Termine zusammen etwa 80 000. Mit den großen Modellen auf der CPU sind das Minuten je Frame, also **auf dem Notebook nur für einzelne Takes sinnvoll** (bester Take je Shot, `--every 3 --topdown sapiens`), und auch dann über Nacht. Mit DirectML ist es vermutlich deutlich schneller; das ist noch nicht gemessen. Auf einer Colab-GPU (A100) braucht Sapiens2 1b laut `pose-training` etwa 0,2–0,3 s je Person, alles zusammen grob 0,4 s je Frame: 80 000 Frames ≈ 9 h, mit `--every 2` die Hälfte.
+
+### Auf Colab auswerten (nur mit deinem Ja)
+
+Dafür müssen die **Infrarotbilder** (dein Gesicht ist darauf erkennbar) zu Google hochgeladen werden, keine Tiefe. Das passiert nur, wenn du es willst: `--colab-paket` fragt vorher, und du lädst selbst hoch. Die colab CLI läuft unter Linux/macOS, unter Windows in WSL (siehe `pose-training/README.md`, „On Colab“).
+
+1. Packen (fragt nach deinem Ja; `--every 2` packt nur jeden 2. Frame, halb so groß; das 2D dazwischen wird später interpoliert):
+   ```
+   auswerten.cmd --colab-paket D:\colab C:\Pfad\zu\ndkk-kinect-wall\recordings\mocap\termin1
+   ```
+2. Hochladen und starten (das Paket enthält auch den Code der Auswertung; die Befehle stehen auch oben in `colab_auswerten.py`):
+   ```
+   colab new -s mocap --gpu A100
+   colab upload -s mocap /mnt/d/colab/kinect-ir-<datum>.zip /content/kinect-ir-<datum>.zip
+   colab exec -s mocap -f kabel-wickeln/mocap/colab_auswerten.py
+   echo "print(open('/content/job-auswerten.log').read()[-3000:])" | colab exec -s mocap
+   ```
+3. Wenn `/content/DONE-auswerten` da ist: `colab download -s mocap /content/out/kp2d.zip <Hauptordner>/recordings/mocap/kp2d.zip`, dann `colab stop -s mocap`. Die VM löscht die Infrarotbilder am Ende selbst; mit `colab stop` ist die VM ganz weg.
+4. `kp2d.zip` in den Termin-Ordner auspacken (Explorer „Alle extrahieren“ oder `tar -xf kp2d.zip -C ...\termin1`) und lokal auswerten wie oben. Die 2D-Ergebnisse werden gefunden; gerechnet wird nur noch 3D, das braucht die Tiefe und bleibt bei dir.
+
+### Datenschutz
+
+- Aufnahmen, Kontrollvideos, 2D-Zwischenstände, Bodendateien und Berichte bleiben neben den Aufnahmen in `recordings\` (von git ausgeschlossen).
+- Take-Dateien standardmäßig auch (`recordings\mocap\takes\`); ins Repository nur mit `--ins-repo` und deinem Okay. Sie enthalten keine Bilder, aber deine Bewegungen und Körpermaße. Die einer zweiten Person nur mit ihrem Okay.
+- Hochgeladen wird nichts, außer du packst selbst ein Colab-Paket und lädst es hoch.
+
+### Genauigkeit (synthetische Aufnahmen)
+
+AUSSTEHEND
+
+### Testen
+
+```
+python kabel-wickeln\mocap\tests\test_auswerten.py
+```
+
+Einzeltests (Leser, Kamera, Boden, Glättung, Hände, Take-Format, Klatschen) laufen ohne Daten in einer Sekunde. Mit den synthetischen Aufnahmen (`node mocap\synthetic\erzeugen.mjs`) kommen dazu: die wahren 2D-Pixel durch die ganze 3D-Kette, das leichte Modell auf `synth-coil`, das Kabel, ein Termin-Ordner mit `sitzung.json` (zusammen etwa 3 min). `python auswerten.py --modell leicht ..\output\synthetic` vergleicht jede synthetische Aufnahme mit ihrer Wahrheit und druckt die Fehler je Gelenk.

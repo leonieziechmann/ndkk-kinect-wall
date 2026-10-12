@@ -2,12 +2,13 @@
 
 Der Vertrag zwischen der Auswertung (`auswerten.py`: `.k2rec` → Gelenke), der synthetischen Testaufnahme (`synthetic/generate.ts`: bekannte Bewegung → `.k2rec` + Wahrheit in diesem Format) und dem Retargeting (Gelenke → Figuren der Animation). Wer etwas ändert, ändert es hier und in allen drei zugleich und erhöht `version`.
 
-Version 1. Angelegt mit der synthetischen Testaufnahme; `synthetic/pruefen.py` liest es.
+Version 1. Angelegt mit der synthetischen Testaufnahme; `synthetic/pruefen.py` liest es. Die Auswertung schreibt dazu einige **optionale** Felder (Abschnitt „Was die Auswertung zusätzlich schreibt“); sie ändern nichts an den Pflichtfeldern, Leser übergehen Felder, die sie nicht kennen. Prüfen: `auswertung/take.py` (`check()`).
 
 ## Datei
 
 - `mocap/takes/<shot>_t<take>.json.gz`, z. B. `p1.coil.teach_t1.json.gz`: gzip-komprimiertes JSON (UTF-8). Im Browser: `new Response(blob.stream().pipeThrough(new DecompressionStream('gzip'))).json()`.
-- Nur Gelenkdaten, keine Bilder. Ins Repository nur mit deinem Okay.
+- Nur Gelenkdaten, keine Bilder. Ins Repository nur mit deinem Okay. Bis dahin schreibt `auswerten.py` nach `<Hauptordner>/recordings/mocap/takes/` (privat, von git ausgeschlossen); `--ins-repo` schreibt nach `mocap/takes/`.
+- Eine zweite Person im selben Take (nur `p6.lift.pair`): `<shot>_t<take>_p2.json.gz` mit `person: 2`.
 - Die Wahrheit einer synthetischen Aufnahme hat dasselbe Format (`kind: "truth"`) und liegt neben ihr: `output/synthetic/<name>.truth.json.gz`.
 
 ## Koordinaten
@@ -76,3 +77,27 @@ Das Retargeting rechnet die Zeit relativ zum Klatschen: `t − markers.clap`.
 | `tolerance_mm` | je Gelenk, wie weit die Haut vor der Gelenkmitte liegen darf (Rumpf 160, Gliedmaßen 80, Gesicht 50, Füße 50, Hand 35) |
 | `room`, `wall_m`, `sensor_model` | der Raum (Ebenen in WELT, Infrarot-Albedo), Abstand der Wand hinter der Marke, Rausch- und Kantenmodell |
 | `ik_pos_error_max_mm` | wie weit die Hände der Choreographie ihr Ziel höchstens verfehlt haben (die Wahrheit ist die erreichte Pose) |
+
+## Was die Auswertung zusätzlich schreibt (optional)
+
+`auswerten.py` (`auswertung/pipeline.py`) füllt die Pflichtfelder so:
+
+- `t` ist immer gleichmäßig, `{"t0": …, "dt": 1/30}`: Die Auswertung rechnet auf ein genaues 30-fps-Raster um (Aufnahmezeiten mit Lücken → gleichmäßige Zeit). `t0` ist der Beginn des Takes in s seit dem ersten Frame der `.k2rec`; vorne fällt alles vor „Klatschen − 1 s“ weg (`--ganz` behält alles).
+- `how`: `D` Tiefe am Keypoint passt zum Körperbau; `B` auf dem Sichtstrahl des Keypoints mit der Knochenlänge gesetzt (Tiefe fehlt, gehört zu etwas davor, oder springt); `I` aus den Nachbarframes interpoliert (kubisch, Lücken bis 1 s; auch verworfene Ausreißer); `-` fehlt. Die Positionen sind geglättet (robuste lokale quadratische Regression, etwa ±0,1 s), auch bei `D`.
+- `conf`: 2D-Konfidenz des Modells × Faktor nach `how` (D 1, B 0,7, I 0,45 und weniger, je länger die Lücke).
+- Gelenkmitten: die Tiefe sieht die Haut; die Auswertung schiebt den Punkt entlang der Sichtlinie um einen festen Abstand nach hinten (`meta.radius_mm`: Schulter 50, Ellbogen 40, Handgelenk 25, Hüfte 90, Knie 55, Knöchel 45, Fingergelenke 10, Fingerspitzen 0 …).
+- Abgeleitete Gelenke: `pelvis` = Mitte der Hüften; `neck` = Mitte der Schultern, 0,11 Schulterbreiten zum Kopf hin (entlang Becken → Schultern); `head` = Mitte der Ohren (fehlen sie: Mitte der Augen, 8 cm nach −z). So liegen sie auch in der Wahrheit.
+- `cable`: `null`, wenn die Kabelsuche aus war (`--kabel aus`), sonst je Frame die Polylinien (Punkte etwa 2 cm auseinander) mit `conf` aus Kontrast, Länge und Tiefenanteil. Experimentell: Lage nahe den Händen und darunter, keine Zuordnung der Linien von Frame zu Frame.
+- `markers.clap`: Minimum des Abstands der Hände nach schneller Annäherung, zwischen den Frames verfeinert; `null`, wenn keins gefunden wurde. `start`/`end`: Näherung aus der Bewegung (erste Bewegung nach der Ruhe nach dem Klatschen, letzte Bewegung vor der Endpose).
+- `floor.source`, `floor.measured`: aus welcher Aufnahme der Boden kommt (leerer Raum `cal.<Aufbau>.empty` derselben Platzierung oder der Take selbst). `world.mark_mm` ist die **geplante** Marke aus `shots.json` (`world.mark_note` sagt das), nicht gemessen.
+
+Zusätzliche Felder:
+
+| Feld | Inhalt |
+|---|---|
+| `person` | nur ab der zweiten Person: `2` (fehlt = 1, die Hauptperson) |
+| `hands` | je Frame `{"left": …, "right": …}`, je Hand `null` (fehlt) oder `{"origin": [x, y, z] (mm, WELT, = Handgelenk), "axes": [9 ganze Zahlen] (x-, y-, z-Achse als Einheitsvektoren × 1000, nacheinander), "curl": [Daumen, Zeige-, Mittel-, Ring-, kleiner Finger] (0 gestreckt … 100 Faust, `null` = unbekannt), "conf": 0 … 100 (kleinste Konfidenz von wrist, index_mcp, middle_mcp, pinky_mcp), "low": true/false (conf < 40)}`. Achsen: x vom Handgelenk zu `middle_mcp`; y zur Daumenseite (`index_mcp − pinky_mcp`, senkrecht zu x); z aus dem Handrücken heraus (rechte Hand x × y, linke y × x). Handfläche oben ⇔ z zeigt nach unten. Krümmung: Summe der Beugewinkel (Finger: Mittelhand→Grundglied, PIP, DIP, ohne Spreizen; Daumen: MCP, IP) durch 270° (Daumen 150°). |
+| `quality` | außer `joints` (dort zusätzlich `outliers`: verworfene Messungen): `frames_recorded`, `frames_skipped_by_hub`, `person_found` (Anteil der gerechneten Frames mit Person), `cable_frames`, `floor` (`pitch_deg`, `roll_deg`, `inliers`, `angle_vs_take`: Boden des leeren Raums gegen den des Takes), `clap` (`time`, `gap_mm`, `speed_m_s`, `searched`, …), `activity` (Schwelle für Beginn/Ende), `bones_fixed`, `warnings` (Text, deutsch) |
+| `meta` | `program`, `models` (Detektor, Top-down-Modelle, Gerät), `every`, `flip`, `person`, `bones_mm` (Knochenlängen der Person, `"<eltern>-<kind>"`), `trim`, `signal_in_recording_s`, `smoothing`, `max_gap_s`, `seconds`, `radius_mm` |
+
+`jitter_mm` in `quality.joints` ist bei der Auswertung die robuste Streuung der Messungen um die geglättete Kurve (1,48 × Median der Abstände).
