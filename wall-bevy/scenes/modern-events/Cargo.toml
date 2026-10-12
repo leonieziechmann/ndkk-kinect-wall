@@ -1,0 +1,18 @@
+[package]
+name = "wall-scene-modern-events"
+version = "0.1.0"
+edition = "2024"
+description = "Scene modern-events"
+publish = false
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+wall.workspace = true
+bytemuck.workspace = true
+wgpu.workspace = true
+tiny-skia.workspace = true
+
+[lints]
+workspace = true

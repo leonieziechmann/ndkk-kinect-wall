@@ -1,0 +1,19 @@
+[package]
+name = "wall-scene-fruit-ninja"
+version = "0.1.0"
+edition = "2024"
+description = "Scene fruit-ninja"
+publish = false
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+wall.workspace = true
+bytemuck.workspace = true
+serde_json.workspace = true
+wgpu.workspace = true
+crossbeam-channel.workspace = true
+
+[lints]
+workspace = true

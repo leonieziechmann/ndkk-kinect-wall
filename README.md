@@ -1,11 +1,11 @@
 # ndkk-kinect-wall
 
-Kinect v2 an einem Windows-Rechner (USB-Mod): Tiefenbild mit 30 fps, eine Middleware, über die beliebig viele Programme und Agenten gleichzeitig auf den Sensor zugreifen, und eine Szenen-Werkstatt, in der viele Agenten parallel (je ein Worktree) Browser-Szenen für die Wand entwickeln.
+Kinect v2 an einem Windows-Rechner (USB-Mod): Tiefenbild mit 30 fps, eine Middleware, über die beliebig viele Programme und Agenten gleichzeitig auf den Sensor zugreifen, und die LED-Wand selbst: eine native Ausgabe mit Szenen als eigenen Rust-Crates (im laufenden Bild austauschbar) und eingebauter Steuerzentrale, die auch als Fernbedienung auf dem Handy läuft.
 
 | Teil | Was |
 |---|---|
 | [`kinect-hub/`](kinect-hub/README.md) | Rust-Middleware: besitzt die Kinect, rechnet einmal pro Frame vor, streamt per WebSocket/HTTP an alle |
-| [`web/`](web/README.md) | Szenen-Werkstatt (Vite): Galerie, Laufzeit mit Hot-Swap, Beispielszenen (Punktwolke, Shader, three.js). Anleitung für Agenten: [`web/AGENTS.md`](web/AGENTS.md) |
+| [`wall-bevy/`](wall-bevy/README.md) | Die LED-Wand (Rust, Bevy): Ausgabe, Show, Szenen als eigene Crates mit Hot-Swap, eingebaute Steuerzentrale (auch als Fernbedienung im Netz). Szenen schreiben: [`wall-bevy/SCENES.md`](wall-bevy/SCENES.md), die Wand: [`wall-bevy/WALL.md`](wall-bevy/WALL.md) |
 | `fn2/` | C++ auf libfreenect2: Capture-Worker für den Hub, Reconnect-Messtool, DLLs für Python |
 | `kinect_hub.py` | Python-Client für den Hub |
 | `pointcloud.py`, `viewer.py` | Python-Viewer (direkt über libfreenect2/SDK oder `--hub`) |
@@ -14,17 +14,18 @@ Kinect v2 an einem Windows-Rechner (USB-Mod): Tiefenbild mit 30 fps, eine Middle
 
 ## Ausstellung: alles mit einem Klick
 
-`start-wand.cmd` (Doppelklick, oder Desktop-Symbol „Kinect-Wand starten“) startet aus dem main-Checkout den Hub, den Dev-Server und das Ausgabefenster der Wand. Was schon läuft, wird mitbenutzt, und was abstürzt, startet neu. Solange das Programm läuft, stellt es Windows auf Leistung:
+`start-wand.cmd` (Doppelklick, oder Desktop-Symbol „Kinect-Wand starten“) startet aus dem main-Checkout den Hub und die Ausgabe der Wand (`wall-bevy`) und öffnet die Steuerzentrale. Was schon läuft, wird mitbenutzt, und was abstürzt, startet neu. Solange das Programm läuft, stellt es Windows auf Leistung:
 
 - Energieplan: eine vorübergehende Kopie von „Höchstleistung“ (kein Standby, Bildschirm bleibt an, Deckel zu = nichts tun, USB- und PCIe-Energiesparen aus)
-- Hub und Tiefen-Worker mit hoher Priorität, Chat- und Sync-Apps (Teams, WhatsApp, Signal, Smartphone-Link, OneDrive, …) im Effizienzmodus
-- nach einer UAC-Abfrage: Windows-Suche, SysMain, Telemetrie und Windows Update angehalten (nicht deaktiviert)
+- Hub, Tiefen-Worker und Ausgabe mit hoher Priorität, Chat- und Sync-Apps (Teams, WhatsApp, Signal, Smartphone-Link, OneDrive, …) im Effizienzmodus
+- Windows-Dienste bleiben, wie sie sind (Windows startet Suche und Update sonst gleich wieder)
 
 Die Bildschirme erkennt das Programm bei jedem Start von selbst, einstellen musst du nichts.
-- Das Wand-Fenster geht auf dem Zweitmonitor auf, nie auf dem Notebook. Ohne Zweitmonitor bleibt es zu, bis einer angeschlossen ist. Landet ein Wand-Fenster doch auf dem Notebook, schließt das Programm es sofort.
-- Die Steuerzentrale geht als eigenes Fenster maximiert auf dem Notebook-Bildschirm auf. Bei zugeklapptem Deckel bleibt sie zu, damit sie nie auf der Wand landet. **S** holt sie zurück.
+- Die Ausgabe geht auf dem Zweitmonitor auf, nie auf dem Notebook. Ohne Zweitmonitor bleibt sie zu, bis einer angeschlossen ist. Landet ein Wand-Fenster doch auf dem Notebook, schließt das Programm es sofort.
+- Die Steuerzentrale ist Teil der Ausgabe (`http://127.0.0.1:8095/`). Sobald die Ausgabe läuft, geht sie als eigenes Fenster maximiert auf dem Notebook-Bildschirm auf. Bei zugeklapptem Deckel bleibt sie zu, damit sie nie auf der Wand landet. **S** holt sie zurück.
+- **Fernbedienung:** Im Tab „Fernbedienung“ der Steuerzentrale steht ein QR-Code. Ein Handy oder Tablet im selben Netz scannt ihn einmal und bleibt gekoppelt. Beim ersten Start fragt Windows, ob `wall-bevy` im Netzwerk erreichbar sein darf: „Private Netzwerke“ erlauben.
 
-Beenden mit **Q** im Fenster. **NOTAUS: Strg+Alt+Shift+N** (wirkt in jedem Fenster) oder das Desktop-Symbol „Kinect-Wand NOTAUS“: Das beendet alles, was das Programm gestartet hat, und stellt alle Werte zurück. Jeder alte Wert steht in `%LOCALAPPDATA%\kinect-wand\journal.json`, bevor er geändert wird. Wird das Fenster geschlossen oder stürzt es ab, stellt ein Wächter-Prozess alles zurück. Nach einem Absturz des PCs passiert das bei der nächsten Anmeldung, und den Rest räumt der nächste Start auf. Optionen: `-NoWall`, `-NoControl`, `-NoAdmin`, `-Hub 8091`, `-RecordMinutes 10`, `-Minimal`.
+Beenden mit **Q** im Fenster. **NOTAUS: Strg+Alt+Shift+N** (wirkt in jedem Fenster) oder das Desktop-Symbol „Kinect-Wand NOTAUS“: Das beendet alles, was das Programm gestartet hat, und stellt alle Werte zurück. Jeder alte Wert steht in `%LOCALAPPDATA%\kinect-wand\journal.json`, bevor er geändert wird. Wird das Fenster geschlossen oder stürzt es ab, stellt ein Wächter-Prozess alles zurück. Nach einem Absturz des PCs passiert das bei der nächsten Anmeldung, und den Rest räumt der nächste Start auf. Optionen: `-NoWall`, `-NoControl`, `-Hub 8091`, `-RecordMinutes 10`, `-Minimal`.
 
 **Minimalmodus,** wenn die Wand immer mal wieder ruckelt: das Desktop-Symbol „Kinect-Wand starten (minimal)“ oder `start-wand.cmd -Minimal`. Das Programm lässt dann alles weg, was der Show Zeit oder Strom nehmen könnte:
 - Der Energieplan ist eine Kopie von „Ausbalanciert“ und ändert nur, was die Show braucht: kein Standby, Bildschirm bleibt an, Deckel zu = nichts tun, USB- und PCIe-Energiesparen aus. Die CPU bekommt keinen Mindesttakt und keinen erzwungenen Boost. Auf diesem Notebook teilen sich CPU und Grafik ein Strom- und Wärmebudget: Eine CPU auf Volllast nimmt der Grafik Leistung weg, das Notebook wird heiß und drosselt dann beide.
@@ -43,17 +44,10 @@ Beenden mit **Q** im Fenster. **NOTAUS: Strg+Alt+Shift+N** (wirkt in jedem Fenst
 
 ```
 kinect-hub\target\release\kinect-hub.exe
+wall-bevy\target\release\wall-bevy.exe
 ```
 
-Dann im Browser (Chrome/Edge, wegen WebGPU) **http://127.0.0.1:8090** öffnen: Status, Live-Vorschau und die Szenen aller laufenden Dev-Server. Szenen entwickeln (je Worktree ein Dev-Server, Node.js 20+):
-
-```
-cd web
-npm install
-npm run dev
-```
-
-Details in [`web/README.md`](web/README.md). Weitere Programme lesen parallel mit:
+Die Steuerzentrale: **http://127.0.0.1:8095/**, der Status des Hubs: http://127.0.0.1:8090/. Ohne zweiten Bildschirm öffnet sich die Ausgabe als Fenster auf dem Hauptbildschirm. Szenen entwickeln: [`wall-bevy/SCENES.md`](wall-bevy/SCENES.md). Jede Szene ist eine eigene Crate; `wall-bevy.exe --watch --scene NAME --windowed` baut sie beim Speichern neu und tauscht sie im laufenden Bild aus. Weitere Programme lesen parallel mit:
 
 ```
 python viewer.py --hub
@@ -67,15 +61,15 @@ Ohne Kinect gibt es eine generierte Testszene: `kinect-hub.exe --source syntheti
 Voraussetzungen:
 - Windows 10/11 mit Git for Windows (Git Bash). Die Shell-Skripte laufen dort.
 - [w64devkit](https://github.com/skeeto/w64devkit): gcc, cmake, ninja im `PATH`.
-- Rust (rustup, Toolchain `stable-x86_64-pc-windows-gnu`).
+- Rust (rustup, Toolchain `stable-x86_64-pc-windows-gnu`), 1.97 oder neuer für `wall-bevy` (`rustup update`).
 - Python 3 mit `pip install -r requirements.txt`.
-- Node.js 20 oder neuer, für die Szenen in `web/` (`npm install` dort).
 - Kinect-Treiber: in Zadig „Xbox NUI Sensor (Interface 0)“ auf **libusbK** umstellen (Options → List All Devices). Damit läuft das Kinect SDK nicht mehr. Zurück geht es im Geräte-Manager: Treiber samt Treibersoftware deinstallieren, dann nach geänderter Hardware suchen.
 
 ```
 sh third_party/setup.sh            # libfreenect2 + Abhängigkeiten holen, patchen, bauen
 sh fn2/build.sh                    # Capture-Worker, Messtool, DLLs
-cd kinect-hub && cargo build --release
+(cd kinect-hub && cargo build --release)
+(cd wall-bevy && cargo build --release)   # Ausgabe, Steuerzentrale, Szenen (beim ersten Mal 10–20 min)
 ```
 
 ## Punktwolken-Demo (Python)

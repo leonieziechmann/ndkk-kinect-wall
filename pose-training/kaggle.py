@@ -24,7 +24,7 @@ def pack(out, only=''):
     if not only:
         for w in ('yolo11x-pose.pt', 'yolo11n-pose.pt'):
             files.append((os.path.join(out, 'weights', w), f'kinect/recordings/training/weights/{w}'))
-        files.append((os.path.join(MAIN, 'web', 'lib', 'models', 'yolo11n-pose-fp16.onnx'), 'kinect/web/lib/models/yolo11n-pose-fp16.onnx'))
+        files.append((os.path.join(MAIN, 'kinect-hub', 'models', 'yolo11n-pose-fp16.onnx'), 'kinect/kinect-hub/models/yolo11n-pose-fp16.onnx'))
     with zipfile.ZipFile(dst, 'w', zipfile.ZIP_STORED) as z:  # PNG and weights do not compress further
         for src, arc in files:
             z.write(src, arc)
@@ -42,8 +42,8 @@ def notebook(out, epochs):
     scripts = {n: open(os.path.join(HERE, n), encoding='utf8').read() for n in SCRIPTS}
     cells = [
         cell('markdown', '# Kinect-Pose-Modell nachtrainieren\n\n'
-             'Beschriftet die Kinect-IR-Bilder mit YOLO11x-pose (Lehrer), trainiert YOLO11n-pose (das Modell im Browser) nach, '
-             'misst alt gegen neu und exportiert ONNX wie in `web/lib/models/README.md`.\n\n'
+             'Beschriftet die Kinect-IR-Bilder mit YOLO11x-pose (Lehrer), trainiert YOLO11n-pose nach, '
+             'misst alt gegen neu und exportiert ONNX wie in `kinect-hub/models/README.md`.\n\n'
              '**Einstellungen:** Accelerator *GPU T4 x2*, Internet *an*, Datensatz `kinect-pose-daten` (privat) hinzufügen. '
              'Dann *Run All* (oder *Save Version → Save & Run All*, dann läuft es im Hintergrund weiter).\n\n'
              'Am Ende `ergebnis.zip` aus dem Output herunterladen. Die kopierten Bilder werden zum Schluss gelöscht.'),

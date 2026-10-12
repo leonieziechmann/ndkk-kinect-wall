@@ -1,7 +1,9 @@
 //! The people in the Kinect depth image: found by their skeletons, cut out of every depth frame.
-//! A port of web/lib/persons-core.js (and persons-flow.js) to Rust, so that kinect-hub can track
-//! once for all clients; the JavaScript stays the reference (web/PERSONS.md explains the method,
-//! examples/backtest.rs compares both frame by frame).
+//! A port of the browser's tracker (persons-core.js and persons-flow.js of the former web/
+//! directory, in the git history) to Rust, so that kinect-hub can track once for all clients. Since
+//! web/ is gone this is the only tracker (wall-bevy/PERSONS.md explains the method;
+//! examples/backtest.rs runs it over a recording, as recordings/backtest/backtest.mjs ran the
+//! JavaScript).
 //!
 //! The 2D poses come from a pose model on the infrared image (YOLO-pose): a few frames late, and
 //! only every few frames. Every depth frame is segmented on its own:

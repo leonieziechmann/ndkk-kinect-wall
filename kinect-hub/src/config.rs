@@ -16,7 +16,6 @@ usage: kinect-hub [options]
   --pipeline fast|cl|cpu|clkde
                          depth decoding inside the worker (default fast = on the CPU with AVX2,
                          leaves the GPU to the scenes; cl = OpenCL on the GPU)
-  --web-dir PATH         static files served at / (default: web/, searched upwards)
   --max-clients N        simultaneous WebSocket clients (default 64)
   --smoothing A          temporal filter for the `depth` stream: weight of the newest frame,
                          0.05..1 (default 0.4; 1 = off). `depth_raw` is never filtered.
@@ -25,8 +24,8 @@ usage: kinect-hub [options]
   --pose dml|cpu|off     pose model on the infrared image (stream `poses`): DirectML on the GPU
                          (default), the CPU, or not at all
   --pose-models A,B,...  pose models, best first; all are loaded, the hub runs the best one that
-                         keeps --pose-hz (default: those of web/lib/models/ that exist, in this
-                         order: yolo11s-pose-512x448-fp16, yolo11s-pose-384x320-fp16,
+                         keeps --pose-hz (default: those of kinect-hub/models/ that exist, in
+                         this order: yolo11s-pose-512x448-fp16, yolo11s-pose-384x320-fp16,
                          yolo11n-pose-fp16 (only without the s 384 one), yolo11n-pose-384-fp16)
   --pose-model PATH      the best model, --pose-model-fast PATH|none the next one (older form of
                          --pose-models)
@@ -74,7 +73,6 @@ pub struct Config {
     pub replay: Option<PathBuf>,
     pub worker: Option<PathBuf>,
     pub pipeline: String,
-    pub web_dir: Option<PathBuf>,
     pub max_clients: usize,
     pub smoothing: f32,
     pub allow_origins: Vec<String>,
@@ -100,7 +98,6 @@ impl Config {
             replay: None,
             worker: None,
             pipeline: "fast".to_string(),
-            web_dir: None,
             max_clients: 64,
             smoothing: 0.4,
             allow_origins: Vec::new(),
@@ -146,7 +143,6 @@ impl Config {
                     }
                     cfg.pipeline = v;
                 }
-                "--web-dir" => cfg.web_dir = Some(PathBuf::from(value("--web-dir")?)),
                 "--max-clients" => {
                     let v = value("--max-clients")?;
                     cfg.max_clients = v.parse().map_err(|e| format!("--max-clients {v}: {e}"))?;
@@ -210,10 +206,6 @@ impl Config {
                 other => return Err(format!("unknown option {other}")),
             }
         }
-        if cfg.web_dir.is_none() {
-            cfg.web_dir = find_upwards(Path::new("web").join("index.html").as_path())
-                .and_then(|p| p.parent().map(Path::to_path_buf));
-        }
         Ok(Some(cfg))
     }
 
@@ -226,12 +218,13 @@ impl Config {
     }
 
     /// The pose models, best first (looked up again before every start: models may be added
-    /// while the hub runs). Empty: no web/ directory and none given.
+    /// while the hub runs). Empty: no kinect-hub/models/ found and none given.
     pub fn pose_model_paths(&self) -> Vec<PathBuf> {
         if !self.pose_models.is_empty() {
             return self.pose_models.clone();
         }
-        let dir = self.web_dir.as_ref().map(|d| d.join("lib").join("models"));
+        // kinect-hub/models/ of the checkout the hub was built in (or is started from)
+        let dir = find_upwards(&Path::new("kinect-hub").join("models").join("README.md")).and_then(|p| p.parent().map(Path::to_path_buf));
         let in_dir = |name: &str| dir.as_ref().map(|d| d.join(name));
         if self.pose_model.is_some() || self.pose_model_fast.is_some() {
             let best = self.pose_model.clone().or_else(|| in_dir("yolo11n-pose-fp16.onnx"));
@@ -297,4 +290,18 @@ pub fn find_upwards(rel: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_pose_models_are_found_in_kinect_hub_models() {
+        let cfg = Config::from_args(std::iter::empty()).ok().flatten();
+        let files = cfg.map(|c| c.pose_model_paths()).unwrap_or_default();
+        let names: Vec<String> = files.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["yolo11s-pose-512x448-fp16.onnx", "yolo11s-pose-384x320-fp16.onnx", "yolo11n-pose-384-fp16.onnx"]);
+        assert!(files.iter().all(|p| p.is_file() && p.parent().is_some_and(|d| d.ends_with(Path::new("kinect-hub").join("models")))));
+    }
 }

@@ -1,6 +1,7 @@
-# Exports a trained model the way web/lib/models/README.md describes (ONNX for 448x512, then float16) and
-# checks that it is a drop-in for web/lib/models/yolo11n-pose-fp16.onnx: the same input and output, run on
-# a validation frame with the browser's preprocessing (persons-pose.js), side by side with the old model.
+# Exports a trained model the way kinect-hub/models/README.md describes (ONNX for 448x512, then float16)
+# and checks that it is a drop-in for kinect-hub/models/yolo11n-pose-fp16.onnx: the same input and output,
+# run on a validation frame with the hub's preprocessing (as the browser's persons-pose.js did), side by
+# side with the old model.
 # Usage: python export.py [--name n-ir] [--weights best.pt]  ->  <out>/export/<name>.onnx, <name>-fp16.onnx
 import argparse, glob, os, shutil, sys
 import numpy as np
@@ -55,7 +56,7 @@ def main():
     p16 = os.path.join(dst, f'{a.name}-fp16.onnx')
     onnx.save(m, p16)
 
-    old = os.path.join(MAIN, 'web', 'lib', 'models', 'yolo11n-pose-fp16.onnx')
+    old = os.path.join(MAIN, 'kinect-hub', 'models', 'yolo11n-pose-fp16.onnx')
     png = sorted(glob.glob(os.path.join(a.out, 'images', 'val', '*.png')))[len(glob.glob(os.path.join(a.out, 'images', 'val', '*.png'))) // 2]
     for label, path in (('old', old), ('new fp32', p32), ('new fp16', p16)):
         s = ort.InferenceSession(path, providers=['CPUExecutionProvider'])

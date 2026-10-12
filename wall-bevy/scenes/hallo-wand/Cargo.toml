@@ -1,0 +1,15 @@
+[package]
+name = "wall-scene-hallo-wand"
+version = "0.1.0"
+edition = "2024"
+description = "Example scene: what the framework gives a scene in a few lines"
+publish = false
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+wall.workspace = true
+
+[lints]
+workspace = true

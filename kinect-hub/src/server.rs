@@ -5,8 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::rejection::{JsonRejection, QueryRejection};
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State, WebSocketUpgrade};
+use axum::extract::{ConnectInfo, Path, Query, State, WebSocketUpgrade};
 use axum::http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use axum::http::{Method, StatusCode};
 use axum::response::{Html, IntoResponse, Json, Response};
@@ -17,12 +16,9 @@ use serde::Deserialize;
 use serde_json::json;
 use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
-use tower_http::services::ServeDir;
-use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::{debug, error, info, warn};
 
 use crate::config::Config;
-use crate::devservers::{self, RegisterError, Registration};
 use crate::pipeline::points_message;
 use crate::protocol::{CLIENT_HEADER_LEN, HEIGHT, PROTOCOL_VERSION, Stream, WIDTH, payload};
 use crate::state::{FrameSet, Hub, Shutdown};
@@ -87,24 +83,9 @@ fn router(hub: Arc<Hub>) -> Router {
         .route("/api/frame/{stream}", get(api_frame))
         .route("/api/poses", get(api_poses))
         .route("/api/persons", get(api_persons))
-        .route(
-            "/api/devservers",
-            get(devservers_list).post(devservers_register).delete(devservers_remove).layer(DefaultBodyLimit::max(64 * 1024)),
-        )
+        .route("/", get(|| async { Html(START_PAGE) }))
+        .fallback(|| async { error(StatusCode::NOT_FOUND, "not found; the API is described at /api") })
         .with_state(hub.clone());
-    let files = match &hub.cfg.web_dir {
-        Some(dir) => {
-            info!("serving web clients from {}", dir.display());
-            Router::new()
-                .fallback_service(ServeDir::new(dir).append_index_html_on_directories(true))
-                // agents edit these files while the hub runs: always revalidate
-                .layer(SetResponseHeaderLayer::overriding(header::CACHE_CONTROL, HeaderValue::from_static("no-cache")))
-        }
-        None => {
-            warn!("no web/ directory found, serving only the API");
-            Router::new().fallback(|| async { Html(NO_WEB_DIR_PAGE) })
-        }
-    };
     let cfg = hub.cfg.clone();
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(move |origin: &HeaderValue, parts| {
@@ -119,12 +100,12 @@ fn router(hub: Arc<Hub>) -> Router {
             HeaderName::from_static("x-publish-time-us"),
             HeaderName::from_static("x-format"),
         ]);
-    api.merge(files).layer(cors).layer(CatchPanicLayer::new())
+    api.layer(cors).layer(CatchPanicLayer::new())
 }
 
 /// Browsers send an Origin header; any website could otherwise read the depth stream of this
-/// room. Allowed: non-browser clients (no Origin), pages served by the hub itself, localhost
-/// pages (other dev servers on this machine), and origins passed with --allow-origin.
+/// room. Allowed: non-browser clients (no Origin, like wall-bevy), pages of the hub itself,
+/// localhost pages, and origins passed with --allow-origin.
 fn origin_allowed(cfg: &Config, origin: &str, host: Option<&HeaderValue>) -> bool {
     if cfg.allow_origins.iter().any(|o| o == "*" || o.eq_ignore_ascii_case(origin)) {
         return true;
@@ -333,70 +314,6 @@ fn encode_png(data: &[u8], sixteen_bit: bool) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-async fn devservers_list(State(hub): State<Arc<Hub>>) -> Response {
-    Json(hub.devservers.list_json()).into_response()
-}
-
-/// Dev servers announce themselves from this machine. Browser pages have no business here: a
-/// website could otherwise plant links on the start page.
-fn registry_rejection(addr: &SocketAddr, headers: &HeaderMap) -> Option<Response> {
-    if !addr.ip().is_loopback() {
-        return Some(error(StatusCode::FORBIDDEN, "dev servers can only register from this machine"));
-    }
-    if headers.contains_key(header::ORIGIN) {
-        return Some(error(StatusCode::FORBIDDEN, "browser pages cannot register dev servers"));
-    }
-    None
-}
-
-async fn devservers_register(
-    State(hub): State<Arc<Hub>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    body: Result<Json<Registration>, JsonRejection>,
-) -> Response {
-    if let Some(rejection) = registry_rejection(&addr, &headers) {
-        return rejection;
-    }
-    let reg = match body {
-        Ok(Json(reg)) => reg,
-        Err(e) => return error(e.status(), format!("invalid registration: {}", e.body_text())),
-    };
-    match hub.devservers.register(reg) {
-        Ok(new) => Json(json!({ "ok": true, "new": new, "ttl_s": devservers::TTL.as_secs() })).into_response(),
-        Err(RegisterError::BadUrl) => {
-            error(StatusCode::BAD_REQUEST, "url must be http://127.0.0.1:<port> (or localhost, [::1]) without a path")
-        }
-        Err(RegisterError::Full) => {
-            error(StatusCode::SERVICE_UNAVAILABLE, format!("{} dev servers are registered already", devservers::MAX_SERVERS))
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct RemoveQuery {
-    url: String,
-}
-
-async fn devservers_remove(
-    State(hub): State<Arc<Hub>>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    query: Result<Query<RemoveQuery>, QueryRejection>,
-) -> Response {
-    if let Some(rejection) = registry_rejection(&addr, &headers) {
-        return rejection;
-    }
-    let Ok(Query(q)) = query else {
-        return error(StatusCode::BAD_REQUEST, "use DELETE /api/devservers?url=http://127.0.0.1:<port>");
-    };
-    if hub.devservers.remove(&q.url) {
-        Json(json!({ "ok": true })).into_response()
-    } else {
-        error(StatusCode::NOT_FOUND, "no dev server registered under this url")
-    }
-}
-
 async fn api_index(State(hub): State<Arc<Hub>>) -> Response {
     let streams: serde_json::Map<String, serde_json::Value> =
         Stream::ALL.iter().map(|s| (s.name().to_string(), json!({"kind": s.kind(), "description": s.describe()}))).collect();
@@ -412,17 +329,14 @@ async fn api_index(State(hub): State<Arc<Hub>>) -> Response {
             "GET /api/persons": "newest result of the person tracking as the persons stream sends it (JSON, without the labels); a request keeps the tracker running for 5 s",
             "GET /api/poses": "newest poses of the pose model as the poses stream sends them (JSON); a request keeps the model running for 5 s, the first one may get poses: null",
             "GET /ws": "WebSocket stream (see websocket)",
-            "GET /api/devservers": "scene dev servers (Vite, one per worktree) that announced themselves, with their scenes (JSON)",
-            "POST /api/devservers": "announce a dev server: {url: 'http://127.0.0.1:<port>', label, branch, worktree, hub, pid, scenes: [{name, title, description, author, thumb, modified_ms, error}]}; repeat every few seconds, entries expire after ttl_s; only from this machine, not from browsers",
-            "DELETE /api/devservers?url=...": "sign a dev server off",
-            "GET /": "start page from the web/ directory: hub status and the scenes of all dev servers",
+            "GET /": "start page: hub status and links",
         },
         "websocket": {
             "url": "ws://<host>/ws",
             "client_messages": {
                 "subscribe": {"type": "subscribe", "streams": ["depth", "lut"], "max_fps": 30},
                 "ping": {"type": "ping", "t": "anything, echoed back"},
-                "render": {"type": "render", "fps": 57.3, "target": 60, "visible": true, "scene": "neon-wall", "note": "about once a second from a page that renders a scene, no reply; while a visible page renders below 85 % of its target the pose model steps down"},
+                "render": {"type": "render", "fps": 57.3, "target": 60, "visible": true, "scene": "neon-wall", "note": "about once a second from a client that renders scenes (the wall output), no reply; while a visible one renders below 85 % of its target the pose model steps down"},
             },
             "server_text_messages": ["hello", "subscribed", "status", "params", "frame", "poses", "persons", "persons_live", "pong", "error"],
             "binary_header": {
@@ -442,6 +356,22 @@ async fn api_index(State(hub): State<Arc<Hub>>) -> Response {
     .into_response()
 }
 
-const NO_WEB_DIR_PAGE: &str = "<!doctype html><meta charset=utf-8><title>kinect-hub</title>\
-<body style='font-family:system-ui;background:#222;color:#ddd;padding:2em'>\
-<h1>kinect-hub läuft</h1><p>Kein <code>web/</code>-Verzeichnis gefunden. API-Beschreibung: <a style='color:#9cf' href='/api'>/api</a></p>";
+/// The start page: what runs, live from /api/status, and where the rest is.
+const START_PAGE: &str = r#"<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>kinect-hub</title>
+<body style="font-family:system-ui,sans-serif;background:#18181b;color:#ddd;padding:1.5em;max-width:46em;line-height:1.5">
+<h1 style="font-weight:600">kinect-hub läuft</h1>
+<p id="s">…</p>
+<p>Die LED-Wand steuert die Steuerzentrale von <b>wall-bevy</b>: <a id="c" style="color:#8fc1ff" href="http://127.0.0.1:8095/">http://127.0.0.1:8095/</a> (Standard-Port; im Netz siehe Tab „Fernbedienung“ dort).</p>
+<p>Für Programme: <a style="color:#8fc1ff" href="/api">/api</a> (Beschreibung), <a style="color:#8fc1ff" href="/api/status">/api/status</a>, WebSocket <code>/ws</code>.</p>
+<script>
+const c = document.getElementById('c');
+c.href = c.textContent = location.protocol + '//' + location.hostname + ':8095/';
+async function tick() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    const t = s.tracking || {};
+    document.getElementById('s').textContent = 'Quelle: ' + s.source + ' · Sensor: ' + ((s.sensor || {}).state || '?') + ' · ' + s.fps + ' fps · Clients: ' + s.clients + (t.state === 'running' ? ' · Personen: ' + t.persons : '');
+  } catch (e) { document.getElementById('s').textContent = 'Status nicht lesbar: ' + e; }
+}
+tick(); setInterval(tick, 2000);
+</script>"#;

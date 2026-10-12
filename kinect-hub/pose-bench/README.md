@@ -1,8 +1,10 @@
 # pose-bench: Pose-Modell nativ statt im Browser (Mess-Prototyp)
 
-Misst das Pose-Modell der Personenerkennung (YOLO11n-pose, `web/lib/models/yolo11n-pose-fp16.onnx`, Eingang 1×3×448×512) nativ mit ONNX Runtime: auf der GPU über DirectML und auf der CPU mit N Threads. Vorbereitung und Auswertung sind genau die aus `web/lib/persons-pose.js`. Das Werkzeug vergleicht Zeit, CPU-/GPU-Last und Sensorrate mit dem Browser (ONNX Runtime Web, WebGPU) und prüft, ob dieselben Posen herauskommen.
+Misst das Pose-Modell der Personenerkennung (YOLO11n-pose, `kinect-hub/models/yolo11n-pose-fp16.onnx`, Eingang 1×3×448×512) nativ mit ONNX Runtime: auf der GPU über DirectML und auf der CPU mit N Threads. Vorbereitung und Auswertung sind genau die aus `web/lib/persons-pose.js`. Das Werkzeug vergleicht Zeit, CPU-/GPU-Last und Sensorrate mit dem Browser (ONNX Runtime Web, WebGPU) und prüft, ob dieselben Posen herauskommen.
 
 Nur ein Messwerkzeug: der Hub nutzt es nicht, und es ist ein eigenes Crate (eigener Workspace, eigenes `target/`).
+
+**Stand:** Die Messung unten ist von 2026-10-08. Die Browser-Seite davon (`web/`, mit `tools/pose-ref.mjs` und `tools/pose-load.mjs`) ist seit dem Umstieg auf die native Ausgabe wall-bevy aus dem Repo entfernt; sie liegt in der Git-Historie. Ohne sie misst das Werkzeug weiter nativ; `--compare` braucht Referenzdateien, die damals mit `pose-ref.mjs` entstanden sind.
 
 ## Ergebnis (08.10.2026, Ryzen 5 PRO 4650U, Radeon Vega iGPU, Hub mit Kinect bei 30 fps)
 
@@ -112,18 +114,18 @@ target/release/pose-bench.exe [--ep dml,cpu6,cpu3spin] [--frames a.bin,b.bin] [-
 - `--frames`: Infrarotbilder als 512×424 Byte roh. Ohne: das neueste Bild vom Hub (`/api/frame/ir`).
 - `--seconds` / `--runs`: so lange bzw. so oft hintereinander rechnen, wie der Pose-Worker im Browser es tut. `--hz 15`: stattdessen in fester Rate.
 - `--load`: dabei CPU und GPU je Prozess messen (`load.ps1`, braucht `--seconds`).
-- `--compare`: mit dem Browser vergleichen. Erwartet neben jedem Bild `<name>.browser.f32` (Rohausgabe) und `<name>.browser.txt` (Posen), die `web/tools/pose-ref.mjs` schreibt.
+- `--compare`: mit dem Browser vergleichen. Erwartet neben jedem Bild `<name>.browser.f32` (Rohausgabe) und `<name>.browser.txt` (Posen), die `web/tools/pose-ref.mjs` schrieb (in der Git-Historie).
 
 Je Provider: Zeit fürs Laden und den ersten Lauf, dann Vorbereitung, Modell (mit Rückkopieren der Ausgabe) und Auswertung (Median, p90, Minimum), Rate, CPU dieses Prozesses in Kernen und die Sensorrate am Hub während der Messung.
 
-Dazu in `web/tools/`:
+Dazu gab es in `web/tools/` (in der Git-Historie):
 
 - `pose-ref.mjs` (+ `pose-ref.html`): das Modell im Browser genau so, wie der Pose-Worker es rechnet (`PoseModel` aus `persons-pose.js`, headless Chrome, echte GPU). Zeit für `detect()` und `session.run`, schreibt die Referenz für `--compare`.
 - `pose-load.mjs`: GPU-Last. Rendert eine Szene in headless Chrome und schreibt jede Sekunde die Zahl gerenderter Frames, um die Szenen-fps je Messphase zu sehen.
 
-Bilder mit Personen aus Aufnahmen: `pose-bench --extract ../../web/.cache/pose-native <clip>.k2rec …` schreibt das mittlere Infrarotbild jedes Clips als `<clip>.bin`. Die Bilder zeigen Menschen und bleiben wie die Aufnahmen lokal (`web/.cache/` ist ignoriert).
+Bilder mit Personen aus Aufnahmen: `pose-bench --extract ../../recordings/pose-native <clip>.k2rec …` schreibt das mittlere Infrarotbild jedes Clips als `<clip>.bin`. Die Bilder zeigen Menschen und bleiben wie die Aufnahmen lokal (`recordings/` ist ignoriert).
 
-Die Messung oben, Schritt für Schritt (aus `kinect-hub/pose-bench/`, `C=../../web/.cache/pose-native`):
+Die Messung oben, Schritt für Schritt, wie sie damals lief (aus `kinect-hub/pose-bench/`, `C=../../web/.cache/pose-native`):
 
 ```
 target/release/pose-bench.exe --extract $C <Clips aus recordings/clips/verdeckung/>

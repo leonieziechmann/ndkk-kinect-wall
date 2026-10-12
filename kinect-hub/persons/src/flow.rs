@@ -1,6 +1,6 @@
 //! Sparse optical flow on the infrared image (pyramidal Lucas–Kanade): moves the keypoints of the
 //! persons from frame to frame, so the skeletons follow the bodies at the full frame rate although
-//! the pose model only runs every few frames. The method of web/lib/persons-flow.js.
+//! the pose model only runs every few frames. The method of the browser's persons-flow.js.
 //!
 //! Faster than there: all samples of a window share one sub-pixel offset, so a window is one
 //! bilinear patch made row by row with fixed weights (f32, vectorized; AVX2 where the CPU has it),
