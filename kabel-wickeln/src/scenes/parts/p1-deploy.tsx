@@ -251,7 +251,7 @@ const throwTime = (s: number) =>
 
 /**
  * The cameras.
- * - Wide, from his right: Kofi with the ring and the mic stand, the target, 11 m away.
+ * - Wide, from behind him on his left: Kofi with the ring and, ahead, the mic stand, the target, 11 m away.
  * - Near, from his front left, 1.25 m from the ring: the ring's face, the tie his right hand
  *   opens, the end he keeps hanging out below it (labelled, glowing).
  * - Behind him on his right, over the shoulder (cut 1.6 s before the swing): the arc of the swing,
@@ -260,9 +260,9 @@ const throwTime = (s: number) =>
  *   circle and its back face, where the cable comes off.
  * - Then high from the side: the cable on the floor.
  */
-const B_WIDE: Orbit = { target: [5.3, 0.75, 0.2], yaw: 0.2, pitch: 0.12, dist: 11.5, fov: 38 };
-const B_NEAR: Orbit = { target: [0.33, 0.9, -0.02], yaw: 1.95, pitch: 0.1, dist: 1.3, fov: 36 };
-const B_NEAR2: Orbit = { target: [0.33, 0.95, 0.02], yaw: 1.85, pitch: 0.12, dist: 1.55, fov: 36 };
+const B_WIDE: Orbit = { target: [4.5, 0.95, 0.3], yaw: -1.95, pitch: 0.12, dist: 7.0, fov: 38 };
+const B_NEAR: Orbit = { target: [0.33, 1.0, -0.04], yaw: 2.05, pitch: 0.08, dist: 1.35, fov: 36 };
+const B_NEAR2: Orbit = { target: [0.33, 1.05, 0.0], yaw: 1.9, pitch: 0.1, dist: 1.6, fov: 36 };
 const B_BEHIND: Orbit = { target: [5.2, 0.85, 0.2], yaw: -1.2, pitch: 0.2, dist: 8.2, fov: 40 };
 const B_REST: Orbit = { target: [5.4, 0.1, 0.1], yaw: 0.12, pitch: 0.6, dist: 12.5, fov: 40 };
 /** the cut from near to behind (shot time): 1.6 s before the swing starts */
@@ -279,19 +279,19 @@ function stageDeck(): THREE.Group {
   deck.position.set(5.2, 0.0005, 0.1);
   deck.receiveShadow = true;
   g.add(deck);
-  const tape = new THREE.MeshLambertMaterial({ color: '#232427', polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
-  const strip = (len: number, w: number, x: number, z: number, rot: number) => {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(len, w), tape);
+  const tape = new THREE.MeshLambertMaterial({ color: '#8f8a83', polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const mark = new THREE.MeshLambertMaterial({ color: '#2f3034', polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const strip = (len: number, w: number, x: number, z: number, rot: number, mat = tape) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(len, w), mat);
     m.rotation.set(-Math.PI / 2, 0, rot);
     m.position.set(x, 0.0008, z);
     m.receiveShadow = true;
     g.add(m);
   };
-  // the deck's edges
-  for (const z of [0.1 - 3.25, 0.1 + 3.25]) strip(18, 0.05, 5.2, z, 0);
-  // the mark for the stand
-  strip(0.3, 0.05, MIC_AT[0], MIC_AT[2], Math.PI / 4);
-  strip(0.3, 0.05, MIC_AT[0], MIC_AT[2], -Math.PI / 4);
+  // the deck's edges (a quiet grey line), the mark for the stand (black gaffer tape)
+  for (const z of [0.1 - 3.25, 0.1 + 3.25]) strip(18, 0.03, 5.2, z, 0);
+  strip(0.3, 0.05, MIC_AT[0], MIC_AT[2], Math.PI / 4, mark);
+  strip(0.3, 0.05, MIC_AT[0], MIC_AT[2], -Math.PI / 4, mark);
   return g;
 }
 
@@ -320,14 +320,14 @@ function* longCable(layer: Node) {
   const stand = micStand();
   stand.position.set(...MIC_AT);
   stand.rotation.y = Math.PI / 2;
-  // a calm load-out: cases on the stage's far side and behind him, off every camera's line to him,
-  // the ring and the stand (checked in stills of all five cameras)
+  // a calm load-out: cases on the stage's far side (to his left, well ahead of him) and beyond the
+  // stand, off every camera's line to him, the ring and the stand (checked in stills of all cameras)
   const cases = [flightCase({ width: 0.8, depth: 0.6, height: 0.7 }), flightCase({ width: 0.6, depth: 0.5, height: 0.5 }), flightCase({ width: 1.0, depth: 0.6, height: 0.6 })];
-  cases[0].position.set(-1.6, 0, -2.4);
+  cases[0].position.set(7.6, 0, -3.9);
   cases[0].rotation.y = 0.2;
-  cases[1].position.set(-1.5, 0.7, -2.35);
+  cases[1].position.set(7.7, 0.7, -3.85);
   cases[1].rotation.y = 0.3;
-  cases[2].position.set(3.2, 0, -2.9);
+  cases[2].position.set(13.2, 0, -2.4);
   cases[2].rotation.y = -0.15;
 
   const cam = makeCamera(34);

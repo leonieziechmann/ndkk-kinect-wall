@@ -75,8 +75,8 @@ export const THROW_WIDE_RADIUS = 0.006;
 
 /** the ring as the factory made it, turned: its stack along +x (forward), the start end to his left (-z) */
 const QRING: Quat = quatFromAxisAngle(0, 1, 0, Math.PI / 2);
-/** the middle of the bunch at the ring's top, in his left hand */
-const HOLD: V3 = [0.32, 1.05, -0.03];
+/** the middle of the bunch at the ring's top, in his left hand: at his belly, the black ring against his light shirt */
+const HOLD: V3 = [0.32, 1.15, -0.05];
 
 // ---------------------------------------------------------------- shot times
 
@@ -95,7 +95,7 @@ const DRAG = 0.15;
 /** the ring touches the floor when its grip point (its top) is this high */
 const LAND_Y = 0.3;
 /** the ring is empty at this fraction of its flight */
-const PEEL_DONE = 0.62;
+const PEEL_DONE = 0.72;
 
 // ---------------------------------------------------------------- Kofi's body
 
@@ -200,6 +200,22 @@ const ringTilt = (t: number) => {
 const ringYaw = (t: number) => (t <= SW.rel ? 0 : 0.05 * Math.sin(2 * Math.PI * 1.1 * (t - SW.rel) + 0.6) * (1 - Math.exp(-(t - SW.rel) / 0.15)));
 const ringQ = (t: number): Quat => quatMul(quatFromAxisAngle(0, 1, 0, ringYaw(t)), quatFromAxisAngle(0, 0, 1, ringTilt(t)));
 
+/**
+ * Between two places of a node of the ring (its frame's coordinates: x along the axis), blended round
+ * the ring's axis (cH, cB: the axis's y, z in each shape): the radius and the angle are blended, not
+ * the points, so neighbouring nodes keep their distance on the way (a straight blend of a hanging
+ * oval and a circle would pull the cable shorter in between).
+ */
+function polarMix(h: V3, b: V3, cH: [number, number], cB: [number, number], u: number): V3 {
+  const yh = h[1] - cH[0], zh = h[2] - cH[1], yb = b[1] - cB[0], zb = b[2] - cB[1];
+  const rh = Math.hypot(yh, zh), rb = Math.hypot(yb, zb);
+  const ah = Math.atan2(yh, zh);
+  let da = Math.atan2(yb, zb) - ah;
+  da -= 2 * Math.PI * Math.round(da / (2 * Math.PI));
+  const r = rh + (rb - rh) * u, a = ah + da * u, cy = cH[0] + (cB[0] - cH[0]) * u, cz = cH[1] + (cB[1] - cH[1]) * u;
+  return [h[0] + (b[0] - h[0]) * u, cy + r * Math.sin(a), cz + r * Math.cos(a)];
+}
+
 // ---------------------------------------------------------------- the plan (recorded in the bake)
 
 const SLOTS = {
@@ -249,9 +265,9 @@ const mixGrip = (a: Grip, b: Grip, u: number): Grip => ({ p: lerpV(a.p, b.p, u),
 /** the left hand's coil grip: the strands run along z through it, the palm over them (IK probes: the comfortable one) */
 const LEFT_GRIP = gripFrame(HOLD, [0, 0, 1], [0, 1, 0]);
 /** during the throw the left hand comes forward a little (it points the way), with the loops it keeps */
-const LEFT_THROW = gripFrame([0.42, 1.1, -0.08], [0, 0, 1], [0, 1, 0]);
+const LEFT_THROW = gripFrame([0.42, 1.18, -0.1], [0, 0, 1], [0, 1, 0]);
 /** where the left hand goes with the rest once the ring has landed: back towards his hip, drawing the cable after it */
-const LEFT_REST: Grip = { p: [0.3, 0.95, -0.13], q: LEFT_GRIP.q };
+const LEFT_REST: Grip = { p: [0.3, 0.98, -0.14], q: LEFT_GRIP.q };
 /**
  * The right hand's coil grip: the strands run along +z through it; on the swing arc at angle φ the
  * palm side turns with the arm (from the strands to the palm: (-cos φ, -sin φ, 0): the palm faces
@@ -271,7 +287,7 @@ export function swingGrip(p: Plan, t: number): Grip {
   if (t < T.split) {
     // out to his right first (clear of the loops the left hand keeps, which hang behind the front
     // loops), then back and down to his side: a quadratic curve through a point out to the right
-    const u = ease(t, T.take + 0.05, T.split), side = onArc(t, PHI.side);
+    const u = ease(t, T.take + 0.15, T.split), side = onArc(t, PHI.side);
     const ctrl: V3 = [take[0] + 0.02, take[1], side[2] + 0.07];
     const pt = add(add(scale(take, (1 - u) * (1 - u)), scale(ctrl, 2 * u * (1 - u))), scale(side, u * u));
     return { p: pt, q: slerpQ(rightQ(0), rightQ(PHI.side), u) };
@@ -499,11 +515,12 @@ export const throwShot: ShotDef = {
     rod.setCapsules((t) => {
       const pose = poseAt(t);
       const body = capsulesOf(pose).filter((c) => c.part === 'torso' || c.part === 'legL' || c.part === 'legR');
-      // (the right hand's capsules are off while it goes into the coil, closes on the front loops and
-      // draws them out (they slide in its fist): it must not plough through them; from then on the
-      // strands in its fist are held by it)
-      const off = t > T.letTie + 0.1 && t < T.split + 0.05;
-      return [...body, ...handColliders(pose, 0, { group: LEFT, soft: SOFT }), ...handColliders(pose, 1, { group: RIGHT, soft: SOFT, disable: off ? () => true : undefined })];
+      // (the right hand's capsules: off while it goes into the coil and closes on the front loops, so
+      // it does not plough through them; then, while it holds the ring, the hand's own (palm, fingers,
+      // thumb: the strands in its fist, which the guides hold) are off, its forearm is on)
+      const hand = t > T.letTie + 0.1 && t < T.release + 0.1, arm = t > T.letTie + 0.1 && t < T.take + 0.2;
+      const disable = arm ? () => true : hand ? (c: { part: string }) => c.part !== 'forearm' : undefined;
+      return [...body, ...handColliders(pose, 0, { group: LEFT, soft: SOFT }), ...handColliders(pose, 1, { group: RIGHT, soft: SOFT, disable })];
     });
     for (let f = 0; f < 90; f++) rod.step(1 / 60, 40);
     rod.time = 0;
@@ -545,15 +562,44 @@ export const throwShot: ShotDef = {
     const woven: [number, number, number][] = [];
     for (let k = RING_FIRST; k < N - 1; k++) if (LONG_RING.pattern[k] === 'u') woven.push([sLoop[k][0] - 0.05, sLoop[k + 1][0], sLoop[k + 1][0] + 0.62 * LONG_RING.loop]);
     const sN = rod.sNode;
-    /** free: peeled, a woven strand whose loop in front is coming off, or (once thrown) the end tail */
+    /**
+     * free: peeled, a woven strand whose loop in front is coming off, or the end tail once the last
+     * loop starts to come off (it runs through that loop's eye). The end's last 8 cm (its plug) stay
+     * guided until they are near the floor: once the ring is empty the end flies on ahead on the
+     * ring's arc and the cable behind it is pulled out straight between it and the hand (a ring
+     * emptied without that lands its last loop as a curl).
+     */
+    const sPlug = ring.sCable[1] - 0.08, sLast = sLoop[N - 1][0];
+    /** when the last loop starts to come off (the end then leads), when the end touches down and where */
+    let tLead = Infinity;
+    for (let t = T.release; t < T.land; t += 1 / 240) if (peelAt(t) >= sLast) { tLead = t; break; }
+    const LEAD = 0.35;
+    const vel = (t: number): V3 => scale(sub(flight(t + 1e-3), flight(t - 1e-3)), 500);
+    const ahead = (t: number): V3 => add(flight(t), scale(normalize(vel(t)), LEAD));
+    let tDown = T.land, vDown: V3 = [1, 0, 0];
+    for (let t = T.release + 0.05; t < T.land + 0.5; t += 1 / 240) {
+      if (ahead(t)[1] < 0.035) {
+        tDown = t;
+        const v = vel(t);
+        vDown = [v[0], 0, v[2]];
+        break;
+      }
+    }
+    /**
+     * Where the end's plug is guided once the last loop comes off: ahead of the empty ring on its arc
+     * (the end leads, the cable trails from it). It is let go as it touches down and slides on by
+     * itself, so the cable behind it lands stretched, not piled up.
+     */
+    const plugLead = (t: number): V3 => ahead(Math.min(t, tDown));
     const isFree = (s: number, t: number) => {
       if (t < T.release) return false;
       const sp = peelAt(t);
-      return s < sp || s > sRing1 || woven.some(([at, w0, w1]) => sp >= at && s >= w0 && s <= w1);
+      if (s >= sPlug) return t >= tDown;
+      if (s > sRing1) return sp >= sLast;
+      return s < sp || woven.some(([at, w0, w1]) => sp >= at && s >= w0 && s <= w1);
     };
+
     let guide = -1, landed = false, taken = false;
-    /** the strands in the right hand's fist: held by it (its capsules let them through) until it lets go */
-    let fist: Bundle | null = null;
 
     /** the loops still in the left hand (indices), the outermost first */
     const inHand: number[] = [];
@@ -587,14 +633,24 @@ export const throwShot: ShotDef = {
           }
           return [0, y1, (z0 + z1) / 2];
         };
-        const cA = centre(A), cB = centre(B);
+        const cA = centre(A), cBs = centre(B);
         const AS = new Float64Array(3 * m);
         for (let k = 0; k < m; k++) {
           AS.set([A[3 * k], A[3 * k + 1] - cA[1], A[3 * k + 2] - cA[2]], 3 * k);
-          B[3 * k + 1] -= cB[1];
-          B[3 * k + 2] -= cB[2];
+          B[3 * k + 1] -= cBs[1];
+          B[3 * k + 2] -= cBs[2];
         }
         const AA = A, BB = B;
+        // the axis of each shape (y, z of the loops' middle; the hanging one after centring)
+        const axis = (X: Float64Array, dy: number, dz: number): [number, number] => {
+          let y = 0, z = 0, k = 0;
+          for (let i = nRing0; i <= nRingEnd; i++, k++) {
+            y += X[3 * (i - nRing0) + 1];
+            z += X[3 * (i - nRing0) + 2];
+          }
+          return [y / k - dy, z / k - dz];
+        };
+        const cH = axis(A, cA[1], cA[2]), cB = axis(B, 0, 0);
         guide = r.addGuide({
           nodes: [nRing0, nEnd],
           compliance: 1e-4,
@@ -602,26 +658,27 @@ export const throwShot: ShotDef = {
           target: (i, tt) => {
             if (isFree(sN[i], tt)) return null;
             const F2 = ringFrame(tt), o = 3 * (i - nRing0);
+            if (sN[i] >= sPlug && tt > tLead) {
+              // the end leads: from its place below the ring to ahead of it, in 0.2 s (each plug node
+              // keeps its distance from the plug's tip along the throw)
+              const back = sN[nEnd] - sN[i], hb: V3 = add(plugLead(tt), scale(normalize(tt < tDown ? vel(tt) : vDown), -back));
+              const w = smooth((tt - tLead) / 0.2);
+              if (w >= 1) return hb;
+              const u0 = smooth((tt - T.release) / 0.15);
+              const h0: V3 = [AA[o] + (AS[o] - AA[o]), AA[o + 1] + (AS[o + 1] - AA[o + 1]), AA[o + 2] + (AS[o + 2] - AA[o + 2])];
+              const l0 = u0 >= 1 ? ([BB[o], BB[o + 1], BB[o + 2]] as V3) : polarMix(h0, [BB[o], BB[o + 1], BB[o + 2]], cH, cB, u0);
+              const p0 = add(F2.p, quatRotate(F2.q, l0));
+              return [p0[0] + (hb[0] - p0[0]) * w, p0[1] + (hb[1] - p0[1]) * w, p0[2] + (hb[2] - p0[2]) * w];
+            }
             // as taken → hanging centred (during the split) → as stored (in flight)
-            const c = smooth((tt - T.take - 0.05) / (T.split - T.take - 0.05)), u = smooth((tt - T.release) / 0.15);
+            const c = smooth((tt - T.take - 0.15) / (T.split - T.take - 0.15)), u = smooth((tt - T.release) / 0.15);
             const h: V3 = [AA[o] + (AS[o] - AA[o]) * c, AA[o + 1] + (AS[o + 1] - AA[o + 1]) * c, AA[o + 2] + (AS[o + 2] - AA[o + 2]) * c];
-            const l: V3 = [h[0] + (BB[o] - h[0]) * u, h[1] + (BB[o + 1] - h[1]) * u, h[2] + (BB[o + 2] - h[2]) * u];
+            // (round the ring's axis: radius and angle are blended, not the points, so no strand gets shorter on the way)
+            const l = u <= 0 ? h : u >= 1 ? ([BB[o], BB[o + 1], BB[o + 2]] as V3) : polarMix(h, [BB[o], BB[o + 1], BB[o + 2]], cH, cB, u);
             return add(F2.p, quatRotate(F2.q, l));
           },
         });
         taken = true;
-      }
-      if (taken && !fist && t >= T.split && t < T.release) {
-        // the ring hangs centred in the fist now: the strands in it (within 5 cm of the grip point)
-        // are held by the hand (in the ring's frame, as the guides: they and the rest move as one)
-        fist = r.bundle({ frame: ringFrame, hand: RIGHT, blend: 0.1 });
-        const g0 = ringFrame(t).p;
-        for (let j = nRing0; j < r.ns; j++) if (len(sub(C(j), g0)) < 0.05) fist.add(r.sNode[j], r.sNode[j + 1], 0.1);
-      }
-      if (fist && t >= T.release) {
-        // the hand opens: the guides alone hold the ring now
-        fist.remove();
-        fist = null;
       }
       if (!split && t >= T.take + 0.05) {
         // the left hand lets the front loops go (and the two between the hands)
@@ -629,7 +686,7 @@ export const throwShot: ShotDef = {
         lh.release(sLoop[N - 1][1], ring.sCable[1] + 1, 0.06);
         split = true;
       }
-      if (taken && !landed && (peelAt(t) >= sRing1 || flight(t)[1] < LAND_Y) && t > T.release) {
+      if (taken && !landed && t >= tDown && peelAt(t) >= sRing1) {
         r.removeGuide(guide);
         landed = true;
       }
