@@ -1,20 +1,23 @@
-//! Command line and environment: where the hub, the dev server and the wall documents are.
+//! Command line and environment: where the hub and the wall's documents are, the control center.
 //!
 //!   wall-bevy                        the output on the LED screen (setup.output.window, else the
-//!                                    first screen that is not the primary one), playing the show
+//!                                    first screen that is not the primary one), playing the show;
+//!                                    the control center at http://127.0.0.1:8095/ and in the network
 //!   --hub 8091 | host:port | URL     the kinect-hub (default KINECT_HUB, else 127.0.0.1:8090)
-//!   --web DIR                        the checkout's web/ folder (show.json, dev-server.json);
-//!                                    default: found next to the exe or the working directory
-//!   --dev URL                        the dev server for the control center (default: from
-//!                                    web/.cache/dev-server.json, re-read while running)
+//!   --data DIR                       setup, projections, show, pairing code (default KINECT_WALL_DIR,
+//!                                    else wall-bevy/data of the main checkout)
+//!   --control-port N                 the control center's port (default 8095, 0: none)
+//!   --control-bind IP                where it listens (default 0.0.0.0: the network too;
+//!                                    127.0.0.1: only this computer)
+//!   --control-dir DIR                the control center's files from DIR (work on the page)
 //!   --scene NAME                     plays this scene instead of the show
 //!   --windowed                       a normal window (testing), --monitor N|NAME a screen
 //!   --screen X,Y,W,H                 the screen with this desktop rectangle (start-wand.ps1)
-//!   --fps N                          caps the render rate (as ?fps= in the browser)
+//!   --fps N                          caps the render rate
 //!   --vsync fifo|mailbox|immediate   presentation (default fifo: steady, never tears)
 //!   --shots DIR --seconds S          test: renders S seconds, writes PNGs and frame times to DIR
 //!   --mute                           no sound
-//!   --no-bus                         does not talk to the control center
+//!   --no-control                     no control center
 
 use std::path::{Path, PathBuf};
 
@@ -22,12 +25,15 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     /// http://host:port of the hub
     pub hub: String,
-    /// the checkout's web/ folder
-    pub web_dir: PathBuf,
-    /// setup.json and projection.json (shared by every worktree: the main checkout's)
-    pub wall_dir: PathBuf,
-    /// dev server URL given on the command line (else read from dev-server.json)
-    pub dev: Option<String>,
+    /// the wall's documents (setup, projection, show), the scenes' store, the pairing code
+    pub data_dir: PathBuf,
+    /// where the documents were before (web/.cache/wall of the main checkout): taken over once
+    pub legacy_dirs: Vec<PathBuf>,
+    /// the control center's port (0: none)
+    pub control_port: u16,
+    pub control_bind: std::net::IpAddr,
+    /// the control center's page from this folder instead of the built-in one
+    pub control_dir: Option<PathBuf>,
     pub scene: Option<String>,
     pub windowed: bool,
     pub monitor: Option<String>,
@@ -40,7 +46,7 @@ pub struct Config {
     /// test mode: a shot every this many seconds
     pub shot_every: f64,
     pub mute: bool,
-    pub no_bus: bool,
+    pub no_control: bool,
     /// scene params for --scene: key=value pairs (numbers, true/false, #colors, text)
     pub params: Vec<(String, String)>,
     /// LED size for tests without a setup (--led 1008x336)
@@ -68,7 +74,8 @@ pub fn normalize_hub(raw: &str) -> String {
     h.trim_end_matches('/').to_string()
 }
 
-fn find_web_dir() -> Option<PathBuf> {
+/// The checkout this program belongs to: the folder with .git above the exe (or the working folder).
+fn checkout_top() -> Option<PathBuf> {
     let mut starts = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         starts.push(exe);
@@ -79,11 +86,7 @@ fn find_web_dir() -> Option<PathBuf> {
     for start in starts {
         let mut dir: Option<&Path> = Some(start.as_path());
         while let Some(d) = dir {
-            let web = d.join("web");
-            if web.join("scenes").is_dir() && web.join("lib").is_dir() {
-                return Some(web);
-            }
-            if d.join("scenes").is_dir() && d.join("lib").join("wall.js").is_file() {
+            if d.join(".git").exists() {
                 return Some(d.to_path_buf());
             }
             dir = d.parent();
@@ -114,12 +117,14 @@ impl Config {
     pub fn from_args() -> Result<Self, String> {
         let mut args = std::env::args().skip(1).peekable();
         let mut hub = std::env::var("KINECT_HUB").ok();
-        let mut web: Option<PathBuf> = None;
+        let mut data: Option<PathBuf> = None;
         let mut cfg = Config {
             hub: String::new(),
-            web_dir: PathBuf::new(),
-            wall_dir: PathBuf::new(),
-            dev: None,
+            data_dir: PathBuf::new(),
+            legacy_dirs: Vec::new(),
+            control_port: 8095,
+            control_bind: std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            control_dir: None,
             scene: None,
             windowed: false,
             monitor: None,
@@ -130,7 +135,7 @@ impl Config {
             seconds: None,
             shot_every: 2.0,
             mute: false,
-            no_bus: false,
+            no_control: false,
             params: Vec::new(),
             led: None,
             list_scenes: false,
@@ -141,8 +146,10 @@ impl Config {
             let mut value = |name: &str| args.next().ok_or_else(|| format!("{name} braucht einen Wert"));
             match a.as_str() {
                 "--hub" => hub = Some(value("--hub")?),
-                "--web" => web = Some(PathBuf::from(value("--web")?)),
-                "--dev" => cfg.dev = Some(value("--dev")?.trim_end_matches('/').to_string()),
+                "--data" => data = Some(PathBuf::from(value("--data")?)),
+                "--control-port" => cfg.control_port = value("--control-port")?.parse().map_err(|_| "--control-port: Zahl erwartet")?,
+                "--control-bind" => cfg.control_bind = value("--control-bind")?.parse().map_err(|_| "--control-bind: IP-Adresse erwartet (0.0.0.0 oder 127.0.0.1)")?,
+                "--control-dir" => cfg.control_dir = Some(PathBuf::from(value("--control-dir")?)),
                 "--scene" => cfg.scene = Some(value("--scene")?),
                 "--windowed" => cfg.windowed = true,
                 "--monitor" => cfg.monitor = Some(value("--monitor")?),
@@ -168,7 +175,7 @@ impl Config {
                     cfg.watch = Some(dir.ok_or_else(|| "--watch: wo ist der Workspace (wall-bevy/)? --watch DIR angeben".to_string())?);
                 }
                 "--new-scene" => cfg.new_scene = Some(value("--new-scene")?),
-                "--no-bus" => cfg.no_bus = true,
+                "--no-control" | "--no-bus" => cfg.no_control = true,
                 "--param" | "-p" => {
                     let kv = value("--param")?;
                     let (k, v) = kv.split_once('=').ok_or("--param key=value")?;
@@ -184,14 +191,21 @@ impl Config {
             }
         }
         cfg.hub = normalize_hub(hub.as_deref().unwrap_or("http://127.0.0.1:8090"));
-        cfg.web_dir = web.or_else(find_web_dir).unwrap_or_else(|| PathBuf::from("web"));
-        cfg.wall_dir = match std::env::var("KINECT_WALL_DIR") {
-            Ok(d) if !d.is_empty() => PathBuf::from(d),
-            _ => {
-                let top = cfg.web_dir.parent().map(Path::to_path_buf).unwrap_or_default();
-                main_checkout(&top).join("web").join(".cache").join("wall")
+        let top = checkout_top();
+        let main = top.as_deref().map(main_checkout);
+        let env_dir = std::env::var("KINECT_WALL_DIR").ok().filter(|d| !d.is_empty()).map(PathBuf::from);
+        cfg.data_dir = data.or(env_dir).or_else(|| main.as_ref().map(|m| m.join("wall-bevy").join("data"))).unwrap_or_else(|| {
+            let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_default();
+            exe_dir.join("data")
+        });
+        // where the browser's dev server kept them (setup and projection in the main checkout, the
+        // show per checkout)
+        for d in [main.as_ref(), top.as_ref()].into_iter().flatten() {
+            let old = d.join("web").join(".cache").join("wall");
+            if !cfg.legacy_dirs.contains(&old) {
+                cfg.legacy_dirs.push(old);
             }
-        };
+        }
         if cfg.shots.is_some() && cfg.seconds.is_none() {
             cfg.seconds = Some(10.0);
         }
@@ -202,33 +216,18 @@ impl Config {
     pub fn hub_ws(&self) -> String {
         format!("{}/ws", self.hub.replacen("http", "ws", 1))
     }
-
-    /// The show of this checkout (web/.cache/wall/show.json).
-    pub fn show_file(&self) -> PathBuf {
-        self.web_dir.join(".cache").join("wall").join("show.json")
-    }
-
-    pub fn doc_file(&self, kind: &str) -> PathBuf {
-        if kind == "show" { self.show_file() } else { self.wall_dir.join(format!("{kind}.json")) }
-    }
-
-    /// The dev server this checkout runs (web/.cache/dev-server.json), if any.
-    pub fn dev_server(&self) -> Option<String> {
-        if let Some(d) = &self.dev {
-            return Some(d.clone());
-        }
-        let text = std::fs::read_to_string(self.web_dir.join(".cache").join("dev-server.json")).ok()?;
-        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-        v.get("url")?.as_str().map(|s| s.trim_end_matches('/').to_string())
-    }
 }
 
 const HELP: &str = "wall-bevy: die LED-Wand-Ausgabe als native App (Bevy)
 
-  wall-bevy                      Ausgabe auf dem LED-Bildschirm, spielt die Show
+  wall-bevy                      Ausgabe auf dem LED-Bildschirm, spielt die Show;
+                                 Steuerzentrale: http://127.0.0.1:8095/ (und im Netz)
   --hub 8091|host:port|URL       kinect-hub (Standard KINECT_HUB oder 127.0.0.1:8090)
-  --web DIR                      web/-Ordner des Checkouts (show.json, dev-server.json)
-  --dev URL                      Dev-Server für die Steuerzentrale (Standard: dev-server.json)
+  --data DIR                     Setup, Projektionen, Show (Standard KINECT_WALL_DIR, sonst
+                                 wall-bevy/data im Haupt-Checkout)
+  --control-port N               Port der Steuerzentrale (Standard 8095, 0: keine)
+  --control-bind IP              0.0.0.0: auch im Netz (Standard), 127.0.0.1: nur hier
+  --control-dir DIR              Dateien der Steuerzentrale aus DIR (zum Bearbeiten der Seite)
   --scene NAME                   nur diese Szene statt der Show (-p key=wert für Parameter)
   --windowed                     normales Fenster (Test); --monitor N|NAME Bildschirm
   --screen X,Y,B,H               der Bildschirm mit diesem Desktop-Rechteck (start-wand)
@@ -240,4 +239,4 @@ const HELP: &str = "wall-bevy: die LED-Wand-Ausgabe als native App (Bevy)
   --watch [DIR]                  Szenen beim Speichern neu bauen und austauschen (DIR: wall-bevy/)
   --new-scene NAME               neue Szene aus der Vorlage anlegen (scenes/NAME)
   --mute                         ohne Ton
-  --no-bus                       ohne Steuerzentrale";
+  --no-control                   ohne Steuerzentrale";

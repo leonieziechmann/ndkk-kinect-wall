@@ -19,11 +19,10 @@ use serde_json::{Value, json};
 
 use crate::audio::SoundQueue;
 use wall::audio::Audio;
-use crate::bus::{Bus, BusIn};
 use wall::canvas::Canvas;
 use crate::compositor::{Fit, OutputImage};
 use crate::config::Config;
-use crate::docs::Docs;
+use crate::control::{Control, ControlIn};
 use wall::gpu::{FULLSCREEN_WGSL, Gpu, TARGET_FORMAT, layout};
 use wall::hub::mono_ms;
 use wall::kinect::KinectData;
@@ -302,7 +301,6 @@ pub struct OutputState {
     setup_gen: u64,
     projection_raw: Value,
     projections: ProjectionDoc,
-    live_at: [f64; 3],
     registry: Vec<&'static SceneDef>,
     /// the scene libraries built anew while the output runs (scenes.rs)
     scene_updates: Receiver<crate::scenes::Update>,
@@ -337,8 +335,8 @@ pub struct OutputState {
     queued: Option<(Entry, Transition)>,
     errors: Vec<ErrorEntry>,
     title: String,
-    bus: Option<Bus>,
-    docs: Docs,
+    /// the control center (control/: its web server, the documents)
+    control: Control,
     readback: Readback,
     audio: Audio,
     // timing
@@ -382,6 +380,8 @@ pub struct OutputState {
     windowed: bool,
     /// the output's screen and window as the browser reports them (telemetry `screen`)
     screen: Value,
+    /// every screen (telemetry `monitors`: the control center picks the wall's)
+    monitors: Value,
     problem: String,
     problem_key: String,
     problem_since: f64,
@@ -405,27 +405,33 @@ fn new_state(cfg: Config) -> OutputState {
     for e in &scene_errors {
         warn!("{e}");
     }
-    let docs = Docs::start(["setup", "projection", "show"].iter().map(|k| (k.to_string(), cfg.doc_file(k))).collect());
-    let bus = if cfg.no_bus || cfg.shots.is_some() {
-        None
-    } else {
-        let c = cfg.clone();
-        Some(Bus::start(move || c.dev_server()))
-    };
+    // tests (--shots) keep the documents as they are and need no control center
+    let control = Control::start(crate::control::Options {
+        port: if cfg.no_control || cfg.shots.is_some() { 0 } else { cfg.control_port },
+        bind: cfg.control_bind,
+        data_dir: cfg.data_dir.clone(),
+        legacy: cfg.legacy_dirs.clone(),
+        page_dir: cfg.control_dir.clone(),
+        hub: cfg.hub.clone(),
+        // a test window (--windowed, --scene, --watch) must not pose as the show's output
+        announce: !cfg.windowed && cfg.scene.is_none() && cfg.watch.is_none(),
+        read_only: cfg.shots.is_some(),
+    });
+    control.set_catalog(crate::scenes::catalog(&registry));
+    let docs = control.docs();
     let mut setup = normalize_setup(&Value::Null);
     if let Some((w, h)) = cfg.led {
         setup.led_w = w;
         setup.led_h = h;
     }
     let now = mono_ms();
-    OutputState {
+    let mut st = OutputState {
         kinect: KinectData::new(cfg.hub_ws()),
         page_wall: WallMap::new(setup.clone(), None),
         setup,
         setup_gen: 0,
         projection_raw: Value::Null,
         projections: ProjectionDoc::default(),
-        live_at: [-1e9; 3],
         registry,
         scene_updates: crate::scenes::watch(seen),
         dev: cfg.watch.clone().map(crate::devbuild::start),
@@ -457,8 +463,7 @@ fn new_state(cfg: Config) -> OutputState {
         queued: None,
         errors: Vec::new(),
         title: String::new(),
-        bus,
-        docs,
+        control,
         readback: Readback::new(),
         audio: Audio::new(cfg.mute),
         last_frame: now,
@@ -490,6 +495,7 @@ fn new_state(cfg: Config) -> OutputState {
         warmed: false,
         windowed: cfg.windowed,
         screen: json!({ "w": 0, "h": 0, "left": Value::Null, "top": Value::Null, "dpr": 1, "inner": [0, 0], "fullscreen": false }),
+        monitors: json!([]),
         problem: String::new(),
         problem_key: String::new(),
         problem_since: 0.0,
@@ -499,7 +505,11 @@ fn new_state(cfg: Config) -> OutputState {
         out: None,
         kgpu: None,
         cfg,
+    };
+    for kind in ["setup", "projection", "show"] {
+        st.apply_doc(kind, docs.get(kind).unwrap_or(&Value::Null), now);
     }
+    st
 }
 
 fn now_epoch_ms() -> u64 {
@@ -790,7 +800,7 @@ impl OutputState {
 }
 
 fn remember_file(cfg: &Config) -> std::path::PathBuf {
-    cfg.web_dir.join(".cache").join("wall").join("bevy-current.txt")
+    cfg.data_dir.join("bevy-current.txt")
 }
 
 fn remember_current(cfg: &Config, id: &str) {
@@ -816,7 +826,7 @@ fn panic_text(p: &Box<dyn std::any::Any + Send>) -> String {
 pub fn init_output(world: &mut World) {
     let cfg = world.resource::<Config>().clone();
     // the scenes' localStorage (tests keep theirs in memory)
-    wall::store::init(cfg.shots.is_none().then(|| cfg.web_dir.join(".cache").join("wall").join("bevy-store.json")));
+    wall::store::init(cfg.shots.is_none().then(|| cfg.data_dir.join("bevy-store.json")));
     world.insert_non_send(new_state(cfg));
 }
 
@@ -828,6 +838,7 @@ fn output_frame(
     mut sounds: ResMut<SoundQueue>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     monitors: Query<(Entity, &bevy::window::Monitor)>,
+    primary: Query<Entity, With<bevy::window::PrimaryMonitor>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(mut st) = state else {
@@ -861,6 +872,17 @@ fn output_frame(
         st.windowed = w.mode == bevy::window::WindowMode::Windowed;
         if st.frame_no.is_multiple_of(30) {
             st.screen = screen_info(w, &monitors);
+            st.monitors = monitors
+                .iter()
+                .map(|(e, m)| {
+                    json!({
+                        "name": m.name, "left": m.physical_position.x, "top": m.physical_position.y,
+                        "width": m.physical_width, "height": m.physical_height, "scale": m.scale_factor,
+                        "primary": primary.contains(e),
+                        "hz": m.refresh_rate_millihertz.map(|r| (f64::from(r) / 1000.0).round()),
+                    })
+                })
+                .collect();
         }
     }
 
@@ -885,9 +907,8 @@ fn output_frame(
     }
 
     // ----- documents and commands -----
-    st.take_docs(now);
     st.take_scene_updates(now);
-    st.take_bus(now, &mut exit);
+    st.take_control(now);
 
     // ----- the hub's messages (every display frame) -----
     {
@@ -1062,6 +1083,7 @@ impl OutputState {
             match e {
                 crate::devbuild::DevEvent::Started(files, saved) => {
                     info!("baue: {}", files.join(", "));
+                    self.control.note(&format!("baue: {}", files.join(", ")), false);
                     self.dev_saved = saved;
                 }
                 crate::devbuild::DevEvent::Done { ok: true, secs, .. } => info!("gebaut in {secs:.1} s"),
@@ -1069,6 +1091,7 @@ impl OutputState {
                     warn!("Build fehlgeschlagen ({secs:.1} s):\n{errors}");
                     let short: Vec<&str> = errors.lines().filter(|l| !l.trim().is_empty()).take(12).collect();
                     self.push_error("Build", &short.join("\n"));
+                    self.control.note(&format!("Build fehlgeschlagen ({secs:.1} s) – Details unter Status"), true);
                     self.dev_saved = None;
                 }
                 crate::devbuild::DevEvent::Restart(files) => {
@@ -1077,6 +1100,7 @@ impl OutputState {
                     let msg = format!("Framework oder Ausgabe geändert ({}{more}): wall-bevy neu bauen und starten, Szenen werden bis dahin nicht gebaut", shown.join(", "));
                     warn!("{msg}");
                     self.push_error("Build", &msg);
+                    self.control.note(&msg, true);
                 }
             }
         }
@@ -1094,6 +1118,7 @@ impl OutputState {
             let saved = self.dev_saved.take();
             let since = saved.and_then(|t| t.elapsed().ok()).map(|d| format!(", {:.1} s nach dem Speichern", d.as_secs_f64())).unwrap_or_default();
             info!("{} neu geladen aus {file} ({:.0} ms{since})", names.join(", "), u.ms);
+            self.control.note(&format!("{} neu geladen{since}", names.join(", ")), false);
             for d in defs {
                 match self.registry.iter_mut().find(|r| r.name == d.name) {
                     Some(r) => {
@@ -1109,6 +1134,7 @@ impl OutputState {
                     }
                 }
             }
+            self.control.set_catalog(crate::scenes::catalog(&self.registry));
             let running = self.current.as_ref().filter(|c| names.contains(&c.def.name)).map(|c| (c.def.name, c.overrides.clone()));
             if let Some((name, overrides)) = running
                 && let Some(def) = self.find(name)
@@ -1128,70 +1154,45 @@ impl OutputState {
         }
     }
 
-    fn take_docs(&mut self, now: f64) {
-        while let Ok((kind, doc)) = self.docs.changed.try_recv() {
-            match kind.as_str() {
-                // the control center sends every change at once; the file follows a moment later
-                // (an older save must not undo a newer live change)
-                "setup" if now - self.live_at[0] > 3000.0 => {
-                    let mut s = normalize_setup(&doc);
-                    if let Some((w, h)) = self.cfg.led {
-                        s.led_w = w;
-                        s.led_h = h;
-                    }
-                    self.setup = s;
-                    self.apply_wall();
+    /// A document of the control center (at the start, and whenever it changes).
+    fn apply_doc(&mut self, kind: &str, doc: &Value, now: f64) {
+        match kind {
+            "setup" => {
+                let mut s = normalize_setup(doc);
+                if let Some((w, h)) = self.cfg.led {
+                    s.led_w = w;
+                    s.led_h = h;
                 }
-                "projection" if now - self.live_at[1] > 3000.0 => {
-                    self.projection_raw = doc;
-                    self.apply_wall();
-                }
-                "show" if now - self.live_at[2] > 3000.0 => {
-                    let first = self.entry.is_none() && self.current.is_none();
-                    self.set_show(&doc, now);
-                    if first && self.warmed {
-                        self.start_show(now);
-                    }
-                }
-                _ => {}
+                self.setup = s;
+                self.apply_wall();
             }
+            "projection" => {
+                self.projection_raw = doc.clone();
+                self.apply_wall();
+            }
+            "show" => {
+                let first = self.entry.is_none() && self.current.is_none();
+                self.set_show(doc, now);
+                if first && self.warmed {
+                    self.start_show(now);
+                }
+            }
+            _ => {}
         }
     }
 
-    fn take_bus(&mut self, now: f64, exit: &mut MessageWriter<AppExit>) {
-        let Some(bus) = &self.bus else { return };
-        let mut msgs = Vec::new();
-        while let Ok(m) = bus.incoming.try_recv() {
-            msgs.push(m);
-        }
+    /// What the control centers said.
+    fn take_control(&mut self, now: f64) {
+        let msgs: Vec<ControlIn> = self.control.incoming.try_iter().collect();
         for m in msgs {
             match m {
-                BusIn::Connected(url) => {
-                    info!("Steuerzentrale: verbunden mit {url}");
-                    if let Some(b) = self.bus.as_mut() {
-                        b.connected = true;
-                    }
-                    self.telemetry(now);
-                }
-                BusIn::Disconnected => {
-                    if let Some(b) = self.bus.as_mut() {
-                        b.connected = false;
-                    }
-                }
-                BusIn::File(kind) => {
-                    let i = ["setup", "projection", "show"].iter().position(|k| *k == kind);
-                    if let Some(i) = i
-                        && now - self.live_at[i] > 3000.0
-                    {
-                        self.docs.reload(&kind);
-                    }
-                }
-                BusIn::Msg(msg) => self.command(&msg.kind, &msg.data, now, exit),
+                ControlIn::Doc(kind, doc) => self.apply_doc(&kind, &doc, now),
+                ControlIn::Cmd(kind, data) => self.command(&kind, &data, now),
             }
         }
     }
 
-    fn command(&mut self, kind: &str, d: &Value, now: f64, exit: &mut MessageWriter<AppExit>) {
+    fn command(&mut self, kind: &str, d: &Value, now: f64) {
         match kind {
             "play" => {
                 let entry = match d.get("scene").and_then(Value::as_str) {
@@ -1206,31 +1207,6 @@ impl OutputState {
             "next" => self.step(1, now),
             "prev" => self.step(-1, now),
             "stop" => self.play_entry(None, Transition::Cut, now),
-            "show" => {
-                self.live_at[2] = now;
-                if let Some(s) = d.get("show") {
-                    self.set_show(&s.clone(), now);
-                }
-            }
-            "setup" => {
-                if let Some(s) = d.get("setup") {
-                    self.live_at[0] = now;
-                    let mut s = normalize_setup(s);
-                    if let Some((w, h)) = self.cfg.led {
-                        s.led_w = w;
-                        s.led_h = h;
-                    }
-                    self.setup = s;
-                    self.apply_wall();
-                }
-            }
-            "projection" => {
-                if let Some(p) = d.get("projection") {
-                    self.live_at[1] = now;
-                    self.projection_raw = p.clone();
-                    self.apply_wall();
-                }
-            }
             "blackout" => {
                 self.blackout = d.get("on").and_then(Value::as_bool).unwrap_or(false);
                 let fade = d.get("fade").and_then(Value::as_f64).unwrap_or(0.5);
@@ -1251,16 +1227,6 @@ impl OutputState {
                 self.telemetry(now);
             }
             "ping" => self.telemetry(now),
-            // the browser reloads its page; here the documents are read again (the scene keeps
-            // running: no black frame on the wall)
-            "reload" => {
-                for k in ["setup", "projection", "show"] {
-                    self.docs.reload(k);
-                }
-            }
-            "close" => {
-                exit.write(AppExit::Success);
-            }
             _ => {}
         }
     }
@@ -1726,10 +1692,8 @@ impl OutputState {
             self.push_error("Ausgabe", &e);
         }
         self.readback.after_submit(gpu);
-        while let Ok((url, w, h)) = self.readback.previews.try_recv() {
-            if let Some(b) = &self.bus {
-                b.send("frame", json!({ "jpeg": url, "w": w, "h": h, "blackout": self.blackout }), Some("control"));
-            }
+        while let Ok(jpeg) = self.readback.previews.try_recv() {
+            self.control.frame(jpeg);
         }
         // the window shows it
         image.view = Some(led_view);
@@ -1828,7 +1792,9 @@ impl OutputState {
             self.problem_logged = true;
         }
         self.problem = problem.clone();
-        let Some(bus) = &self.bus else { return };
+        if !self.control.has_clients() {
+            return;
+        }
         let sw = self.current.as_ref().map(|c| &c.wall).unwrap_or(&self.page_wall);
         let elapsed = (now - self.started_at) / 1000.0;
         let persons: Vec<Value> = sw
@@ -1887,8 +1853,9 @@ impl OutputState {
             "led": [self.setup.led_w, self.setup.led_h],
             "native": { "engine": "bevy", "late": self.late, "refreshHz": (1000.0 / refresh_interval(&self.intervals)).round(), "playDelayMs": k.play_delay().round() },
             "screen": self.screen,
+            "monitors": self.monitors,
         });
-        bus.send("telemetry", data, Some("control"));
+        self.control.telemetry(data);
     }
 
     /// Test mode: what plays, for the frame logs ("name +setup +fade +first").

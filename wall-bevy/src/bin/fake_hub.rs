@@ -253,8 +253,47 @@ fn lut_payload() -> Vec<u8> {
 
 type Shared = Arc<Mutex<Option<Arc<Frame>>>>;
 
+/// GET /api/frame/points as the hub answers it: x, y, z (mm, i16) per pixel of the latest frame.
+fn points(mut stream: TcpStream, frame: &Shared) {
+    use std::io::{Read, Write};
+    // the request first (closing with it unread would reset the connection)
+    let mut req = Vec::new();
+    let mut buf = [0u8; 1024];
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+    while !req.windows(4).any(|w| w == b"\r\n\r\n") && req.len() < 16384 {
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => req.extend_from_slice(buf.get(..n).unwrap_or_default()),
+        }
+    }
+    let body: Vec<u8> = match frame.lock().ok().and_then(|f| f.clone()) {
+        Some(f) => {
+            let mut b = Vec::with_capacity(N * 6);
+            for (i, z) in f.depth.iter().enumerate() {
+                let (u, v) = ((i % W) as f32, (i / W) as f32);
+                let z = f32::from(*z);
+                for c in [(u - CX) / F * z, (v - CY) / F * z, z] {
+                    b.extend_from_slice(&(c.round().clamp(-32768.0, 32767.0) as i16).to_le_bytes());
+                }
+            }
+            b
+        }
+        None => Vec::new(),
+    };
+    let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(&body);
+}
+
 fn client(stream: TcpStream, frame: Shared, jitter: f32) {
     stream.set_nodelay(true).ok();
+    // a plain HTTP request (the control center's floor plan) instead of the WebSocket
+    let mut first = [0u8; 32];
+    if let Ok(n) = stream.peek(&mut first)
+        && first.get(..n).is_some_and(|b| b.starts_with(b"GET /api/frame/points"))
+    {
+        return points(stream, &frame);
+    }
     let Ok(mut ws) = tungstenite::accept(stream) else { return };
     ws.get_ref().set_read_timeout(Some(Duration::from_millis(2))).ok();
     let names = ["depth", "depth_raw", "ir", "points", "lut", "meta", "status", "poses", "persons", "persons_live"];

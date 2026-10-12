@@ -171,18 +171,45 @@ fn watcher(seen: &mut HashMap<PathBuf, (SystemTime, u64)>, tx: &Sender<Update>) 
 
 /// Every scene's declaration as the browser scenes write theirs (wall-bevy --list-scenes): to
 /// check a port against its browser scene.
-pub fn declarations(defs: &[&'static SceneDef]) -> String {
+/// Every scene as the control center lists it: name, title, params (in their order, with ranges and
+/// options), what it asks of the projection, its persons options, streams, render cap.
+pub fn catalog(defs: &[&'static SceneDef]) -> serde_json::Value {
+    use serde_json::json;
+    use wall::params::Kind;
     let list: Vec<serde_json::Value> = defs
         .iter()
         .map(|d| {
             let specs = (d.params)();
-            let params = wall::params::Params::resolve(std::sync::Arc::new(specs.clone()), &serde_json::json!({}));
-            let persons = (d.persons)(&params).map(|o| serde_json::json!({ "delay": o.delay, "live": o.live, "skeleton": o.skeleton }));
-            serde_json::json!({
+            let params = wall::params::Params::resolve(std::sync::Arc::new(specs.clone()), &json!({}));
+            let persons = (d.persons)(&params).map(|o| json!({ "delay": o.delay, "live": o.live, "skeleton": o.skeleton }));
+            let list: Vec<serde_json::Value> = specs
+                .iter()
+                .map(|s| {
+                    let mut o = json!({ "key": s.key, "value": s.default, "label": s.label });
+                    match &s.kind {
+                        Kind::Number { min, max, step } => {
+                            o["min"] = json!(min);
+                            o["max"] = json!(max);
+                            o["step"] = json!(step);
+                        }
+                        Kind::Select(opts) => {
+                            // labels of their own: { label: value }, else the values
+                            let plain = opts.iter().all(|(l, v)| v.as_str() == Some(l.as_str()));
+                            o["options"] = if plain {
+                                serde_json::Value::Array(opts.iter().map(|(_, v)| v.clone()).collect())
+                            } else {
+                                serde_json::Value::Object(opts.iter().map(|(l, v)| (l.clone(), v.clone())).collect())
+                            };
+                        }
+                        Kind::Bool | Kind::Color | Kind::Text => {}
+                    }
+                    o
+                })
+                .collect();
+            json!({
                 "name": d.name,
                 "title": d.title,
-                "params": serde_json::Value::Object(specs.iter().map(|s| (s.key.clone(), s.declaration())).collect()),
-                "order": specs.iter().map(|s| s.key.clone()).collect::<Vec<_>>(),
+                "params": list,
                 "projection": (d.projection)(),
                 "persons": persons,
                 "streams": (d.streams)(&params),
@@ -190,5 +217,10 @@ pub fn declarations(defs: &[&'static SceneDef]) -> String {
             })
         })
         .collect();
-    serde_json::to_string_pretty(&list).unwrap_or_default()
+    serde_json::Value::Array(list)
+}
+
+/// The catalog as text (--list-scenes).
+pub fn declarations(defs: &[&'static SceneDef]) -> String {
+    serde_json::to_string_pretty(&catalog(defs)).unwrap_or_default()
 }

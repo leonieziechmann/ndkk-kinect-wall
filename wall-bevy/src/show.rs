@@ -1,5 +1,5 @@
-//! The show (port of web/lib/wall-show.js): a playlist of scenes with their own param values,
-//! edited in the control center, saved in web/.cache/wall/show.json.
+//! The show (port of the browser's wall-show.js): a playlist of scenes with their own param values,
+//! edited in the control center, saved in show.json of the data folder (control/store.rs).
 
 use serde_json::{Value, json};
 

@@ -35,8 +35,8 @@ pub struct Readback {
     to_encoder: Sender<(Purpose, u32, u32, Vec<u8>)>,
     /// pictures handed to the encoder thread and not written yet
     encoding: Arc<AtomicUsize>,
-    /// finished previews (data URL, w, h)
-    pub previews: Receiver<(String, u32, u32)>,
+    /// finished previews (JPEG)
+    pub previews: Receiver<Vec<u8>>,
 }
 
 const SMALL_WGSL: &str = r"
@@ -185,22 +185,20 @@ impl Readback {
     }
 }
 
-fn encoder(rx: Receiver<(Purpose, u32, u32, Vec<u8>)>, previews: Sender<(String, u32, u32)>, encoding: Arc<AtomicUsize>) {
+fn encoder(rx: Receiver<(Purpose, u32, u32, Vec<u8>)>, previews: Sender<Vec<u8>>, encoding: Arc<AtomicUsize>) {
     while let Ok((purpose, w, h, rgba)) = rx.recv() {
         encode(purpose, w, h, &rgba, &previews);
         encoding.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
-fn encode(purpose: Purpose, w: u32, h: u32, rgba: &[u8], previews: &Sender<(String, u32, u32)>) {
-    use base64::Engine;
+fn encode(purpose: Purpose, w: u32, h: u32, rgba: &[u8], previews: &Sender<Vec<u8>>) {
     match purpose {
         Purpose::Preview => {
             let mut jpeg = Vec::new();
             let enc = jpeg_encoder::Encoder::new(&mut jpeg, 72);
             if enc.encode(rgba, w as u16, h as u16, jpeg_encoder::ColorType::Rgba).is_ok() {
-                let url = format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(&jpeg));
-                let _ = previews.try_send((url, w, h));
+                let _ = previews.try_send(jpeg);
             }
         }
         Purpose::Shot(path) => {

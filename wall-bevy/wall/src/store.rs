@@ -1,6 +1,6 @@
-//! A small persistent key-value store for the scenes: the browser's localStorage (per dev server,
-//! i.e. per checkout). Kept in web/.cache/wall/bevy-store.json; read once, written by a thread of
-//! its own a moment after a change (a scene's frame never waits for the disk).
+//! A small persistent key-value store for the scenes (what localStorage was in the browser). Kept
+//! in bevy-store.json of the output's data folder; read once, written by a thread of its own a
+//! moment after a change (a scene's frame never waits for the disk).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

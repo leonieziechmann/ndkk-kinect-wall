@@ -36,7 +36,7 @@ neg_cmp_op_on_partial_ord = "allow"
 name = "wall-bevy"
 version = "0.1.0"
 edition = "2024"
-description = "The LED wall output (web/ /wall/) as a native Bevy app: the show, the scenes, the wall core"
+description = "The LED wall output as a native Bevy app: the show, the scenes, the wall core, the control center"
 publish = false
 
 [[bin]]
@@ -72,7 +72,7 @@ bytemuck.workspace = true
 tiny-skia.workspace = true
 png.workspace = true
 jpeg-encoder = "0.6"
-base64 = "0.22"
+httparse = "1"
 libloading = "0.8"
 
 # Windows: process priority and power throttling (platform.rs); already in the tree via winit

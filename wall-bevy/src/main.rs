@@ -1,15 +1,15 @@
-//! wall-bevy: the LED wall output (web/ /wall/) as a native Bevy app. See README.md.
+//! wall-bevy: the LED wall output as a native Bevy app, with its control center built in. See
+//! README.md.
 //!
 //! The main world runs the show: the hub client (threads), the persons, the wall mapping and the
 //! scenes, which render with wgpu into their own textures (as they did with WebGPU in the
 //! browser). The render world only puts the finished LED image into the window (compositor.rs).
 
 mod audio;
-mod bus;
 mod compositor;
 mod config;
+mod control;
 mod devbuild;
-mod docs;
 mod newscene;
 mod output;
 mod patterns;
