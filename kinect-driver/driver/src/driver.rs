@@ -1174,19 +1174,22 @@ mod tests {
     fn restarts_a_stalled_stream() {
         let faults = Faults { stall_after_frames: Some(5), ..Default::default() };
         let wd = Watchdog { first_frame: Duration::from_secs(5), frame_gap: Duration::from_millis(400) };
-        let (d, backend) = mock_driver(faults, wd);
-        // the stream stalls after 5 frames, the watchdog restarts it, frames come again
+        let (d, _) = mock_driver(faults, wd);
+        // the stream stalls after 5 frames: the watchdog must notice and restart it ...
         let end = Instant::now() + Duration::from_secs(30);
         let mut log = Vec::new();
-        while Instant::now() < end && backend.frames_sent() < 5 {
-            let (_, l) = frames_within(&d, 1, Duration::from_millis(200));
-            log.extend(l);
+        while Instant::now() < end && d.status().restarts == 0 {
+            log.extend(frames_within(&d, usize::MAX, Duration::from_millis(100)).1);
         }
+        log.extend(frames_within(&d, usize::MAX, Duration::from_millis(200)).1);
+        assert!(d.status().restarts >= 1, "{log:?}");
+        // (on a loaded machine the stall can fall on the first frame of a session, which reads
+        // "no frame ... after the start")
+        assert!(log.iter().any(|l| l.contains("frames stopped") || l.contains("no frame")), "{log:?}");
+        // ... and then frames come again
         let (got, l) = frames_within(&d, 3, Duration::from_secs(20));
         log.extend(l);
         assert_eq!(got, 3, "{log:?}");
-        assert!(log.iter().any(|l| l.contains("frames stopped")), "{log:?}");
-        assert!(d.status().restarts >= 1);
     }
 
     #[test]

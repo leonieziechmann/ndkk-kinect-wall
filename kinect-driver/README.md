@@ -17,7 +17,7 @@ Ein schlanker Kinect-v2-Treiber in Rust, der nicht abstürzt: USB direkt über l
 
 **IR ohne Überbelichtung (HDR).** Statt die drei Frequenzen zu addieren und bei 65535 abzuschneiden, ist das IR der gewichtete Mittelwert der brauchbaren Frequenzen: sättigt eine, tragen die anderen (rekonstruierte schwächer gewichtet). Nur wo alle sättigen, wird aus der Umgebung gefüllt, nie dunkler als der Pegel, bei dem dieser Sensor sättigt. Die Werte gehen über 65535 hinaus; die Stufe `IrToneMap` bringt sie in einen Ausgabebereich:
 - `hub`: bis 3000 unverändert, darüber weich komprimiert (Reinhard) statt abgeschnitten (für die Weiß-bei-6000-Darstellung des Hubs)
-- `even`: gleichmäßigere Belichtung: der Abfall mit der Entfernung wird herausgerechnet (auf 2 m bezogen), dann wie `hub`
+- `even`: gleichmäßigere Belichtung: der Abfall mit der Entfernung wird herausgerechnet (auf 2,5 m bezogen; Nahes höchstens 4-fach dunkler, Fernes höchstens 2,5-fach heller, damit das Rauschen hinten nicht aufblüht), dann wie `hub`
 
 **Kompatibler Modus (`compat`).** Das Verfahren von libfreenect2 bzw. `fn2/fast_depth.cpp` mit denselben Ergebnissen (gegen fast_depth geprüft mit `tools/fastdepth_ref.cpp`); die Flags bleiben dort leer.
 
@@ -168,4 +168,5 @@ cargo run --release -p kinect-driver --example eval_sim                       # 
 - `driver/src/usb/`: Trait-Grenze, `libusb.rs` (echtes Gerät), `mock.rs` (simuliertes Gerät).
 - `driver/src/protocol/`, `device.rs`: Befehle, Antworten, Paket-Zusammenbau, Startsequenz (wie libfreenect2, aber nachsichtig).
 - `driver/src/driver.rs`: Supervisor (Quellen, Watchdog, Eskalation, Ereignisse).
-- `driver/src/sim/`: Simulator mit Szenen (`room`, `near`, `far`, `ramp`, `sun`, `hall`, `flat`) und Auswertung.
+- `driver/src/sim/`: Simulator mit Szenen (`room`, `near`, `far`, `ramp`, `sun`, `hall`, `flat`, `visitor`) und Auswertung.
+- IR-Vergleichsbilder (libfreenect2 / `hub` / `even`, so wie der Hub sie zeigt): `cargo run --release -p kinect-driver --example ir_demo -- ORDNER visitor near room hall`.

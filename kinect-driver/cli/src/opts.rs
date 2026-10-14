@@ -19,7 +19,8 @@ pub enum IrMode {
     /// for kinect-hub (white at 6000): unchanged up to 3000, highlights compressed instead of
     /// clipped
     Hub,
-    /// even exposure: the falloff with distance cancelled (to 2 m), then like `Hub`
+    /// even exposure: the falloff with distance cancelled (relative to 2.5 m, within 1/4..2.5x),
+    /// then like `Hub`
     Even,
 }
 

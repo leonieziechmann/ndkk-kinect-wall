@@ -122,7 +122,7 @@ impl Scene {
     }
 
     /// One of the built-in scenes at time `t` (seconds; objects move), or `None` for an unknown
-    /// name. Names: `room`, `near`, `far`, `ramp`, `sun`, `hall`, `flat`.
+    /// name. Names: `room`, `near`, `far`, `ramp`, `sun`, `hall`, `flat`, `visitor`.
     pub fn preset(name: &str, t: f32) -> Option<Scene> {
         Some(match name {
             "room" => room(t, 150.0),
@@ -132,12 +132,13 @@ impl Scene {
             "ramp" => ramp(),
             "hall" => hall(t),
             "flat" => flat(2000.0),
+            "visitor" => visitor(t),
             _ => return None,
         })
     }
 
     /// Names of the built-in scenes.
-    pub const PRESETS: [&'static str; 7] = ["room", "near", "far", "ramp", "sun", "hall", "flat"];
+    pub const PRESETS: [&'static str; 8] = ["room", "near", "far", "ramp", "sun", "hall", "flat", "visitor"];
 }
 
 fn person(x: f32, z: f32, floor_y: f32, albedo: f32) -> Vec<Object> {
@@ -173,6 +174,18 @@ fn room(t: f32, ambient: f32) -> Scene {
     objects.push(Object::new(Shape::Cuboid { min: [600.0, 250.0, 1300.0], max: [1500.0, 300.0, 2100.0] }, 0.6));
     objects.push(Object::new(Shape::Cuboid { min: [-2500.0, 300.0, 3900.0], max: [-600.0, 1000.0, 4500.0] }, 0.06));
     Scene { objects, ambient, brightness: 16000.0 }
+}
+
+/// Someone right in front of the sensor (0.95 m, reaching out to 0.55 m), others at 2.6 and
+/// 4.2 m: the exhibition case where the one in front is far brighter than the rest.
+fn visitor(t: f32) -> Scene {
+    let floor = 1200.0;
+    let mut objects = walls(floor, 5500.0, 3000.0, -1600.0);
+    let sway = (t * 0.7).sin() * 60.0;
+    objects.extend(person(-150.0 + sway, 950.0, floor, 0.55));
+    objects.extend(person(1100.0, 2600.0, floor, 0.45));
+    objects.extend(person(-1300.0, 4200.0 + 200.0 * (t * 0.4).sin(), floor, 0.35));
+    Scene { objects, ambient: 150.0, brightness: 16000.0 }
 }
 
 /// A hand right in front of the sensor (saturates), a forearm, a wall at 1.2 m.

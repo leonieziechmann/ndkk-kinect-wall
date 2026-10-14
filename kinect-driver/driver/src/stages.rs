@@ -54,15 +54,18 @@ impl ToneCurve {
 
 /// Infrared tone mapping: makes the (HDR) infrared fit an output range without hard clipping,
 /// optionally evening out the exposure: `distance_reference_mm` multiplies every pixel by
-/// (depth / reference)^2, which cancels the falloff of the Kinect's own light with distance (a
-/// person at 4 m then looks like one at 2 m); `local` divides by the local average brightness.
+/// (distance / reference)^2, which cancels the falloff of the Kinect's own light with distance
+/// (a person at 4 m then looks like one at 2.5 m); `local` divides by the local average brightness.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IrToneMap {
     /// the curve applied last
     pub curve: ToneCurve,
-    /// cancel the 1/d^2 falloff relative to this distance (where there is no depth, the depth
-    /// around is used)
+    /// cancel the 1/r^2 falloff relative to this distance (r along the ray; where there is no
+    /// depth, the depth around is used)
     pub distance_reference_mm: Option<f32>,
+    /// the distance compensation multiplies by at least / at most this much (it would otherwise
+    /// blow up the noise of far, dark areas)
+    pub distance_limits: (f32, f32),
     /// local adaptation: (radius in pixels, strength 0..1)
     pub local: Option<(usize, f32)>,
 }
@@ -70,18 +73,20 @@ pub struct IrToneMap {
 impl IrToneMap {
     /// libfreenect2's behavior: clip at 65535.
     pub fn clip() -> IrToneMap {
-        IrToneMap { curve: ToneCurve::Clip { white: 65535.0 }, distance_reference_mm: None, local: None }
+        IrToneMap { curve: ToneCurve::Clip { white: 65535.0 }, distance_reference_mm: None, distance_limits: (0.25, 4.0), local: None }
     }
 
     /// For kinect-hub's infrared stream (white at 6000): unchanged up to 3000, highlights rolled
     /// off instead of clipped.
     pub fn hub() -> IrToneMap {
-        IrToneMap { curve: ToneCurve::Rolloff { knee: 3000.0, white: 6000.0 }, distance_reference_mm: None, local: None }
+        IrToneMap { curve: ToneCurve::Rolloff { knee: 3000.0, white: 6000.0 }, distance_reference_mm: None, distance_limits: (0.25, 4.0), local: None }
     }
 
-    /// Even exposure: distance compensated to 2 m, then like [`IrToneMap::hub`].
+    /// Even exposure: the falloff with distance cancelled relative to 2.5 m (what is nearer gets
+    /// at most 4x darker, what is farther at most 2.5x brighter, so far noise stays down), then
+    /// like [`IrToneMap::hub`].
     pub fn even() -> IrToneMap {
-        IrToneMap { distance_reference_mm: Some(2000.0), ..IrToneMap::hub() }
+        IrToneMap { distance_reference_mm: Some(2500.0), distance_limits: (0.25, 2.5), ..IrToneMap::hub() }
     }
 }
 
@@ -96,15 +101,21 @@ impl Stage for IrToneMap {
         }
         if let Some(r) = self.distance_reference_mm.filter(|r| *r > 0.0)
             && frame.depth.len() == PIXELS
+            && frame.depth.iter().any(|d| *d > 0.0)
         {
-            let weights: Vec<f32> = frame.depth.iter().map(|d| if *d > 0.0 { 1.0 } else { 0.0 }).collect();
-            if weights.iter().any(|w| *w > 0.0) {
-                let filled = push_pull(&frame.depth, &weights, WIDTH, HEIGHT);
-                let inv = 1.0 / (r * r);
-                for (v, d) in frame.ir.iter_mut().zip(filled) {
-                    // never darken what is nearer than the reference by more than 4x
-                    *v *= (d * d * inv).max(0.25);
-                }
+            let filled = depth_for_gain(&frame.depth);
+            let inv = 1.0 / (r * r);
+            let (lo, hi) = self.distance_limits;
+            let (lo, hi) = (lo.max(0.0), hi.max(lo.max(0.0)));
+            let rays = &frame.tables.rays;
+            let has_rays = rays.len() == PIXELS;
+            for (i, (v, z)) in frame.ir.iter_mut().zip(filled).enumerate() {
+                // squared distance along the ray: z^2 (1 + x^2 + y^2) in ray units
+                let k = match rays.get(i).filter(|_| has_rays) {
+                    Some(ray) => 1.0 + ray[0] * ray[0] + ray[1] * ray[1],
+                    None => 1.0,
+                };
+                *v *= (z * z * k * inv).clamp(lo, hi);
             }
         }
         if let Some((radius, strength)) = self.local.filter(|(r, s)| *r > 0 && *s > 0.0) {
@@ -116,6 +127,78 @@ impl Stage for IrToneMap {
         }
         Ok(())
     }
+}
+
+/// The distance each pixel's compensation uses: a robust, smooth depth map (the median of the
+/// depths around, at half resolution: a stray wrong depth or a hole in dark clothes takes the
+/// depth of what is around it instead of making a blotch), but a pixel's own depth where it
+/// agrees with that (so object edges stay sharp). Where nothing is measured nearby, the smooth
+/// fill.
+#[allow(clippy::indexing_slicing)] // c is a fixed array of four
+fn depth_for_gain(depth: &[f32]) -> Vec<f32> {
+    let (w, h) = (WIDTH, HEIGHT);
+    let (hw, hh) = (w / 2, h / 2);
+    if depth.len() < w * h {
+        return depth.to_vec();
+    }
+    // half resolution: the mean of the measured pixels of each 2 x 2 block
+    let mut half = vec![0f32; hw * hh];
+    for (by, hrow) in half.chunks_exact_mut(hw).enumerate() {
+        for (bx, v) in hrow.iter_mut().enumerate() {
+            let (mut sum, mut n) = (0f32, 0f32);
+            for (dy, dx) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+                if let Some(&d) = depth.get((2 * by + dy) * w + 2 * bx + dx)
+                    && d > 0.0
+                {
+                    sum += d;
+                    n += 1.0;
+                }
+            }
+            *v = if n > 0.0 { sum / n } else { 0.0 };
+        }
+    }
+    // the median of the measured values in a 5 x 5 window (10 x 10 pixels)
+    let mut med = vec![0f32; hw * hh];
+    let mut window: Vec<f32> = Vec::with_capacity(25);
+    for y in 0..hh {
+        for x in 0..hw {
+            window.clear();
+            for yy in y.saturating_sub(2)..=(y + 2).min(hh - 1) {
+                let Some(row) = half.get(yy * hw..(yy + 1) * hw) else { continue };
+                let Some(part) = row.get(x.saturating_sub(2)..=(x + 2).min(hw - 1)) else { continue };
+                window.extend(part.iter().copied().filter(|v| *v > 0.0));
+            }
+            if window.len() >= 4 {
+                let k = window.len() / 2;
+                let (_, m, _) = window.select_nth_unstable_by(k, f32::total_cmp);
+                if let Some(o) = med.get_mut(y * hw + x) {
+                    *o = *m;
+                }
+            }
+        }
+    }
+    let weights: Vec<f32> = med.iter().map(|v| if *v > 0.0 { 1.0 } else { 0.0 }).collect();
+    let smooth = if weights.iter().any(|v| *v > 0.0) { push_pull(&med, &weights, hw, hh) } else { med };
+    // back to full resolution (bilinear); a pixel's own depth where it agrees
+    let at = |x: usize, y: usize| smooth.get(y.min(hh - 1) * hw + x.min(hw - 1)).copied().unwrap_or(0.0);
+    let mut out = vec![0f32; w * h];
+    for (y, orow) in out.chunks_exact_mut(w).enumerate() {
+        let fy = ((y as f32 + 0.5) * 0.5 - 0.5).max(0.0);
+        let (y0, ty) = (fy as usize, fy.fract());
+        for (x, o) in orow.iter_mut().enumerate() {
+            let fx = ((x as f32 + 0.5) * 0.5 - 0.5).max(0.0);
+            let (x0, tx) = (fx as usize, fx.fract());
+            let c = [at(x0, y0), at(x0 + 1, y0), at(x0, y0 + 1), at(x0 + 1, y0 + 1)];
+            let top = c[0] + (c[1] - c[0]) * tx;
+            let bottom = c[2] + (c[3] - c[2]) * tx;
+            let s = top + (bottom - top) * ty;
+            let d = depth.get(y * w + x).copied().unwrap_or(0.0);
+            // its own depth if it fits one of the surfaces around (at an edge, either side)
+            let fits = c.iter().any(|v| (d - v).abs() <= 0.2 * v);
+            *o = if d > 0.0 && fits { d } else { s };
+        }
+    }
+    out
 }
 
 /// Divides by the local (box) average in the log domain, keeping the global average.
@@ -270,6 +353,31 @@ mod tests {
         let l = ToneCurve::Log { max_in: 1000.0, white: 255.0 };
         assert!((l.apply(1000.0) - 255.0).abs() < 1e-3);
         assert_eq!(ToneCurve::Clip { white: 10.0 }.apply(20.0), 10.0);
+    }
+
+    #[test]
+    fn holes_and_strays_take_what_is_around() {
+        // a person at 2.5 m with holes and a few wrong depths, in front of a wall at 9 m
+        let mut d = vec![9000.0f32; PIXELS];
+        for y in 100..300 {
+            for x in 200..300 {
+                d[y * WIDTH + x] = 2500.0;
+            }
+        }
+        for y in 180..190 {
+            for x in 240..248 {
+                d[y * WIDTH + x] = 0.0;
+            }
+        }
+        d[150 * WIDTH + 250] = 15000.0;
+        d[40 * WIDTH + 40] = 500.0;
+        let g = depth_for_gain(&d);
+        assert!((g[185 * WIDTH + 244] - 2500.0).abs() < 1.0, "{}", g[185 * WIDTH + 244]);
+        assert!((g[150 * WIDTH + 250] - 2500.0).abs() < 1.0, "{}", g[150 * WIDTH + 250]);
+        assert!((g[40 * WIDTH + 40] - 9000.0).abs() < 1.0, "{}", g[40 * WIDTH + 40]);
+        // edges stay where they are
+        assert_eq!(g[200 * WIDTH + 199], 9000.0);
+        assert_eq!(g[200 * WIDTH + 200], 2500.0);
     }
 
     #[test]
