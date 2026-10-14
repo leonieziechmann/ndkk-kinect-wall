@@ -27,6 +27,8 @@ pub mod device;
 pub mod driver;
 pub mod error;
 pub mod frame;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod packet;
 pub mod pipeline;
 pub mod protocol;

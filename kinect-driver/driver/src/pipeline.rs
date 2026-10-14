@@ -99,7 +99,8 @@ impl Backend {
     }
 }
 
-/// Creates a decoder for the backend.
+/// Creates a decoder for the backend. `Gpu` never fails for lack of a GPU: it decodes on the CPU
+/// then (and whenever the GPU fails) and says so in [`TofDecoder::describe`].
 pub fn make_decoder(cfg: TofConfig, backend: Backend) -> Result<Box<dyn TofDecoder>> {
     match backend {
         Backend::Cpu => Ok(Box::new(CpuDecoder::new(cfg)?)),
@@ -116,12 +117,13 @@ pub fn make_decoder(cfg: TofConfig, backend: Backend) -> Result<Box<dyn TofDecod
 
 #[cfg(feature = "gpu")]
 fn gpu_decoder(cfg: TofConfig) -> Result<Box<dyn TofDecoder>> {
-    Ok(Box::new(crate::gpu::GpuDecoder::new(cfg)?))
+    Ok(Box::new(crate::gpu::FallbackDecoder::new(cfg)?))
 }
 
 #[cfg(not(feature = "gpu"))]
-fn gpu_decoder(_cfg: TofConfig) -> Result<Box<dyn TofDecoder>> {
-    Err(Error::Unsupported("this build has no GPU decoder (feature `gpu`)".into()))
+fn gpu_decoder(cfg: TofConfig) -> Result<Box<dyn TofDecoder>> {
+    log::warn!("kinect-driver: built without the GPU decoder (feature `gpu`); using the CPU");
+    Ok(Box::new(CpuDecoder::new(cfg)?))
 }
 
 /// The decoding as a stage: fills depth, infrared, confidence and flags from the raw packet.

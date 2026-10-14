@@ -15,9 +15,10 @@ use std::time::Instant;
 use super::config::{TofConfig, TofMode};
 use super::fill::push_pull;
 use super::kernels::{
-    self, EdgeParams, Row, RowFlags, RowU8, S1Out, S1Params, S1Tabs, S2In, S2OutCompat, S2OutExt, S2Params, S3In, S3Params, flags,
+    self, EdgeParams, Row, RowFlags, RowU8, S1Out, S1Params, S1Tabs, S2In, S2OutCompat, S2OutExt, S2Params, S3In, S3Params,
 };
 use super::parallel::{for_each_block, thread_count};
+use super::post;
 use super::resolve::{ResolveIn, resolve_row};
 use super::{TofOutput, TofTimings};
 use crate::consts::{HEIGHT, PIXELS, WIDTH};
@@ -35,19 +36,20 @@ const P2: usize = 8;
 /// stage 2 byte planes: edge_ok, kind, saturation bits
 const P2B: usize = 3;
 
-/// Derived per-device tables (depend on the device tables and the parameters).
-struct Prepared {
-    tables_id: u64,
-    mc: [Vec<f32>; 3],
-    ms: [Vec<f32>; 3],
-    valid: Vec<f32>,
-    xt: Vec<f32>,
-    zt: Vec<f32>,
-    lut: [f32; 2048],
+/// Derived per-device tables (depend on the device tables and the parameters); the GPU decoder
+/// uploads the same.
+pub(crate) struct Prepared {
+    pub(crate) tables_id: u64,
+    pub(crate) mc: [Vec<f32>; 3],
+    pub(crate) ms: [Vec<f32>; 3],
+    pub(crate) valid: Vec<f32>,
+    pub(crate) xt: Vec<f32>,
+    pub(crate) zt: Vec<f32>,
+    pub(crate) lut: [f32; 2048],
 }
 
 impl Prepared {
-    fn new(t: &DeviceTables, cfg: &TofConfig) -> Prepared {
+    pub(crate) fn new(t: &DeviceTables, cfg: &TofConfig) -> Prepared {
         let mc = std::array::from_fn(|k| {
             let m = f64::from(cfg.params.ab_multiplier_per_frq.get(k).copied().unwrap_or(1.0));
             (0..PIXELS).map(|i| (m * t.p0_phase(k, i).cos()) as f32).collect()
@@ -66,6 +68,79 @@ impl Prepared {
             lut: t.lut,
         }
     }
+}
+
+/// Constants of stage 1 (shared with the GPU decoder).
+pub(crate) fn s1_params(cfg: &TofConfig) -> S1Params {
+    let p = &cfg.params;
+    let e = &cfg.ext;
+    S1Params {
+        cos_t: p.phase_in_rad.map(f32::cos),
+        sin_t: p.phase_in_rad.map(f32::sin),
+        ir_scale: 0.333_333_33 * p.ab_multiplier * p.ab_output_multiplier,
+        ir_lin: p.ab_multiplier * p.ab_output_multiplier,
+        repair: e.repair_saturation,
+        repair_lost: e.repair_lost,
+        repair_ratio: e.repair_min_ratio,
+        full_scale: e.full_scale_is_saturated,
+        w_repaired: e.hdr_repaired_weight,
+        gain: e.gain_correction.map(|g| 1.0 / g),
+    }
+}
+
+/// Constants of stage 2 (shared with the GPU decoder).
+pub(crate) fn s2_params(cfg: &TofConfig) -> S2Params {
+    let p = &cfg.params;
+    let e = &cfg.ext;
+    S2Params {
+        jb_threshold: (p.joint_bilateral_ab_threshold * p.joint_bilateral_ab_threshold) / (p.ab_multiplier * p.ab_multiplier),
+        // libfreenect2's literal (not exactly LOG2_E): kept so Compat matches it
+        #[allow(clippy::approx_constant)]
+        jb_exp: -1.442_695 * p.joint_bilateral_exp,
+        max_edge: p.joint_bilateral_max_edge,
+        gauss: p.gaussian_kernel,
+        bilateral: cfg.bilateral_filter,
+        ab_multiplier: p.ab_multiplier,
+        slope: p.ab_confidence_slope,
+        conf_offset: p.ab_confidence_offset,
+        min_conf: p.min_dealias_confidence,
+        max_conf: p.max_dealias_confidence,
+        individual_threshold: p.individual_ab_threshold,
+        sum_threshold: p.ab_threshold,
+        phase_offset: p.phase_offset,
+        noise_coeff: e.noise_coeff.map(|c| c * e.noise_scale),
+        noise_floor: e.noise_floor * e.noise_scale,
+        min_amplitude: e.min_amplitude,
+        weak_boost: e.weak_boost,
+        weak_threshold: e.weak_threshold,
+        plausibility: e.plausibility,
+        inv_brightness: 1.0 / e.brightness_1m,
+        min_reflectivity: e.min_reflectivity,
+        max_reflectivity: e.max_reflectivity,
+        ir_output: p.ab_output_multiplier,
+    }
+}
+
+/// Constants of the edge filter (shared with the GPU decoder).
+pub(crate) fn edge_params(cfg: &TofConfig, extended: bool) -> EdgeParams {
+    let p = &cfg.params;
+    EdgeParams {
+        min_depth: cfg.min_depth,
+        max_depth: cfg.max_depth,
+        enabled: cfg.edge_filter,
+        avg_min: p.edge_ab_avg_min_value,
+        std_threshold: p.edge_ab_std_dev_threshold,
+        close: p.edge_close_delta_threshold,
+        far: p.edge_far_delta_threshold,
+        max_delta: p.edge_max_delta_threshold,
+        avg_delta: p.edge_avg_delta_threshold,
+        scale_mm: if extended { cfg.ext.edge_scale_mm } else { 0.0 },
+    }
+}
+
+/// Constants of the extended finalization (shared with the GPU decoder).
+pub(crate) fn s3_params(cfg: &TofConfig) -> S3Params {
+    S3Params { min_conf: cfg.ext.min_confidence, speckle: cfg.ext.speckle_filter, speckle_min: cfg.ext.speckle_min_neighbors as f32 }
 }
 
 /// The CPU depth/infrared decoder (reusable, keeps its buffers between frames).
@@ -156,37 +231,23 @@ impl CpuDecoder {
             TofMode::Compat => self.stage3_compat(out)?,
             TofMode::Extended => self.stage3_extended(out)?,
         }
+        out.flags.copy_from_slice(&self.flags);
+        if self.cfg.mode == TofMode::Extended && self.cfg.ext.fill_saturated_depth {
+            post::fill_saturated_depth(&self.cfg, out);
+        }
         self.timings.stage3_ms = ms_since(t2);
         let t3 = Instant::now();
         if self.cfg.mode == TofMode::Extended && self.cfg.ext.ir_fill_clipped {
-            self.fill_ir(out);
+            post::fill_ir(&self.cfg, out, &mut self.saturation_level);
         }
-        out.flags.copy_from_slice(&self.flags);
         self.timings.fill_ms = ms_since(t3);
         self.timings.total_ms = ms_since(t0);
         Ok(())
     }
 
-    fn s1_params(&self) -> S1Params {
-        let p = &self.cfg.params;
-        let e = &self.cfg.ext;
-        S1Params {
-            cos_t: p.phase_in_rad.map(f32::cos),
-            sin_t: p.phase_in_rad.map(f32::sin),
-            ir_scale: 0.333_333_33 * p.ab_multiplier * p.ab_output_multiplier,
-            ir_lin: p.ab_multiplier * p.ab_output_multiplier,
-            repair: e.repair_saturation,
-            repair_lost: e.repair_lost,
-            repair_ratio: e.repair_min_ratio,
-            full_scale: e.full_scale_is_saturated,
-            w_repaired: e.hdr_repaired_weight,
-            gain: e.gain_correction.map(|g| 1.0 / g),
-        }
-    }
-
     fn stage1(&mut self, packet: &RawDepthPacket, out: &mut TofOutput) -> Result<()> {
         let prep = self.prep.as_ref().ok_or_else(|| Error::invalid("tables not loaded"))?;
-        let p = self.s1_params();
+        let p = s1_params(&self.cfg);
         let extended = self.cfg.mode == TofMode::Extended;
         let blocks: Vec<_> = self
             .s1
@@ -243,41 +304,9 @@ impl CpuDecoder {
         for_each_block(self.threads, blocks, &work)
     }
 
-    fn s2_params(&self) -> S2Params {
-        let p = &self.cfg.params;
-        let e = &self.cfg.ext;
-        S2Params {
-            jb_threshold: (p.joint_bilateral_ab_threshold * p.joint_bilateral_ab_threshold) / (p.ab_multiplier * p.ab_multiplier),
-            // libfreenect2's literal (not exactly LOG2_E): kept so Compat matches it
-            #[allow(clippy::approx_constant)]
-            jb_exp: -1.442_695 * p.joint_bilateral_exp,
-            max_edge: p.joint_bilateral_max_edge,
-            gauss: p.gaussian_kernel,
-            bilateral: self.cfg.bilateral_filter,
-            ab_multiplier: p.ab_multiplier,
-            slope: p.ab_confidence_slope,
-            conf_offset: p.ab_confidence_offset,
-            min_conf: p.min_dealias_confidence,
-            max_conf: p.max_dealias_confidence,
-            individual_threshold: p.individual_ab_threshold,
-            sum_threshold: p.ab_threshold,
-            phase_offset: p.phase_offset,
-            noise_coeff: e.noise_coeff.map(|c| c * e.noise_scale),
-            noise_floor: e.noise_floor * e.noise_scale,
-            min_amplitude: e.min_amplitude,
-            weak_boost: e.weak_boost,
-            weak_threshold: e.weak_threshold,
-            plausibility: e.plausibility,
-            inv_brightness: 1.0 / e.brightness_1m,
-            min_reflectivity: e.min_reflectivity,
-            max_reflectivity: e.max_reflectivity,
-            ir_output: p.ab_output_multiplier,
-        }
-    }
-
     fn stage2(&mut self) -> Result<()> {
         let prep = self.prep.as_ref().ok_or_else(|| Error::invalid("tables not loaded"))?;
-        let p = self.s2_params();
+        let p = s2_params(&self.cfg);
         let extended = self.cfg.mode == TofMode::Extended;
         let s1 = &self.s1;
         let usable = &self.usable;
@@ -330,24 +359,8 @@ impl CpuDecoder {
         for_each_block(self.threads, blocks, &work)
     }
 
-    fn edge_params(&self, extended: bool) -> EdgeParams {
-        let p = &self.cfg.params;
-        EdgeParams {
-            min_depth: self.cfg.min_depth,
-            max_depth: self.cfg.max_depth,
-            enabled: self.cfg.edge_filter,
-            avg_min: p.edge_ab_avg_min_value,
-            std_threshold: p.edge_ab_std_dev_threshold,
-            close: p.edge_close_delta_threshold,
-            far: p.edge_far_delta_threshold,
-            max_delta: p.edge_max_delta_threshold,
-            avg_delta: p.edge_avg_delta_threshold,
-            scale_mm: if extended { self.cfg.ext.edge_scale_mm } else { 0.0 },
-        }
-    }
-
     fn stage3_compat(&mut self, out: &mut TofOutput) -> Result<()> {
-        let e = self.edge_params(false);
+        let e = edge_params(&self.cfg, false);
         let s2 = &self.s2;
         let s2b = &self.s2b;
         let blocks: Vec<_> = out
@@ -439,12 +452,8 @@ impl CpuDecoder {
         };
         for_each_block(self.threads, blocks, &work)?;
         // 3b: edge filter, speckle filter, range, confidence threshold
-        let e = self.edge_params(true);
-        let q = S3Params {
-            min_conf: self.cfg.ext.min_confidence,
-            speckle: self.cfg.ext.speckle_filter,
-            speckle_min: self.cfg.ext.speckle_min_neighbors as f32,
-        };
+        let e = edge_params(&self.cfg, true);
+        let q = s3_params(&self.cfg);
         let (dres, cres, s2, s2b) = (&self.depth_res, &self.conf_res, &self.s2, &self.s2b);
         let blocks: Vec<_> = out
             .depth
@@ -469,104 +478,7 @@ impl CpuDecoder {
                 kernels::stage3_extended(&input, &e, &q, dout, cout, fl);
             }
         };
-        for_each_block(self.threads, blocks, &work)?;
-        if self.cfg.ext.fill_saturated_depth {
-            self.fill_saturated_depth(out);
-        }
-        Ok(())
+        for_each_block(self.threads, blocks, &work)
     }
 
-    /// Where every frequency saturated there is no measurement; inside such an area the depth
-    /// is interpolated from the measured rim of the same bright object (pixels that saturated
-    /// in some sample but still have depth), never from what is behind it.
-    fn fill_saturated_depth(&mut self, out: &mut TofOutput) {
-        let sat = |f: u32| f & flags::SATURATED_ANY != 0;
-        let rejected = flags::EDGE | flags::SPECKLE | flags::OUT_OF_RANGE;
-        let is_source = |i: usize| out.depth.get(i).is_some_and(|d| *d > 0.0) && self.flags.get(i).is_some_and(|f| sat(*f));
-        let is_target = |i: usize| out.depth.get(i).is_some_and(|d| *d <= 0.0) && self.flags.get(i).is_some_and(|f| sat(*f) && *f & rejected == 0);
-        // flood from the sources through the targets (4-neighborhood)
-        let mut reached = vec![false; PIXELS];
-        let mut queue: std::collections::VecDeque<usize> = (0..PIXELS).filter(|i| is_source(*i)).collect();
-        if queue.is_empty() {
-            return;
-        }
-        let mut any = false;
-        while let Some(i) = queue.pop_front() {
-            let (x, y) = (i % W, i / W);
-            let mut push = |j: usize| {
-                if let Some(r) = reached.get_mut(j)
-                    && !*r
-                    && is_target(j)
-                {
-                    *r = true;
-                    any = true;
-                    queue.push_back(j);
-                }
-            };
-            if x > 0 {
-                push(i - 1);
-            }
-            if x + 1 < W {
-                push(i + 1);
-            }
-            if y > 0 {
-                push(i - W);
-            }
-            if y + 1 < HEIGHT {
-                push(i + W);
-            }
-        }
-        if !any {
-            return;
-        }
-        let weights: Vec<f32> = (0..PIXELS).map(|i| if is_source(i) { 1.0 } else { 0.0 }).collect();
-        let filled = push_pull(&out.depth, &weights, W, HEIGHT);
-        let (lo, hi) = (self.cfg.min_depth, self.cfg.max_depth);
-        for (i, r) in reached.iter().enumerate() {
-            if !*r {
-                continue;
-            }
-            let v = filled.get(i).copied().unwrap_or(0.0);
-            if v >= lo
-                && v <= hi
-                && let (Some(d), Some(c), Some(f)) = (out.depth.get_mut(i), out.confidence.get_mut(i), self.flags.get_mut(i))
-            {
-                *d = v;
-                *c = 0.5;
-                *f = (*f | flags::DEPTH_FILLED) & !flags::LOW_CONFIDENCE;
-            }
-        }
-    }
-
-    /// Infrared where every frequency saturated: filled smoothly from the surroundings, but never
-    /// darker than the level at which this sensor saturates (estimated from the pixels whose
-    /// saturated sample could be rebuilt: their brightness is known and just at that level).
-    fn fill_ir(&mut self, out: &mut TofOutput) {
-        let mut repaired: Vec<f32> = out
-            .ir
-            .iter()
-            .zip(&self.flags)
-            .filter(|(v, f)| **f & flags::REPAIRED_ANY != 0 && **f & flags::IR_FILLED == 0 && v.is_finite() && **v > 0.0)
-            .map(|(v, _)| *v)
-            .collect();
-        if repaired.len() >= 30 {
-            let k = repaired.len() * 3 / 4;
-            let (_, level, _) = repaired.select_nth_unstable_by(k, f32::total_cmp);
-            let level = *level;
-            self.saturation_level = if self.saturation_level > 0.0 { 0.8 * self.saturation_level + 0.2 * level } else { level };
-        }
-        let clipped = self.flags.iter().filter(|f| **f & flags::IR_FILLED != 0).count();
-        if clipped == 0 {
-            return;
-        }
-        let weights: Vec<f32> = self.flags.iter().map(|f| if *f & flags::IR_FILLED != 0 { 0.0 } else { 1.0 }).collect();
-        let filled = push_pull(&out.ir, &weights, W, HEIGHT);
-        let gain = self.cfg.ext.ir_fill_gain;
-        let floor = self.saturation_level;
-        for ((o, f), v) in out.ir.iter_mut().zip(&self.flags).zip(filled) {
-            if *f & flags::IR_FILLED != 0 {
-                *o = v.max(floor) * gain;
-            }
-        }
-    }
 }
