@@ -41,7 +41,7 @@ IR, wo der Sensor sättigt: compat 100 % weiß abgeschnitten, extended 0 %. Ein 
 
 **Das muss sich an der echten Kinect noch bestätigen.** Der Simulator ist nach dem Rauschmodell der Literatur gebaut, nicht nach diesem Sensor. Werkzeuge dafür: `kinect-driver record` (Rohdaten), `replay --compare --png` (beide Modi nebeneinander), `analyze` (Helligkeit, Verstärkung und Rauschen des eigenen Sensors → `--tof`-Einstellungen).
 
-**Zeit** (Xeon 2,8 GHz, 4 vCPU, AVX2): compat 7,5 ms je Frame mit 3 Threads (21 ms mit einem), extended 17 ms (40–44 ms mit einem). Auf der GPU (wgpu) dieselben Ergebnisse bis auf Rundung (Tiefe max. 0,002 mm Abweichung, gemessen mit lavapipe); die Zeit dort hängt von der GPU ab: `kinect-driver bench`.
+**Zeit** (Xeon 2,8 GHz, 4 vCPU, AVX2): compat 4,6 ms je Frame mit 3 Threads (12,5 ms mit einem), extended 10,7 ms im Raum und 12,5 ms mit viel Sättigung (27–29 ms mit einem); Einzelheiten unter [Rechenkerne](#rechenkerne). Auf der GPU (wgpu) dieselben Ergebnisse bis auf Rundung (Tiefe max. 0,005 mm Abweichung, gemessen mit lavapipe); die Zeit dort hängt von der GPU ab: `kinect-driver bench`.
 
 ## Speicher und Kopien
 
@@ -63,6 +63,36 @@ Gemessen mit `cargo run --release -p kinect-driver --example alloc_count` (zähl
 | Zeit, Linux, 4 vCPU: Parser / compat / extended / ganzer Treiber | 0,35 / 9–13 / 21 / 18,7 ms | 0,21 / 8 / 20 / 17,1 ms |
 
 `driver/tests/alloc.rs` hält das fest. Im erweiterten Modus ändert sich die Zeit kaum, dort dominiert die Rechnung. Unter Windows sind Thread-Starts und große Allokationen teurer; dort dürfte der Unterschied größer sein (noch nicht gemessen).
+
+## Rechenkerne
+
+Die Pixelkerne rechnen acht Pixel auf einmal (`driver/src/tof/lanes.rs`: Werte aus acht Spuren, die der Compiler zu je einem AVX2-Befehl macht, zu zwei mit SSE2 oder NEON). So bleiben Zwischenwerte über Schleifen hinweg, die nicht über Pixel laufen, in Registern, statt als Zeilen-Arrays durch den Cache zu gehen: die 15 Kandidatenentfernungen der Entfaltung, die neun Nachbarn des bilateralen Filters, die 24 des Speckle-Filters.
+
+- **Näherungen:** exp, atan2 und ln sind dieselben Polynome wie in `fn2/fast_depth.cpp` und im GPU-Shader (exp etwa 1e-4 relativ). Eine andere, gleich genaue Näherung lag weit unter 0,1 mm, verschob aber so viele Schwellenentscheidungen, dass CPU und GPU nicht mehr gleich entschieden. Gespart wird dagegen, was sich exakt umformen lässt: Wurzel und zwei Divisionen im Kantenfilter (der Test quadriert), die Division je Kandidat (Kehrwert), der Rest der Referenzfrequenz (an ihren eigenen Kandidaten null), die Plausibilitätsprüfung als Schranke auf u², NaN-sichere `min`/`max` (drei Befehle) durch einfache. Im AVX2-Build rechnet FMA mit.
+- **Keine maskierten Speicherzugriffe:** `vmaskmovps` ist auf AMD Zen mikrocodiert und langsam; der AVX2-Code enthält keine mehr.
+- **Gleichstände:** Sind nur 80 und 120 MHz nutzbar, wiederholen sich die Kandidaten alle 3,75 m mit gleichen Kosten. Bisher entschied dann das Rundungsrauschen, jetzt ein fester Zuschlag von 0,001 je Kandidatenschritt (`TIE_BREAK`): der nähere gewinnt, auf CPU und GPU gleich.
+- **Entpacken:** die 11-Bit-Codes mit einem 64-Bit-Zugriff je Code direkt in Messwerte, ohne Zwischenfeld.
+- **Nachschritte:** Push-Pull ohne gespeicherte volle Auflösung und auf den Dekoder-Threads; die IR-Füllung läuft neben der Erwartung des Auflösers; die Flutfüllung startet nur am Rand der Quellen.
+- **Kompaktere Zwischenwerte brachten hier nichts:** Der Dekoder ist rechengebunden (neben einem Prozess, der dauernd Speicher kopiert, nicht langsamer). 9 statt 15 Ebenen aus Stufe 1 (a und b aus Betrag und Richtung) waren langsamer, weil der Filter dann mehr rechnet; f16 wäre zu ungenau (bis 0,7 mm Phasenfehler bei 16 MHz). Geblieben ist n² statt n (eine Multiplikation weniger je Nachbar).
+
+Zeit je Frame (Median aus fünf abwechselnden Läufen, `examples/bench_tof.rs`):
+
+| | vorher | jetzt |
+|---|---|---|
+| compat, 1 / 3 / 4 Threads | 20,0 / 7,2 / 5,5 ms | 12,5 / 4,6 / 3,4 ms |
+| extended, Raum, 1 / 3 / 4 Threads | 38,2 / 14,9 / 11,6 ms | 26,7 / 10,7 / 8,7 ms |
+| extended, viel Sättigung, 1 / 3 / 4 Threads | 41,4 / 20,4 / 19,8 ms | 29,4 / 12,5 / 11,7 ms |
+
+Genauigkeit gegen die vorige Version (`examples/tof_diff.rs`: 18 Frames, alle Szenen des Simulators, ein verlorenes Phasenbild, beschädigte Zeilen):
+
+| je Frame | compat | extended |
+|---|---|---|
+| Tiefe, größte / mittlere Abweichung | 0,004 / 0,0001 mm | 0,006 / 0,0001 mm |
+| IR, größte relative Abweichung | 3e-7 | 3e-7 |
+| Pixel, die zwischen mit und ohne Tiefe wechseln | 1,8 von 121.700 | 34 von 157.800 |
+| zum Vergleich: dieselben Szenen mit anderem Sensorrauschen | 17.200 | 20.900 |
+
+Die wechselnden Pixel liegen genau an einer Schwelle (Konfidenz 0,6, Kanten- und Speckle-Test) oder sind Gleichstände wie oben. Der kompatible Modus liegt gegen `fn2/fast_depth.cpp` bei höchstens 0,004 mm, das IR ist gleich.
 
 ## Mit dem kinect-hub
 
@@ -184,7 +214,8 @@ cargo build --release --target x86_64-pc-windows-gnu -p kinect-driver-cli    # W
 cargo run --release -p kinect-driver --example eval_sim                       # weitere Auswertungen: examples/
 ```
 
-- `driver/src/tof/`: CPU-Dekoder (`kernels.rs` die Pixelkerne, zeilenweise, vektorisiert, mit AVX2/FMA per Laufzeitauswahl; `resolve.rs` die Nachbarschaftsauflösung; `post.rs` Flood-Fill und IR-Füllung), `config.rs` alle Parameter.
+- `driver/src/tof/`: CPU-Dekoder (`kernels.rs` die Pixelkerne, je acht Pixel in `lanes.rs`-Werten, mit AVX2/FMA per Laufzeitauswahl; `resolve.rs` die Nachbarschaftsauflösung; `post.rs` Flood-Fill und IR-Füllung; `fill.rs` Push-Pull), `config.rs` alle Parameter.
+- Änderungen an den Kernen prüfen: `examples/tof_diff.rs` vergleicht die Ausgabe zweier Builds Pixel für Pixel (`dump ORDNER` in beiden, dann `compare ALT NEU`), `examples/bench_tof.rs` misst je Phase (Median).
 - `driver/src/gpu/`: `decode.wgsl` (dieselben Schritte als Compute-Shader), `mod.rs` (wgpu, Rückfall auf die CPU).
 - `driver/src/usb/`: Trait-Grenze, `libusb.rs` (echtes Gerät), `mock.rs` (simuliertes Gerät).
 - `driver/src/protocol/`, `device.rs`: Befehle, Antworten, Paket-Zusammenbau, Startsequenz (wie libfreenect2, aber nachsichtig).

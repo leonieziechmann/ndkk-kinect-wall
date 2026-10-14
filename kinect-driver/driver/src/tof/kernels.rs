@@ -3,8 +3,11 @@
 //! Every function works on whole image rows held as fixed-size arrays (`[f32; WIDTH]`), with
 //! loops over `0..WIDTH` (or `1..WIDTH - 1` for neighbors), so every index is within bounds by
 //! construction: the compiler proves it and no panic path exists. That is why this module
-//! allows plain indexing. The loops are written so they vectorize (no calls, no early exits,
-//! selects instead of branches); `multiversion!` builds them for AVX2 + FMA as well.
+//! allows plain indexing. Most kernels go eight pixels at a time in [`F8`] values, so their
+//! state stays in registers across loops over neighbors or candidates; the rest are plain loops
+//! written so they vectorize (no calls, no early exits, selects instead of branches, no
+//! conditional loads or stores: masked moves are slow on AMD). `multiversion!` builds them for
+//! AVX2 + FMA as well.
 
 #![allow(clippy::indexing_slicing, clippy::needless_range_loop, clippy::too_many_arguments)]
 
