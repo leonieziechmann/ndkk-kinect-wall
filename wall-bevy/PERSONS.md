@@ -205,11 +205,11 @@ The GPU is shared: the pose model, and your scene. When the output renders below
 
 ## Testing without people in the room
 
-Recordings with people (local only, never commit or upload them) are in `recordings/` of the main checkout (`recordings/README.md`, the catalog `recordings/katalog/KATALOG.md`). Play one on a replay hub (CLAUDE.md: one replay hub serves everyone; if 8091 already plays a recording, use it; another recording on 8092, …) and point the output at it:
+Recordings with people (local only, never commit or upload them) are in `recordings/` of the main checkout (`recordings/INDEX.md` lists them all; layout and rules in `recordings/README.md`). Play one on a replay hub (CLAUDE.md: one replay hub serves everyone; if 8091 already plays a recording, use it; another recording on 8092, …) and point the output at it:
 
 ```bash
 curl -s http://127.0.0.1:8091/api/status        # "source":"replay"? which file: sensor.detail
-"$MAIN/kinect-hub/target/release/kinect-hub.exe" --source replay "$MAIN/recordings/final-solo.k2rec" --bind 127.0.0.1:8091   # else, in the BACKGROUND
+"$MAIN/kinect-hub/target/release/kinect-hub.exe" --source replay "$MAIN/recordings/2026-10-07-endaufbau-probe/aufnahmen/final-solo.k2rec" --bind 127.0.0.1:8091   # else, in the BACKGROUND
 wall-bevy --hub 8091 --scene my-scene --windowed            # or headless: --shots DIR --seconds 12
 ```
 

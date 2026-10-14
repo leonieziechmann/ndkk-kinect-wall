@@ -34,7 +34,7 @@ Beenden mit **Q** im Fenster. **NOTAUS: Strg+Alt+Shift+N** (wirkt in jedem Fenst
 
 **Aufnahmen für Trainingsdaten:** **R** im Fenster nimmt 5 Minuten Tiefe und Infrarot vom laufenden Hub auf, wie `kinect-hub-probe record`. Die Wand läuft dabei weiter.
 - Vorher fragt das Programm: „Einverständnis eingeholt?“ Erst nach **J** startet die Aufnahme.
-- Sie landet in `recordings/wand-<Datum>-<Uhrzeit>.k2rec` des main-Checkouts. 5 Minuten sind etwa 5,5 GB. Die Aufnahme startet nur, wenn danach noch 5 GB frei bleiben, und endet von selbst, wenn weniger als 2 GB frei sind.
+- Sie landet in `recordings/wand-<Datum>-<Uhrzeit>.k2rec` des main-Checkouts, dem Eingang: Danach kommt sie in einen Sitzungsordner (siehe [`recordings/README.md`](recordings/README.md), „Neue Aufnahmen einsortieren“), nach der Prüfung auf erkennbare Kinder. 5 Minuten sind etwa 5,5 GB. Die Aufnahme startet nur, wenn danach noch 5 GB frei bleiben, und endet von selbst, wenn weniger als 2 GB frei sind.
 - Noch einmal **R** beendet sie vorzeitig: **J** behält sie, **X** löscht sie. Auch **Q**, NOTAUS und der Wächter beenden sie und behalten, was schon aufgenommen ist.
 - Eine andere Länge: `start-wand.cmd -RecordMinutes 10`.
 - Fürs Training des Pose-Modells kommen neue Aufnahmen in die Listen von `pose-training/frames.py` (siehe [`pose-training/README.md`](pose-training/README.md)).

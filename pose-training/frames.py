@@ -57,6 +57,16 @@ def device():
 # has only recordings/training)
 MAIN = main_checkout()
 REC = os.path.join(MAIN, 'recordings')
+BESUCH = os.path.join(REC, '2026-10-08-besuch')  # the multi-user recordings and their catalog (labels)
+
+
+def k2():
+    """The shared .k2rec reader of recordings/werkzeuge/ (k2.find(name) knows each recording's session folder)."""
+    tools = os.path.join(REC, 'werkzeuge')
+    if tools not in sys.path:
+        sys.path.insert(0, tools)
+    import k2 as mod
+    return mod
 
 MULTI = ['145333', '145834', '150334', '150835', '153816', '154316', '154817', '155317', '155817']
 VAL = {'155317': None, '150835': None, '150334': (140.0, None)}  # recording: (from s, to s) or the whole
@@ -68,7 +78,7 @@ TPOSE = {'tpose-dreh-2026-10-08': None, 'tpose-zielen-2026-10-08': 20.0}  # reco
 def cue_times(name):
     """Seconds from the start of the recording of each announced move (t_s; some files write it 7,413)."""
     ts = []
-    for line in open(os.path.join(REC, name + '.cues.csv'), encoding='utf-8-sig').read().splitlines()[1:]:
+    for line in open(k2().find(name)[:-6] + '.cues.csv', encoding='utf-8-sig').read().splitlines()[1:]:
         f = line.split(',')
         if len(f) >= 4:
             ts.append(float('.'.join(f[2:-1])))
@@ -81,16 +91,17 @@ def main():
     ap.add_argument('--stride', type=int, default=12, help='every n-th frame for training')
     ap.add_argument('--val-stride', type=int, default=15)
     a = ap.parse_args()
-    sys.path.insert(0, os.path.join(REC, 'katalog', 'werkzeuge'))
-    import k2  # the catalog's reader for .k2rec
+    def rec(name):
+        return k2().Rec(k2().find(name))
+
 
     listing = []
     for tag in MULTI:
         name = f'multi-2026-10-08-{tag}'
-        labels = json.load(open(os.path.join(REC, 'katalog', 'daten', name + '.labels.json')))
+        labels = json.load(open(os.path.join(BESUCH, 'daten', name + '.labels.json')))
         ok = {s['i'] for s in labels['samples'] if s['cam'] == 'ok'}  # camera not moved or covered
         step = labels['step']
-        r = k2.Rec(os.path.join(REC, name + '.k2rec'))
+        r = rec(name)
         for i in range(0, len(r), step):
             if i not in ok:
                 continue
@@ -102,18 +113,18 @@ def main():
                 continue
             listing.append((split, name, r, i))
     for name in OTHER:
-        r = k2.Rec(os.path.join(REC, name + '.k2rec'))
+        r = rec(name)
         for i in range(0, len(r), a.stride):
             listing.append(('train', name, r, i))
     for name, split in MOVES.items():
-        r = k2.Rec(os.path.join(REC, name + '.k2rec'))
+        r = rec(name)
         cues = cue_times(name)
         for i in range(len(r)):
             near = any(abs(r.time(i) - c) <= 1.6 for c in cues)
             if i % (3 if near else 9) == 0:
                 listing.append((split, name, r, i))
     for name, held in TPOSE.items():
-        r = k2.Rec(os.path.join(REC, name + '.k2rec'))
+        r = rec(name)
         end = r.time(len(r) - 1)
         for i in range(0, len(r), 3):
             listing.append(('val' if held and r.time(i) > end - held else 'train', name, r, i))
