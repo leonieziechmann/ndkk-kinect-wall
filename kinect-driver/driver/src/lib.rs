@@ -23,16 +23,25 @@
 
 pub mod camera;
 pub mod consts;
+pub mod device;
+pub mod driver;
 pub mod error;
+pub mod frame;
 pub mod packet;
+pub mod pipeline;
 pub mod protocol;
 pub mod record;
 pub mod sim;
+pub mod stages;
 pub mod tables;
 pub mod tof;
+pub mod usb;
 
 pub use camera::{ColorCameraParams, DeviceIdentity, IrCameraParams};
+pub use driver::{Driver, DriverConfig, DriverState, Event, Source};
 pub use error::{Error, Result};
+pub use frame::Frame;
+pub use pipeline::{Backend, Pipeline, Stage};
 pub use packet::RawDepthPacket;
 pub use tables::DeviceTables;
 pub use tof::{CpuDecoder, TofConfig, TofMode, TofOutput};

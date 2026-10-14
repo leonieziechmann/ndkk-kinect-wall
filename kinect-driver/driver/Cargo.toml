@@ -11,13 +11,14 @@ default = ["usb"]
 # USB access through libusb, built from source (no DLL to ship; needs a C compiler)
 usb = ["usb-system", "libusb1-sys/vendored"]
 # USB access through a libusb the system provides (pkg-config / vcpkg)
-usb-system = ["dep:libusb1-sys"]
+usb-system = ["dep:libusb1-sys", "dep:libc"]
 # depth and IR on the GPU (wgpu compute shaders; the same wgpu as wall-bevy)
 gpu = ["dep:wgpu", "dep:pollster", "dep:bytemuck"]
 
 [dependencies]
 log = "0.4"
 libusb1-sys = { version = "0.7", optional = true }
+libc = { version = "0.2", optional = true }
 wgpu = { version = "30", optional = true, default-features = false, features = ["std", "wgsl", "vulkan", "metal", "dx12", "gles", "parking_lot"] }
 pollster = { version = "0.4", optional = true }
 bytemuck = { version = "1", optional = true }

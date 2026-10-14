@@ -176,6 +176,7 @@ impl CpuDecoder {
             ir_scale: 0.333_333_33 * p.ab_multiplier * p.ab_output_multiplier,
             ir_lin: p.ab_multiplier * p.ab_output_multiplier,
             repair: e.repair_saturation,
+            repair_lost: e.repair_lost,
             repair_ratio: e.repair_min_ratio,
             full_scale: e.full_scale_is_saturated,
             w_repaired: e.hdr_repaired_weight,
@@ -221,7 +222,6 @@ impl CpuDecoder {
                 }
                 let [s0, s1, s2, s3, s4, s5, s6, s7, s8] = sub_ok;
                 let freq_ok = [s0 && s1 && s2, s3 && s4 && s5, s6 && s7 && s8];
-                let lost = !(freq_ok[0] && freq_ok[1] && freq_ok[2]);
                 let (Some(mc0), Some(mc1), Some(mc2), Some(ms0), Some(ms1), Some(ms2), Some(valid)) =
                     (row1(&prep.mc[0], y), row1(&prep.mc[1], y), row1(&prep.mc[2], y), row1(&prep.ms[0], y), row1(&prep.ms[1], y), row1(&prep.ms[2], y), row1(&prep.valid, y))
                 else {
@@ -234,7 +234,7 @@ impl CpuDecoder {
                 };
                 let mut o = S1Out { a: [a0, a1, a2], b: [b0, b1, b2], n: [n0, n1, n2], na: [na0, na1, na2], nb: [nb0, nb1, nb2], ir, usable, flags };
                 if extended {
-                    kernels::stage1_extended(&vals, freq_ok, lost, &tabs, &mut o, &p);
+                    kernels::stage1_extended(&vals, sub_ok, &tabs, &mut o, &p);
                 } else {
                     kernels::stage1_compat(&vals, freq_ok, &tabs, &mut o, &p);
                 }

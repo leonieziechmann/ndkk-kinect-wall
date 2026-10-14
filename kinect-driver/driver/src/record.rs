@@ -112,6 +112,16 @@ impl RawHeader {
     }
 }
 
+/// Reads just a header (from a `.head` file or the start of a recording).
+pub fn read_header(r: &mut impl Read) -> Result<RawHeader> {
+    RawHeader::read(r)
+}
+
+/// Writes just a header.
+pub fn write_header(w: &mut impl Write, header: &RawHeader) -> Result<()> {
+    header.write(w)
+}
+
 /// Reads a recording packet by packet.
 pub struct RawReader {
     header: RawHeader,

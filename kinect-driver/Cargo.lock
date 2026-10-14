@@ -385,6 +385,7 @@ name = "kinect-driver"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "libc",
  "libusb1-sys",
  "log",
  "png",

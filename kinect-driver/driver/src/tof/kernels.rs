@@ -128,6 +128,8 @@ pub struct S1Params {
     pub ir_lin: f32,
     /// rebuild one saturated sample
     pub repair: bool,
+    /// rebuild one lost sample (a sub-image row that did not arrive)
+    pub repair_lost: bool,
     /// plausibility ratio of a rebuilt sample
     pub repair_ratio: f32,
     /// treat +-16320 as saturated
@@ -177,18 +179,24 @@ multiversion! {
 }
 
 multiversion! {
-    /// The extended stage 1: one saturated sample of a frequency is rebuilt from the other two
-    /// (the three samples of a frequency sum to zero), a frequency with more is left out; the
-    /// infrared is the average amplitude of the usable frequencies (HDR, not clipped).
-    pub fn stage1_extended(v: &[Row; 9], freq_ok: [bool; 3], lost: bool, t: &S1Tabs, o: &mut S1Out, p: &S1Params) {
+    /// The extended stage 1: one saturated or lost sample of a frequency is rebuilt from the
+    /// other two (the three samples of a frequency sum to zero), a frequency with more is left
+    /// out; the infrared is the average amplitude of the usable frequencies (HDR, not clipped).
+    /// `sub_ok[s]`: the row of phase sub-image `s` arrived.
+    pub fn stage1_extended(v: &[Row; 9], sub_ok: [bool; 9], t: &S1Tabs, o: &mut S1Out, p: &S1Params) {
         let mut ir_acc = [0f32; W];
         let mut w_acc = [0f32; W];
         let mut usable = [0u8; W];
         let mut fl = [0u32; W];
+        let lost = sub_ok.iter().any(|ok| !ok);
         for k in 0..3 {
             let (v0, v1, v2) = (&v[3 * k], &v[3 * k + 1], &v[3 * k + 2]);
             let (mc, ms) = (t.mc[k], t.ms[k]);
-            let ok = freq_ok[k];
+            // a lost sample is unknown everywhere in the row: like a saturated one, but any
+            // value is plausible for it
+            let (m0, m1, m2) = (!sub_ok[3 * k], !sub_ok[3 * k + 1], !sub_ok[3 * k + 2]);
+            let nmiss = u32::from(m0) + u32::from(m1) + u32::from(m2);
+            let ok = nmiss == 0 || (nmiss == 1 && p.repair_lost);
             let (c0, c1, c2) = (p.cos_t[0], p.cos_t[1], p.cos_t[2]);
             let (s0, s1, s2) = (p.sin_t[0], p.sin_t[1], p.sin_t[2]);
             let gain = p.gain[k];
@@ -201,17 +209,20 @@ multiversion! {
                 let st1 = x1 == SATURATED || (p.full_scale && x1.abs() >= FULL_SCALE);
                 let st2 = x2 == SATURATED || (p.full_scale && x2.abs() >= FULL_SCALE);
                 let nsat = u32::from(st0) + u32::from(st1) + u32::from(st2);
-                let k0 = if st0 { 0.0 } else { x0 };
-                let k1 = if st1 { 0.0 } else { x1 };
-                let k2 = if st2 { 0.0 } else { x2 };
+                let (u0, u1, u2) = (st0 || m0, st1 || m1, st2 || m2);
+                let nunk = u32::from(u0) + u32::from(u1) + u32::from(u2);
+                let k0 = if u0 { 0.0 } else { x0 };
+                let k1 = if u1 { 0.0 } else { x1 };
+                let k2 = if u2 { 0.0 } else { x2 };
                 let sum_ok = k0 + k1 + k2;
                 let max_ok = k0.abs().max(k1.abs()).max(k2.abs());
                 let imputed = -sum_ok;
-                let repaired = p.repair && nsat == 1 && imputed.abs() >= p.repair_ratio * max_ok;
-                let y0 = if st0 { imputed } else { x0 };
-                let y1 = if st1 { imputed } else { x1 };
-                let y2 = if st2 { imputed } else { x2 };
-                let good = ok && t.valid[x] > 0.0 && (nsat == 0 || repaired);
+                let plausible = if nmiss == 1 { true } else { p.repair && imputed.abs() >= p.repair_ratio * max_ok };
+                let repaired = nunk == 1 && plausible;
+                let y0 = if u0 { imputed } else { x0 };
+                let y1 = if u1 { imputed } else { x1 };
+                let y2 = if u2 { imputed } else { x2 };
+                let good = ok && t.valid[x] > 0.0 && (nunk == 0 || repaired);
                 let c = y0 * c0 + y1 * c1 + y2 * c2;
                 let s = y0 * s0 + y1 * s1 + y2 * s2;
                 let av = if good { mc[x] * c - ms[x] * s } else { 0.0 };
@@ -529,6 +540,11 @@ fn weak_boost(i: &S2In, k: usize, p: &S2Params, af: &mut Row, bf: &mut Row, boos
     }
 }
 
+/// Phase noise of a frequency with a rebuilt sample relative to a measured one: the rebuilt
+/// sample is minus the sum of the other two, which doubles the noise variance on average over
+/// the phase (sqrt(3) at worst, 1 at best).
+pub const REBUILT_NOISE: f32 = std::f32::consts::SQRT_2;
+
 multiversion! {
     /// The extended stage 2: bilateral filter (unusable samples never count), optional 5 x 5
     /// averaging of weak pixels, then maximum-likelihood unwrapping over the whole unambiguous
@@ -562,7 +578,9 @@ multiversion! {
                 let use_k = i.usable[2][x] & bit != 0 && ir >= p.min_amplitude;
                 let mut ck = atan2(bk, ak) * inv_tau;
                 ck += if ck < 0.0 { 1.0 } else { 0.0 };
-                let sig = (p.noise_coeff[k] / ir.max(1e-6)).min(3.0);
+                // a rebuilt sample carries the noise of the two it came from
+                let rebuilt = o.flags[x] & (flags::REPAIRED_80 << k) != 0;
+                let sig = (p.noise_coeff[k] * (if rebuilt { REBUILT_NOISE } else { 1.0 }) / ir.max(1e-6)).min(3.0);
                 let sig_c = (sig * sig + p.noise_floor * p.noise_floor).sqrt() * inv_tau;
                 c[k][x] = ck;
                 w[k][x] = if use_k { 1.0 / (sig_c * sig_c).max(1e-12) } else { 0.0 };

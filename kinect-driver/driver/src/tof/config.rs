@@ -104,6 +104,9 @@ pub struct ExtendedParams {
     pub repair_min_ratio: f32,
     /// samples at the largest code (+-16320) count as saturated too
     pub full_scale_is_saturated: bool,
+    /// rebuild a phase sub-image lost on the USB from the other two of its frequency (instead of
+    /// dropping the frequency where it is missing)
+    pub repair_lost: bool,
     /// phase noise times amplitude per frequency (radians * IR amplitude units): the noise
     /// model that weights the frequencies (from the KDE paper's fit of a real Kinect v2)
     pub noise_coeff: [f32; 3],
@@ -164,6 +167,7 @@ impl Default for ExtendedParams {
             repair_saturation: true,
             repair_min_ratio: 0.6,
             full_scale_is_saturated: true,
+            repair_lost: true,
             noise_coeff: [1.27, 0.83, 1.64],
             noise_floor: 0.015,
             noise_scale: 1.0,
@@ -296,6 +300,7 @@ impl TofConfig {
             "repair_saturation" => e.repair_saturation = b()?,
             "repair_min_ratio" => e.repair_min_ratio = f()?,
             "full_scale_is_saturated" => e.full_scale_is_saturated = b()?,
+            "repair_lost" => e.repair_lost = b()?,
             "noise_coeff" => e.noise_coeff = triple()?,
             "noise_floor" => e.noise_floor = f()?,
             "noise_scale" => e.noise_scale = f()?,
