@@ -665,10 +665,10 @@ impl GpuDecoder {
         let t3 = Instant::now();
         if self.cfg.mode == TofMode::Extended {
             if self.cfg.ext.fill_saturated_depth {
-                post::fill_saturated_depth(&self.cfg, out, &mut self.post);
+                post::fill_saturated_depth(&self.cfg, &mut out.depth, &mut out.confidence, &mut out.flags, &mut self.post.depth);
             }
             if self.cfg.ext.ir_fill_clipped {
-                post::fill_ir(&self.cfg, out, &mut self.saturation_level, &mut self.post);
+                post::fill_ir(&self.cfg, &mut out.ir, &out.flags, &mut self.saturation_level, &mut self.post.ir);
             }
         }
         let ms = |a: Instant, b: Instant| b.duration_since(a).as_secs_f64() * 1000.0;

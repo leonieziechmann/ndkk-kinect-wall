@@ -146,37 +146,41 @@ multiversion! {
     /// libfreenect2's stage 1 (as fast_depth.cpp): a saturated sample zeroes its frequency and
     /// makes the infrared white; amplitudes for the bilateral filter come from the unzeroed values.
     pub fn stage1_compat(v: &[Row; 9], freq_ok: [bool; 3], t: &S1Tabs, o: &mut S1Out, p: &S1Params) {
-        let mut ir_acc = [0f32; W];
-        for k in 0..3 {
-            let (v0, v1, v2) = (&v[3 * k], &v[3 * k + 1], &v[3 * k + 2]);
-            let (mc, ms) = (t.mc[k], t.ms[k]);
-            let ok = if freq_ok[k] { 1.0f32 } else { 0.0 };
-            let (c0, c1, c2) = (p.cos_t[0], p.cos_t[1], p.cos_t[2]);
-            let (s0, s1, s2) = (p.sin_t[0], p.sin_t[1], p.sin_t[2]);
-            for x in 0..W {
-                let c = v0[x] * c0 + v1[x] * c1 + v2[x] * c2;
-                let s = v0[x] * s0 + v1[x] * s1 + v2[x] * s2;
-                let valid = t.valid[x] * ok;
-                let av = valid * (mc[x] * c - ms[x] * s);
-                let bv = valid * -(ms[x] * c + mc[x] * s);
-                let nn = (av * av + bv * bv).sqrt();
-                let sat = v0[x] == SATURATED || v1[x] == SATURATED || v2[x] == SATURATED;
-                let av = if sat { 0.0 } else { av };
-                let bv = if sat { 0.0 } else { bv };
-                o.a[k][x] = av;
-                o.b[k][x] = bv;
-                o.n2[k][x] = nn * nn;
-                let inv = if nn > 0.0 { 1.0 / nn.max(1e-30) } else { 0.0 };
-                o.na[k][x] = av * inv;
-                o.nb[k][x] = bv * inv;
-                ir_acc[x] += if sat { 65535.0 } else { nn };
-            }
+        for x in (0..W).step_by(LANES) {
+            stage1_compat_lanes::<Isa>(v, freq_ok, t, o, p, x);
         }
-        for x in 0..W {
-            o.ir[x] = (ir_acc[x] * p.ir_scale).min(65535.0);
-            o.usable[x] = 0;
-            o.flags[x] = 0;
-        }
+    }
+}
+
+/// [`stage1_compat`] for eight pixels from `x` on.
+#[inline(always)]
+fn stage1_compat_lanes<I: Isa>(v: &[Row; 9], freq_ok: [bool; 3], t: &S1Tabs, o: &mut S1Out, p: &S1Params, x: usize) {
+    let (zero, sat_v) = (F8::zero(), F8::splat(SATURATED));
+    let valid = F8::load(t.valid, x);
+    let mut ir_acc = zero;
+    for k in 0..3 {
+        let (x0, x1, x2) = (F8::load(&v[3 * k], x), F8::load(&v[3 * k + 1], x), F8::load(&v[3 * k + 2], x));
+        let (mc, ms) = (F8::load(t.mc[k], x), F8::load(t.ms[k], x));
+        let c = x0.mul_add::<I>(F8::splat(p.cos_t[0]), x1.mul_add::<I>(F8::splat(p.cos_t[1]), x2 * F8::splat(p.cos_t[2])));
+        let s = x0.mul_add::<I>(F8::splat(p.sin_t[0]), x1.mul_add::<I>(F8::splat(p.sin_t[1]), x2 * F8::splat(p.sin_t[2])));
+        let use_k = valid * F8::splat(if freq_ok[k] { 1.0 } else { 0.0 });
+        let av = use_k * mc.mul_add::<I>(c, -(ms * s));
+        let bv = use_k * -ms.mul_add::<I>(c, mc * s);
+        let nn = av.mul_add::<I>(av, bv * bv).sqrt();
+        let sat = x0.eq(sat_v) | x1.eq(sat_v) | x2.eq(sat_v);
+        let (av, bv) = (sat.select(zero, av), sat.select(zero, bv));
+        av.store(o.a[k], x);
+        bv.store(o.b[k], x);
+        (nn * nn).store(o.n2[k], x);
+        let inv = nn.gt(zero).and(F8::splat(1.0) / nn.max(F8::splat(1e-30)));
+        (av * inv).store(o.na[k], x);
+        (bv * inv).store(o.nb[k], x);
+        ir_acc = ir_acc + sat.select(F8::splat(65535.0), nn);
+    }
+    (ir_acc * F8::splat(p.ir_scale)).min(F8::splat(65535.0)).store(o.ir, x);
+    if let (Some(u), Some(f)) = (o.usable.get_mut(x..x + LANES), o.flags.get_mut(x..x + LANES)) {
+        u.fill(0);
+        f.fill(0);
     }
 }
 
@@ -186,70 +190,76 @@ multiversion! {
     /// out; the infrared is the average amplitude of the usable frequencies (HDR, not clipped).
     /// `sub_ok[s]`: the row of phase sub-image `s` arrived.
     pub fn stage1_extended(v: &[Row; 9], sub_ok: [bool; 9], t: &S1Tabs, o: &mut S1Out, p: &S1Params) {
-        let mut ir_acc = [0f32; W];
-        let mut w_acc = [0f32; W];
-        let mut usable = [0u8; W];
-        let mut fl = [0u32; W];
-        let lost = sub_ok.iter().any(|ok| !ok);
-        for k in 0..3 {
-            let (v0, v1, v2) = (&v[3 * k], &v[3 * k + 1], &v[3 * k + 2]);
-            let (mc, ms) = (t.mc[k], t.ms[k]);
-            // a lost sample is unknown everywhere in the row: like a saturated one, but any
-            // value is plausible for it
-            let (m0, m1, m2) = (!sub_ok[3 * k], !sub_ok[3 * k + 1], !sub_ok[3 * k + 2]);
-            let nmiss = u32::from(m0) + u32::from(m1) + u32::from(m2);
-            let ok = nmiss == 0 || (nmiss == 1 && p.repair_lost);
-            let (c0, c1, c2) = (p.cos_t[0], p.cos_t[1], p.cos_t[2]);
-            let (s0, s1, s2) = (p.sin_t[0], p.sin_t[1], p.sin_t[2]);
-            let gain = p.gain[k];
-            let sat_bit = 1u32 << k;
-            let rep_bit = 1u32 << (3 + k);
-            let use_bit = 1u8 << k;
-            for x in 0..W {
-                let (x0, x1, x2) = (v0[x], v1[x], v2[x]);
-                let st0 = x0 == SATURATED || (p.full_scale && x0.abs() >= FULL_SCALE);
-                let st1 = x1 == SATURATED || (p.full_scale && x1.abs() >= FULL_SCALE);
-                let st2 = x2 == SATURATED || (p.full_scale && x2.abs() >= FULL_SCALE);
-                let nsat = u32::from(st0) + u32::from(st1) + u32::from(st2);
-                let (u0, u1, u2) = (st0 || m0, st1 || m1, st2 || m2);
-                let nunk = u32::from(u0) + u32::from(u1) + u32::from(u2);
-                let k0 = if u0 { 0.0 } else { x0 };
-                let k1 = if u1 { 0.0 } else { x1 };
-                let k2 = if u2 { 0.0 } else { x2 };
-                let sum_ok = k0 + k1 + k2;
-                let max_ok = k0.abs().max(k1.abs()).max(k2.abs());
-                let imputed = -sum_ok;
-                let plausible = if nmiss == 1 { true } else { p.repair && imputed.abs() >= p.repair_ratio * max_ok };
-                let repaired = nunk == 1 && plausible;
-                let y0 = if u0 { imputed } else { x0 };
-                let y1 = if u1 { imputed } else { x1 };
-                let y2 = if u2 { imputed } else { x2 };
-                let good = ok && t.valid[x] > 0.0 && (nunk == 0 || repaired);
-                let c = y0 * c0 + y1 * c1 + y2 * c2;
-                let s = y0 * s0 + y1 * s1 + y2 * s2;
-                let av = if good { mc[x] * c - ms[x] * s } else { 0.0 };
-                let bv = if good { -(ms[x] * c + mc[x] * s) } else { 0.0 };
-                let nn = (av * av + bv * bv).sqrt();
-                o.a[k][x] = av;
-                o.b[k][x] = bv;
-                o.n2[k][x] = nn * nn;
-                let inv = if nn > 0.0 { 1.0 / nn.max(1e-30) } else { 0.0 };
-                o.na[k][x] = av * inv;
-                o.nb[k][x] = bv * inv;
-                let w = if good { if repaired { p.w_repaired } else { 1.0 } } else { 0.0 };
-                ir_acc[x] += w * nn * gain;
-                w_acc[x] += w;
-                usable[x] |= if good && nn > 0.0 { use_bit } else { 0 };
-                fl[x] |= (if nsat > 0 { sat_bit } else { 0 }) | (if repaired && good { rep_bit } else { 0 });
-            }
+        for x in (0..W).step_by(LANES) {
+            stage1_extended_lanes::<Isa>(v, sub_ok, t, o, p, x);
         }
-        let lost_flag = if lost { flags::DATA_LOST } else { 0 };
-        for x in 0..W {
-            let ir = if w_acc[x] > 0.0 { ir_acc[x] / w_acc[x].max(1e-30) * p.ir_lin } else { 0.0 };
-            let clipped = w_acc[x] <= 0.0 && fl[x] & flags::SATURATED_ANY != 0;
-            o.ir[x] = ir;
-            o.usable[x] = usable[x];
-            o.flags[x] = fl[x] | lost_flag | (if clipped { flags::IR_FILLED } else { 0 });
+    }
+}
+
+/// [`stage1_extended`] for eight pixels from `x` on.
+#[inline(always)]
+fn stage1_extended_lanes<I: Isa>(v: &[Row; 9], sub_ok: [bool; 9], t: &S1Tabs, o: &mut S1Out, p: &S1Params, x: usize) {
+    let (zero, one) = (F8::zero(), F8::splat(1.0));
+    let valid = F8::load(t.valid, x).gt(zero);
+    let mut ir_acc = zero;
+    let mut w_acc = zero;
+    let mut usable = [0u32; LANES];
+    let mut fl = [0u32; LANES];
+    let saturated = |s: F8| {
+        let m = s.eq(F8::splat(SATURATED));
+        if p.full_scale { m | s.abs().ge(F8::splat(FULL_SCALE)) } else { m }
+    };
+    let count = |a: M8, b: M8, c: M8| -> [u32; LANES] { std::array::from_fn(|l| (a.0[l] & 1) + (b.0[l] & 1) + (c.0[l] & 1)) };
+    let is = |n: [u32; LANES], want: u32| M8(std::array::from_fn(|l| if n[l] == want { u32::MAX } else { 0 }));
+    for k in 0..3 {
+        let (x0, x1, x2) = (F8::load(&v[3 * k], x), F8::load(&v[3 * k + 1], x), F8::load(&v[3 * k + 2], x));
+        // a lost sample is unknown everywhere in the row: like a saturated one, but any
+        // value is plausible for it
+        let lost = [!sub_ok[3 * k], !sub_ok[3 * k + 1], !sub_ok[3 * k + 2]];
+        let nmiss = lost.iter().filter(|m| **m).count();
+        let ok = nmiss == 0 || (nmiss == 1 && p.repair_lost);
+        let (st0, st1, st2) = (saturated(x0), saturated(x1), saturated(x2));
+        let (u0, u1, u2) = (st0 | M8::splat(lost[0]), st1 | M8::splat(lost[1]), st2 | M8::splat(lost[2]));
+        let nunk = count(u0, u1, u2);
+        let (k0, k1, k2) = ((!u0).and(x0), (!u1).and(x1), (!u2).and(x2));
+        let imputed = -(k0 + k1 + k2);
+        let max_ok = k0.abs().max(k1.abs()).max(k2.abs());
+        let plausible = if nmiss == 1 { M8::splat(true) } else { M8::splat(p.repair) & imputed.abs().ge(F8::splat(p.repair_ratio) * max_ok) };
+        let repaired = is(nunk, 1) & plausible;
+        let (y0, y1, y2) = (u0.select(imputed, x0), u1.select(imputed, x1), u2.select(imputed, x2));
+        let good = M8::splat(ok) & valid & (is(nunk, 0) | repaired);
+        let c = y0.mul_add::<I>(F8::splat(p.cos_t[0]), y1.mul_add::<I>(F8::splat(p.cos_t[1]), y2 * F8::splat(p.cos_t[2])));
+        let s = y0.mul_add::<I>(F8::splat(p.sin_t[0]), y1.mul_add::<I>(F8::splat(p.sin_t[1]), y2 * F8::splat(p.sin_t[2])));
+        let (mc, ms) = (F8::load(t.mc[k], x), F8::load(t.ms[k], x));
+        let av = good.and(mc.mul_add::<I>(c, -(ms * s)));
+        let bv = good.and(-ms.mul_add::<I>(c, mc * s));
+        let nn = av.mul_add::<I>(av, bv * bv).sqrt();
+        av.store(o.a[k], x);
+        bv.store(o.b[k], x);
+        (nn * nn).store(o.n2[k], x);
+        let inv = nn.gt(zero).and(one / nn.max(F8::splat(1e-30)));
+        (av * inv).store(o.na[k], x);
+        (bv * inv).store(o.nb[k], x);
+        let w = good.and(repaired.select(F8::splat(p.w_repaired), one));
+        ir_acc = (w * nn).mul_add::<I>(F8::splat(p.gain[k]), ir_acc);
+        w_acc = w_acc + w;
+        let used = (good & nn.gt(zero)).and_u32(1 << k);
+        let sat_bits = (st0 | st1 | st2).and_u32(1 << k);
+        let rep_bits = (repaired & good).and_u32(1 << (3 + k));
+        for l in 0..LANES {
+            usable[l] |= used[l];
+            fl[l] |= sat_bits[l] | rep_bits[l];
+        }
+    }
+    let has = w_acc.gt(zero);
+    has.and(ir_acc / w_acc.max(F8::splat(1e-30)) * F8::splat(p.ir_lin)).store(o.ir, x);
+    let lost_flag = if sub_ok.iter().any(|ok| !ok) { flags::DATA_LOST } else { 0 };
+    if let (Some(u), Some(f)) = (o.usable.get_mut(x..x + LANES), o.flags.get_mut(x..x + LANES)) {
+        for l in 0..LANES {
+            // flags::SATURATED_* are the bits 0..2 set above
+            let clipped = has.0[l] == 0 && fl[l] & flags::SATURATED_ANY != 0;
+            u[l] = usable[l] as u8;
+            f[l] = fl[l] | lost_flag | if clipped { flags::IR_FILLED } else { 0 };
         }
     }
 }
@@ -548,39 +558,51 @@ multiversion! {
 }
 
 /// 5 x 5 phase-coherent average of a weak pixel: replaces (a, b) where the neighbors agree in
-/// phase (no edge), multiplying the signal-to-noise ratio by up to 5.
+/// phase (no edge), multiplying the signal-to-noise ratio by up to 5. Eight pixels at a time,
+/// the sums in registers.
 #[inline(always)]
-fn weak_boost(i: &S2In, k: usize, p: &S2Params, af: &mut Row, bf: &mut Row, boosted: &mut RowU8) {
-    let (a, b, n2) = (&i.a[k], &i.b[k], &i.n2[k]);
-    let mut sa = [0f32; W];
-    let mut sb = [0f32; W];
-    let mut sm = [0f32; W];
-    let mut cnt = [0f32; W];
-    for dy in 0..5 {
-        for dx in 0..5usize {
-            let (ra, rb, rn2) = (a[dy], b[dy], n2[dy]);
-            for x in 2..W - 2 {
-                let xo = x + dx - 2;
-                let on = rn2[xo].sqrt();
-                let use_it = on > 0.0;
-                sa[x] += if use_it { ra[xo] } else { 0.0 };
-                sb[x] += if use_it { rb[xo] } else { 0.0 };
-                sm[x] += if use_it { on } else { 0.0 };
-                cnt[x] += if use_it { 1.0 } else { 0.0 };
+fn weak_boost<I: Isa>(i: &S2In, k: usize, p: &S2Params, af: &mut Row, bf: &mut Row, boosted: &mut RowU8) {
+    let (a, b, n2, na, nb) = (&i.a[k], &i.b[k], &i.n2[k], &i.na[k], &i.nb[k]);
+    // the filtered values as they are: the last step overlaps the one before
+    let (fa0, fb0) = (*af, *bf);
+    let (zero, one) = (F8::zero(), F8::splat(1.0));
+    let thr = p.weak_threshold / p.ab_multiplier;
+    let thr2 = F8::splat(thr * thr);
+    let mut x0 = 2;
+    loop {
+        let x = x0.min(W - 2 - LANES);
+        let (mut sa, mut sb, mut sm, mut cnt) = (zero, zero, zero, zero);
+        for dy in 0..5 {
+            for dx in 0..5 {
+                let at = x + dx - 2;
+                let (ra, rb) = (F8::load(a[dy], at), F8::load(b[dy], at));
+                let use_it = F8::load(n2[dy], at).gt(zero);
+                // the neighbor's amplitude: (a, b) . (na, nb)
+                let on = ra.mul_add::<I>(F8::load(na[dy], at), rb * F8::load(nb[dy], at));
+                sa = sa + use_it.and(ra);
+                sb = sb + use_it.and(rb);
+                sm = sm + use_it.and(on);
+                cnt = cnt + use_it.and(one);
             }
         }
-    }
-    let thr = p.weak_threshold / p.ab_multiplier;
-    for x in 2..W - 2 {
-        let amp = (af[x] * af[x] + bf[x] * bf[x]).sqrt();
-        let self_ok = n2[2][x] > 0.0;
-        let weak = amp < thr;
-        let coherent = (sa[x] * sa[x] + sb[x] * sb[x]).sqrt() > 0.8 * sm[x];
-        let take = self_ok && weak && coherent && cnt[x] >= 12.0;
-        let inv = 1.0 / cnt[x].max(1.0);
-        af[x] = if take { sa[x] * inv } else { af[x] };
-        bf[x] = if take { sb[x] * inv } else { bf[x] };
-        boosted[x] |= u8::from(take);
+        let (fa, fb) = (F8::load(&fa0, x), F8::load(&fb0, x));
+        let self_ok = F8::load(n2[2], x).gt(zero);
+        let weak = fa.mul_add::<I>(fa, fb * fb).lt(thr2);
+        let sm8 = sm * F8::splat(0.8);
+        let coherent = sa.mul_add::<I>(sa, sb * sb).gt(sm8 * sm8);
+        let take = self_ok & weak & coherent & cnt.ge(F8::splat(12.0));
+        let inv = one / cnt.max(one);
+        take.select(sa * inv, fa).store(af, x);
+        take.select(sb * inv, fb).store(bf, x);
+        if let Some(bo) = boosted.get_mut(x..x + LANES) {
+            for (o, m) in bo.iter_mut().zip(take.0) {
+                *o |= (m & 1) as u8;
+            }
+        }
+        if x0 + LANES >= W - 2 {
+            break;
+        }
+        x0 += LANES;
     }
 }
 
@@ -609,7 +631,7 @@ multiversion! {
             let (fa, fb) = (&mut af[k], &mut bf[k]);
             bilateral::<Isa>(i, k, p, true, fa, fb, &mut edge);
             if p.weak_boost {
-                weak_boost(i, k, p, fa, fb, &mut boosted);
+                weak_boost::<Isa>(i, k, p, fa, fb, &mut boosted);
             }
         }
         let f = Filtered { a: &af, b: &bf, edge: &edge, boosted: &boosted };
@@ -803,18 +825,20 @@ fn is_flying(d: f32, dn: [f32; 8], s: f32, sn: [f32; 8], e: &EdgeParams) -> bool
         acc += sn[j];
         sq += sn[j] * sn[j];
         let o = dn[j];
-        mn = if o > 0.0 { mn.min(o) } else { mn };
-        mx = if o > 0.0 { mx.max(o) } else { mx };
+        mn = if o > 0.0 { fmin(mn, o) } else { mn };
+        mx = if o > 0.0 { fmax(mx, o) } else { mx };
     }
-    let tmp0 = (sq * 9.0 - acc * acc).max(0.0).sqrt() / 9.0;
-    let tmp0 = tmp0 / (acc / 9.0).max(e.avg_min);
+    // libfreenect2: sqrt(max(9 sq - acc^2, 0)) / 9 / max(acc / 9, avg_min) >= std_threshold;
+    // the same test squared, without the root and the divisions
+    let var9 = fmax(sq * 9.0 - acc * acc, 0.0);
+    let limit = e.std_threshold * fmax(acc, 9.0 * e.avg_min);
     let amin = (d - mn).abs();
     let amax = (d - mx).abs();
     let avg = (amin + amax) * 0.5;
-    let maxd = amin.max(amax);
-    let scale = if e.scale_mm > 0.0 { (d / e.scale_mm).max(1.0) } else { 1.0 };
+    let maxd = fmax(amin, amax);
+    let scale = if e.scale_mm > 0.0 { fmax(d * (1.0 / e.scale_mm), 1.0) } else { 1.0 };
     d > 0.0
-        && tmp0 >= e.std_threshold
+        && var9 >= limit * limit
         && e.close * scale < amin
         && e.far * scale < amax
         && e.max_delta * scale < maxd
@@ -828,18 +852,19 @@ multiversion! {
             *out = *d[1];
             return;
         }
+        let in_range = |v: f32| (v >= e.min_depth) & (v <= e.max_depth);
+        // the border keeps every depth in range; inside, the flying pixels go too (no branch in
+        // the loop: it vectorizes without masked stores)
+        for x in [0, W - 1] {
+            out[x] = if in_range(d[1][x]) { d[1][x] } else { 0.0 };
+        }
         let border_row = !(1..=HEIGHT - 2).contains(&y);
-        for x in 0..W {
+        for x in 1..W - 1 {
             let v = d[1][x];
-            let in_range = v >= e.min_depth && v <= e.max_depth;
-            if border_row || !(1..=W - 2).contains(&x) {
-                out[x] = if in_range { v } else { 0.0 };
-                continue;
-            }
             let dn = [d[0][x - 1], d[0][x], d[0][x + 1], d[1][x - 1], d[1][x + 1], d[2][x - 1], d[2][x], d[2][x + 1]];
             let sn = [s[0][x - 1], s[0][x], s[0][x + 1], s[1][x - 1], s[1][x + 1], s[2][x - 1], s[2][x], s[2][x + 1]];
-            let flying = is_flying(v, dn, s[1][x], sn, e);
-            out[x] = if in_range && !flying && edge_ok[x] != 0 { v } else { 0.0 };
+            let flying = !border_row & (is_flying(v, dn, s[1][x], sn, e) | (edge_ok[x] == 0));
+            out[x] = if in_range(v) & !flying { v } else { 0.0 };
         }
     }
 }
@@ -892,23 +917,7 @@ multiversion! {
         // neighbors in a 5 x 5 window at a similar depth
         let mut agree = [24f32; W];
         if q.speckle && (2..=HEIGHT - 3).contains(&y) {
-            for x in 2..W - 2 {
-                agree[x] = 0.0;
-            }
-            for dy in 0..5 {
-                for dx in 0..5usize {
-                    if dy == 2 && dx == 2 {
-                        continue;
-                    }
-                    let r = d[dy];
-                    for x in 2..W - 2 {
-                        let v = d[2][x];
-                        let o = r[x + dx - 2];
-                        let tol = (0.03 * v).max(50.0);
-                        agree[x] += if (o > 0.0) & ((o - v).abs() < tol) { 1.0 } else { 0.0 };
-                    }
-                }
-            }
+            speckle_neighbors(d, &mut agree);
         }
         for x in 0..W {
             let v = d[2][x];
@@ -926,6 +935,38 @@ multiversion! {
                 | (if has & in_range & !fly & !confident { flags::LOW_CONFIDENCE } else { 0 })
                 | (if has & in_range & !fly & confident & speckle { flags::SPECKLE } else { 0 });
         }
+    }
+}
+
+/// For the pixels 2 ..= W - 3 of the middle row of `d`: how many of the 24 neighbors in the
+/// 5 x 5 window have a depth within 3 % (at least 50 mm). Eight pixels at a time, the counts
+/// in registers; the last step overlaps the one before.
+#[inline(always)]
+fn speckle_neighbors(d: &[&Row; 5], agree: &mut Row) {
+    let zero = F8::zero();
+    let mut x0 = 2;
+    loop {
+        let x = x0.min(W - 2 - LANES);
+        let v = F8::load(d[2], x);
+        let tol = (v * F8::splat(0.03)).max(F8::splat(50.0));
+        let mut count = [0u32; LANES];
+        for (dy, row) in d.iter().enumerate() {
+            for dx in 0..5 {
+                if dy == 2 && dx == 2 {
+                    continue;
+                }
+                let o = F8::load(*row, x + dx - 2);
+                let near = o.gt(zero) & (o - v).abs().lt(tol);
+                for (c, m) in count.iter_mut().zip(near.0) {
+                    *c += m & 1;
+                }
+            }
+        }
+        F8(count.map(|c| c as f32)).store(agree, x);
+        if x0 + LANES >= W - 2 {
+            break;
+        }
+        x0 += LANES;
     }
 }
 

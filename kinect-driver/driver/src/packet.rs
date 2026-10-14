@@ -214,6 +214,46 @@ pub fn unpack_row(row: &[u8], out: &mut [u16; WIDTH]) {
     }
 }
 
+/// Where code `t` (0..16) of a 22-byte group sits: the byte from which a little-endian u64
+/// holds all its 11 bits, and the shift within that u64.
+// (evaluated by the compiler: an index out of range would not compile)
+#[allow(clippy::indexing_slicing)]
+const CODE_AT: [(usize, u32); 16] = {
+    let mut at = [(0usize, 0u32); 16];
+    let mut t = 0;
+    while t < 16 {
+        let bit = 11 * t;
+        let byte = if bit / 8 < 14 { bit / 8 } else { 14 };
+        at[t] = (byte, (bit - 8 * byte) as u32);
+        t += 1;
+    }
+    at
+};
+
+/// [`unpack_row`] followed by the table `lut` (code -> sample value) in one pass: every code
+/// is read with one 64-bit load from its group, and its value goes straight to its pixel.
+pub fn unpack_row_values(row: &[u8], lut: &[f32; 2048], out: &mut [f32; WIDTH]) {
+    for (g, chunk) in row.chunks_exact(22).take(32).enumerate() {
+        let Ok(chunk) = <&[u8; 22]>::try_from(chunk) else { continue };
+        let (q, i0) = (g / 8, (g % 8) * 16);
+        for (t, &(byte, shift)) in CODE_AT.iter().enumerate() {
+            let Some(word) = chunk.get(byte..byte + 8).and_then(|b| <[u8; 8]>::try_from(b).ok()) else { continue };
+            let code = (u64::from_le_bytes(word) >> shift) as usize & 2047;
+            if let (Some(o), Some(v)) = (out.get_mut(4 * (i0 + t) + q), lut.get(code)) {
+                *o = *v;
+            }
+        }
+    }
+    // the first and the last column carry nothing (code 0, as in unpack_row)
+    let zero = lut.first().copied().unwrap_or(0.0);
+    if let Some(o) = out.first_mut() {
+        *o = zero;
+    }
+    if let Some(o) = out.last_mut() {
+        *o = zero;
+    }
+}
+
 /// The inverse of [`unpack_row`]: packs 512 codes (pixel order) into a row of 704 bytes.
 pub fn pack_row(codes: &[u16; WIDTH], row: &mut [u8]) {
     for (g, chunk) in row.chunks_exact_mut(22).take(32).enumerate() {
@@ -316,6 +356,29 @@ mod tests {
         unpack_row(&row, &mut codes);
         for (x, c) in codes.iter().enumerate() {
             assert_eq!(*c, reference_code(&row, x), "pixel {x}");
+        }
+    }
+
+    #[test]
+    fn unpacking_to_values_is_unpacking_and_the_table() {
+        let mut lut = [0f32; 2048];
+        for (i, v) in lut.iter_mut().enumerate() {
+            *v = i as f32 * 0.5 - 7.0;
+        }
+        let mut seed = 0x9e37_79b9u32;
+        for _ in 0..20 {
+            let mut row = vec![0u8; ROW_BYTES];
+            for b in row.iter_mut() {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                *b = (seed >> 24) as u8;
+            }
+            let mut codes = [0u16; WIDTH];
+            unpack_row(&row, &mut codes);
+            let mut values = [f32::NAN; WIDTH];
+            unpack_row_values(&row, &lut, &mut values);
+            for (x, (c, v)) in codes.iter().zip(&values).enumerate() {
+                assert_eq!(*v, lut[usize::from(*c)], "pixel {x}");
+            }
         }
     }
 

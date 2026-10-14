@@ -23,7 +23,7 @@ use super::resolve::{ResolveIn, resolve_row};
 use super::{TofOutput, TofTimings};
 use crate::consts::{HEIGHT, PIXELS, WIDTH};
 use crate::error::{Error, Result};
-use crate::packet::{RawDepthPacket, unpack_row};
+use crate::packet::{RawDepthPacket, unpack_row_values};
 use crate::tables::DeviceTables;
 
 const W: usize = WIDTH;
@@ -141,6 +141,41 @@ pub(crate) fn edge_params(cfg: &TofConfig, extended: bool) -> EdgeParams {
 /// Constants of the extended finalization (shared with the GPU decoder).
 pub(crate) fn s3_params(cfg: &TofConfig) -> S3Params {
     S3Params { min_conf: cfg.ext.min_confidence, speckle: cfg.ext.speckle_filter, speckle_min: cfg.ext.speckle_min_neighbors as f32 }
+}
+
+/// The serial steps of stage 3 that do not depend on each other: run as two tasks at once.
+enum Serial<'a> {
+    /// the smooth expectation of u for the resolver, from the confident pixels
+    Expected { s2: &'a [f32], u: &'a mut Vec<f32>, w: &'a mut Vec<f32>, pp: &'a mut PushPull, anchored: &'a mut bool },
+    /// the infrared where every frequency saturated
+    FillIr { cfg: &'a TofConfig, ir: &'a mut [f32], flags: &'a [u32], level: &'a mut f32, scratch: &'a mut post::IrFill, ms: &'a mut f64 },
+}
+
+impl Serial<'_> {
+    fn run(self) {
+        match self {
+            Serial::Expected { s2, u, w, pp, anchored } => {
+                u.clear();
+                w.clear();
+                // (the planes are row-interleaved: whole rows at a time)
+                for r in s2.chunks_exact(W * P2) {
+                    u.extend_from_slice(r.get(..W).unwrap_or(&[]));
+                    w.extend_from_slice(r.get(7 * W..8 * W).unwrap_or(&[]));
+                }
+                *anchored = w.iter().any(|w| *w > 0.0);
+                if *anchored {
+                    pp.fill(u, w, W, HEIGHT);
+                } else {
+                    u.fill(0.0);
+                }
+            }
+            Serial::FillIr { cfg, ir, flags, level, scratch, ms } => {
+                let t = Instant::now();
+                post::fill_ir(cfg, ir, flags, level, scratch);
+                *ms = ms_since(t);
+            }
+        }
+    }
 }
 
 /// The CPU depth/infrared decoder (reusable, keeps its buffers and threads between frames: a
@@ -262,6 +297,7 @@ impl CpuDecoder {
         out.sequence = packet.sequence;
         out.timestamp = packet.timestamp;
         let t0 = Instant::now();
+        self.timings.fill_ms = 0.0;
         self.stage1(packet, out)?;
         self.timings.stage1_ms = ms_since(t0);
         let t1 = Instant::now();
@@ -274,14 +310,9 @@ impl CpuDecoder {
         }
         out.flags.copy_from_slice(&self.flags);
         if self.cfg.mode == TofMode::Extended && self.cfg.ext.fill_saturated_depth {
-            post::fill_saturated_depth(&self.cfg, out, &mut self.post);
+            post::fill_saturated_depth(&self.cfg, &mut out.depth, &mut out.confidence, &mut out.flags, &mut self.post.depth);
         }
         self.timings.stage3_ms = ms_since(t2);
-        let t3 = Instant::now();
-        if self.cfg.mode == TofMode::Extended && self.cfg.ext.ir_fill_clipped {
-            post::fill_ir(&self.cfg, out, &mut self.saturation_level, &mut self.post);
-        }
-        self.timings.fill_ms = ms_since(t3);
         self.timings.total_ms = ms_since(t0);
         Ok(())
     }
@@ -299,7 +330,6 @@ impl CpuDecoder {
             .enumerate()
             .map(|(b, (((s1, ir), us), fl))| (b * ROWS_PER_BLOCK, s1, ir, us, fl));
         let work = |(y0, s1, ir, us, fl): (usize, &mut [f32], &mut [f32], &mut [u8], &mut [u32])| {
-            let mut codes = [0u16; W];
             let mut vals = [[0f32; W]; 9];
             for ((r, s1row), ((irrow, usrow), flrow)) in s1
                 .chunks_exact_mut(W * P1)
@@ -312,12 +342,7 @@ impl CpuDecoder {
                     let ok = packet.row_ok(s, y);
                     *so = ok;
                     match packet.row_bytes(s, y).filter(|_| ok) {
-                        Some(bytes) => {
-                            unpack_row(bytes, &mut codes);
-                            for (o, c) in v.iter_mut().zip(codes.iter()) {
-                                *o = prep.lut.get(usize::from(*c & 2047)).copied().unwrap_or(0.0);
-                            }
-                        }
+                        Some(bytes) => unpack_row_values(bytes, &prep.lut, v),
                         None => v.fill(0.0),
                     }
                 }
@@ -448,22 +473,27 @@ impl CpuDecoder {
         // (the planes are row-interleaved: whole rows at a time)
         let kind_rows = self.s2b.chunks_exact(W * P2B).filter_map(|r| r.get(W..2 * W));
         let singles = kind_rows.flatten().filter(|k| **k & 0x0f == kernels::kind::SINGLE).count();
-        let expected: &[f32] = if self.cfg.ext.spatial_resolve && singles > 0 {
-            self.exp_u.clear();
-            self.exp_w.clear();
-            for r in self.s2.chunks_exact(W * P2) {
-                self.exp_u.extend_from_slice(r.get(..W).unwrap_or(&[]));
-                self.exp_w.extend_from_slice(r.get(7 * W..8 * W).unwrap_or(&[]));
-            }
-            if self.exp_w.iter().any(|w| *w > 0.0) {
-                self.exp_pp.fill(&self.exp_u, &self.exp_w, W, HEIGHT)
-            } else {
-                // no anchor anywhere: an expectation of 0 everywhere
-                self.exp_u.fill(0.0);
-                &self.exp_u
-            }
-        } else {
-            &[]
+        let want_expected = self.cfg.ext.spatial_resolve && singles > 0;
+        // meanwhile the clipped infrared is filled (it needs only what stage 1 decided): both
+        // are serial, so they run side by side
+        let mut anchored = false;
+        let tasks = [
+            want_expected.then_some(Serial::Expected { s2: &self.s2, u: &mut self.exp_u, w: &mut self.exp_w, pp: &mut self.exp_pp, anchored: &mut anchored }),
+            self.cfg.ext.ir_fill_clipped.then_some(Serial::FillIr {
+                cfg: &self.cfg,
+                ir: &mut out.ir,
+                flags: &self.flags,
+                level: &mut self.saturation_level,
+                scratch: &mut self.post.ir,
+                ms: &mut self.timings.fill_ms,
+            }),
+        ];
+        self.workers.for_each(tasks.into_iter().flatten(), &Serial::run)?;
+        let expected: &[f32] = match (want_expected, anchored) {
+            (true, true) => self.exp_pp.result(),
+            // no anchor anywhere: an expectation of 0 everywhere
+            (true, false) => &self.exp_u,
+            (false, _) => &[],
         };
         let resolve = ResolveIn {
             s2: &self.s2,
