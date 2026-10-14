@@ -148,7 +148,7 @@ enum Serial<'a> {
     /// the smooth expectation of u for the resolver, from the confident pixels
     Expected { s2: &'a [f32], u: &'a mut Vec<f32>, w: &'a mut Vec<f32>, pp: &'a mut PushPull, anchored: &'a mut bool },
     /// the infrared where every frequency saturated
-    FillIr { cfg: &'a TofConfig, ir: &'a mut [f32], flags: &'a [u32], level: &'a mut f32, scratch: &'a mut post::IrFill, ms: &'a mut f64 },
+    FillIr { cfg: &'a TofConfig, ir: &'a mut [f32], flags: &'a [u32], level: &'a mut f32, scratch: &'a mut PostScratch, ms: &'a mut f64 },
 }
 
 impl Serial<'_> {
@@ -310,7 +310,7 @@ impl CpuDecoder {
         }
         out.flags.copy_from_slice(&self.flags);
         if self.cfg.mode == TofMode::Extended && self.cfg.ext.fill_saturated_depth {
-            post::fill_saturated_depth(&self.cfg, &mut out.depth, &mut out.confidence, &mut out.flags, &mut self.post.depth, Some(&self.workers))?;
+            post::fill_saturated_depth(&self.cfg, &mut out.depth, &mut out.confidence, &mut out.flags, &mut self.post, Some(&self.workers))?;
         }
         self.timings.stage3_ms = ms_since(t2);
         self.timings.total_ms = ms_since(t0);
@@ -484,7 +484,7 @@ impl CpuDecoder {
                 ir: &mut out.ir,
                 flags: &self.flags,
                 level: &mut self.saturation_level,
-                scratch: &mut self.post.ir,
+                scratch: &mut self.post,
                 ms: &mut self.timings.fill_ms,
             }),
         ];

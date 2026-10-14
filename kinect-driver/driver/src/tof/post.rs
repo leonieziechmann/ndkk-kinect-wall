@@ -1,6 +1,6 @@
 //! The steps after the per-pixel decoding that work on whole areas (a flood fill, a percentile):
-//! shared by the CPU and the GPU decoder, which runs them on the decoded output. The two fills
-//! use separate planes and buffers, so a decoder can run them at the same time.
+//! shared by the CPU and the GPU decoder, which runs them on the decoded output. The infrared
+//! fill needs only what stage 1 decided, so a decoder can run it early, beside other work.
 
 use super::TofConfig;
 use super::fill::PushPull;
@@ -11,28 +11,13 @@ use crate::error::Result;
 
 const W: usize = WIDTH;
 
-/// The buffers of the steps, kept by each decoder: they grow once and are reused.
+/// The buffers of the steps, kept by each decoder: they grow once and are reused (the two
+/// fills never run at the same time and share them).
 #[derive(Default)]
 pub(crate) struct PostScratch {
-    /// of [`fill_saturated_depth`]
-    pub(crate) depth: DepthFill,
-    /// of [`fill_ir`]
-    pub(crate) ir: IrFill,
-}
-
-/// The buffers of [`fill_saturated_depth`].
-#[derive(Default)]
-pub(crate) struct DepthFill {
     /// per pixel: [`OTHER`], [`SOURCE`], [`TARGET`] or [`REACHED`]
     class: Vec<u8>,
     stack: Vec<u32>,
-    weights: Vec<f32>,
-    pp: PushPull,
-}
-
-/// The buffers of [`fill_ir`].
-#[derive(Default)]
-pub(crate) struct IrFill {
     repaired: Vec<f32>,
     weights: Vec<f32>,
     pp: PushPull,
@@ -50,8 +35,8 @@ const REACHED: u8 = 3;
 /// is interpolated from the measured rim of the same bright object (pixels that saturated
 /// in some sample but still have depth), never from what is behind it. With `workers`, the
 /// interpolation runs on them (fails only if one panicked).
-pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidence: &mut [f32], fl: &mut [u32], s: &mut DepthFill, workers: Option<&Workers>) -> Result<()> {
-    let DepthFill { class, stack, weights, pp } = s;
+pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidence: &mut [f32], fl: &mut [u32], s: &mut PostScratch, workers: Option<&Workers>) -> Result<()> {
+    let PostScratch { class, stack, weights, pp, .. } = s;
     let rejected = flags::EDGE | flags::SPECKLE | flags::OUT_OF_RANGE;
     class.clear();
     class.extend(depth.iter().zip(fl.iter()).map(|(d, f)| {
@@ -135,8 +120,8 @@ pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidenc
 /// darker than the level at which this sensor saturates (estimated from the pixels whose
 /// saturated sample could be rebuilt: their brightness is known and just at that level).
 /// Needs only what stage 1 decided (`IR_FILLED`, the repair bits of `fl`).
-pub(crate) fn fill_ir(cfg: &TofConfig, ir: &mut [f32], fl: &[u32], saturation_level: &mut f32, s: &mut IrFill) {
-    let IrFill { repaired, weights, pp } = s;
+pub(crate) fn fill_ir(cfg: &TofConfig, ir: &mut [f32], fl: &[u32], saturation_level: &mut f32, s: &mut PostScratch) {
+    let PostScratch { repaired, weights, pp, .. } = s;
     repaired.clear();
     let mut clipped = 0usize;
     for (v, f) in ir.iter().zip(fl) {
