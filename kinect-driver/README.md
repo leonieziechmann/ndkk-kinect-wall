@@ -41,7 +41,28 @@ IR, wo der Sensor sättigt: compat 100 % weiß abgeschnitten, extended 0 %. Ein 
 
 **Das muss sich an der echten Kinect noch bestätigen.** Der Simulator ist nach dem Rauschmodell der Literatur gebaut, nicht nach diesem Sensor. Werkzeuge dafür: `kinect-driver record` (Rohdaten), `replay --compare --png` (beide Modi nebeneinander), `analyze` (Helligkeit, Verstärkung und Rauschen des eigenen Sensors → `--tof`-Einstellungen).
 
-**Zeit** (Xeon 2,8 GHz, 4 vCPU, AVX2): compat 8 ms je Frame mit 3 Threads (21 ms mit einem), extended 18–19 ms (40–44 ms mit einem). Auf der GPU (wgpu) dieselben Ergebnisse bis auf Rundung (Tiefe max. 0,002 mm Abweichung, gemessen mit lavapipe); die Zeit dort hängt von der GPU ab: `kinect-driver bench`.
+**Zeit** (Xeon 2,8 GHz, 4 vCPU, AVX2): compat 7,5 ms je Frame mit 3 Threads (21 ms mit einem), extended 17 ms (40–44 ms mit einem). Auf der GPU (wgpu) dieselben Ergebnisse bis auf Rundung (Tiefe max. 0,002 mm Abweichung, gemessen mit lavapipe); die Zeit dort hängt von der GPU ab: `kinect-driver bench`.
+
+## Speicher und Kopien
+
+Im laufenden Betrieb legt ein Frame keinen Bildspeicher neu an; die großen Puffer kreisen.
+
+- **Rohpakete** (2,98 MB) kommen aus einem Pool des Parsers. Die USB-Pakete landen direkt an ihrem Platz im Rohpaket (beim Teilbild nach dem zuletzt empfangenen); nur der Footer, der den richtigen Platz nennt, liegt daneben. Nennt er einen anderen Platz (nach einem verlorenen Teilbild), wird das Teilbild einmal verschoben. Je Byte also eine Kopie: vom USB-Puffer ins Rohpaket.
+- **Ausgabe-Ebenen** (Tiefe, IR, Konfidenz, Flags, Punkte: 3,47 MB, mit Punkten 6 MB) kommen aus dem Pool der Dekodierstufe und gehen zurück, wenn die Anwendung den Frame fallen lässt. Hält sie Frames länger, entstehen eben neue; beide Pools behalten höchstens 8 Stück.
+- **Dekoder:** feste Helfer-Threads, die zwischen den Phasen schlafen, statt Thread-Starts je Phase. Arbeitsebenen, Push-Pull, Flood-Fill und IR-Füllung behalten ihre Puffer.
+- **Stufen** behalten ihre Puffer (`IrToneMap::even`, `TemporalFilter`); `Points` füllt die Ebene des Frames.
+- **Worker für den Hub:** schreibt Tiefe und IR direkt aus den Ebenen des Frames in die Pipe, ohne Nachrichtenpuffer und Zwischenkopie; danach gehen die Ebenen zurück in den Pool.
+
+Gemessen mit `cargo run --release -p kinect-driver --example alloc_count` (zählender Allocator; Parser, Pipeline, Übergabe):
+
+| je Frame | vorher | jetzt |
+|---|---|---|
+| Allokationen, CPU (compat / extended / mit `even` und Punkten) | 3.872 / 4.808 / 4.809 | 2 / 2 / 2 |
+| neu angelegte Bytes | 7,1 / 12,8 / 15,4 MB | 296 B (`Arc` des Rohpakets, `Box` des Ereignisses) |
+| GPU-Weg | 105 Allokationen, 6,7 MB | 94 kleine in wgpu, 18 KB |
+| Zeit, Linux, 4 vCPU: Parser / compat / extended / ganzer Treiber | 0,35 / 9–13 / 21 / 18,7 ms | 0,21 / 8 / 20 / 17,1 ms |
+
+`driver/tests/alloc.rs` hält das fest. Im erweiterten Modus ändert sich die Zeit kaum, dort dominiert die Rechnung. Unter Windows sind Thread-Starts und große Allokationen teurer; dort dürfte der Unterschied größer sein (noch nicht gemessen).
 
 ## Mit dem kinect-hub
 
@@ -121,7 +142,7 @@ let factory: PipelineFactory = std::sync::Arc::new(|| {
 let cfg = kinect_driver::DriverConfig { pipeline: Some(factory), ..Default::default() };
 ```
 
-- `Frame`: Tiefe (mm), IR, Konfidenz 0..1, Flags je Pixel (`tof::flags`: gesättigt, rekonstruiert, aus Nachbarn aufgelöst, Kante, gefüllt, …), 3D-Punkte, eigene Ebenen (`extra`).
+- `Frame`: Tiefe (mm), IR, Konfidenz 0..1, Flags je Pixel (`tof::flags`: gesättigt, rekonstruiert, aus Nachbarn aufgelöst, Kante, gefüllt, …), 3D-Punkte, eigene Ebenen (`extra`). Die Ebenen gehen zurück in den Pool, wenn der Frame fallen gelassen wird: Was länger gebraucht wird, mit `std::mem::take(&mut frame.depth)` herausnehmen oder kopieren.
 - Quellen: `Source::Kinect`, `Source::Recording` (`.k2raw`, Echtzeit oder so schnell wie möglich, in Schleife), `Source::Simulator`, `Source::Backend` (eigener USB-Backend, z. B. das simulierte Gerät `usb::mock` mit Fehlerinjektion).
 - Ohne Treiber-Threads: `CpuDecoder` / `gpu::GpuDecoder` direkt auf Rohpakete; `gpu::GpuDecoder::with_device` nutzt ein vorhandenes wgpu-Device (wgpu 30, dieselbe Version wie wall-bevy).
 - `pipeline::Backend::Gpu` fällt ohne GPU oder nach einem GPU-Fehler (Treiber-Reset, Device verloren) auf die CPU zurück und versucht die GPU alle 30 s neu.

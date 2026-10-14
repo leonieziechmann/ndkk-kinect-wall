@@ -13,12 +13,12 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use super::config::{TofConfig, TofMode};
-use super::fill::push_pull;
+use super::fill::PushPull;
 use super::kernels::{
     self, EdgeParams, Row, RowFlags, RowU8, S1Out, S1Params, S1Tabs, S2In, S2OutCompat, S2OutExt, S2Params, S3In, S3Params,
 };
-use super::parallel::{for_each_block, thread_count};
-use super::post;
+use super::parallel::{Workers, thread_count};
+use super::post::{self, PostScratch};
 use super::resolve::{ResolveIn, resolve_row};
 use super::{TofOutput, TofTimings};
 use crate::consts::{HEIGHT, PIXELS, WIDTH};
@@ -143,10 +143,12 @@ pub(crate) fn s3_params(cfg: &TofConfig) -> S3Params {
     S3Params { min_conf: cfg.ext.min_confidence, speckle: cfg.ext.speckle_filter, speckle_min: cfg.ext.speckle_min_neighbors as f32 }
 }
 
-/// The CPU depth/infrared decoder (reusable, keeps its buffers between frames).
+/// The CPU depth/infrared decoder (reusable, keeps its buffers and threads between frames: a
+/// frame allocates nothing).
 pub struct CpuDecoder {
     cfg: TofConfig,
-    threads: usize,
+    workers: Workers,
+    describe: String,
     prep: Option<Prepared>,
     s1: Vec<f32>,
     usable: Vec<u8>,
@@ -155,6 +157,11 @@ pub struct CpuDecoder {
     s2b: Vec<u8>,
     depth_res: Vec<f32>,
     conf_res: Vec<f32>,
+    /// the resolver's expectation: input, weights, push-pull
+    exp_u: Vec<f32>,
+    exp_w: Vec<f32>,
+    exp_pp: PushPull,
+    post: PostScratch,
     /// estimated infrared level at which this sensor saturates (running, 0 = not yet seen)
     saturation_level: f32,
     /// how long the last frame took per phase
@@ -170,9 +177,11 @@ fn row1(buf: &[f32], y: usize) -> Option<&Row> {
     buf.get(y * W..(y + 1) * W)?.try_into().ok()
 }
 
+/// The `P` rows of `W` of a row-interleaved block row.
 fn split_row<T, const P: usize>(row: &mut [T]) -> Option<[&mut [T; W]; P]> {
-    let v: Vec<&mut [T; W]> = row.chunks_exact_mut(W).take(P).filter_map(|c| c.try_into().ok()).collect();
-    v.try_into().ok()
+    let (rows, _) = row.as_chunks_mut::<W>();
+    let rows: &mut [[T; W]; P] = rows.get_mut(..P)?.try_into().ok()?;
+    Some(rows.each_mut())
 }
 
 fn ms_since(t: Instant) -> f64 {
@@ -183,8 +192,19 @@ impl CpuDecoder {
     /// A decoder with this configuration.
     pub fn new(cfg: TofConfig) -> Result<CpuDecoder> {
         cfg.validate()?;
+        let workers = Workers::new(thread_count(cfg.threads));
+        let describe = format!(
+            "cpu {}, {} threads, {}",
+            super::simd::detected().name(),
+            workers.threads(),
+            match cfg.mode {
+                TofMode::Compat => "compat",
+                TofMode::Extended => "extended",
+            }
+        );
         Ok(CpuDecoder {
-            threads: thread_count(cfg.threads),
+            workers,
+            describe,
             cfg,
             prep: None,
             s1: vec![0.0; PIXELS * P1],
@@ -194,6 +214,10 @@ impl CpuDecoder {
             s2b: vec![0; PIXELS * P2B],
             depth_res: vec![0.0; PIXELS],
             conf_res: vec![0.0; PIXELS],
+            exp_u: Vec::new(),
+            exp_w: Vec::new(),
+            exp_pp: PushPull::new(),
+            post: PostScratch::default(),
             saturation_level: 0.0,
             timings: TofTimings::default(),
         })
@@ -206,7 +230,12 @@ impl CpuDecoder {
 
     /// Threads in use.
     pub fn threads(&self) -> usize {
-        self.threads
+        self.workers.threads()
+    }
+
+    /// "cpu avx2+fma, 4 threads, extended"
+    pub fn describe(&self) -> &str {
+        &self.describe
     }
 
     /// The complex value (a, b) of frequency `k` (0 = 80, 1 = 16, 2 = 120 MHz) at pixel `i` in the
@@ -245,12 +274,12 @@ impl CpuDecoder {
         }
         out.flags.copy_from_slice(&self.flags);
         if self.cfg.mode == TofMode::Extended && self.cfg.ext.fill_saturated_depth {
-            post::fill_saturated_depth(&self.cfg, out);
+            post::fill_saturated_depth(&self.cfg, out, &mut self.post);
         }
         self.timings.stage3_ms = ms_since(t2);
         let t3 = Instant::now();
         if self.cfg.mode == TofMode::Extended && self.cfg.ext.ir_fill_clipped {
-            post::fill_ir(&self.cfg, out, &mut self.saturation_level);
+            post::fill_ir(&self.cfg, out, &mut self.saturation_level, &mut self.post);
         }
         self.timings.fill_ms = ms_since(t3);
         self.timings.total_ms = ms_since(t0);
@@ -261,15 +290,14 @@ impl CpuDecoder {
         let prep = self.prep.as_ref().ok_or_else(|| Error::invalid("tables not loaded"))?;
         let p = s1_params(&self.cfg);
         let extended = self.cfg.mode == TofMode::Extended;
-        let blocks: Vec<_> = self
+        let blocks = self
             .s1
             .chunks_mut(W * P1 * ROWS_PER_BLOCK)
             .zip(out.ir.chunks_mut(W * ROWS_PER_BLOCK))
             .zip(self.usable.chunks_mut(W * ROWS_PER_BLOCK))
             .zip(self.flags.chunks_mut(W * ROWS_PER_BLOCK))
             .enumerate()
-            .map(|(b, (((s1, ir), us), fl))| (b * ROWS_PER_BLOCK, s1, ir, us, fl))
-            .collect();
+            .map(|(b, (((s1, ir), us), fl))| (b * ROWS_PER_BLOCK, s1, ir, us, fl));
         let work = |(y0, s1, ir, us, fl): (usize, &mut [f32], &mut [f32], &mut [u8], &mut [u32])| {
             let mut codes = [0u16; W];
             let mut vals = [[0f32; W]; 9];
@@ -295,13 +323,22 @@ impl CpuDecoder {
                 }
                 let [s0, s1, s2, s3, s4, s5, s6, s7, s8] = sub_ok;
                 let freq_ok = [s0 && s1 && s2, s3 && s4 && s5, s6 && s7 && s8];
+                // (the frame's planes are reused: a row that cannot be decoded is zeroed, never
+                // left with an older frame's values; none of this fails with planes of the
+                // right size)
                 let (Some(mc0), Some(mc1), Some(mc2), Some(ms0), Some(ms1), Some(ms2), Some(valid)) =
                     (row1(&prep.mc[0], y), row1(&prep.mc[1], y), row1(&prep.mc[2], y), row1(&prep.ms[0], y), row1(&prep.ms[1], y), row1(&prep.ms[2], y), row1(&prep.valid, y))
                 else {
+                    irrow.fill(0.0);
+                    usrow.fill(0);
                     continue;
                 };
                 let tabs = S1Tabs { mc: [mc0, mc1, mc2], ms: [ms0, ms1, ms2], valid };
-                let Some([a0, a1, a2, b0, b1, b2, n0, n1, n2, na0, na1, na2, nb0, nb1, nb2]) = split_row::<f32, P1>(s1row) else { continue };
+                let Some([a0, a1, a2, b0, b1, b2, n0, n1, n2, na0, na1, na2, nb0, nb1, nb2]) = split_row::<f32, P1>(s1row) else {
+                    irrow.fill(0.0);
+                    usrow.fill(0);
+                    continue;
+                };
                 let (Ok(ir), Ok(usable), Ok(flags)) = (<&mut Row>::try_from(irrow), <&mut RowU8>::try_from(usrow), <&mut RowFlags>::try_from(flrow)) else {
                     continue;
                 };
@@ -313,7 +350,7 @@ impl CpuDecoder {
                 }
             }
         };
-        for_each_block(self.threads, blocks, &work)
+        self.workers.for_each(blocks, &work)
     }
 
     fn stage2(&mut self) -> Result<()> {
@@ -322,14 +359,13 @@ impl CpuDecoder {
         let extended = self.cfg.mode == TofMode::Extended;
         let s1 = &self.s1;
         let usable = &self.usable;
-        let blocks: Vec<_> = self
+        let blocks = self
             .s2
             .chunks_mut(W * P2 * ROWS_PER_BLOCK)
             .zip(self.s2b.chunks_mut(W * P2B * ROWS_PER_BLOCK))
             .zip(self.flags.chunks_mut(W * ROWS_PER_BLOCK))
             .enumerate()
-            .map(|(b, ((s2, s2b), fl))| (b * ROWS_PER_BLOCK, s2, s2b, fl))
-            .collect();
+            .map(|(b, ((s2, s2b), fl))| (b * ROWS_PER_BLOCK, s2, s2b, fl));
         let work = |(y0, s2, s2b, fl): (usize, &mut [f32], &mut [u8], &mut [u32])| {
             for ((r, s2row), (s2brow, flrow)) in s2.chunks_exact_mut(W * P2).enumerate().zip(s2b.chunks_exact_mut(W * P2B).zip(fl.chunks_exact_mut(W))) {
                 let y = y0 + r;
@@ -338,11 +374,11 @@ impl CpuDecoder {
                     Some([row(s1, P1, ys[0], plane)?, row(s1, P1, ys[1], plane)?, row(s1, P1, ys[2], plane)?, row(s1, P1, ys[3], plane)?, row(s1, P1, ys[4], plane)?])
                 };
                 let urow = |yy: usize| -> Option<&RowU8> { usable.get(yy * W..(yy + 1) * W)?.try_into().ok() };
-                let planes = (0..P1).map(rows5).collect::<Option<Vec<_>>>();
+                let pl: [Option<[&Row; 5]>; P1] = std::array::from_fn(rows5);
                 let us5 = [urow(ys[0]), urow(ys[1]), urow(ys[2]), urow(ys[3]), urow(ys[4])];
-                let (Some(pl), [Some(u0), Some(u1), Some(u2), Some(u3), Some(u4)]) = (planes, us5) else { continue };
+                let [Some(u0), Some(u1), Some(u2), Some(u3), Some(u4)] = us5 else { continue };
                 let (Some(xt), Some(zt)) = (row1(&prep.xt, y), row1(&prep.zt, y)) else { continue };
-                let g = |i: usize| pl.get(i).copied();
+                let g = |i: usize| pl.get(i).copied().flatten();
                 let (Some(a0), Some(a1), Some(a2), Some(b0), Some(b1), Some(b2), Some(n0), Some(n1), Some(n2)) = (g(0), g(1), g(2), g(3), g(4), g(5), g(6), g(7), g(8)) else { continue };
                 let (Some(na0), Some(na1), Some(na2), Some(nb0), Some(nb1), Some(nb2)) = (g(9), g(10), g(11), g(12), g(13), g(14)) else { continue };
                 let input = S2In {
@@ -368,20 +404,19 @@ impl CpuDecoder {
                 }
             }
         };
-        for_each_block(self.threads, blocks, &work)
+        self.workers.for_each(blocks, &work)
     }
 
     fn stage3_compat(&mut self, out: &mut TofOutput) -> Result<()> {
         let e = edge_params(&self.cfg, false);
         let s2 = &self.s2;
         let s2b = &self.s2b;
-        let blocks: Vec<_> = out
+        let blocks = out
             .depth
             .chunks_mut(W * ROWS_PER_BLOCK)
             .zip(out.confidence.chunks_mut(W * ROWS_PER_BLOCK))
             .enumerate()
-            .map(|(b, (d, c))| (b * ROWS_PER_BLOCK, d, c))
-            .collect();
+            .map(|(b, (d, c))| (b * ROWS_PER_BLOCK, d, c));
         let work = |(y0, d, c): (usize, &mut [f32], &mut [f32])| {
             for (r, (drow, crow)) in d.chunks_exact_mut(W).zip(c.chunks_exact_mut(W)).enumerate() {
                 let y = y0 + r;
@@ -389,16 +424,21 @@ impl CpuDecoder {
                 let (Some(d0), Some(d1), Some(d2), Some(s0), Some(s1), Some(s2r), Some(edge)) =
                     (row(s2, P2, ya, 0), row(s2, P2, y, 0), row(s2, P2, yc, 0), row(s2, P2, ya, 1), row(s2, P2, y, 1), row(s2, P2, yc, 1), row(s2b, P2B, y, 0))
                 else {
+                    drow.fill(0.0);
+                    crow.fill(0.0);
                     continue;
                 };
-                let Ok(out_row) = <&mut Row>::try_from(drow) else { continue };
+                let Ok(out_row) = <&mut Row>::try_from(drow) else {
+                    crow.fill(0.0);
+                    continue;
+                };
                 kernels::stage3_compat(y, [d0, d1, d2], [s0, s1, s2r], edge, &e, out_row);
                 for (cv, dv) in crow.iter_mut().zip(out_row.iter()) {
                     *cv = if *dv > 0.0 { 1.0 } else { 0.0 };
                 }
             }
         };
-        for_each_block(self.threads, blocks, &work)
+        self.workers.for_each(blocks, &work)
     }
 
     fn stage3_extended(&mut self, out: &mut TofOutput) -> Result<()> {
@@ -408,19 +448,27 @@ impl CpuDecoder {
         let kind_at = |i: usize| self.s2b.get(((i / W) * P2B + 1) * W + i % W).copied().unwrap_or(0);
         let f_at = |p: usize, i: usize| self.s2.get(((i / W) * P2 + p) * W + i % W).copied().unwrap_or(0.0);
         let singles = (0..PIXELS).filter(|i| kind_at(*i) & 0x0f == kernels::kind::SINGLE).count();
-        let expected = if self.cfg.ext.spatial_resolve && singles > 0 {
-            let u1: Vec<f32> = (0..PIXELS).map(|i| f_at(0, i)).collect();
-            let weights: Vec<f32> = (0..PIXELS).map(|i| f_at(7, i)).collect();
-            if weights.iter().any(|w| *w > 0.0) { push_pull(&u1, &weights, W, HEIGHT) } else { vec![0.0; PIXELS] }
+        let expected: &[f32] = if self.cfg.ext.spatial_resolve && singles > 0 {
+            self.exp_u.clear();
+            self.exp_u.extend((0..PIXELS).map(|i| f_at(0, i)));
+            self.exp_w.clear();
+            self.exp_w.extend((0..PIXELS).map(|i| f_at(7, i)));
+            if self.exp_w.iter().any(|w| *w > 0.0) {
+                self.exp_pp.fill(&self.exp_u, &self.exp_w, W, HEIGHT)
+            } else {
+                // no anchor anywhere: an expectation of 0 everywhere
+                self.exp_u.fill(0.0);
+                &self.exp_u
+            }
         } else {
-            Vec::new()
+            &[]
         };
         let resolve = ResolveIn {
             s2: &self.s2,
             p2: P2,
             s2b: &self.s2b,
             p2b: P2B,
-            expected: &expected,
+            expected,
             xt: &prep.xt,
             zt: &prep.zt,
             radius: if self.cfg.ext.spatial_resolve { self.cfg.ext.spatial_radius } else { 0 },
@@ -429,14 +477,13 @@ impl CpuDecoder {
         };
         let spatial = self.cfg.ext.spatial_resolve;
         // 3a: resolve
-        let blocks: Vec<_> = self
+        let blocks = self
             .depth_res
             .chunks_mut(W * ROWS_PER_BLOCK)
             .zip(self.conf_res.chunks_mut(W * ROWS_PER_BLOCK))
             .zip(self.flags.chunks_mut(W * ROWS_PER_BLOCK))
             .enumerate()
-            .map(|(b, ((d, c), f))| (b * ROWS_PER_BLOCK, d, c, f))
-            .collect();
+            .map(|(b, ((d, c), f))| (b * ROWS_PER_BLOCK, d, c, f));
         let work = |(y0, d, c, f): (usize, &mut [f32], &mut [f32], &mut [u32])| {
             for (r, ((drow, crow), frow)) in d.chunks_exact_mut(W).zip(c.chunks_exact_mut(W)).zip(f.chunks_exact_mut(W)).enumerate() {
                 let y = y0 + r;
@@ -462,19 +509,18 @@ impl CpuDecoder {
                 }
             }
         };
-        for_each_block(self.threads, blocks, &work)?;
+        self.workers.for_each(blocks, &work)?;
         // 3b: edge filter, speckle filter, range, confidence threshold
         let e = edge_params(&self.cfg, true);
         let q = s3_params(&self.cfg);
         let (dres, cres, s2, s2b) = (&self.depth_res, &self.conf_res, &self.s2, &self.s2b);
-        let blocks: Vec<_> = out
+        let blocks = out
             .depth
             .chunks_mut(W * ROWS_PER_BLOCK)
             .zip(out.confidence.chunks_mut(W * ROWS_PER_BLOCK))
             .zip(self.flags.chunks_mut(W * ROWS_PER_BLOCK))
             .enumerate()
-            .map(|(b, ((d, c), f))| (b * ROWS_PER_BLOCK, d, c, f))
-            .collect();
+            .map(|(b, ((d, c), f))| (b * ROWS_PER_BLOCK, d, c, f));
         let work = |(y0, d, c, f): (usize, &mut [f32], &mut [f32], &mut [u32])| {
             for (r, ((drow, crow), frow)) in d.chunks_exact_mut(W).zip(c.chunks_exact_mut(W)).zip(f.chunks_exact_mut(W)).enumerate() {
                 let y = y0 + r;
@@ -482,15 +528,20 @@ impl CpuDecoder {
                 let (Some(d0), Some(d1), Some(d2), Some(d3), Some(d4), Some(cr)) =
                     (row1(dres, ys[0]), row1(dres, ys[1]), row1(dres, y), row1(dres, ys[3]), row1(dres, ys[4]), row1(cres, y))
                 else {
+                    drow.fill(0.0);
+                    crow.fill(0.0);
                     continue;
                 };
-                let (Some(s0), Some(s1), Some(s2r), Some(edge)) = (row(s2, P2, ys[1], 6), row(s2, P2, y, 6), row(s2, P2, ys[3], 6), row(s2b, P2B, y, 0)) else { continue };
+                let (Some(s0), Some(s1), Some(s2r), Some(edge)) = (row(s2, P2, ys[1], 6), row(s2, P2, y, 6), row(s2, P2, ys[3], 6), row(s2b, P2B, y, 0)) else {
+                    drow.fill(0.0);
+                    crow.fill(0.0);
+                    continue;
+                };
                 let (Ok(dout), Ok(cout), Ok(fl)) = (<&mut Row>::try_from(drow), <&mut Row>::try_from(crow), <&mut RowFlags>::try_from(frow)) else { continue };
                 let input = S3In { y, d: [d0, d1, d2, d3, d4], s: [s0, s1, s2r], edge_ok: edge, conf: cr };
                 kernels::stage3_extended(&input, &e, &q, dout, cout, fl);
             }
         };
-        for_each_block(self.threads, blocks, &work)
+        self.workers.for_each(blocks, &work)
     }
-
 }

@@ -27,8 +27,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::error::{Error, Result, catch};
-use crate::frame::Frame;
+use crate::frame::{Frame, Planes};
 use crate::packet::RawDepthPacket;
+use crate::pool::Pool;
 use crate::tables::DeviceTables;
 use crate::tof::{CpuDecoder, TofConfig, TofOutput};
 
@@ -48,8 +49,9 @@ pub trait Stage: Send {
 
 /// Something that decodes raw packets (CPU or GPU).
 pub trait TofDecoder: Send {
-    /// "cpu avx2+fma, 4 threads, extended", ...
-    fn describe(&self) -> String;
+    /// "cpu avx2+fma, 4 threads, extended", ... (changes only when the decoder switches, e.g.
+    /// from the GPU to the CPU)
+    fn describe(&self) -> &str;
     /// Decodes `packet` into `out`.
     fn decode(&mut self, packet: &RawDepthPacket, tables: &Arc<DeviceTables>, out: &mut TofOutput) -> Result<()>;
     /// Milliseconds of the last frame.
@@ -57,16 +59,8 @@ pub trait TofDecoder: Send {
 }
 
 impl TofDecoder for CpuDecoder {
-    fn describe(&self) -> String {
-        format!(
-            "cpu {}, {} threads, {}",
-            crate::tof::simd::detected().name(),
-            self.threads(),
-            match self.config().mode {
-                crate::tof::TofMode::Compat => "compat",
-                crate::tof::TofMode::Extended => "extended",
-            }
-        )
+    fn describe(&self) -> &str {
+        CpuDecoder::describe(self)
     }
     fn decode(&mut self, packet: &RawDepthPacket, tables: &Arc<DeviceTables>, out: &mut TofOutput) -> Result<()> {
         CpuDecoder::decode(self, packet, tables, out)
@@ -127,10 +121,17 @@ fn gpu_decoder(cfg: TofConfig) -> Result<Box<dyn TofDecoder>> {
 }
 
 /// The decoding as a stage: fills depth, infrared, confidence and flags from the raw packet.
+/// The planes come from the stage's pool (see [`Frame`]): decoding allocates nothing once a
+/// few frames have gone round.
 pub struct TofStage {
     decoder: Box<dyn TofDecoder>,
     name: String,
+    pool: Pool<Planes>,
 }
+
+/// Plane sets kept for reuse: frames in the driver's queue, in the application, in a worker's
+/// output, and one being decoded.
+const KEEP_PLANES: usize = 8;
 
 impl TofStage {
     /// A decoding stage.
@@ -141,7 +142,12 @@ impl TofStage {
     /// Wraps any decoder.
     pub fn from_decoder(decoder: Box<dyn TofDecoder>) -> TofStage {
         let name = format!("tof ({})", decoder.describe());
-        TofStage { decoder, name }
+        TofStage { decoder, name, pool: Pool::new(KEEP_PLANES) }
+    }
+
+    /// The pool of the planes (counters: how many sets were made, how often reused).
+    pub fn pool(&self) -> &Pool<Planes> {
+        &self.pool
     }
 }
 
@@ -154,6 +160,7 @@ impl Stage for TofStage {
     }
     fn process(&mut self, frame: &mut Frame) -> Result<()> {
         let raw = frame.raw.clone().ok_or_else(|| Error::invalid("the decoding stage needs the raw packet"))?;
+        frame.use_pool(&self.pool);
         let mut out = TofOutput {
             sequence: frame.sequence,
             timestamp: frame.timestamp,
@@ -167,7 +174,8 @@ impl Stage for TofStage {
         frame.ir = out.ir;
         frame.confidence = out.confidence;
         frame.flags = out.flags;
-        frame.decoder = self.decoder.describe();
+        frame.decoder.clear();
+        frame.decoder.push_str(self.decoder.describe());
         r
     }
 }

@@ -4,10 +4,27 @@ use std::sync::Arc;
 
 use crate::consts::{PIXELS, WIDTH};
 use crate::packet::RawDepthPacket;
+use crate::pool::Pool;
 use crate::tables::DeviceTables;
+
+/// The planes of a frame that are reused: when a decoded frame is dropped they go back to the
+/// decoder's pool, and a later frame is decoded into them.
+#[derive(Debug, Default)]
+pub struct Planes {
+    depth: Vec<f32>,
+    ir: Vec<f32>,
+    confidence: Vec<f32>,
+    flags: Vec<u32>,
+    points: Vec<[f32; 3]>,
+    decoder: String,
+}
 
 /// One processed frame. Images are 512 x 424, row-major, row 0 at the top, mirrored the way
 /// the Kinect SDK and libfreenect2 deliver them. Planes that no stage produced are empty.
+///
+/// The planes of a decoded frame come from the decoder's pool and go back there when the frame
+/// is dropped: keep a frame as long as you need it, but take what you want to keep longer out
+/// of it (`std::mem::take(&mut frame.depth)`) or copy it, so the buffers can go round.
 #[derive(Clone, Debug)]
 pub struct Frame {
     /// frame sequence number of the device
@@ -36,6 +53,23 @@ pub struct Frame {
     pub decoder: String,
     /// milliseconds the whole pipeline took
     pub pipeline_ms: f64,
+    /// where the planes go when the frame is dropped
+    pub(crate) home: Option<Pool<Planes>>,
+}
+
+impl Drop for Frame {
+    fn drop(&mut self) {
+        if let Some(pool) = self.home.take() {
+            pool.put(Planes {
+                depth: std::mem::take(&mut self.depth),
+                ir: std::mem::take(&mut self.ir),
+                confidence: std::mem::take(&mut self.confidence),
+                flags: std::mem::take(&mut self.flags),
+                points: std::mem::take(&mut self.points),
+                decoder: std::mem::take(&mut self.decoder),
+            });
+        }
+    }
 }
 
 impl Frame {
@@ -55,7 +89,38 @@ impl Frame {
             extra: Vec::new(),
             decoder: String::new(),
             pipeline_ms: 0.0,
+            home: None,
         }
+    }
+
+    /// Gives the frame planes from `pool` to be filled (they hold an earlier frame's values
+    /// until then), and sends them back there when the frame is dropped. Planes the frame
+    /// already has stay; a frame that already belongs to a pool keeps it.
+    pub fn use_pool(&mut self, pool: &Pool<Planes>) {
+        if self.home.is_some() {
+            return;
+        }
+        let p = pool.take_or(Planes::default);
+        let swap_in = |mine: &mut Vec<f32>, theirs: Vec<f32>| {
+            if mine.is_empty() {
+                *mine = theirs;
+            }
+        };
+        swap_in(&mut self.depth, p.depth);
+        swap_in(&mut self.ir, p.ir);
+        swap_in(&mut self.confidence, p.confidence);
+        if self.flags.is_empty() {
+            self.flags = p.flags;
+        }
+        if self.points.is_empty() {
+            self.points = p.points;
+            self.points.clear();
+        }
+        if self.decoder.is_empty() {
+            self.decoder = p.decoder;
+            self.decoder.clear();
+        }
+        self.home = Some(pool.clone());
     }
 
     /// Depth at a pixel (mm, 0 = none).

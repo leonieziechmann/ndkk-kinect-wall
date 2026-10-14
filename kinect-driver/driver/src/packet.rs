@@ -7,6 +7,7 @@
 
 use crate::consts::{ALL_SUBIMAGES, HEIGHT, PACKET_BYTES, PHASE_SUBIMAGES, ROW_BYTES, SATURATED_CODE, SUBIMAGE_BYTES, SUBIMAGES, WIDTH};
 use crate::error::{Error, Result};
+use crate::pool::Pool;
 
 /// One raw depth packet as it comes from the device (all ten sub-images of a frame).
 #[derive(Clone, Debug)]
@@ -23,12 +24,38 @@ pub struct RawDepthPacket {
     pub present: u16,
     /// rows whose bytes were lost in transit (USB packet errors), if any
     pub bad_rows: Option<Box<BadRows>>,
+    /// where `data` goes back to when the packet is dropped
+    pub(crate) home: Option<Pool<Vec<u8>>>,
+}
+
+impl Drop for RawDepthPacket {
+    fn drop(&mut self) {
+        if let Some(pool) = self.home.take() {
+            pool.put(std::mem::take(&mut self.data));
+        }
+    }
+}
+
+/// A buffer of `PACKET_BYTES` from the pool (it keeps whatever an earlier packet left in it).
+pub(crate) fn packet_buffer(pool: &Pool<Vec<u8>>) -> Vec<u8> {
+    let mut b = pool.take_or(|| vec![0; PACKET_BYTES]);
+    if b.len() != PACKET_BYTES {
+        b.resize(PACKET_BYTES, 0);
+    }
+    b
 }
 
 impl RawDepthPacket {
     /// An empty packet (all sub-images missing).
     pub fn zeroed(sequence: u32, timestamp: u32) -> RawDepthPacket {
-        RawDepthPacket { sequence, timestamp, host_time_us: 0, data: vec![0; PACKET_BYTES], present: 0, bad_rows: None }
+        RawDepthPacket { sequence, timestamp, host_time_us: 0, data: vec![0; PACKET_BYTES], present: 0, bad_rows: None, home: None }
+    }
+
+    /// A packet whose buffer comes from `pool` and goes back there when the packet is dropped.
+    /// The buffer still holds what an earlier packet left in it: fill every sub-image and set
+    /// `present` (sources that read whole frames), or zero what is missing.
+    pub fn from_pool(pool: &Pool<Vec<u8>>, sequence: u32, timestamp: u32) -> RawDepthPacket {
+        RawDepthPacket { sequence, timestamp, host_time_us: 0, data: packet_buffer(pool), present: 0, bad_rows: None, home: Some(pool.clone()) }
     }
 
     /// A complete packet from bytes (e.g. a recording). Shorter data is rejected.
@@ -37,7 +64,23 @@ impl RawDepthPacket {
             return Err(Error::invalid(format!("raw depth packet of {} bytes, expected {PACKET_BYTES}", data.len())));
         }
         data.truncate(PACKET_BYTES);
-        Ok(RawDepthPacket { sequence, timestamp, host_time_us: 0, data, present: ALL_SUBIMAGES, bad_rows: None })
+        Ok(RawDepthPacket { sequence, timestamp, host_time_us: 0, data, present: ALL_SUBIMAGES, bad_rows: None, home: None })
+    }
+
+    /// Copies everything of `other` into this packet's buffer (no allocation when the sizes
+    /// match): a cheaper `clone` for packets that go round in a pool.
+    pub fn copy_from(&mut self, other: &RawDepthPacket) {
+        self.sequence = other.sequence;
+        self.timestamp = other.timestamp;
+        self.host_time_us = other.host_time_us;
+        if self.data.len() == other.data.len() {
+            self.data.copy_from_slice(&other.data);
+        } else {
+            self.data.clear();
+            self.data.extend_from_slice(&other.data);
+        }
+        self.present = other.present;
+        self.bad_rows.clone_from(&other.bad_rows);
     }
 
     /// All ten sub-images arrived and nothing was lost.

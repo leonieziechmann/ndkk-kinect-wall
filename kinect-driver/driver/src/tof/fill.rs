@@ -3,6 +3,7 @@
 //! expectation of the resolver). O(pixels), about a millisecond for the whole image.
 
 /// One pyramid level: premultiplied values and weights (0..1).
+#[derive(Clone, Debug, Default)]
 struct Level {
     w: usize,
     h: usize,
@@ -12,96 +13,156 @@ struct Level {
 
 /// For each output coordinate of a level, the two parent coordinates and the weight of the
 /// second (bilinear upsampling by 2: weights 0.75 / 0.25 alternate).
-fn upsample_taps(n: usize, parent: usize) -> Vec<(usize, usize, f32)> {
-    (0..n)
-        .map(|x| {
-            let last = parent.saturating_sub(1);
-            if x % 2 == 0 {
-                // center at x/2 - 0.25: between x/2 - 1 (0.25) and x/2 (0.75)
-                let b = (x / 2).min(last);
-                let a = b.saturating_sub(1);
-                (a, b, 0.75)
-            } else {
-                // center at (x-1)/2 + 0.25: between (x-1)/2 (0.75) and (x+1)/2 (0.25)
-                let a = (x / 2).min(last);
-                let b = (a + 1).min(last);
-                (a, b, 0.25)
+fn upsample_taps(taps: &mut Vec<(usize, usize, f32)>, n: usize, parent: usize) {
+    taps.clear();
+    let last = parent.saturating_sub(1);
+    taps.extend((0..n).map(|x| {
+        if x % 2 == 0 {
+            // center at x/2 - 0.25: between x/2 - 1 (0.25) and x/2 (0.75)
+            let b = (x / 2).min(last);
+            let a = b.saturating_sub(1);
+            (a, b, 0.75)
+        } else {
+            // center at (x-1)/2 + 0.25: between (x-1)/2 (0.75) and (x+1)/2 (0.25)
+            let a = (x / 2).min(last);
+            let b = (a + 1).min(last);
+            (a, b, 0.25)
+        }
+    }));
+}
+
+/// Push-pull with its buffers kept between calls: once they have grown to the image size, a
+/// fill allocates nothing.
+#[derive(Clone, Debug, Default)]
+pub struct PushPull {
+    levels: Vec<Level>,
+    out: Vec<f32>,
+    tmp: Vec<f32>,
+    upper: Vec<f32>,
+    lower: Vec<f32>,
+    tx: Vec<(usize, usize, f32)>,
+    ty: Vec<(usize, usize, f32)>,
+}
+
+impl PushPull {
+    /// Empty buffers (they grow with the first fill).
+    pub fn new() -> PushPull {
+        PushPull::default()
+    }
+
+    /// Level `i` with the size `w` x `h`, zeroed.
+    fn level(&mut self, i: usize, w: usize, h: usize) -> Option<&mut Level> {
+        if i == self.levels.len() {
+            self.levels.push(Level::default());
+        }
+        let l = self.levels.get_mut(i)?;
+        l.w = w;
+        l.h = h;
+        l.vw.clear();
+        l.vw.resize(w * h, 0.0);
+        l.wt.clear();
+        l.wt.resize(w * h, 0.0);
+        Some(l)
+    }
+
+    /// Fills pixels with weight 0 (or small weights) from the weighted values around them.
+    /// `values` and `weights` are `width * height`; weights are clamped to 0..1. Pixels with
+    /// weight 1 keep their value. The result lives until the next call.
+    pub fn fill(&mut self, values: &[f32], weights: &[f32], width: usize, height: usize) -> &[f32] {
+        let n = width * height;
+        if values.len() < n || weights.len() < n || n == 0 {
+            self.out.clear();
+            self.out.extend_from_slice(values);
+            return &self.out;
+        }
+        if let Some(l0) = self.level(0, width, height) {
+            for ((vw, wt), (v, w)) in l0.vw.iter_mut().zip(l0.wt.iter_mut()).zip(values.iter().zip(weights)) {
+                let w = if w.is_finite() { w.clamp(0.0, 1.0) } else { 0.0 };
+                *wt = w;
+                *vw = if v.is_finite() { v * w } else { 0.0 };
             }
-        })
-        .collect()
+        }
+        // push: halve until small
+        let mut used = 1;
+        while let Some(&Level { w, h, .. }) = self.levels.get(used - 1) {
+            if (w <= 1 && h <= 1) || used >= 24 {
+                break;
+            }
+            let (nw, nh) = (w.div_ceil(2), h.div_ceil(2));
+            if self.level(used, nw, nh).is_none() {
+                break;
+            }
+            let (done, rest) = self.levels.split_at_mut(used);
+            let (Some(l), Some(next)) = (done.last(), rest.first_mut()) else { break };
+            for (y, (vrow, wrow)) in l.vw.chunks_exact(l.w).zip(l.wt.chunks_exact(l.w)).enumerate() {
+                let start = (y / 2) * nw;
+                let (Some(dv), Some(dw)) = (next.vw.get_mut(start..start + nw), next.wt.get_mut(start..start + nw)) else { continue };
+                for (x, (v, w)) in vrow.iter().zip(wrow).enumerate() {
+                    if let (Some(a), Some(b)) = (dv.get_mut(x / 2), dw.get_mut(x / 2)) {
+                        *a += v;
+                        *b += w;
+                    }
+                }
+            }
+            // average, keep the confidence saturating at 1
+            for (v, t) in next.vw.iter_mut().zip(next.wt.iter_mut()) {
+                if *t > 0.0 {
+                    let c = t.min(1.0);
+                    *v = *v / *t * c;
+                    *t = c;
+                }
+            }
+            used += 1;
+        }
+        // pull: from the coarsest level down, what is missing comes from the level above
+        let Some(top) = self.levels.get(used - 1) else {
+            self.out.clear();
+            self.out.extend_from_slice(values);
+            return &self.out;
+        };
+        self.out.clear();
+        self.out.extend(top.vw.iter().zip(&top.wt).map(|(v, w)| if *w > 0.0 { v / w } else { 0.0 }));
+        let (mut parent_w, mut parent_h) = (top.w, top.h);
+        for li in (0..used - 1).rev() {
+            let Some(l) = self.levels.get(li) else { break };
+            upsample_taps(&mut self.tx, l.w, parent_w);
+            upsample_taps(&mut self.ty, l.h, parent_h);
+            self.tmp.clear();
+            self.tmp.resize(l.w * l.h, 0.0);
+            self.upper.clear();
+            self.upper.resize(l.w, 0.0);
+            self.lower.clear();
+            self.lower.resize(l.w, 0.0);
+            let filled = &self.out;
+            for (y, orow) in self.tmp.chunks_exact_mut(l.w).enumerate() {
+                let (ya, yb, fy) = self.ty.get(y).copied().unwrap_or((0, 0, 0.0));
+                let (Some(ra), Some(rb)) = (filled.get(ya * parent_w..(ya + 1) * parent_w), filled.get(yb * parent_w..(yb + 1) * parent_w)) else { continue };
+                for (x, (u, d)) in self.upper.iter_mut().zip(self.lower.iter_mut()).enumerate() {
+                    let (xa, xb, fx) = self.tx.get(x).copied().unwrap_or((0, 0, 0.0));
+                    let (a0, a1) = (ra.get(xa).copied().unwrap_or(0.0), ra.get(xb).copied().unwrap_or(0.0));
+                    let (b0, b1) = (rb.get(xa).copied().unwrap_or(0.0), rb.get(xb).copied().unwrap_or(0.0));
+                    *u = a0 + (a1 - a0) * fx;
+                    *d = b0 + (b1 - b0) * fx;
+                }
+                let (Some(vrow), Some(wrow)) = (l.vw.get(y * l.w..(y + 1) * l.w), l.wt.get(y * l.w..(y + 1) * l.w)) else { continue };
+                for ((o, (u, d)), (v, w)) in orow.iter_mut().zip(self.upper.iter().zip(&self.lower)).zip(vrow.iter().zip(wrow)) {
+                    let parent = u + (d - u) * fy;
+                    *o = v + (1.0 - w) * parent;
+                }
+            }
+            std::mem::swap(&mut self.out, &mut self.tmp);
+            parent_w = l.w;
+            parent_h = l.h;
+        }
+        &self.out
+    }
 }
 
 /// Fills pixels with weight 0 (or small weights) from the weighted values around them.
 /// `values` and `weights` are `width * height`; weights are clamped to 0..1. Pixels with weight 1
-/// keep their value.
+/// keep their value. (Allocates its buffers: for repeated use keep a [`PushPull`].)
 pub fn push_pull(values: &[f32], weights: &[f32], width: usize, height: usize) -> Vec<f32> {
-    let n = width * height;
-    if values.len() < n || weights.len() < n || n == 0 {
-        return values.to_vec();
-    }
-    let wt: Vec<f32> = weights.iter().take(n).map(|w| if w.is_finite() { w.clamp(0.0, 1.0) } else { 0.0 }).collect();
-    let vw: Vec<f32> = values.iter().zip(&wt).map(|(v, w)| if v.is_finite() { v * w } else { 0.0 }).collect();
-    let mut levels = vec![Level { w: width, h: height, vw, wt }];
-    // push: halve until small
-    while let Some(l) = levels.last() {
-        if (l.w <= 1 && l.h <= 1) || levels.len() >= 24 {
-            break;
-        }
-        let (nw, nh) = (l.w.div_ceil(2), l.h.div_ceil(2));
-        let mut nvw = vec![0f32; nw * nh];
-        let mut nwt = vec![0f32; nw * nh];
-        for (y, (vrow, wrow)) in l.vw.chunks_exact(l.w).zip(l.wt.chunks_exact(l.w)).enumerate() {
-            let start = (y / 2) * nw;
-            let (Some(dv), Some(dw)) = (nvw.get_mut(start..start + nw), nwt.get_mut(start..start + nw)) else { continue };
-            for (x, (v, w)) in vrow.iter().zip(wrow).enumerate() {
-                if let (Some(a), Some(b)) = (dv.get_mut(x / 2), dw.get_mut(x / 2)) {
-                    *a += v;
-                    *b += w;
-                }
-            }
-        }
-        // average, keep the confidence saturating at 1
-        for (v, t) in nvw.iter_mut().zip(nwt.iter_mut()) {
-            if *t > 0.0 {
-                let c = t.min(1.0);
-                *v = *v / *t * c;
-                *t = c;
-            }
-        }
-        levels.push(Level { w: nw, h: nh, vw: nvw, wt: nwt });
-    }
-    // pull: from the coarsest level down, what is missing comes from the level above
-    let Some(top) = levels.last() else { return values.to_vec() };
-    let mut filled: Vec<f32> = top.vw.iter().zip(&top.wt).map(|(v, w)| if *w > 0.0 { v / w } else { 0.0 }).collect();
-    let mut parent_w = top.w;
-    let mut parent_h = top.h;
-    for l in levels.iter().rev().skip(1) {
-        let tx = upsample_taps(l.w, parent_w);
-        let ty = upsample_taps(l.h, parent_h);
-        let mut out = vec![0f32; l.w * l.h];
-        let mut upper = vec![0f32; l.w];
-        let mut lower = vec![0f32; l.w];
-        for (y, orow) in out.chunks_exact_mut(l.w).enumerate() {
-            let (ya, yb, fy) = ty.get(y).copied().unwrap_or((0, 0, 0.0));
-            let (Some(ra), Some(rb)) = (filled.get(ya * parent_w..(ya + 1) * parent_w), filled.get(yb * parent_w..(yb + 1) * parent_w)) else { continue };
-            for (x, (u, d)) in upper.iter_mut().zip(lower.iter_mut()).enumerate() {
-                let (xa, xb, fx) = tx.get(x).copied().unwrap_or((0, 0, 0.0));
-                let (a0, a1) = (ra.get(xa).copied().unwrap_or(0.0), ra.get(xb).copied().unwrap_or(0.0));
-                let (b0, b1) = (rb.get(xa).copied().unwrap_or(0.0), rb.get(xb).copied().unwrap_or(0.0));
-                *u = a0 + (a1 - a0) * fx;
-                *d = b0 + (b1 - b0) * fx;
-            }
-            let (Some(vrow), Some(wrow)) = (l.vw.get(y * l.w..(y + 1) * l.w), l.wt.get(y * l.w..(y + 1) * l.w)) else { continue };
-            for ((o, (u, d)), (v, w)) in orow.iter_mut().zip(upper.iter().zip(&lower)).zip(vrow.iter().zip(wrow)) {
-                let parent = u + (d - u) * fy;
-                *o = v + (1.0 - w) * parent;
-            }
-        }
-        filled = out;
-        parent_w = l.w;
-        parent_h = l.h;
-    }
-    filled
+    PushPull::new().fill(values, weights, width, height).to_vec()
 }
 
 #[cfg(test)]
@@ -143,10 +204,28 @@ mod tests {
 
     #[test]
     fn upsample_weights_sum_up() {
+        let mut taps = Vec::new();
         for (n, p) in [(10, 5), (11, 6), (2, 1), (1, 1)] {
-            for (a, b, f) in upsample_taps(n, p) {
+            upsample_taps(&mut taps, n, p);
+            assert_eq!(taps.len(), n);
+            for &(a, b, f) in &taps {
                 assert!(a < p && b < p && (0.0..=1.0).contains(&f));
             }
+        }
+    }
+
+    #[test]
+    fn reused_buffers_give_the_same_result() {
+        let (w, h) = (53, 41);
+        let mut pp = PushPull::new();
+        for k in 0..3 {
+            let values: Vec<f32> = (0..w * h).map(|i| ((i * 7 + k) % 97) as f32).collect();
+            let weights: Vec<f32> = (0..w * h).map(|i| if (i / w + i % w + k) % 5 == 0 { 0.0 } else { 1.0 }).collect();
+            let fresh = push_pull(&values, &weights, w, h);
+            assert_eq!(pp.fill(&values, &weights, w, h), &fresh[..]);
+            // another size in between
+            let small = pp.fill(&values[..12], &weights[..12], 4, 3).to_vec();
+            assert_eq!(small.len(), 12);
         }
     }
 

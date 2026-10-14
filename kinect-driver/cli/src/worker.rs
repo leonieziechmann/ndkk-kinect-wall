@@ -22,6 +22,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use kinect_driver::consts::{HEIGHT, PIXELS, WIDTH};
 use kinect_driver::driver::{Driver, DriverState, Event};
+use kinect_driver::frame::Frame;
 
 use crate::args::Args;
 use crate::opts::Common;
@@ -77,19 +78,59 @@ pub fn json_str(s: &str) -> String {
 #[derive(Default)]
 struct Pending {
     control: std::collections::VecDeque<Vec<u8>>,
-    frame: Option<Vec<u8>>,
+    frame: Option<Box<Frame>>,
     stop: bool,
 }
 
+enum Message {
+    Control(Vec<u8>),
+    Frame(Box<Frame>),
+}
+
+/// A plane as little-endian f32, cut or padded to `PIXELS`: on a little-endian machine straight
+/// from the frame's memory into the pipe (no message buffer, no copy), elsewhere through `buf`.
+fn write_plane(out: &mut impl Write, v: &[f32], buf: &mut Vec<u8>) -> std::io::Result<()> {
+    let v = v.get(..PIXELS).unwrap_or(v);
+    if cfg!(target_endian = "little") {
+        out.write_all(bytemuck::cast_slice(v))?;
+    } else {
+        buf.clear();
+        buf.extend(v.iter().flat_map(|x| x.to_le_bytes()));
+        out.write_all(buf)?;
+    }
+    // a short plane is padded with zeros (never happens with the driver's frames)
+    const ZEROS: [u8; 4096] = [0; 4096];
+    let mut missing = (PIXELS - v.len()) * 4;
+    while missing > 0 {
+        let n = missing.min(ZEROS.len());
+        out.write_all(ZEROS.get(..n).unwrap_or(&[]))?;
+        missing -= n;
+    }
+    Ok(())
+}
+
+/// One FRAME message: header, depth, infrared (if the frame has it).
+fn write_frame(out: &mut impl Write, f: &Frame, buf: &mut Vec<u8>) -> std::io::Result<()> {
+    let has_ir = f.ir.len() == PIXELS;
+    let len = if has_ir { 2 * PIXELS * 4 } else { PIXELS * 4 };
+    out.write_all(&header(FRAME, if has_ir { FLAG_HAS_IR } else { 0 }, len, f.sequence, f.timestamp, f.host_time_us))?;
+    write_plane(out, &f.depth, buf)?;
+    if has_ir {
+        write_plane(out, &f.ir, buf)?;
+    }
+    out.flush()
+}
+
 /// Everything to stdout goes through one writer thread: control messages are queued, frames
-/// have a latest-only slot (a slow reader loses frames here instead of delaying the sensor).
+/// have a latest-only slot (a slow reader loses frames here instead of delaying the sensor). A
+/// frame is written straight from its planes; dropping it afterwards gives them back to the
+/// decoder.
 struct Output {
     pending: Arc<(Mutex<Pending>, Condvar)>,
     thread: Option<std::thread::JoinHandle<()>>,
     dropped: Arc<AtomicU64>,
     written: Arc<AtomicU64>,
     broken: Arc<AtomicBool>,
-    spare: Vec<u8>,
 }
 
 impl Output {
@@ -102,37 +143,42 @@ impl Output {
             .name("worker-output".into())
             .spawn(move || {
                 let mut out = std::io::stdout().lock();
+                let mut buf = Vec::new();
                 loop {
-                    let (msg, is_frame) = {
+                    let msg = {
                         let (m, cv) = &*p;
                         let mut g = lock(m);
                         loop {
                             if let Some(c) = g.control.pop_front() {
-                                break (Some(c), false);
+                                break Some(Message::Control(c));
                             }
                             if let Some(f) = g.frame.take() {
-                                break (Some(f), true);
+                                break Some(Message::Frame(f));
                             }
                             if g.stop {
-                                break (None, false);
+                                break None;
                             }
                             g = cv.wait_timeout(g, Duration::from_millis(200)).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
                         }
                     };
-                    let Some(msg) = msg else { break };
-                    if out.write_all(&msg).and_then(|()| out.flush()).is_err() {
+                    let r = match &msg {
+                        None => break,
+                        Some(Message::Control(c)) => out.write_all(c).and_then(|()| out.flush()),
+                        Some(Message::Frame(f)) => write_frame(&mut out, f, &mut buf),
+                    };
+                    if r.is_err() {
                         // the hub is gone
                         b.store(true, Ordering::SeqCst);
                         quit.store(true, Ordering::SeqCst);
                         break;
                     }
-                    if is_frame {
+                    if let Some(Message::Frame(_)) = msg {
                         w.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             })
             .ok();
-        Output { pending, thread, dropped: Arc::new(AtomicU64::new(0)), written, broken, spare: Vec::new() }
+        Output { pending, thread, dropped: Arc::new(AtomicU64::new(0)), written, broken }
     }
 
     fn json(&self, kind: u16, json: &str) {
@@ -147,32 +193,14 @@ impl Output {
         cv.notify_one();
     }
 
-    fn frame(&mut self, depth: &[f32], ir: Option<&[f32]>, seq: u32, device_ts: u32, t_us: u64) {
-        let bytes = PIXELS * 4;
-        let len = if ir.is_some() { 2 * bytes } else { bytes };
-        let mut msg = std::mem::take(&mut self.spare);
-        msg.clear();
-        msg.reserve(32 + len);
-        msg.extend_from_slice(&header(FRAME, if ir.is_some() { FLAG_HAS_IR } else { 0 }, len, seq, device_ts, t_us));
-        let plane = |msg: &mut Vec<u8>, v: &[f32]| {
-            for x in v.iter().take(PIXELS) {
-                msg.extend_from_slice(&x.to_le_bytes());
-            }
-            // a short plane is padded (never happens with the driver's frames)
-            msg.resize(msg.len() + (PIXELS.saturating_sub(v.len())) * 4, 0);
-        };
-        plane(&mut msg, depth);
-        if let Some(ir) = ir {
-            plane(&mut msg, ir);
-        }
+    fn frame(&self, f: Box<Frame>) {
         let (m, cv) = &*self.pending;
-        let mut g = lock(m);
-        if let Some(old) = g.frame.replace(msg) {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-            self.spare = old;
-        }
-        drop(g);
+        let old = lock(m).frame.replace(f);
         cv.notify_one();
+        if old.is_some() {
+            // not written yet: the newer one goes instead (the old one's planes go back)
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Lets the queued messages go out, but waits at most a second: a reader that stopped
@@ -240,7 +268,7 @@ pub fn run(mut a: Args) -> Result<(), String> {
     a.done()?;
     raise_priority();
     let quit = Arc::new(AtomicBool::new(false));
-    let mut out = Output::start(quit.clone());
+    let out = Output::start(quit.clone());
     if stdin_watch {
         let q = quit.clone();
         let _ = std::thread::Builder::new().name("worker-stdin".into()).spawn(move || {
@@ -293,8 +321,7 @@ pub fn run(mut a: Args) -> Result<(), String> {
                     eprintln!("decoder: {}", f.decoder);
                     decoder = f.decoder.clone();
                 }
-                let ir = (f.ir.len() == PIXELS).then_some(f.ir.as_slice());
-                out.frame(&f.depth, ir, f.sequence, f.timestamp, f.host_time_us);
+                out.frame(f);
             }
             Some(Event::State { state, detail }) => {
                 eprintln!("state: {} {detail}", state.name());
@@ -347,6 +374,32 @@ mod tests {
         assert_eq!(u32::from_le_bytes([h[16], h[17], h[18], h[19]]), 99);
         assert_eq!(&h[20..24], &[0, 0, 0, 0]);
         assert_eq!(u64::from_le_bytes([h[24], h[25], h[26], h[27], h[28], h[29], h[30], h[31]]), 0x0102_0304_0506_0708);
+    }
+
+    #[test]
+    fn frames_go_out_as_little_endian_planes() {
+        let sim = kinect_driver::sim::Simulator::new(kinect_driver::sim::SimConfig { supersample: false, ..Default::default() }).unwrap();
+        let mut f = Frame::new(std::sync::Arc::new(kinect_driver::RawDepthPacket::zeroed(5, 6)), sim.tables().clone());
+        f.depth = (0..PIXELS).map(|i| i as f32).collect();
+        f.ir = vec![2.5; PIXELS];
+        f.host_time_us = 77;
+        let mut out = Vec::new();
+        write_frame(&mut out, &f, &mut Vec::new()).unwrap();
+        assert_eq!(out.len(), 32 + 2 * PIXELS * 4);
+        assert_eq!(&out[0..4], b"K2W1");
+        assert_eq!(u16::from_le_bytes([out[6], out[7]]), FLAG_HAS_IR);
+        assert_eq!(u32::from_le_bytes([out[8], out[9], out[10], out[11]]) as usize, 2 * PIXELS * 4);
+        let at = |i: usize| f32::from_le_bytes([out[i], out[i + 1], out[i + 2], out[i + 3]]);
+        assert_eq!(at(32 + 4 * 1000), 1000.0);
+        assert_eq!(at(32 + 4 * PIXELS + 8), 2.5);
+        // a frame without infrared, with a short depth plane: padded
+        f.ir.clear();
+        f.depth.truncate(10);
+        let mut out = Vec::new();
+        write_frame(&mut out, &f, &mut Vec::new()).unwrap();
+        assert_eq!(out.len(), 32 + PIXELS * 4);
+        assert_eq!(u16::from_le_bytes([out[6], out[7]]), 0);
+        assert!(out[32 + 40..].iter().all(|b| *b == 0));
     }
 
     #[test]

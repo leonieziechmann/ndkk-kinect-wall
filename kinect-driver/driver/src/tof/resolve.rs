@@ -86,9 +86,21 @@ fn brow<'a>(i: &ResolveIn<'a>, p: usize, y: usize) -> Option<&'a [u8]> {
     i.s2b.get(start..start + W)
 }
 
+/// Rows of the largest window (`spatial_radius` is at most 16).
+const WINDOW_ROWS: usize = 33;
+
+type WindowRow<'a> = (&'a [f32], &'a [f32], &'a [u8]);
+
 /// The rows of the neighborhood window: u1, anchor weight, saturation bits.
 struct Window<'a> {
-    rows: Vec<(&'a [f32], &'a [f32], &'a [u8])>,
+    rows: [WindowRow<'a>; WINDOW_ROWS],
+    n: usize,
+}
+
+impl<'a> Window<'a> {
+    fn rows(&self) -> &[WindowRow<'a>] {
+        self.rows.get(..self.n).unwrap_or(&[])
+    }
 }
 
 /// Resolves one row: writes the depth (mm, 0 = none) and confidence, adds flags.
@@ -106,11 +118,15 @@ pub fn resolve_row(i: &ResolveIn, y: usize, depth: &mut [f32], conf_out: &mut [f
         return;
     };
     let (Some(xtr), Some(ztr), Some(anr)) = (i.xt.get(y * W..(y + 1) * W), i.zt.get(y * W..(y + 1) * W), frow(i, plane::ANCHOR, y)) else { return };
-    let window = Window {
-        rows: (y.saturating_sub(r)..=(y + r).min(HEIGHT - 1))
-            .filter_map(|yy| Some((frow(i, plane::U1, yy)?, frow(i, plane::ANCHOR, yy)?, brow(i, plane::SAT, yy)?)))
-            .collect(),
-    };
+    let mut window = Window { rows: [(&[], &[], &[]); WINDOW_ROWS], n: 0 };
+    for yy in y.saturating_sub(r)..=(y + r).min(HEIGHT - 1) {
+        if let (Some(u), Some(a), Some(sat)) = (frow(i, plane::U1, yy), frow(i, plane::ANCHOR, yy), brow(i, plane::SAT, yy))
+            && let Some(slot) = window.rows.get_mut(window.n)
+        {
+            *slot = (u, a, sat);
+            window.n += 1;
+        }
+    }
     let rows = u1r.iter().zip(u2r).zip(e1r.iter().zip(e2r)).zip(cr.iter().zip(csr)).zip(kr.iter().zip(xtr.iter().zip(ztr)));
     for (x, ((((&u1, &u2), (&e1, &e2)), (&c, &cref)), (&k, (&xt, &zt)))) in rows.enumerate() {
         let (Some(d_out), Some(c_out), Some(f)) = (depth.get_mut(x), conf_out.get_mut(x), fl.get_mut(x)) else { continue };
@@ -186,7 +202,7 @@ fn support2(w: &Window, x: usize, r: usize, u1: f32, u2: f32, h: f32) -> (f32, f
     let (mut s1, mut s2, mut total) = (0f32, 0f32, 0f32);
     let inv_h2 = 1.0 / (h * h).max(1e-12);
     let (x0, x1) = (x.saturating_sub(r), (x + r).min(W - 1));
-    for (ur, ar, _) in &w.rows {
+    for (ur, ar, _) in w.rows() {
         let (Some(us), Some(aws)) = (ur.get(x0..=x1), ar.get(x0..=x1)) else { continue };
         for (&uj, &aj) in us.iter().zip(aws) {
             let d1 = uj - u1;
@@ -205,7 +221,7 @@ fn vote(w: &Window, x: usize, r: usize, n: f32, cref: f32, saturated: bool) -> (
     let mut votes = [0f32; 16];
     let mut total = 0f32;
     let (x0, x1) = (x.saturating_sub(r), (x + r).min(W - 1));
-    for (ur, ar, sr) in &w.rows {
+    for (ur, ar, sr) in w.rows() {
         let (Some(us), Some(aws), Some(ss)) = (ur.get(x0..=x1), ar.get(x0..=x1), sr.get(x0..=x1)) else { continue };
         for ((&uj, &aj), &sj) in us.iter().zip(aws).zip(ss) {
             if aj <= 0.0 {

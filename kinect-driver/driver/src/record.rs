@@ -17,9 +17,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::camera::IrCameraParams;
-use crate::consts::{PACKET_BYTES, PIXELS};
+use crate::consts::{ALL_SUBIMAGES, PACKET_BYTES, PIXELS};
 use crate::error::{Error, Result};
 use crate::packet::RawDepthPacket;
+use crate::pool::Pool;
 use crate::protocol::response::{P0Tables, parse_p0_tables};
 use crate::tables::DeviceTables;
 
@@ -152,8 +153,8 @@ impl RawReader {
         &self.header
     }
 
-    /// The next packet, `None` at the end (or at a truncated last packet).
-    pub fn next_packet(&mut self) -> Result<Option<RawDepthPacket>> {
+    /// Sequence, timestamp and length of the next packet; `None` at the end.
+    fn packet_head(&mut self) -> Result<Option<(u32, u32, usize)>> {
         let mut head = [0u8; 12];
         match self.file.read_exact(&mut head) {
             Ok(()) => {}
@@ -165,7 +166,36 @@ impl RawReader {
         if len > MAX_PACKET {
             return Err(Error::invalid(format!("packet of {len} bytes")));
         }
-        let mut data = vec![0u8; len as usize];
+        Ok(Some((seq, ts, len as usize)))
+    }
+
+    /// The next packet into a buffer from `pool` (it goes back there when the packet is
+    /// dropped): reading a recording allocates nothing. `None` at the end (or at a truncated
+    /// last packet).
+    pub fn next_packet_in(&mut self, pool: &Pool<Vec<u8>>) -> Result<Option<RawDepthPacket>> {
+        let Some((seq, ts, len)) = self.packet_head()? else { return Ok(None) };
+        let mut p = RawDepthPacket::from_pool(pool, seq, ts);
+        let n = len.min(PACKET_BYTES);
+        let (head, rest) = p.data.split_at_mut_checked(n).unwrap_or((&mut [], &mut []));
+        match self.file.read_exact(head) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
+        // a short packet reads as zeros after its end; a longer one is cut
+        rest.fill(0);
+        if len > n {
+            self.file.seek_relative((len - n) as i64)?;
+        }
+        p.present = ALL_SUBIMAGES;
+        self.packets_read += 1;
+        Ok(Some(p))
+    }
+
+    /// The next packet, `None` at the end (or at a truncated last packet).
+    pub fn next_packet(&mut self) -> Result<Option<RawDepthPacket>> {
+        let Some((seq, ts, len)) = self.packet_head()? else { return Ok(None) };
+        let mut data = vec![0u8; len];
         match self.file.read_exact(&mut data) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),

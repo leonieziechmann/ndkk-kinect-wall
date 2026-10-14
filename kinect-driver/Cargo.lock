@@ -397,6 +397,7 @@ dependencies = [
 name = "kinect-driver-cli"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "kinect-driver",
  "log",
  "png",

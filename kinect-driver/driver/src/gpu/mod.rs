@@ -12,8 +12,8 @@
 //! panic by default), every call runs inside `catch`, and a lost device turns into errors that
 //! [`FallbackDecoder`] answers by decoding on the CPU.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::consts::{HEIGHT, PACKET_BYTES, PHASE_SUBIMAGES, PIXELS, SATURATED, SUBIMAGE_BYTES, WIDTH};
@@ -25,6 +25,7 @@ use crate::tof::config::{TofConfig, TofMode};
 use crate::tof::cpu::{Prepared, edge_params, s1_params, s2_params, s3_params};
 use crate::tof::kernels::{ANCHOR_CONFIDENCE, FULL_SCALE, REBUILT_NOISE, U_RANGE_MM, flags, kind};
 use crate::tof::resolve::{CONFIRMED_CONFIDENCE, SURE_CONFIDENCE};
+use crate::tof::post::PostScratch;
 use crate::tof::{CpuDecoder, TofOutput, TofTimings, post};
 
 const N: usize = PIXELS;
@@ -341,6 +342,10 @@ pub struct GpuDecoder {
     steps: Vec<Step>,
     tables_id: Option<u64>,
     masks: Vec<u8>,
+    /// the answer of the read-back mapping (set by its callback during the poll)
+    mapped: Arc<Mutex<Option<std::result::Result<(), wgpu::BufferAsyncError>>>>,
+    post: PostScratch,
+    describe: String,
     saturation_level: f32,
     lost: Arc<AtomicBool>,
     /// how long the last frame took (stage1 = upload, stage2 = GPU, stage3 = read back,
@@ -508,11 +513,15 @@ impl GpuDecoder {
         if let Some(e) = pollster::block_on(scope.pop()) {
             return Err(gpu_err("setting up the shaders", e));
         }
+        let describe = format!("gpu {adapter}, {}", if cfg.mode == TofMode::Compat { "compat" } else { "extended" });
         Ok(GpuDecoder {
             cfg,
             device,
             queue,
             adapter,
+            describe,
+            mapped: Arc::new(Mutex::new(None)),
+            post: PostScratch::default(),
             pipelines,
             raw,
             tabs,
@@ -599,9 +608,10 @@ impl GpuDecoder {
         enc.copy_buffer_to_buffer(&self.fw, 0, &self.staging, 0, 3 * plane);
         enc.copy_buffer_to_buffer(&self.iw, I_FLAGS as u64 * plane, &self.staging, 3 * plane, plane);
         let submission = self.queue.submit([enc.finish()]);
-        let (tx, rx) = std::sync::mpsc::channel();
+        let slot = self.mapped.clone();
+        *slot.lock().unwrap_or_else(PoisonError::into_inner) = None;
         self.staging.map_async(wgpu::MapMode::Read, .., move |r| {
-            let _ = tx.send(r);
+            *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(r);
         });
         let waited = self
             .device
@@ -611,10 +621,17 @@ impl GpuDecoder {
                 Some(e) => Err(gpu_err("decoding", e)),
                 None => Ok(()),
             })
-            .and_then(|()| match rx.recv_timeout(Duration::from_secs(1)) {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(e)) => Err(gpu_err("reading back", e)),
-                Err(_) => Err(Error::Gpu("reading back: no answer from the GPU".into())),
+            .and_then(|()| {
+                // the poll above ran the mapping's callback; once more if it is late
+                let answer = || self.mapped.lock().unwrap_or_else(PoisonError::into_inner).take();
+                match answer().or_else(|| {
+                    let _ = self.device.poll(wgpu::PollType::Poll);
+                    answer()
+                }) {
+                    Some(Ok(())) => Ok(()),
+                    Some(Err(e)) => Err(gpu_err("reading back", e)),
+                    None => Err(Error::Gpu("reading back: no answer from the GPU".into())),
+                }
             });
         if let Err(e) = waited {
             // never leave the buffer mapped (or a mapping pending): the next frame copies into it
@@ -647,10 +664,10 @@ impl GpuDecoder {
         let t3 = Instant::now();
         if self.cfg.mode == TofMode::Extended {
             if self.cfg.ext.fill_saturated_depth {
-                post::fill_saturated_depth(&self.cfg, out);
+                post::fill_saturated_depth(&self.cfg, out, &mut self.post);
             }
             if self.cfg.ext.ir_fill_clipped {
-                post::fill_ir(&self.cfg, out, &mut self.saturation_level);
+                post::fill_ir(&self.cfg, out, &mut self.saturation_level, &mut self.post);
             }
         }
         let ms = |a: Instant, b: Instant| b.duration_since(a).as_secs_f64() * 1000.0;
@@ -668,8 +685,8 @@ fn dispatch(pass: &mut wgpu::ComputePass<'_>, pipeline: Option<&wgpu::ComputePip
 }
 
 impl TofDecoder for GpuDecoder {
-    fn describe(&self) -> String {
-        format!("gpu {}, {}", self.adapter, if self.cfg.mode == TofMode::Compat { "compat" } else { "extended" })
+    fn describe(&self) -> &str {
+        &self.describe
     }
     fn decode(&mut self, packet: &RawDepthPacket, tables: &Arc<DeviceTables>, out: &mut TofOutput) -> Result<()> {
         GpuDecoder::decode(self, packet, tables, out)
@@ -686,6 +703,7 @@ pub struct FallbackDecoder {
     gpu: Option<GpuDecoder>,
     cpu: Option<CpuDecoder>,
     reason: String,
+    describe: String,
     retry_at: Option<Instant>,
     last_ms: f64,
 }
@@ -697,12 +715,22 @@ impl FallbackDecoder {
     /// Tries the GPU; without one the CPU decodes (see [`FallbackDecoder::reason`]).
     pub fn new(cfg: TofConfig) -> Result<FallbackDecoder> {
         cfg.validate()?;
-        let mut d = FallbackDecoder { cfg, gpu: None, cpu: None, reason: String::new(), retry_at: None, last_ms: 0.0 };
+        let mut d = FallbackDecoder { cfg, gpu: None, cpu: None, reason: String::new(), describe: String::new(), retry_at: None, last_ms: 0.0 };
         d.try_gpu();
         if d.gpu.is_none() {
             d.cpu = Some(CpuDecoder::new(d.cfg.clone())?);
         }
+        d.refresh_describe();
         Ok(d)
+    }
+
+    /// The description changes only when the decoder switches.
+    fn refresh_describe(&mut self) {
+        self.describe = match (&self.gpu, &self.cpu) {
+            (Some(g), _) => g.describe().to_string(),
+            (None, Some(c)) => format!("{} (no GPU: {})", c.describe(), self.reason),
+            (None, None) => "none".into(),
+        };
     }
 
     fn try_gpu(&mut self) {
@@ -733,17 +761,14 @@ impl FallbackDecoder {
 }
 
 impl TofDecoder for FallbackDecoder {
-    fn describe(&self) -> String {
-        match (&self.gpu, &self.cpu) {
-            (Some(g), _) => g.describe(),
-            (None, Some(c)) => format!("{} (no GPU: {})", c.describe(), self.reason),
-            (None, None) => "none".into(),
-        }
+    fn describe(&self) -> &str {
+        &self.describe
     }
 
     fn decode(&mut self, packet: &RawDepthPacket, tables: &Arc<DeviceTables>, out: &mut TofOutput) -> Result<()> {
         if self.gpu.is_none() && self.retry_at.is_some_and(|t| Instant::now() >= t) {
             self.try_gpu();
+            self.refresh_describe();
         }
         if let Some(g) = self.gpu.as_mut() {
             match g.decode(packet, tables, out) {
@@ -758,11 +783,16 @@ impl TofDecoder for FallbackDecoder {
                     self.reason = e.to_string();
                     self.gpu = None;
                     self.retry_at = Some(Instant::now() + GPU_RETRY);
+                    if self.cpu.is_none() {
+                        self.cpu = Some(CpuDecoder::new(self.cfg.clone())?);
+                    }
+                    self.refresh_describe();
                 }
             }
         }
         if self.cpu.is_none() {
             self.cpu = Some(CpuDecoder::new(self.cfg.clone())?);
+            self.refresh_describe();
         }
         let cpu = self.cpu.as_mut().ok_or_else(|| Error::Unsupported("no decoder".into()))?;
         cpu.decode(packet, tables, out)?;

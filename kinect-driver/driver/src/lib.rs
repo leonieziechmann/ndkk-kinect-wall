@@ -31,6 +31,7 @@ pub mod frame;
 pub mod gpu;
 pub mod packet;
 pub mod pipeline;
+pub mod pool;
 pub mod protocol;
 pub mod record;
 pub mod sim;

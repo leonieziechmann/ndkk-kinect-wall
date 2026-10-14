@@ -42,6 +42,7 @@ use crate::error::{Error, Result, catch, panic_message};
 use crate::frame::Frame;
 use crate::packet::RawDepthPacket;
 use crate::pipeline::{Backend, Pipeline};
+use crate::pool::Pool;
 use crate::protocol::color_stream::{ColorFrame, ColorStreamParser};
 use crate::protocol::depth_stream::{DepthParserConfig, DepthParserStats, DepthStreamParser};
 use crate::record::{RawHeader, RawReader};
@@ -661,7 +662,9 @@ fn process_loop(shared: &Arc<Shared>) {
                     let mut s = lock(&shared.status);
                     s.frames += 1;
                     s.fps = window.len() as f32;
-                    s.decoder = frame.decoder.clone();
+                    if s.decoder != frame.decoder {
+                        s.decoder.clone_from(&frame.decoder);
+                    }
                     s.pipeline_ms = frame.pipeline_ms;
                 }
                 shared.events.push(Event::Frame(Box::new(frame)));
@@ -1001,8 +1004,9 @@ fn recording_loop(shared: &Arc<Shared>, path: &Path, realtime: bool, looped: boo
     let period = Duration::from_millis(33);
     let mut next = Instant::now();
     let mut seq = 0u32;
+    let pool = Pool::new(8);
     while !shared.stopping() {
-        match reader.next_packet() {
+        match reader.next_packet_in(&pool) {
             Ok(Some(mut p)) => {
                 if realtime {
                     let now = Instant::now();
@@ -1082,10 +1086,13 @@ fn simulator_loop(shared: &Arc<Shared>, scene: &str, fps: f32, sim: SimConfig) {
     // back and forth through the loop, so the motion has no jump
     let len = cache.len();
     let order: Vec<usize> = (0..len).chain((1..len.saturating_sub(1)).rev()).collect();
+    let pool = Pool::new(8);
     while !shared.stopping() {
         let started = Instant::now();
-        if let Some(p) = order.get(seq as usize % order.len().max(1)).and_then(|i| cache.get(*i)) {
-            let mut p = p.clone();
+        if let Some(cached) = order.get(seq as usize % order.len().max(1)).and_then(|i| cache.get(*i)) {
+            // a copy into a buffer that goes round, not a new one
+            let mut p = RawDepthPacket::from_pool(&pool, 0, 0);
+            p.copy_from(cached);
             p.sequence = seq;
             p.timestamp = seq.wrapping_mul(333);
             p.host_time_us = now_us();

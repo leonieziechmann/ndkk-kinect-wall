@@ -17,6 +17,7 @@ gpu = ["kinect-driver/gpu"]
 
 [dependencies]
 kinect-driver = { path = "../driver", features = ["usb"] }
+bytemuck = "1"
 log = "0.4"
 png = "0.18"
 
