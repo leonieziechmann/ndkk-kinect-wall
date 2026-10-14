@@ -28,3 +28,5 @@ wall-bevy/data/
 
 # agent worktrees (Claude Code)
 .claude/worktrees/
+# kinect-driver (Rust driver): build output
+kinect-driver/target/
