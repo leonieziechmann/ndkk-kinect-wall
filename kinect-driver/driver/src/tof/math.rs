@@ -3,14 +3,27 @@
 
 use std::f32::consts::PI;
 
+/// The larger of `a` and `b` (`b` if one is NaN): one instruction, where `f32::max` needs three
+/// for its NaN rule. For values that are never NaN.
+#[inline(always)]
+pub fn fmax(a: f32, b: f32) -> f32 {
+    if a > b { a } else { b }
+}
+
+/// The smaller of `a` and `b` (`b` if one is NaN), see [`fmax`].
+#[inline(always)]
+pub fn fmin(a: f32, b: f32) -> f32 {
+    if a < b { a } else { b }
+}
+
 /// atan2 with ~1e-6 rad error; atan2(0, 0) = 0.
 #[inline(always)]
 pub fn atan2(y: f32, x: f32) -> f32 {
     let ax = x.abs();
     let ay = y.abs();
-    let mx = ax.max(ay);
-    let mn = ax.min(ay);
-    let a = if mx > 0.0 { mn / mx.max(1e-30) } else { 0.0 };
+    let mx = fmax(ax, ay);
+    let mn = fmin(ax, ay);
+    let a = if mx > 0.0 { mn / fmax(mx, 1e-30) } else { 0.0 };
     let s = a * a;
     let p = -0.011_721_2f32;
     let p = p * s + 0.052_653_32;
@@ -28,9 +41,8 @@ pub fn atan2(y: f32, x: f32) -> f32 {
 /// so up to 1e-4 relative error (fast_depth documents 2e-7; it is plenty for filter weights).
 #[inline(always)]
 pub fn exp(x: f32) -> f32 {
-    // not clamp(): it asserts min <= max, and that check keeps the loops from vectorizing
-    #[allow(clippy::manual_clamp)]
-    let x = x.max(-87.0).min(88.0);
+    // (NaN counts as -87)
+    let x = fmin(fmax(x, -87.0), 88.0);
     let t = x * std::f32::consts::LOG2_E;
     let fi = t.floor();
     let f = t - fi;

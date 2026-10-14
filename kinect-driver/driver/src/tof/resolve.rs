@@ -13,6 +13,7 @@
 #![allow(clippy::indexing_slicing)]
 
 use super::kernels::{RowFlags, depth_of_u, flags, kind, u_of_depth};
+use super::lanes::{F8, LANES};
 use crate::consts::{FREQ_MULTIPLES, HEIGHT, WIDTH};
 
 const W: usize = WIDTH;
@@ -127,36 +128,48 @@ pub fn resolve_row(i: &ResolveIn, y: usize, depth: &mut [f32], conf_out: &mut [f
             window.n += 1;
         }
     }
+    // the anchors' support for both candidates, where a multi-frequency pixel needs it
+    let mut need = [0u8; W];
+    for ((n, &k), (&c, (&e1, &e2))) in need.iter_mut().zip(kr).zip(cr.iter().zip(e1r.iter().zip(e2r))) {
+        *n = u8::from((k & 0x0f == kind::MULTI) & !settled(c, e2 - e1));
+    }
+    let mut sums = [[0f32; W]; 3];
+    if need.iter().any(|n| *n != 0) {
+        support_row(&window, r, u1r, u2r, &need, &mut sums);
+    }
+    let [sum1, sum2, sum_total] = &sums;
+    // first as if no neighbor were asked: a multi-frequency pixel keeps its best candidate, the
+    // others have no depth (this pass vectorizes; the one below only works where needed)
+    let first = depth.iter_mut().zip(conf_out.iter_mut()).zip(u1r.iter().zip(cr)).zip(kr.iter().zip(xtr.iter().zip(ztr)));
+    for (((d_out, c_out), (&u1, &c)), (&k, (&xt, &zt))) in first {
+        let multi = k & 0x0f == kind::MULTI;
+        *d_out = if multi { depth_of_u(u1, xt, zt) } else { 0.0 };
+        *c_out = if multi { c } else { 0.0 };
+    }
     let rows = u1r.iter().zip(u2r).zip(e1r.iter().zip(e2r)).zip(cr.iter().zip(csr)).zip(kr.iter().zip(xtr.iter().zip(ztr)));
     for (x, ((((&u1, &u2), (&e1, &e2)), (&c, &cref)), (&k, (&xt, &zt)))) in rows.enumerate() {
-        let (Some(d_out), Some(c_out), Some(f)) = (depth.get_mut(x), conf_out.get_mut(x), fl.get_mut(x)) else { continue };
         let base = k & 0x0f;
+        if base != kind::SINGLE && need.get(x).is_none_or(|n| *n == 0) {
+            continue;
+        }
+        let (Some(d_out), Some(c_out), Some(f)) = (depth.get_mut(x), conf_out.get_mut(x), fl.get_mut(x)) else { continue };
         if base == kind::MULTI {
             let gap = e2 - e1;
-            if c >= SURE_CONFIDENCE || (gap >= 20.0 && c >= CONFIRMED_CONFIDENCE) {
-                // sure, or too clear for the neighbors to switch it and confident already
-                *d_out = depth_of_u(u1, xt, zt);
-                *c_out = c;
-                continue;
-            }
             let h = bandwidth(u1);
-            let (mut s1, mut s2, mut total) = support2(&window, x, r, u1, u2, h);
+            let (Some(&s1), Some(&s2), Some(&total)) = (sum1.get(x), sum2.get(x), sum_total.get(x)) else { continue };
+            let (mut s1, mut s2, mut total) = (s1, s2, total);
             // the pixel itself does not vote
             let own = anr.get(x).copied().unwrap_or(0.0);
             let d = (u2 - u1) / h;
             s1 -= own;
             s2 -= own * (1.0 - d * d).max(0.0);
             total -= own;
-            let (u, conf, resolved) = if total > 1.0 && s2 > 2.0 * s1 && gap < 20.0 {
-                (u2, (0.55 + 0.4 * s2 / total).min(0.95), true)
+            if total > 1.0 && s2 > 2.0 * s1 && gap < 20.0 {
+                *d_out = depth_of_u(u2, xt, zt);
+                *c_out = (0.55 + 0.4 * s2 / total).min(0.95);
+                *f |= flags::RESOLVED;
             } else if total > 1.0 && s1 > 2.0 * s2 && s1 > 0.5 * total {
-                (u1, c.max((0.55 + 0.4 * s1 / total).min(0.95)), true)
-            } else {
-                (u1, c, false)
-            };
-            *d_out = depth_of_u(u, xt, zt);
-            *c_out = conf;
-            if resolved {
+                *c_out = c.max((0.55 + 0.4 * s1 / total).min(0.95));
                 *f |= flags::RESOLVED;
             }
             continue;
@@ -183,21 +196,68 @@ pub fn resolve_row(i: &ResolveIn, y: usize, depth: &mut [f32], conf_out: &mut [f
             };
             *d_out = if conf > 0.0 { depth_of_u(u, xt, zt) } else { 0.0 };
             *c_out = conf;
-            continue;
         }
-        *d_out = 0.0;
-        *c_out = 0.0;
+    }
+}
+
+/// A multi-frequency pixel that is sure, or too clear for the neighbors to switch it and
+/// confident already: the neighbors are not asked.
+#[inline(always)]
+fn settled(conf: f32, gap: f32) -> bool {
+    // no short-circuit: the loops around it vectorize
+    (conf >= SURE_CONFIDENCE) | ((gap >= 20.0) & (conf >= CONFIRMED_CONFIDENCE))
+}
+
+crate::multiversion! {
+    /// [`support2`] of the pixels of a row with `need` set: eight pixels at a time where the
+    /// whole window lies inside the image.
+    fn support_row(w: &Window, r: usize, u1r: &[f32], u2r: &[f32], need: &[u8; W], out: &mut [[f32; W]; 3]) {
+        let [o1, o2, ot] = out;
+        let (zero, one) = (F8::zero(), F8::splat(1.0));
+        for x in (0..W).step_by(LANES) {
+            let Some(nd) = need.get(x..x + LANES) else { continue };
+            if nd.iter().all(|n| *n == 0) {
+                continue;
+            }
+            if x < r || x + LANES + r > W {
+                for (l, n) in nd.iter().enumerate() {
+                    let (xl, u1, u2) = (x + l, u1r.get(x + l).copied().unwrap_or(0.0), u2r.get(x + l).copied().unwrap_or(0.0));
+                    if *n != 0 && let (Some(a), Some(b), Some(t)) = (o1.get_mut(xl), o2.get_mut(xl), ot.get_mut(xl)) {
+                        (*a, *b, *t) = support2(w, xl, r, u1, u2, bandwidth(u1));
+                    }
+                }
+                continue;
+            }
+            let (u1, u2) = (F8::load(u1r, x), F8::load(u2r, x));
+            let h = u1.map_lanes(bandwidth);
+            let inv_h2 = one / (h * h).max(F8::splat(1e-12));
+            let (mut s1, mut s2, mut total) = (zero, zero, zero);
+            for (ur, ar, _) in w.rows() {
+                for at in x - r..=x + r {
+                    let (uj, aj) = (F8::load(ur, at), F8::load(ar, at));
+                    let (d1, d2) = (uj - u1, uj - u2);
+                    total = total + aj;
+                    s1 = aj.mul_add::<Isa>((-d1 * d1).mul_add::<Isa>(inv_h2, one).max(zero), s1);
+                    s2 = aj.mul_add::<Isa>((-d2 * d2).mul_add::<Isa>(inv_h2, one).max(zero), s2);
+                }
+            }
+            s1.store(o1, x);
+            s2.store(o2, x);
+            total.store(ot, x);
+        }
     }
 }
 
 /// Kernel bandwidth around a distance fraction: 4 % of the distance, at least 80 mm.
+#[inline(always)]
 fn bandwidth(u: f32) -> f32 {
     let mm = (u * super::kernels::U_RANGE_MM * 0.04).max(80.0);
     mm / super::kernels::U_RANGE_MM
 }
 
 /// Support of the anchors around `x` for two candidates (Epanechnikov kernel), and the total
-/// anchor weight (the pixel itself excluded).
+/// anchor weight (the pixel itself included).
+#[inline(always)]
 fn support2(w: &Window, x: usize, r: usize, u1: f32, u2: f32, h: f32) -> (f32, f32, f32) {
     let (mut s1, mut s2, mut total) = (0f32, 0f32, 0f32);
     let inv_h2 = 1.0 / (h * h).max(1e-12);

@@ -60,7 +60,8 @@ pub fn use_avx2() -> bool {
 
 /// Defines `fn name(args) -> ret { body }` compiled twice on x86-64: once for the baseline and
 /// once with AVX2 + FMA enabled; calls dispatch on the CPU detected at run time. Helpers used
-/// in the body must be `#[inline(always)]` so they are compiled into each version.
+/// in the body must be `#[inline(always)]` so they are compiled into each version. The body
+/// sees `Isa`, the [`crate::tof::lanes::Isa`] of its version.
 #[macro_export]
 #[doc(hidden)]
 macro_rules! multiversion {
@@ -71,7 +72,11 @@ macro_rules! multiversion {
             {
                 #[target_feature(enable = "avx2,fma")]
                 #[allow(clippy::too_many_arguments)]
-                fn avx2($($arg: $ty),*) $(-> $ret)? $body
+                fn avx2($($arg: $ty),*) $(-> $ret)? {
+                    #[allow(dead_code)]
+                    type Isa = $crate::tof::lanes::Fma;
+                    $body
+                }
                 if $crate::tof::simd::use_avx2() {
                     // SAFETY: the CPU supports AVX2 and FMA (checked at run time just above)
                     #[allow(unsafe_code)]
@@ -80,7 +85,11 @@ macro_rules! multiversion {
             }
             #[allow(clippy::too_many_arguments)]
             #[inline(always)]
-            fn baseline($($arg: $ty),*) $(-> $ret)? $body
+            fn baseline($($arg: $ty),*) $(-> $ret)? {
+                #[allow(dead_code)]
+                type Isa = $crate::tof::lanes::Baseline;
+                $body
+            }
             baseline($($arg),*)
         }
     };

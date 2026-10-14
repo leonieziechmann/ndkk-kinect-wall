@@ -31,6 +31,29 @@ fn upsample_taps(taps: &mut Vec<(usize, usize, f32)>, n: usize, parent: usize) {
     }));
 }
 
+/// One parent row upsampled to `out.len()` columns with the taps of [`upsample_taps`]: the
+/// border pixels with the general rule, the rest pairwise from three neighbors (vectorizes).
+fn upsample_row(parent: &[f32], out: &mut [f32], taps: &[(usize, usize, f32)]) {
+    let lerp = |a: f32, b: f32, f: f32| a + (b - a) * f;
+    let n = out.len();
+    // pairs (2i, 2i + 1) for 1 <= i <= parent.len() - 2 read parent[i - 1 ..= i + 1] unclamped
+    let inner = parent.len().saturating_sub(2).min(n.saturating_sub(2) / 2);
+    if let Some(rest) = out.get_mut(2..2 + 2 * inner) {
+        for (pair, win) in rest.chunks_exact_mut(2).zip(parent.windows(3)) {
+            if let ([e, o], [a, b, c]) = (pair, win) {
+                *e = lerp(*a, *b, 0.75);
+                *o = lerp(*b, *c, 0.25);
+            }
+        }
+    }
+    for x in (0..n.min(2)).chain(2 + 2 * inner..n) {
+        let (xa, xb, fx) = taps.get(x).copied().unwrap_or((0, 0, 0.0));
+        if let (Some(o), Some(a), Some(b)) = (out.get_mut(x), parent.get(xa), parent.get(xb)) {
+            *o = lerp(*a, *b, fx);
+        }
+    }
+}
+
 /// Push-pull with its buffers kept between calls: once they have grown to the image size, a
 /// fill allocates nothing.
 #[derive(Clone, Debug, Default)]
@@ -38,8 +61,8 @@ pub struct PushPull {
     levels: Vec<Level>,
     out: Vec<f32>,
     tmp: Vec<f32>,
-    upper: Vec<f32>,
-    lower: Vec<f32>,
+    /// the filled parent level, upsampled horizontally (one row per parent row)
+    wide: Vec<f32>,
     tx: Vec<(usize, usize, f32)>,
     ty: Vec<(usize, usize, f32)>,
 }
@@ -48,21 +71,6 @@ impl PushPull {
     /// Empty buffers (they grow with the first fill).
     pub fn new() -> PushPull {
         PushPull::default()
-    }
-
-    /// Level `i` with the size `w` x `h`, zeroed.
-    fn level(&mut self, i: usize, w: usize, h: usize) -> Option<&mut Level> {
-        if i == self.levels.len() {
-            self.levels.push(Level::default());
-        }
-        let l = self.levels.get_mut(i)?;
-        l.w = w;
-        l.h = h;
-        l.vw.clear();
-        l.vw.resize(w * h, 0.0);
-        l.wt.clear();
-        l.wt.resize(w * h, 0.0);
-        Some(l)
     }
 
     /// Fills pixels with weight 0 (or small weights) from the weighted values around them.
@@ -75,34 +83,37 @@ impl PushPull {
             self.out.extend_from_slice(values);
             return &self.out;
         }
-        if let Some(l0) = self.level(0, width, height) {
-            for ((vw, wt), (v, w)) in l0.vw.iter_mut().zip(l0.wt.iter_mut()).zip(values.iter().zip(weights)) {
-                let w = if w.is_finite() { w.clamp(0.0, 1.0) } else { 0.0 };
-                *wt = w;
-                *vw = if v.is_finite() { v * w } else { 0.0 };
-            }
+        if self.levels.is_empty() {
+            self.levels.push(Level::default());
         }
-        // push: halve until small
+        if let Some(l0) = self.levels.first_mut() {
+            l0.w = width;
+            l0.h = height;
+            l0.wt.clear();
+            l0.wt.extend(weights.iter().take(n).map(|w| if w.is_finite() { w.clamp(0.0, 1.0) } else { 0.0 }));
+            l0.vw.clear();
+            l0.vw.extend(values.iter().zip(&l0.wt).map(|(v, w)| if v.is_finite() { v * w } else { 0.0 }));
+        }
+        // push: halve until small (each pixel of the next level sums its 2 x 2 children)
         let mut used = 1;
         while let Some(&Level { w, h, .. }) = self.levels.get(used - 1) {
             if (w <= 1 && h <= 1) || used >= 24 {
                 break;
             }
             let (nw, nh) = (w.div_ceil(2), h.div_ceil(2));
-            if self.level(used, nw, nh).is_none() {
-                break;
+            if used == self.levels.len() {
+                self.levels.push(Level::default());
             }
             let (done, rest) = self.levels.split_at_mut(used);
             let (Some(l), Some(next)) = (done.last(), rest.first_mut()) else { break };
-            for (y, (vrow, wrow)) in l.vw.chunks_exact(l.w).zip(l.wt.chunks_exact(l.w)).enumerate() {
-                let start = (y / 2) * nw;
-                let (Some(dv), Some(dw)) = (next.vw.get_mut(start..start + nw), next.wt.get_mut(start..start + nw)) else { continue };
-                for (x, (v, w)) in vrow.iter().zip(wrow).enumerate() {
-                    if let (Some(a), Some(b)) = (dv.get_mut(x / 2), dw.get_mut(x / 2)) {
-                        *a += v;
-                        *b += w;
-                    }
-                }
+            next.w = nw;
+            next.h = nh;
+            next.vw.clear();
+            next.wt.clear();
+            for y in 0..nh {
+                let (v0, v1, w0, w1) = (level_row(&l.vw, w, h, 2 * y), level_row(&l.vw, w, h, 2 * y + 1), level_row(&l.wt, w, h, 2 * y), level_row(&l.wt, w, h, 2 * y + 1));
+                push_row(v0, v1, nw, &mut next.vw);
+                push_row(w0, w1, nw, &mut next.wt);
             }
             // average, keep the confidence saturating at 1
             for (v, t) in next.vw.iter_mut().zip(next.wt.iter_mut()) {
@@ -127,35 +138,62 @@ impl PushPull {
             let Some(l) = self.levels.get(li) else { break };
             upsample_taps(&mut self.tx, l.w, parent_w);
             upsample_taps(&mut self.ty, l.h, parent_h);
-            self.tmp.clear();
-            self.tmp.resize(l.w * l.h, 0.0);
-            self.upper.clear();
-            self.upper.resize(l.w, 0.0);
-            self.lower.clear();
-            self.lower.resize(l.w, 0.0);
-            let filled = &self.out;
-            for (y, orow) in self.tmp.chunks_exact_mut(l.w).enumerate() {
-                let (ya, yb, fy) = self.ty.get(y).copied().unwrap_or((0, 0, 0.0));
-                let (Some(ra), Some(rb)) = (filled.get(ya * parent_w..(ya + 1) * parent_w), filled.get(yb * parent_w..(yb + 1) * parent_w)) else { continue };
-                for (x, (u, d)) in self.upper.iter_mut().zip(self.lower.iter_mut()).enumerate() {
-                    let (xa, xb, fx) = self.tx.get(x).copied().unwrap_or((0, 0, 0.0));
-                    let (a0, a1) = (ra.get(xa).copied().unwrap_or(0.0), ra.get(xb).copied().unwrap_or(0.0));
-                    let (b0, b1) = (rb.get(xa).copied().unwrap_or(0.0), rb.get(xb).copied().unwrap_or(0.0));
-                    *u = a0 + (a1 - a0) * fx;
-                    *d = b0 + (b1 - b0) * fx;
-                }
-                let (Some(vrow), Some(wrow)) = (l.vw.get(y * l.w..(y + 1) * l.w), l.wt.get(y * l.w..(y + 1) * l.w)) else { continue };
-                for ((o, (u, d)), (v, w)) in orow.iter_mut().zip(self.upper.iter().zip(&self.lower)).zip(vrow.iter().zip(wrow)) {
-                    let parent = u + (d - u) * fy;
-                    *o = v + (1.0 - w) * parent;
-                }
+            // every parent row upsampled horizontally once
+            self.wide.clear();
+            self.wide.resize(l.w * parent_h, 0.0);
+            for (prow, wrow) in self.out.chunks_exact(parent_w).zip(self.wide.chunks_exact_mut(l.w)) {
+                upsample_row(prow, wrow, &self.tx);
             }
+            self.tmp.clear();
+            for y in 0..l.h {
+                let (ya, yb, fy) = self.ty.get(y).copied().unwrap_or((0, 0, 0.0));
+                let wrow = |r: usize| self.wide.get(r * l.w..(r + 1) * l.w).unwrap_or(&[]);
+                let (ra, rb) = (wrow(ya), wrow(yb));
+                let (Some(vrow), Some(trow)) = (l.vw.get(y * l.w..(y + 1) * l.w), l.wt.get(y * l.w..(y + 1) * l.w)) else { break };
+                self.tmp.extend(ra.iter().zip(rb).zip(vrow.iter().zip(trow)).map(|((u, d), (v, w))| {
+                    let parent = u + (d - u) * fy;
+                    v + (1.0 - w) * parent
+                }));
+            }
+            self.tmp.resize(l.w * l.h, 0.0);
             std::mem::swap(&mut self.out, &mut self.tmp);
             parent_w = l.w;
             parent_h = l.h;
         }
         &self.out
     }
+}
+
+/// Row `y` of a `w` x `h` level (empty below the last row).
+fn level_row(buf: &[f32], w: usize, h: usize, y: usize) -> &[f32] {
+    if y < h { buf.get(y * w..(y + 1) * w).unwrap_or(&[]) } else { &[] }
+}
+
+/// Appends to `out` one row of the next pyramid level: `nw` sums of 2 x 2 children from the
+/// rows `r0` and `r1` (`r1` empty below the last row; a last odd column has one child per
+/// row). The order of the sums is that of adding the children row by row.
+fn push_row(r0: &[f32], r1: &[f32], nw: usize, out: &mut Vec<f32>) {
+    let start = out.len();
+    let pairs = r0.len() / 2;
+    let p0 = r0.chunks_exact(2);
+    if r1.len() == r0.len() {
+        out.extend(p0.zip(r1.chunks_exact(2)).map(|(a, b)| match (a, b) {
+            ([a0, a1], [b0, b1]) => a0 + a1 + b0 + b1,
+            _ => 0.0,
+        }));
+    } else {
+        out.extend(p0.map(|a| match a {
+            [a0, a1] => a0 + a1,
+            _ => 0.0,
+        }));
+    }
+    if r0.len() % 2 == 1 {
+        let last = r0.last().copied().unwrap_or(0.0) + if r1.len() == r0.len() { r1.last().copied().unwrap_or(0.0) } else { 0.0 };
+        out.push(last);
+    }
+    // (rows of the expected width only; anything else pads with zeros)
+    out.resize(start + nw.max(pairs), 0.0);
+    out.truncate(start + nw);
 }
 
 /// Fills pixels with weight 0 (or small weights) from the weighted values around them.

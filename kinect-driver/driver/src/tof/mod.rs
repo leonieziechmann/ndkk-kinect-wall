@@ -9,6 +9,7 @@ pub mod config;
 pub mod cpu;
 pub mod fill;
 pub mod kernels;
+pub mod lanes;
 pub mod math;
 pub mod parallel;
 pub mod post;

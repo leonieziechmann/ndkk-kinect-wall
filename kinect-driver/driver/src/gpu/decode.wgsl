@@ -550,6 +550,7 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
         let rho = irl * dm * dm * P.inv_brightness;
         let implausible = rho > P.max_reflectivity || rho < P.min_reflectivity;
         if (implausible && P.plausibility != 0u) { e += 30.0; }
+        e += mf * TIE_BREAK;
         if (e < e1) {
             e2 = e1;
             u2 = u1;

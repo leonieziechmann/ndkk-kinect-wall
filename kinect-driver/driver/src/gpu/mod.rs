@@ -23,7 +23,7 @@ use crate::pipeline::TofDecoder;
 use crate::tables::DeviceTables;
 use crate::tof::config::{TofConfig, TofMode};
 use crate::tof::cpu::{Prepared, edge_params, s1_params, s2_params, s3_params};
-use crate::tof::kernels::{ANCHOR_CONFIDENCE, FULL_SCALE, REBUILT_NOISE, U_RANGE_MM, flags, kind};
+use crate::tof::kernels::{ANCHOR_CONFIDENCE, FULL_SCALE, REBUILT_NOISE, TIE_BREAK, U_RANGE_MM, flags, kind};
 use crate::tof::resolve::{CONFIRMED_CONFIDENCE, SURE_CONFIDENCE};
 use crate::tof::post::PostScratch;
 use crate::tof::{CpuDecoder, TofOutput, TofTimings, post};
@@ -245,6 +245,7 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("U_RANGE_MM", U_RANGE_MM),
         ("REBUILT_NOISE", REBUILT_NOISE),
         ("ANCHOR_CONFIDENCE", ANCHOR_CONFIDENCE),
+        ("TIE_BREAK", TIE_BREAK),
         ("SURE_CONFIDENCE", SURE_CONFIDENCE),
         ("CONFIRMED_CONFIDENCE", CONFIRMED_CONFIDENCE),
     ] {

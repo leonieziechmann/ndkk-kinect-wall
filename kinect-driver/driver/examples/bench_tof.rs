@@ -1,4 +1,4 @@
-//! Decoding speed per phase: cargo run --release -p kinect-driver --example bench_tof -- FILE.k2raw [threads] [compat|extended]
+//! Decoding speed per phase (median over BENCH_FRAMES runs, default 60): cargo run --release -p kinect-driver --example bench_tof -- FILE.k2raw [threads] [compat|extended]
 #![allow(clippy::indexing_slicing, clippy::unwrap_used, clippy::expect_used, clippy::needless_range_loop)]
 
 use kinect_driver::record::RawReader;
@@ -22,15 +22,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..5 {
         dec.decode(&p, &tables, &mut out)?;
     }
-    let n = 40;
-    let mut s = [0f64; 5];
+    // the median of every phase over the runs (robust against other load on the machine)
+    let n: usize = std::env::var("BENCH_FRAMES").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
+    let mut runs: [Vec<f64>; 5] = Default::default();
     for _ in 0..n {
         dec.decode(&p, &tables, &mut out)?;
         let t = dec.timings;
-        for (a, b) in s.iter_mut().zip([t.stage1_ms, t.stage2_ms, t.stage3_ms, t.fill_ms, t.total_ms]) {
-            *a += b / n as f64;
+        for (a, b) in runs.iter_mut().zip([t.stage1_ms, t.stage2_ms, t.stage3_ms, t.fill_ms, t.total_ms]) {
+            a.push(b);
         }
     }
+    let s = runs.map(|mut v| {
+        v.sort_by(f64::total_cmp);
+        v.get(v.len() / 2).copied().unwrap_or(0.0)
+    });
     println!(
         "{mode}, {} threads, {}: {:.2} ms/frame (stage1 {:.2}, stage2 {:.2}, stage3 {:.2}, fill {:.2})",
         dec.threads(),

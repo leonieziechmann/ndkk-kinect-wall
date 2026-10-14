@@ -28,7 +28,7 @@ use crate::tables::DeviceTables;
 
 const W: usize = WIDTH;
 const ROWS_PER_BLOCK: usize = 8;
-/// stage 1 planes: a0..2, b0..2, n0..2, na0..2, nb0..2
+/// stage 1 planes: a0..2, b0..2, n2_0..2 (squared amplitude), na0..2, nb0..2
 const P1: usize = 15;
 /// stage 2 float planes: compat raw_depth, ir_sum; extended u1, u2, e1, e2, conf, csingle,
 /// ir_sum, anchor
@@ -342,7 +342,7 @@ impl CpuDecoder {
                 let (Ok(ir), Ok(usable), Ok(flags)) = (<&mut Row>::try_from(irrow), <&mut RowU8>::try_from(usrow), <&mut RowFlags>::try_from(flrow)) else {
                     continue;
                 };
-                let mut o = S1Out { a: [a0, a1, a2], b: [b0, b1, b2], n: [n0, n1, n2], na: [na0, na1, na2], nb: [nb0, nb1, nb2], ir, usable, flags };
+                let mut o = S1Out { a: [a0, a1, a2], b: [b0, b1, b2], n2: [n0, n1, n2], na: [na0, na1, na2], nb: [nb0, nb1, nb2], ir, usable, flags };
                 if extended {
                     kernels::stage1_extended(&vals, sub_ok, &tabs, &mut o, &p);
                 } else {
@@ -385,7 +385,7 @@ impl CpuDecoder {
                     y,
                     a: [a0, a1, a2],
                     b: [b0, b1, b2],
-                    n: [n0, n1, n2],
+                    n2: [n0, n1, n2],
                     na: [na0, na1, na2],
                     nb: [nb0, nb1, nb2],
                     usable: [u0, u1, u2, u3, u4],
@@ -445,14 +445,16 @@ impl CpuDecoder {
         let prep = self.prep.as_ref().ok_or_else(|| Error::invalid("tables not loaded"))?;
         // smooth expectation of u from the confident pixels, for large areas where only one
         // frequency is usable (a saturated hand): only computed when such pixels exist
-        let kind_at = |i: usize| self.s2b.get(((i / W) * P2B + 1) * W + i % W).copied().unwrap_or(0);
-        let f_at = |p: usize, i: usize| self.s2.get(((i / W) * P2 + p) * W + i % W).copied().unwrap_or(0.0);
-        let singles = (0..PIXELS).filter(|i| kind_at(*i) & 0x0f == kernels::kind::SINGLE).count();
+        // (the planes are row-interleaved: whole rows at a time)
+        let kind_rows = self.s2b.chunks_exact(W * P2B).filter_map(|r| r.get(W..2 * W));
+        let singles = kind_rows.flatten().filter(|k| **k & 0x0f == kernels::kind::SINGLE).count();
         let expected: &[f32] = if self.cfg.ext.spatial_resolve && singles > 0 {
             self.exp_u.clear();
-            self.exp_u.extend((0..PIXELS).map(|i| f_at(0, i)));
             self.exp_w.clear();
-            self.exp_w.extend((0..PIXELS).map(|i| f_at(7, i)));
+            for r in self.s2.chunks_exact(W * P2) {
+                self.exp_u.extend_from_slice(r.get(..W).unwrap_or(&[]));
+                self.exp_w.extend_from_slice(r.get(7 * W..8 * W).unwrap_or(&[]));
+            }
             if self.exp_w.iter().any(|w| *w > 0.0) {
                 self.exp_pp.fill(&self.exp_u, &self.exp_w, W, HEIGHT)
             } else {
