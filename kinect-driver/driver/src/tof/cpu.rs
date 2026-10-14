@@ -209,6 +209,18 @@ impl CpuDecoder {
         self.threads
     }
 
+    /// The complex value (a, b) of frequency `k` (0 = 80, 1 = 16, 2 = 120 MHz) at pixel `i` in the
+    /// last decoded frame, before any filter: for analysis tools (noise, gains).
+    pub fn sample(&self, k: usize, i: usize) -> Option<(f32, f32)> {
+        if k >= 3 || i >= PIXELS {
+            return None;
+        }
+        let (y, x) = (i / W, i % W);
+        let a = self.s1.get((y * P1 + k) * W + x)?;
+        let b = self.s1.get((y * P1 + 3 + k) * W + x)?;
+        Some((*a, *b))
+    }
+
     /// Decodes one packet into `out` (its planes are resized as needed).
     pub fn decode(&mut self, packet: &RawDepthPacket, tables: &Arc<DeviceTables>, out: &mut TofOutput) -> Result<()> {
         if packet.data.len() < crate::consts::PACKET_BYTES {

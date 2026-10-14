@@ -10,8 +10,13 @@ publish.workspace = true
 name = "kinect-driver"
 path = "src/main.rs"
 
+[features]
+default = ["gpu"]
+# decoding on the GPU (wgpu); without it `--backend gpu` decodes on the CPU
+gpu = ["kinect-driver/gpu"]
+
 [dependencies]
-kinect-driver = { path = "../driver", features = ["usb", "gpu"] }
+kinect-driver = { path = "../driver", features = ["usb"] }
 log = "0.4"
 png = "0.18"
 

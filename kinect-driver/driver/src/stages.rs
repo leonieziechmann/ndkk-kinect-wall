@@ -14,7 +14,9 @@ pub enum ToneCurve {
         /// largest output
         white: f32,
     },
-    /// unchanged below `knee`, smoothly compressed above it, approaching `white` (never clips)
+    /// unchanged below `knee`, compressed above it (Reinhard: `knee + room * t / (1 + t)`),
+    /// approaching `white` but never reaching it: highlights keep their detail over a range of a
+    /// hundred times the knee instead of clipping
     Rolloff {
         /// below this nothing changes
         knee: f32,
@@ -39,7 +41,8 @@ impl ToneCurve {
             ToneCurve::Clip { white } => v.min(white),
             ToneCurve::Rolloff { knee, white } => {
                 let room = (white - knee).max(1e-3);
-                if v <= knee { v } else { knee + room * (1.0 - (-(v - knee) / room).exp()) }
+                let t = (v - knee) / room;
+                if v <= knee { v } else { knee + room * t / (1.0 + t) }
             }
             ToneCurve::Log { max_in, white } => {
                 let m = max_in.max(1.0);
@@ -259,6 +262,10 @@ mod tests {
         assert_eq!(r.apply(1000.0), 1000.0);
         assert!(r.apply(5000.0) > 3000.0 && r.apply(5000.0) < 6000.0);
         assert!(r.apply(1e9) <= 6000.0 && r.apply(1e9) > 5999.0);
+        // detail far above the knee: 30000 and 60000 still differ clearly
+        assert!(r.apply(60000.0) - r.apply(30000.0) > 100.0);
+        // smooth at the knee (slope 1 on both sides)
+        assert!((r.apply(3001.0) - 3001.0).abs() < 0.01);
         assert!(r.apply(f32::NAN) == 0.0);
         let l = ToneCurve::Log { max_in: 1000.0, white: 255.0 };
         assert!((l.apply(1000.0) - 255.0).abs() < 1e-3);

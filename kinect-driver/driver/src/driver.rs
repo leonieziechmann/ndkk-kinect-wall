@@ -1053,21 +1053,41 @@ fn simulator_loop(shared: &Arc<Shared>, scene: &str, fps: f32, sim: SimConfig) {
         }
     };
     let tables = sim.tables().clone();
+    let period = Duration::from_secs_f32(1.0 / fps.max(0.1));
+    // rendering is slower than the sensor: a short loop is rendered first, then repeated
+    shared.set_state(DriverState::Starting, &format!("rendering the simulated scene '{scene}'"));
+    let mut cache: Vec<RawDepthPacket> = Vec::new();
+    for n in 0..SIM_LOOP_FRAMES {
+        if shared.stopping() {
+            return;
+        }
+        let Some(s) = Scene::preset(scene, n as f32 * period.as_secs_f32()) else {
+            shared.set_state(DriverState::Stopped, &format!("unknown scene {scene:?}"));
+            return;
+        };
+        match catch(|| Ok(sim.frame(&s, n))) {
+            Ok((p, _)) => cache.push(p),
+            Err(e) => shared.warn(format!("simulator: {e}")),
+        }
+    }
+    if cache.is_empty() {
+        shared.set_state(DriverState::Stopped, "the simulator produced nothing");
+        return;
+    }
     let identity = DeviceIdentity { serial: "SIMULATED".into(), firmware: "simulator".into(), ..Default::default() };
     lock(&shared.status).identity = Some(identity.clone());
     shared.events.push(Event::Device { identity, tables: tables.clone() });
     shared.set_state(DriverState::Streaming, &format!("simulated scene '{scene}'"));
-    let period = Duration::from_secs_f32(1.0 / fps.max(0.1));
-    let t0 = Instant::now();
     let mut seq = 0u32;
+    // back and forth through the loop, so the motion has no jump
+    let len = cache.len();
+    let order: Vec<usize> = (0..len).chain((1..len.saturating_sub(1)).rev()).collect();
     while !shared.stopping() {
         let started = Instant::now();
-        let Some(s) = Scene::preset(scene, t0.elapsed().as_secs_f32()) else {
-            shared.set_state(DriverState::Stopped, &format!("unknown scene {scene:?}"));
-            return;
-        };
-        let r = catch(|| Ok(sim.frame(&s, seq)));
-        if let Ok((mut p, _)) = r {
+        if let Some(p) = order.get(seq as usize % order.len().max(1)).and_then(|i| cache.get(*i)) {
+            let mut p = p.clone();
+            p.sequence = seq;
+            p.timestamp = seq.wrapping_mul(333);
             p.host_time_us = now_us();
             shared.last_packet_ms.store(shared.ms().max(1), Ordering::SeqCst);
             shared.work.push((Arc::new(p), tables.clone()));
@@ -1079,6 +1099,9 @@ fn simulator_loop(shared: &Arc<Shared>, scene: &str, fps: f32, sim: SimConfig) {
         }
     }
 }
+
+/// Distinct frames the simulator source renders (then plays back and forth).
+const SIM_LOOP_FRAMES: u32 = 12;
 
 #[cfg(test)]
 mod tests {
