@@ -665,7 +665,8 @@ impl GpuDecoder {
         let t3 = Instant::now();
         if self.cfg.mode == TofMode::Extended {
             if self.cfg.ext.fill_saturated_depth {
-                post::fill_saturated_depth(&self.cfg, &mut out.depth, &mut out.confidence, &mut out.flags, &mut self.post.depth);
+                // (cannot fail without workers)
+                let _ = post::fill_saturated_depth(&self.cfg, &mut out.depth, &mut out.confidence, &mut out.flags, &mut self.post.depth, None);
             }
             if self.cfg.ext.ir_fill_clipped {
                 post::fill_ir(&self.cfg, &mut out.ir, &out.flags, &mut self.saturation_level, &mut self.post.ir);

@@ -1,6 +1,10 @@
 //! Push-pull filling: missing values of an image are interpolated smoothly from what is there,
 //! over any distance (used for clipped infrared, inside saturated areas, and as the depth
-//! expectation of the resolver). O(pixels), about a millisecond for the whole image.
+//! expectation of the resolver). O(pixels), about a millisecond for the whole image on one
+//! thread.
+
+use super::parallel::Workers;
+use crate::error::Result;
 
 /// One pyramid level: premultiplied values and weights (0..1).
 #[derive(Clone, Debug, Default)]
@@ -63,11 +67,6 @@ pub struct PushPull {
     tmp: Vec<f32>,
     /// the filled parent level, upsampled horizontally (one row per parent row)
     wide: Vec<f32>,
-    /// rows of the input as level 0 (premultiplied values, weights)
-    rv: Vec<f32>,
-    rw: Vec<f32>,
-    rv2: Vec<f32>,
-    rw2: Vec<f32>,
     tx: Vec<(usize, usize, f32)>,
     ty: Vec<(usize, usize, f32)>,
 }
@@ -87,20 +86,35 @@ impl PushPull {
     /// `values` and `weights` are `width * height`; weights are clamped to 0..1. Pixels with
     /// weight 1 keep their value. The result lives until the next call.
     pub fn fill(&mut self, values: &[f32], weights: &[f32], width: usize, height: usize) -> &[f32] {
+        // run serially, nothing can fail
+        let _ = self.run(values, weights, width, height, None);
+        &self.out
+    }
+
+    /// [`PushPull::fill`] with the work at full resolution (most of it) spread over `workers`;
+    /// the same result. Fails only if a worker panicked.
+    pub fn fill_with(&mut self, values: &[f32], weights: &[f32], width: usize, height: usize, workers: &Workers) -> Result<&[f32]> {
+        self.run(values, weights, width, height, Some(workers))?;
+        Ok(&self.out)
+    }
+
+    fn run(&mut self, values: &[f32], weights: &[f32], width: usize, height: usize, workers: Option<&Workers>) -> Result<()> {
         let n = width * height;
         let (Some(values), Some(weights)) = (values.get(..n), weights.get(..n)) else {
             self.out.clear();
             self.out.extend_from_slice(values);
-            return &self.out;
+            return Ok(());
         };
         if n == 0 || (width <= 1 && height <= 1) {
             self.out.clear();
-            input_row(values, weights, width, 0, &mut self.rv, &mut self.rw);
-            self.out.extend(self.rv.iter().zip(&self.rw).map(|(v, w)| if *w > 0.0 { v / w } else { 0.0 }));
-            return &self.out;
+            self.out.extend(values.iter().zip(weights).map(|(v, w)| {
+                let (v, w) = level0(*v, *w);
+                if w > 0.0 { v / w } else { 0.0 }
+            }));
+            return Ok(());
         }
-        // level 0 is the input itself, read a row at a time (never stored: at full resolution
-        // that would be the bulk of the memory traffic); `levels` holds level 1 and up
+        // level 0 is the input itself, read where it is needed (never stored: at full
+        // resolution that would be the bulk of the memory traffic); `levels` holds level 1 up
         let mut used = 0;
         let (mut w, mut h) = (width, height);
         while !(w <= 1 && h <= 1) && used < 23 {
@@ -112,32 +126,27 @@ impl PushPull {
             let Some(next) = rest.first_mut() else { break };
             next.w = nw;
             next.h = nh;
-            next.vw.clear();
-            next.wt.clear();
             match done.last() {
-                // each pixel of the next level sums its 2 x 2 children
+                // each pixel of level 1 sums its 2 x 2 children of the input
                 None => {
-                    for y in 0..nh {
-                        input_row(values, weights, width, 2 * y, &mut self.rv, &mut self.rw);
-                        input_row(values, weights, width, 2 * y + 1, &mut self.rv2, &mut self.rw2);
-                        push_row(&self.rv, &self.rv2, nw, &mut next.vw);
-                        push_row(&self.rw, &self.rw2, nw, &mut next.wt);
-                    }
+                    next.vw.resize(nw * nh, 0.0);
+                    next.wt.resize(nw * nh, 0.0);
+                    let blocks = next.vw.chunks_mut(nw * BLOCK_ROWS).zip(next.wt.chunks_mut(nw * BLOCK_ROWS)).enumerate();
+                    rows(workers, blocks, &|(b, (vw, wt)): (usize, (&mut [f32], &mut [f32]))| {
+                        for (r, (vrow, wrow)) in vw.chunks_mut(nw).zip(wt.chunks_mut(nw)).enumerate() {
+                            push_input_row(values, weights, width, height, b * BLOCK_ROWS + r, vrow, wrow);
+                        }
+                    })?;
                 }
                 Some(l) => {
+                    next.vw.clear();
+                    next.wt.clear();
                     for y in 0..nh {
                         let (v0, v1, w0, w1) = (level_row(&l.vw, w, h, 2 * y), level_row(&l.vw, w, h, 2 * y + 1), level_row(&l.wt, w, h, 2 * y), level_row(&l.wt, w, h, 2 * y + 1));
                         push_row(v0, v1, nw, &mut next.vw);
                         push_row(w0, w1, nw, &mut next.wt);
                     }
-                }
-            }
-            // average, keep the confidence saturating at 1
-            for (v, t) in next.vw.iter_mut().zip(next.wt.iter_mut()) {
-                if *t > 0.0 {
-                    let c = t.min(1.0);
-                    *v = *v / *t * c;
-                    *t = c;
+                    normalize(&mut next.vw, &mut next.wt);
                 }
             }
             (w, h) = (nw, nh);
@@ -147,15 +156,14 @@ impl PushPull {
         let Some(top) = used.checked_sub(1).and_then(|i| self.levels.get(i)) else {
             self.out.clear();
             self.out.extend_from_slice(values);
-            return &self.out;
+            return Ok(());
         };
         self.out.clear();
         self.out.extend(top.vw.iter().zip(&top.wt).map(|(v, w)| if *w > 0.0 { v / w } else { 0.0 }));
         let (mut parent_w, mut parent_h) = (top.w, top.h);
-        for li in (0..used).rev() {
-            // level li (0 = the input), its stored planes if any
-            let stored = li.checked_sub(1).and_then(|i| self.levels.get(i));
-            let (lw, lh) = stored.map_or((width, height), |l| (l.w, l.h));
+        for li in (1..used).rev() {
+            let Some(l) = self.levels.get(li - 1) else { break };
+            let (lw, lh) = (l.w, l.h);
             upsample_taps(&mut self.tx, lw, parent_w);
             upsample_taps(&mut self.ty, lh, parent_h);
             // every parent row upsampled horizontally once
@@ -169,13 +177,7 @@ impl PushPull {
                 let (ya, yb, fy) = self.ty.get(y).copied().unwrap_or((0, 0, 0.0));
                 let wrow = |r: usize| self.wide.get(r * lw..(r + 1) * lw).unwrap_or(&[]);
                 let (ra, rb) = (wrow(ya), wrow(yb));
-                let (vrow, trow) = match stored {
-                    Some(l) => (l.vw.get(y * lw..(y + 1) * lw).unwrap_or(&[]), l.wt.get(y * lw..(y + 1) * lw).unwrap_or(&[])),
-                    None => {
-                        input_row(values, weights, width, y, &mut self.rv, &mut self.rw);
-                        (&self.rv[..], &self.rw[..])
-                    }
-                };
+                let (vrow, trow) = (l.vw.get(y * lw..(y + 1) * lw).unwrap_or(&[]), l.wt.get(y * lw..(y + 1) * lw).unwrap_or(&[]));
                 self.tmp.extend(ra.iter().zip(rb).zip(vrow.iter().zip(trow)).map(|((u, d), (v, w))| {
                     let parent = u + (d - u) * fy;
                     v + (1.0 - w) * parent
@@ -186,18 +188,111 @@ impl PushPull {
             parent_w = lw;
             parent_h = lh;
         }
-        &self.out
+        // the last step, to the input's resolution
+        upsample_taps(&mut self.tx, width, parent_w);
+        upsample_taps(&mut self.ty, height, parent_h);
+        self.wide.clear();
+        self.wide.resize(width * parent_h, 0.0);
+        let (parent, tx) = (&self.out, &self.tx);
+        let blocks = self.wide.chunks_mut(width * BLOCK_ROWS).zip(parent.chunks(parent_w * BLOCK_ROWS));
+        rows(workers, blocks, &|(wrows, prows): (&mut [f32], &[f32])| {
+            for (wrow, prow) in wrows.chunks_mut(width).zip(prows.chunks(parent_w)) {
+                upsample_row(prow, wrow, tx);
+            }
+        })?;
+        self.tmp.clear();
+        self.tmp.resize(n, 0.0);
+        let (wide, ty) = (&self.wide, &self.ty);
+        let blocks = self.tmp.chunks_mut(width * BLOCK_ROWS).enumerate();
+        rows(workers, blocks, &|(b, orows): (usize, &mut [f32])| {
+            for (r, orow) in orows.chunks_mut(width).enumerate() {
+                let y = b * BLOCK_ROWS + r;
+                let (ya, yb, fy) = ty.get(y).copied().unwrap_or((0, 0, 0.0));
+                let wrow = |r: usize| wide.get(r * width..(r + 1) * width).unwrap_or(&[]);
+                pull_input_row(level_row(values, width, height, y), level_row(weights, width, height, y), wrow(ya), wrow(yb), fy, orow);
+            }
+        })?;
+        std::mem::swap(&mut self.out, &mut self.tmp);
+        Ok(())
     }
 }
 
-/// Row `y` of the input as level 0 of the pyramid: weights clamped to 0..1 (0 if not finite),
-/// values premultiplied by them (0 if not finite). Empty below the last row.
-fn input_row(values: &[f32], weights: &[f32], width: usize, y: usize, vw: &mut Vec<f32>, wt: &mut Vec<f32>) {
-    vw.clear();
-    wt.clear();
-    let (Some(v), Some(w)) = (values.get(y * width..(y + 1) * width), weights.get(y * width..(y + 1) * width)) else { return };
-    wt.extend(w.iter().map(|w| if w.is_finite() { w.clamp(0.0, 1.0) } else { 0.0 }));
-    vw.extend(v.iter().zip(wt.iter()).map(|(v, w)| if v.is_finite() { v * w } else { 0.0 }));
+/// Rows of a level per work item of [`PushPull::fill_with`].
+const BLOCK_ROWS: usize = 8;
+
+/// `f` over `items`, on `workers` if there are any.
+fn rows<T: Send>(workers: Option<&Workers>, items: impl Iterator<Item = T> + Send, f: &(dyn Fn(T) + Sync)) -> Result<()> {
+    match workers {
+        Some(w) => w.for_each(items, f),
+        None => {
+            items.for_each(f);
+            Ok(())
+        }
+    }
+}
+
+/// A pixel of the input as level 0 of the pyramid: (premultiplied value, weight); the weight
+/// clamped to 0..1, 0 if either is not finite.
+#[inline(always)]
+fn level0(v: f32, w: f32) -> (f32, f32) {
+    let w = if w.is_finite() { w.clamp(0.0, 1.0) } else { 0.0 };
+    (if v.is_finite() { v * w } else { 0.0 }, w)
+}
+
+/// Row `y` of level 1 from the input (the sums of 2 x 2 children, in the order of
+/// [`push_row`]), averaged as [`normalize`] does.
+fn push_input_row(values: &[f32], weights: &[f32], width: usize, height: usize, y: usize, vw: &mut [f32], wt: &mut [f32]) {
+    let row = |a, yy| level_row(a, width, height, yy);
+    let (v0, w0, v1, w1) = (row(values, 2 * y), row(weights, 2 * y), row(values, 2 * y + 1), row(weights, 2 * y + 1));
+    let two_rows = v1.len() == v0.len();
+    let at = |a: &[f32], x: usize| a.get(x).copied().unwrap_or(0.0);
+    for (x, (ov, ow)) in vw.iter_mut().zip(wt.iter_mut()).enumerate().take(width / 2) {
+        let ((va, wa), (vb, wb)) = (level0(at(v0, 2 * x), at(w0, 2 * x)), level0(at(v0, 2 * x + 1), at(w0, 2 * x + 1)));
+        let (sv, sw) = if two_rows {
+            let ((vc, wc), (vd, wd)) = (level0(at(v1, 2 * x), at(w1, 2 * x)), level0(at(v1, 2 * x + 1), at(w1, 2 * x + 1)));
+            (va + vb + vc + vd, wa + wb + wc + wd)
+        } else {
+            (va + vb, wa + wb)
+        };
+        (*ov, *ow) = average(sv, sw);
+    }
+    if width % 2 == 1 {
+        let last = width - 1;
+        let (va, wa) = level0(at(v0, last), at(w0, last));
+        let (vc, wc) = if two_rows { level0(at(v1, last), at(w1, last)) } else { (0.0, 0.0) };
+        if let (Some(ov), Some(ow)) = (vw.get_mut(width / 2), wt.get_mut(width / 2)) {
+            (*ov, *ow) = average(va + vc, wa + wc);
+        }
+    }
+}
+
+/// The last pull: a row of the result at the input's resolution, from the input row and the
+/// upsampled parent rows above and below.
+fn pull_input_row(values: &[f32], weights: &[f32], ra: &[f32], rb: &[f32], fy: f32, out: &mut [f32]) {
+    for ((o, (v, w)), (u, d)) in out.iter_mut().zip(values.iter().zip(weights)).zip(ra.iter().zip(rb)) {
+        let (v, w) = level0(*v, *w);
+        let parent = u + (d - u) * fy;
+        *o = v + (1.0 - w) * parent;
+    }
+}
+
+/// A sum of children as a pixel of the next level: their average, the confidence saturating
+/// at 1.
+#[inline(always)]
+fn average(v: f32, t: f32) -> (f32, f32) {
+    if t > 0.0 {
+        let c = t.min(1.0);
+        (v / t * c, c)
+    } else {
+        (v, t)
+    }
+}
+
+/// [`average`] over a level.
+fn normalize(vw: &mut [f32], wt: &mut [f32]) {
+    for (v, t) in vw.iter_mut().zip(wt.iter_mut()) {
+        (*v, *t) = average(*v, *t);
+    }
 }
 
 /// Row `y` of a `w` x `h` level (empty below the last row).
@@ -300,6 +395,18 @@ mod tests {
             // another size in between
             let small = pp.fill(&values[..12], &weights[..12], 4, 3).to_vec();
             assert_eq!(small.len(), 12);
+        }
+    }
+
+    #[test]
+    fn spread_over_threads_it_is_the_same() {
+        let workers = crate::tof::parallel::Workers::new(4);
+        let mut pp = PushPull::new();
+        for (w, h) in [(512, 424), (53, 41), (2, 1), (1, 7)] {
+            let values: Vec<f32> = (0..w * h).map(|i| ((i * 7) % 97) as f32 * 1.5).collect();
+            let weights: Vec<f32> = (0..w * h).map(|i| if (i / w + i % w) % 5 == 0 { 0.0 } else { 0.7 }).collect();
+            let serial = pp.fill(&values, &weights, w, h).to_vec();
+            assert_eq!(pp.fill_with(&values, &weights, w, h, &workers).unwrap(), &serial[..], "{w} x {h}");
         }
     }
 

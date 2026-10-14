@@ -2,10 +2,12 @@
 //! shared by the CPU and the GPU decoder, which runs them on the decoded output. The two fills
 //! use separate planes and buffers, so a decoder can run them at the same time.
 
+use super::TofConfig;
 use super::fill::PushPull;
 use super::kernels::flags;
-use super::TofConfig;
+use super::parallel::Workers;
 use crate::consts::{HEIGHT, PIXELS, WIDTH};
+use crate::error::Result;
 
 const W: usize = WIDTH;
 
@@ -46,8 +48,9 @@ const REACHED: u8 = 3;
 
 /// Where every frequency saturated there is no measurement; inside such an area the depth
 /// is interpolated from the measured rim of the same bright object (pixels that saturated
-/// in some sample but still have depth), never from what is behind it.
-pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidence: &mut [f32], fl: &mut [u32], s: &mut DepthFill) {
+/// in some sample but still have depth), never from what is behind it. With `workers`, the
+/// interpolation runs on them (fails only if one panicked).
+pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidence: &mut [f32], fl: &mut [u32], s: &mut DepthFill, workers: Option<&Workers>) -> Result<()> {
     let DepthFill { class, stack, weights, pp } = s;
     let rejected = flags::EDGE | flags::SPECKLE | flags::OUT_OF_RANGE;
     class.clear();
@@ -64,7 +67,7 @@ pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidenc
         }
     }));
     if class.len() < PIXELS {
-        return;
+        return Ok(());
     }
     // the targets next to a source, then everything connected to them through targets
     // (4-neighborhood: the same set as a flood from all sources)
@@ -80,7 +83,7 @@ pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidenc
         }
     }
     if stack.is_empty() {
-        return;
+        return Ok(());
     }
     for i in stack.iter() {
         if let Some(c) = class.get_mut(*i as usize) {
@@ -113,7 +116,10 @@ pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidenc
     }
     weights.clear();
     weights.extend(class.iter().map(|c| if *c == SOURCE { 1.0 } else { 0.0 }));
-    let filled = pp.fill(depth, weights, W, HEIGHT);
+    let filled = match workers {
+        Some(w) => pp.fill_with(depth, weights, W, HEIGHT, w)?,
+        None => pp.fill(depth, weights, W, HEIGHT),
+    };
     let (lo, hi) = (cfg.min_depth, cfg.max_depth);
     for (((c, v), d), (cf, f)) in class.iter().zip(filled).zip(depth.iter_mut()).zip(confidence.iter_mut().zip(fl.iter_mut())) {
         if *c == REACHED && *v >= lo && *v <= hi {
@@ -122,6 +128,7 @@ pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidenc
             *f = (*f | flags::DEPTH_FILLED) & !flags::LOW_CONFIDENCE;
         }
     }
+    Ok(())
 }
 
 /// Infrared where every frequency saturated: filled smoothly from the surroundings, but never

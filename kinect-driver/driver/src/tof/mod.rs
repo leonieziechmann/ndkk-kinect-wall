@@ -67,7 +67,7 @@ pub struct TofTimings {
     pub stage2_ms: f64,
     /// resolution, edge filter
     pub stage3_ms: f64,
-    /// infrared fill
+    /// infrared fill (CPU: runs alongside the start of stage 3 and is part of `stage3_ms`)
     pub fill_ms: f64,
     /// all of it
     pub total_ms: f64,

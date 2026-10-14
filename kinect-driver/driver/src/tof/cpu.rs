@@ -310,7 +310,7 @@ impl CpuDecoder {
         }
         out.flags.copy_from_slice(&self.flags);
         if self.cfg.mode == TofMode::Extended && self.cfg.ext.fill_saturated_depth {
-            post::fill_saturated_depth(&self.cfg, &mut out.depth, &mut out.confidence, &mut out.flags, &mut self.post.depth);
+            post::fill_saturated_depth(&self.cfg, &mut out.depth, &mut out.confidence, &mut out.flags, &mut self.post.depth, Some(&self.workers))?;
         }
         self.timings.stage3_ms = ms_since(t2);
         self.timings.total_ms = ms_since(t0);
