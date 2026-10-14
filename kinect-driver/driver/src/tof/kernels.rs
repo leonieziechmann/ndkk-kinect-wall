@@ -799,7 +799,9 @@ multiversion! {
                 let v = d[2][x];
                 let dn = [d[1][x - 1], d[1][x], d[1][x + 1], d[2][x - 1], d[2][x + 1], d[3][x - 1], d[3][x], d[3][x + 1]];
                 let sn = [s[0][x - 1], s[0][x], s[0][x + 1], s[1][x - 1], s[1][x + 1], s[2][x - 1], s[2][x], s[2][x + 1]];
-                let f = v > 0.0 && (is_flying(v, dn, s[1][x], sn, e) || i.edge_ok[x] == 0);
+                // no short-circuit: the loop stays branch-free and vectorizes
+                let fly = is_flying(v, dn, s[1][x], sn, e);
+                let f = (v > 0.0) & (fly | (i.edge_ok[x] == 0));
                 flying[x] = u8::from(f);
             }
         }
@@ -819,26 +821,26 @@ multiversion! {
                         let v = d[2][x];
                         let o = r[x + dx - 2];
                         let tol = (0.03 * v).max(50.0);
-                        agree[x] += if o > 0.0 && (o - v).abs() < tol { 1.0 } else { 0.0 };
+                        agree[x] += if (o > 0.0) & ((o - v).abs() < tol) { 1.0 } else { 0.0 };
                     }
                 }
             }
         }
         for x in 0..W {
             let v = d[2][x];
-            let in_range = v >= e.min_depth && v <= e.max_depth;
+            let in_range = (v >= e.min_depth) & (v <= e.max_depth);
             let fly = flying[x] != 0;
             let c = i.conf[x];
             let confident = c >= q.min_conf;
-            let speckle = q.speckle && agree[x] < q.speckle_min;
-            let keep = v > 0.0 && in_range && !fly && confident && !speckle;
+            let speckle = q.speckle & (agree[x] < q.speckle_min);
+            let has = v > 0.0;
+            let keep = has & in_range & !fly & confident & !speckle;
             depth[x] = if keep { v } else { 0.0 };
             confidence[x] = if keep { c } else { 0.0 };
-            let has = v > 0.0;
-            fl[x] |= (if has && !in_range { flags::OUT_OF_RANGE } else { 0 })
-                | (if has && in_range && fly { flags::EDGE } else { 0 })
-                | (if has && in_range && !fly && !confident { flags::LOW_CONFIDENCE } else { 0 })
-                | (if has && in_range && !fly && confident && speckle { flags::SPECKLE } else { 0 });
+            fl[x] |= (if has & !in_range { flags::OUT_OF_RANGE } else { 0 })
+                | (if has & in_range & fly { flags::EDGE } else { 0 })
+                | (if has & in_range & !fly & !confident { flags::LOW_CONFIDENCE } else { 0 })
+                | (if has & in_range & !fly & confident & speckle { flags::SPECKLE } else { 0 });
         }
     }
 }

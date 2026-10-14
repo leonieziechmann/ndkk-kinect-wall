@@ -7,6 +7,7 @@ Kinect v2 an einem Windows-Rechner (USB-Mod): Tiefenbild mit 30 fps, eine Middle
 | [`kinect-hub/`](kinect-hub/README.md) | Rust-Middleware: besitzt die Kinect, rechnet einmal pro Frame vor, streamt per WebSocket/HTTP an alle |
 | [`wall-bevy/`](wall-bevy/README.md) | Die LED-Wand (Rust, Bevy): Ausgabe, Show, Szenen als eigene Crates mit Hot-Swap, eingebaute Steuerzentrale (auch als Fernbedienung im Netz). Szenen schreiben: [`wall-bevy/SCENES.md`](wall-bevy/SCENES.md), die Wand: [`wall-bevy/WALL.md`](wall-bevy/WALL.md) |
 | `fn2/` | C++ auf libfreenect2: Capture-Worker für den Hub, Reconnect-Messtool, DLLs für Python |
+| [`kinect-driver/`](kinect-driver/README.md) | Rust-Treiber ohne libfreenect2: USB direkt, Tiefe/IR auf CPU oder GPU, erweiterter Modus (bis 18,75 m, nah trotz Sättigung, HDR-IR), absturzsicher; als Crate oder als Worker für den Hub (`--worker`) |
 | `kinect_hub.py` | Python-Client für den Hub |
 | `pointcloud.py`, `viewer.py` | Python-Viewer (direkt über libfreenect2/SDK oder `--hub`) |
 | `third_party/` | `setup.sh` holt und baut libfreenect2 (gepatcht), libusb, libjpeg-turbo, OpenCL-Header |
@@ -64,6 +65,7 @@ Voraussetzungen:
 sh third_party/setup.sh            # libfreenect2 + Abhängigkeiten holen, patchen, bauen
 sh fn2/build.sh                    # Capture-Worker, Messtool, DLLs
 (cd kinect-hub && cargo build --release)
+(cd kinect-driver && cargo build --release)   # optional: Treiber/Worker ohne libfreenect2
 (cd wall-bevy && cargo build --release)   # Ausgabe, Steuerzentrale, Szenen (beim ersten Mal 10–20 min)
 ```
 

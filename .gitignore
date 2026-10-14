@@ -17,6 +17,10 @@ third_party/*
 # local recordings, logs and measurements (may show the room / people)
 recordings/
 *.k2rec
+# raw depth packets and cached calibrations of kinect-driver / fn2_rawdump
+*.k2raw
+*.k2raw.head
+*.k2cal
 *.k2rec.part
 snapshots/
 fn2/logs/
