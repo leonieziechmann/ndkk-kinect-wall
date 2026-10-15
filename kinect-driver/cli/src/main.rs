@@ -38,8 +38,9 @@ OPTIONS (worker, stream, replay)
                               compat: libfreenect2 (0.5-4.5 m)
   --backend cpu|gpu|auto      where the depth is decoded (--pipeline fast|cl as kinect-hub says)
   --tof key=value,...         decoding settings, e.g. min_confidence=0.7,weak_boost=on
-  --ir hub|even|raw           infrared output: hub (worker default) compresses highlights instead
-                              of clipping; even also cancels the falloff with distance; raw = HDR
+  --ir hub|even|raw           infrared output: hub (worker default) as libfreenect2 up to 3000,
+                              above it logarithmic, white only at 65535 (hub:KNEE:TOP sets both);
+                              even also cancels the falloff with distance; raw = HDR
   --source SOURCE             SOURCES (default: kinect)
   --serial S                  which Kinect
   --led 0..1000               LED brightness after the start

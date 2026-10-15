@@ -12,7 +12,7 @@
 //!
 //! The hub passes only `--pipeline fast|cl`; everything else comes from the environment, which
 //! the hub hands on: KINECT_DRIVER_MODE (extended|compat), KINECT_DRIVER_TOF (key=value,...),
-//! KINECT_DRIVER_IR (hub|even|raw), KINECT_DRIVER_SOURCE (kinect|sim:SCENE|FILE.k2raw),
+//! KINECT_DRIVER_IR (hub|even|raw, hub:KNEE:TOP), KINECT_DRIVER_SOURCE (kinect|sim:SCENE|FILE.k2raw),
 //! KINECT_DRIVER_LED (0..1000), KINECT_DRIVER_CACHE (folder|off), KINECT_DRIVER_PRIORITY=normal.
 
 use std::io::{Read, Write};

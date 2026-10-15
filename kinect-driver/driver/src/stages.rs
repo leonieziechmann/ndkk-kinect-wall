@@ -5,6 +5,7 @@ use crate::error::Result;
 use crate::frame::Frame;
 use crate::pipeline::Stage;
 use crate::tof::fill::PushPull;
+use crate::tof::lanes::{Baseline, Isa};
 
 /// How infrared values are mapped into the output range.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -30,26 +31,126 @@ pub enum ToneCurve {
         /// largest output
         white: f32,
     },
+    /// unchanged below `knee`, logarithmic above it (`knee + s ln(1 + (v - knee) / s)`, slope 1
+    /// at the knee, so there is no visible step), reaching `white` at `top`: every doubling of
+    /// the brightness above the knee gets about the same step, so the highlights keep their
+    /// detail up to `top` instead of clipping (with `top` > `white` > `knee`; otherwise like
+    /// `Clip`)
+    LogShoulder {
+        /// below this nothing changes
+        knee: f32,
+        /// the input that becomes `white`
+        top: f32,
+        /// largest output
+        white: f32,
+    },
 }
 
 impl ToneCurve {
-    /// Maps one value.
-    #[inline]
+    /// Maps one value (for many, [`IrToneMap`] prepares the curve once).
     pub fn apply(&self, v: f32) -> f32 {
-        let v = if v.is_finite() { v.max(0.0) } else { 0.0 };
+        self.prepare().apply(v)
+    }
+
+    /// The curve with what does not depend on the value worked out.
+    fn prepare(&self) -> Prepared {
         match *self {
-            ToneCurve::Clip { white } => v.min(white),
+            ToneCurve::Clip { white } => Prepared::Clip { white },
             ToneCurve::Rolloff { knee, white } => {
                 let room = (white - knee).max(1e-3);
-                let t = (v - knee) / room;
-                if v <= knee { v } else { knee + room * t / (1.0 + t) }
+                Prepared::Rolloff { knee, room, inv_room: 1.0 / room }
             }
-            ToneCurve::Log { max_in, white } => {
-                let m = max_in.max(1.0);
-                (white * (1.0 + v).ln() / (1.0 + m).ln()).min(white)
+            ToneCurve::Log { max_in, white } => Prepared::Log { scale: white / (1.0 + max_in.max(1.0)).ln(), white },
+            ToneCurve::LogShoulder { knee, top, white } => {
+                if knee >= 0.0 && white > knee && top > white && top.is_finite() {
+                    let s = shoulder_scale(top - knee, white - knee);
+                    Prepared::LogShoulder { knee, s, inv_s: 1.0 / s, white }
+                } else {
+                    Prepared::Clip { white }
+                }
             }
         }
     }
+}
+
+/// A [`ToneCurve`] ready to map many values: without branches and with the polynomial `ln`, so
+/// the loop over an image vectorizes.
+#[derive(Clone, Copy)]
+enum Prepared {
+    Clip { white: f32 },
+    Rolloff { knee: f32, room: f32, inv_room: f32 },
+    Log { scale: f32, white: f32 },
+    LogShoulder { knee: f32, s: f32, inv_s: f32, white: f32 },
+}
+
+impl Prepared {
+    fn apply(&self, v: f32) -> f32 {
+        let mut one = [v];
+        self.apply_all::<Baseline>(&mut one);
+        let [v] = one;
+        v
+    }
+
+    /// Maps every value in place (one loop per curve, each a straight line).
+    #[inline(always)]
+    fn apply_all<I: Isa>(&self, values: &mut [f32]) {
+        use crate::tof::math::{fmax, fmin};
+        let ln = ln_fast::<I>;
+        // NaN and infinity become 0, negative values 0
+        let clean = |v: f32| if v.abs() < f32::INFINITY { fmax(v, 0.0) } else { 0.0 };
+        match *self {
+            Prepared::Clip { white } => values.iter_mut().for_each(|v| *v = fmin(clean(*v), white)),
+            Prepared::Rolloff { knee, room, inv_room } => values.iter_mut().for_each(|v| {
+                let x = clean(*v);
+                let t = fmax(x - knee, 0.0) * inv_room;
+                *v = if x <= knee { x } else { knee + room * t / (1.0 + t) };
+            }),
+            Prepared::Log { scale, white } => values.iter_mut().for_each(|v| *v = fmin(ln(1.0 + clean(*v)) * scale, white)),
+            Prepared::LogShoulder { knee, s, inv_s, white } => values.iter_mut().for_each(|v| {
+                let x = clean(*v);
+                let shoulder = knee + s * ln(1.0 + fmax(x - knee, 0.0) * inv_s);
+                *v = if x <= knee { x } else { fmin(shoulder, white) };
+            }),
+        }
+    }
+}
+
+crate::multiversion! {
+    /// [`Prepared::apply_all`], with AVX2 where the CPU has it.
+    fn tone_all(c: Prepared, values: &mut [f32]) {
+        c.apply_all::<Isa>(values);
+    }
+}
+
+/// ln(x) for normal x > 0, within 8e-5: the exponent plus a polynomial in the mantissa
+/// (minimax for log2(1 + t) on 0..1, exact at both ends, so it is continuous), without a
+/// division, which keeps the vectorized loops cheap. Plenty for 8-bit pictures.
+#[inline(always)]
+fn ln_fast<I: Isa>(x: f32) -> f32 {
+    let fma = |a: f32, b: f32, c: f32| if I::FMA { a.mul_add(b, c) } else { a * b + c };
+    let u = x.to_bits();
+    let e = ((u >> 23) & 255) as i32 - 127;
+    let t = f32::from_bits((u & 0x007f_ffff) | 0x3f80_0000) - 1.0;
+    let p = fma(t, fma(t, fma(t, -0.082_130_59, 0.321_188_7), -0.677_783_8), 1.438_725_7);
+    fma(t, p, e as f32) * std::f32::consts::LN_2
+}
+
+/// The scale `s` of a logarithmic shoulder that rises by `rise` over an input range of `range`
+/// (`s ln(1 + range / s) = rise`, 0 < `rise` < `range`): bisection on a log scale (64 steps
+/// take the bracket below f64 precision), `s ln(1 + range / s)` grows with `s` from 0 towards
+/// `range`.
+fn shoulder_scale(range: f32, rise: f32) -> f32 {
+    let (range, rise) = (f64::from(range), f64::from(rise));
+    let (mut lo, mut hi) = (rise * 1e-9, range * 1e9);
+    for _ in 0..64 {
+        let mid = (lo * hi).sqrt();
+        if mid * (range / mid).ln_1p() > rise {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    (lo * hi).sqrt() as f32
 }
 
 /// Infrared tone mapping: makes the (HDR) infrared fit an output range without hard clipping,
@@ -105,11 +206,12 @@ impl IrToneMap {
         IrToneMap { curve: ToneCurve::Clip { white: 65535.0 }, distance_reference_mm: None, distance_limits: (0.25, 4.0), local: None, scratch: ToneScratch::default() }
     }
 
-    /// For kinect-hub's infrared stream (white at 6000): unchanged up to 3000, highlights rolled
-    /// off instead of clipped.
+    /// For kinect-hub's infrared stream (white at 6000, shown as sqrt): unchanged up to 3000,
+    /// above it logarithmic up to 65535 (where libfreenect2 clips), so what is white today keeps
+    /// its detail at a mid-light gray (6000 is byte 212 instead of 255, 12000 is 227, 30000 is 243).
     pub fn hub() -> IrToneMap {
         IrToneMap {
-            curve: ToneCurve::Rolloff { knee: 3000.0, white: 6000.0 },
+            curve: ToneCurve::LogShoulder { knee: 3000.0, top: 65535.0, white: HUB_WHITE },
             distance_reference_mm: None,
             distance_limits: (0.25, 4.0),
             local: None,
@@ -123,7 +225,16 @@ impl IrToneMap {
     pub fn even() -> IrToneMap {
         IrToneMap { distance_reference_mm: Some(2500.0), distance_limits: (0.25, 2.5), ..IrToneMap::hub() }
     }
+
+    /// The highlights shaped otherwise, for kinect-hub's range: unchanged up to `knee`, white
+    /// (6000) at `top`, logarithmic between them.
+    pub fn shoulder(self, knee: f32, top: f32) -> IrToneMap {
+        IrToneMap { curve: ToneCurve::LogShoulder { knee, top, white: HUB_WHITE }, ..self }
+    }
 }
+
+/// kinect-hub shows the infrared as sqrt(v / 6000), white from 6000 on.
+pub const HUB_WHITE: f32 = 6000.0;
 
 impl Stage for IrToneMap {
     fn name(&self) -> &str {
@@ -158,10 +269,7 @@ impl Stage for IrToneMap {
         if let Some((radius, strength)) = self.local.filter(|(r, s)| *r > 0 && *s > 0.0) {
             local_adapt(&mut frame.ir, radius, strength.min(1.0), &mut self.scratch);
         }
-        let c = self.curve;
-        for v in &mut frame.ir {
-            *v = c.apply(*v);
-        }
+        tone_all(self.curve.prepare(), &mut frame.ir);
         Ok(())
     }
 }
@@ -410,6 +518,34 @@ mod tests {
         let l = ToneCurve::Log { max_in: 1000.0, white: 255.0 };
         assert!((l.apply(1000.0) - 255.0).abs() < 1e-3);
         assert_eq!(ToneCurve::Clip { white: 10.0 }.apply(20.0), 10.0);
+        let s = ToneCurve::LogShoulder { knee: 3000.0, top: 65535.0, white: 6000.0 };
+        assert_eq!(s.apply(1000.0), 1000.0);
+        assert_eq!(s.apply(3000.0), 3000.0);
+        // smooth at the knee (slope 1 on both sides), white at the top and above
+        assert!((s.apply(3001.0) - 3001.0).abs() < 0.01);
+        assert!((s.apply(65535.0) - 6000.0).abs() < 0.5);
+        assert_eq!(s.apply(1e9), 6000.0);
+        // equal ratios, about equal steps: 7500 -> 15000 and 15000 -> 30000
+        let (a, b) = (s.apply(15000.0) - s.apply(7500.0), s.apply(30000.0) - s.apply(15000.0));
+        assert!(a > 300.0 && b > 300.0 && (a / b - 1.0).abs() < 0.3, "{a} {b}");
+        // in kinect-hub's bytes (sqrt, white at 6000)
+        let byte = |v: f32| ((s.apply(v) / 6000.0).sqrt() * 255.0 + 0.5) as u8;
+        assert_eq!([byte(3000.0), byte(6000.0), byte(12000.0), byte(30000.0)], [180, 212, 227, 243]);
+        assert!(s.apply(f32::NAN) == 0.0 && s.apply(-5.0) == 0.0);
+        // without room above the knee: clipped
+        assert_eq!(ToneCurve::LogShoulder { knee: 3000.0, top: 5000.0, white: 6000.0 }.apply(7000.0), 6000.0);
+    }
+
+    #[test]
+    fn fast_ln() {
+        for i in 0..20000 {
+            let x = 1.0 + i as f32 * 0.37;
+            for ln in [ln_fast::<crate::tof::lanes::Fma>, ln_fast::<crate::tof::lanes::Plain>] {
+                assert!((ln(x) - x.ln()).abs() < 8.5e-5, "{x}");
+            }
+        }
+        assert_eq!(ln_fast::<Baseline>(1.0), 0.0);
+        assert!((ln_fast::<Baseline>(0.001) - 0.001f32.ln()).abs() < 8.5e-5);
     }
 
     #[test]

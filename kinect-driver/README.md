@@ -16,7 +16,7 @@ Ein schlanker Kinect-v2-Treiber in Rust, der nicht abstürzt: USB direkt über l
 - **Verlorene USB-Daten:** Fehlt ein Phasenbild (oder ein Teil davon, weil ein USB-Paket verloren ging), wird es wie eine gesättigte Probe aus den beiden anderen seiner Frequenz rekonstruiert, mit passend höherem Rauschen im Modell.
 
 **IR ohne Überbelichtung (HDR).** Statt die drei Frequenzen zu addieren und bei 65535 abzuschneiden, ist das IR der gewichtete Mittelwert der brauchbaren Frequenzen: sättigt eine, tragen die anderen (rekonstruierte schwächer gewichtet). Nur wo alle sättigen, wird aus der Umgebung gefüllt, nie dunkler als der Pegel, bei dem dieser Sensor sättigt. Die Werte gehen über 65535 hinaus; die Stufe `IrToneMap` bringt sie in einen Ausgabebereich:
-- `hub`: bis 3000 unverändert, darüber weich komprimiert (Reinhard) statt abgeschnitten (für die Weiß-bei-6000-Darstellung des Hubs)
+- `hub`: bis 3000 unverändert (wie libfreenect2 im Hub), darüber logarithmisch, weiß erst bei 65535 (für die Weiß-bei-6000-Darstellung des Hubs): was dort heute weiß ist, behält seine Zeichnung als helles Grau (6000 wird Byte 212 statt 255, 12000 wird 227, 30000 wird 243). `hub:KNIE:WEISS` stellt beides ein, z. B. `hub:2500:200000` für noch weichere Lichter (6000 wird 199). Eine Kurve je Frequenz vor dem Mitteln gäbe dasselbe Bild: die drei Amplituden messen dieselbe Helligkeit (in hellen Bereichen auf etwa 1 % gleich); nur an Kanten, wo sie auseinanderliegen, würde der Rand dunkler.
 - `even`: gleichmäßigere Belichtung: der Abfall mit der Entfernung wird herausgerechnet (auf 2,5 m bezogen; Nahes höchstens 4-fach dunkler, Fernes höchstens 2,5-fach heller, damit das Rauschen hinten nicht aufblüht), dann wie `hub`
 
 **Kompatibler Modus (`compat`).** Das Verfahren von libfreenect2 bzw. `fn2/fast_depth.cpp` mit denselben Ergebnissen (gegen fast_depth geprüft mit `tools/fastdepth_ref.cpp`); die Flags bleiben dort leer.
@@ -73,7 +73,7 @@ Die Pixelkerne rechnen acht Pixel auf einmal (`driver/src/tof/lanes.rs`: Werte a
 - **Gleichstände:** Sind nur 80 und 120 MHz nutzbar, wiederholen sich die Kandidaten alle 3,75 m mit gleichen Kosten. Bisher entschied dann das Rundungsrauschen, jetzt ein fester Zuschlag von 0,001 je Kandidatenschritt (`TIE_BREAK`): der nähere gewinnt, auf CPU und GPU gleich.
 - **Entpacken:** die 11-Bit-Codes mit einem 64-Bit-Zugriff je Code direkt in Messwerte, ohne Zwischenfeld.
 - **Nachschritte:** Push-Pull ohne gespeicherte volle Auflösung und auf den Dekoder-Threads; die IR-Füllung läuft neben der Erwartung des Auflösers; die Flutfüllung startet nur am Rand der Quellen.
-- **Kompaktere Zwischenwerte brachten hier nichts:** Der Dekoder ist rechengebunden (neben einem Prozess, der dauernd Speicher kopiert, nicht langsamer). 9 statt 15 Ebenen aus Stufe 1 (a und b aus Betrag und Richtung) waren langsamer, weil der Filter dann mehr rechnet; f16 wäre zu ungenau (bis 0,7 mm Phasenfehler bei 16 MHz). Geblieben ist n² statt n (eine Multiplikation weniger je Nachbar).
+- **Kompaktere Zwischenwerte brachten hier nichts:** Der Dekoder ist rechengebunden (neben einem Prozess, der dauernd Speicher kopiert, nicht langsamer). 9 statt 15 Ebenen aus Stufe 1 (a und b aus Betrag und Richtung) waren langsamer, weil der Filter dann mehr rechnet. Geblieben ist n² statt n (eine Multiplikation weniger je Nachbar). f16 für die Ebenen aus Stufe 1 (nachgestellt durch Runden auf 11 Bit, mit passender Skalierung): compat höchstens 0,09 mm, extended bei 99,9 % der Pixel unter 0,07 mm, aber 0,06 % springen um 2 bis 40 mm (Pixel, deren 16-MHz-Phase eine halbe Periode danebenliegt, kippen an einer Rundungsgrenze der Schätzung), vereinzelt um einen ganzen Bereich, und siebenmal so viele Pixel wie mit den Näherungen oben wechseln zwischen mit und ohne Tiefe. Schneller würde es nicht: jeder Lesezugriff bräuchte eine Umwandlung, und am Speicher hängt es nicht.
 
 Zeit je Frame (Median aus fünf abwechselnden Läufen, `examples/bench_tof.rs`):
 
@@ -104,7 +104,7 @@ kinect-hub/target/release/kinect-hub.exe --worker kinect-driver/target/release/k
 ```
 
 - `--pipeline fast` (Standard des Hubs) dekodiert auf der CPU, `--pipeline cl` auf der GPU (ohne GPU automatisch wieder CPU).
-- Der Hub reicht nur `--pipeline` durch, alles andere über die Umgebung: `KINECT_DRIVER_MODE=compat|extended` (Standard extended), `KINECT_DRIVER_IR=hub|even|raw` (Standard hub), `KINECT_DRIVER_TOF=key=value,…`, `KINECT_DRIVER_LED=0..1000`, `KINECT_DRIVER_SOURCE=sim:room` (Test ohne Kinect), `KINECT_DRIVER_CACHE=Ordner|off`, `KINECT_DRIVER_PRIORITY=normal`.
+- Der Hub reicht nur `--pipeline` durch, alles andere über die Umgebung: `KINECT_DRIVER_MODE=compat|extended` (Standard extended), `KINECT_DRIVER_IR=hub|even|raw` (Standard hub; `hub:KNIE:WEISS` für eine andere Schulter), `KINECT_DRIVER_TOF=key=value,…`, `KINECT_DRIVER_LED=0..1000`, `KINECT_DRIVER_SOURCE=sim:room` (Test ohne Kinect), `KINECT_DRIVER_CACHE=Ordner|off`, `KINECT_DRIVER_PRIORITY=normal`.
 - Der Heartbeat in `/api/status` → `worker.heartbeat` zeigt Dekoder, ms je Frame, verlorene/geflickte USB-Pakete, Teilframes, Neustarts.
 - Getestet mit dem echten Hub (Linux-Build, simulierte Quelle): Zustand `streaming`, 30 fps, Kameraparameter und Frames kommen an, der Worker endet, wenn der Hub geht.
 - Treiber unter Windows: derselbe wie für libfreenect2 (libusbK über Zadig auf „Xbox NUI Sensor“). Alternativ UsbDk (lässt den Microsoft-Treiber an seinem Platz): `KINECT_DRIVER_USBDK=1`.
@@ -126,7 +126,7 @@ kinect-driver eval [--scenes a,b] [--frames N]
 kinect-driver analyze DATEI.k2raw [--frames N]
 ```
 
-Optionen: `--mode extended|compat`, `--backend cpu|gpu|auto`, `--tof key=value,…` (alle Felder von `TofConfig`/`ExtendedParams`, z. B. `min_confidence=0.7,weak_boost=on,max_depth=12000`), `--ir hub|even|raw`, `--source kinect|kinect:SERIAL|sim:SZENE|DATEI.k2raw`, `--led`, `--calibration-cache`. `kinect-driver help` listet alles. Log: `KINECT_DRIVER_LOG=debug`.
+Optionen: `--mode extended|compat`, `--backend cpu|gpu|auto`, `--tof key=value,…` (alle Felder von `TofConfig`/`ExtendedParams`, z. B. `min_confidence=0.7,weak_boost=on,max_depth=12000`), `--ir hub|even|raw` (auch `hub:KNIE:WEISS`), `--source kinect|kinect:SERIAL|sim:SZENE|DATEI.k2raw`, `--led`, `--calibration-cache`. `kinect-driver help` listet alles. Log: `KINECT_DRIVER_LOG=debug`.
 
 Aufnahmen zeigen den Raum im Infrarot: nur nach `recordings/` (git-ignoriert), nie committen. `.k2raw` ist das Format von `fn2/fn2_rawdump.exe`; beide Programme lesen die Dateien des anderen.
 

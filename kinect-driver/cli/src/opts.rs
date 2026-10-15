@@ -5,40 +5,54 @@ use std::path::PathBuf;
 use kinect_driver::driver::{DriverConfig, PipelineFactory, Source};
 use kinect_driver::pipeline::{Backend, Pipeline};
 use kinect_driver::sim::SimConfig;
-use kinect_driver::stages::IrToneMap;
+use kinect_driver::stages::{HUB_WHITE, IrToneMap};
 use kinect_driver::tof::{TofConfig, TofMode};
 use std::sync::Arc;
 
 use crate::args::Args;
 
 /// How the infrared is handed on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IrMode {
     /// as decoded (Extended: HDR, may exceed 65535)
     Raw,
-    /// for kinect-hub (white at 6000): unchanged up to 3000, highlights compressed instead of
-    /// clipped
-    Hub,
+    /// for kinect-hub (white at 6000): unchanged up to 3000, above it logarithmic up to 65535,
+    /// which becomes white; `Some((knee, top))` instead of 3000 and 65535
+    Hub(Option<(f32, f32)>),
     /// even exposure: the falloff with distance cancelled (relative to 2.5 m, within 1/4..2.5x),
     /// then like `Hub`
-    Even,
+    Even(Option<(f32, f32)>),
 }
 
 impl IrMode {
+    /// `raw`, `hub`, `even`, or `hub:KNEE:TOP` / `even:KNEE:TOP` for another shoulder.
     pub fn parse(s: &str) -> Result<IrMode, String> {
-        match s {
-            "raw" => Ok(IrMode::Raw),
-            "hub" => Ok(IrMode::Hub),
-            "even" => Ok(IrMode::Even),
-            _ => Err(format!("--ir {s:?}: raw, hub or even")),
+        let bad = || format!("--ir {s:?}: raw, hub, even, hub:KNEE:TOP or even:KNEE:TOP (0 <= KNEE < 6000 < TOP, default 3000:65535)");
+        let mut parts = s.split(':');
+        let name = parts.next().unwrap_or_default();
+        let nums = parts.map(|p| p.trim().parse::<f32>().map_err(|_| bad())).collect::<Result<Vec<f32>, String>>()?;
+        let shoulder = match nums.as_slice() {
+            [] => None,
+            [knee, top] if *knee >= 0.0 && *knee < HUB_WHITE && *top > HUB_WHITE && top.is_finite() => Some((*knee, *top)),
+            _ => return Err(bad()),
+        };
+        match (name, shoulder) {
+            ("raw", None) => Ok(IrMode::Raw),
+            ("hub", sh) => Ok(IrMode::Hub(sh)),
+            ("even", sh) => Ok(IrMode::Even(sh)),
+            _ => Err(bad()),
         }
     }
 
     pub fn stage(self) -> Option<IrToneMap> {
+        let shaped = |t: IrToneMap, s: Option<(f32, f32)>| match s {
+            Some((knee, top)) => t.shoulder(knee, top),
+            None => t,
+        };
         match self {
             IrMode::Raw => None,
-            IrMode::Hub => Some(IrToneMap::hub()),
-            IrMode::Even => Some(IrToneMap::even()),
+            IrMode::Hub(s) => Some(shaped(IrToneMap::hub(), s)),
+            IrMode::Even(s) => Some(shaped(IrToneMap::even(), s)),
         }
     }
 }
@@ -155,5 +169,27 @@ impl Common {
             calibration_cache: self.cache.clone(),
             ..DriverConfig::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kinect_driver::stages::ToneCurve;
+
+    #[test]
+    fn ir_modes() {
+        assert_eq!(IrMode::parse("raw"), Ok(IrMode::Raw));
+        assert_eq!(IrMode::parse("hub"), Ok(IrMode::Hub(None)));
+        assert_eq!(IrMode::parse("even:2500:100000"), Ok(IrMode::Even(Some((2500.0, 100000.0)))));
+        for bad in ["", "hdr", "raw:1:7000", "hub:3000", "hub:3000:5000", "hub:7000:9000", "hub:-1:9000", "hub:a:b", "hub:1:2:3"] {
+            assert!(IrMode::parse(bad).is_err(), "{bad}");
+        }
+        let curve = |m: &str| IrMode::parse(m).ok().and_then(IrMode::stage).map(|t| t.curve);
+        assert_eq!(curve("hub"), Some(IrToneMap::hub().curve));
+        assert_eq!(curve("hub:2000:200000"), Some(ToneCurve::LogShoulder { knee: 2000.0, top: 200000.0, white: HUB_WHITE }));
+        let even = IrMode::parse("even:2000:200000").ok().and_then(IrMode::stage);
+        assert!(even.is_some_and(|t| t.distance_reference_mm.is_some() && t.curve == ToneCurve::LogShoulder { knee: 2000.0, top: 200000.0, white: HUB_WHITE }));
+        assert_eq!(curve("raw"), None);
     }
 }
