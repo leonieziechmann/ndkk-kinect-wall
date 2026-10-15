@@ -68,6 +68,19 @@ pub const FIRST_MIN: f32 = 0.25;
 /// a pixel alone); every 8th loses about 1 % of the floor.
 pub const SEED_STEP: usize = 6;
 
+/// With `split_reuse` every pixel is split again at least every this many frames (in turn, a
+/// sixteenth of them per frame): within half a second it finds a pair its last split would hide.
+/// A seed's turn: (lattice row * lattice columns + lattice column + frame) % RESPLIT == 0 (lattice
+/// columns = width / SEED_STEP, rounded up); that of a pixel between: ((y * width + x) *
+/// [`RESPLIT_SPREAD`] + frame) % RESPLIT == 0. The frame counts the decoded frames from 0.
+pub const RESPLIT: u64 = 16;
+/// Spreads the turns of the pixels between the seeds over the image (see [`RESPLIT`]).
+pub const RESPLIT_SPREAD: u64 = 5;
+/// How far (squared, weighted with the phase noise `Noise::tangential`) the input of a pixel may
+/// move from that of its last split before it is split again. Between two frames of a still
+/// scene the inputs move by 2 to 16 (the noise of both); a person walking by, by thousands.
+pub const RESPLIT_DISTANCE: f32 = 16.0;
+
 /// The inputs of the split of one pixel, collected in stage 2.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Cand {

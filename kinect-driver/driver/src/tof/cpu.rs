@@ -386,15 +386,6 @@ struct PrevSplit {
     valid: bool,
 }
 
-/// With `split_reuse` every pixel is split again at least every this many frames (in turn, a
-/// sixteenth of them per frame): within half a second it finds a pair its last split would hide.
-const RESPLIT: u64 = 16;
-
-/// How far (squared, weighted with the phase noise) the input of a pixel may move from that of
-/// its last split before it is split again. Between two frames of a still scene the inputs move
-/// by 2 to 16 (the noise of both); a person walking by, by thousands.
-const RESPLIT_DISTANCE: f32 = 16.0;
-
 /// Whether a pixel takes its last split over: `reuse` on, a last split, not its turn to split
 /// again, and the input close to the last split's.
 fn takes_over(reuse: bool, c: &echoes::Cand, p: &PrevSplit, turn: bool) -> bool {
@@ -402,7 +393,7 @@ fn takes_over(reuse: bool, c: &echoes::Cand, p: &PrevSplit, turn: bool) -> bool 
         return false;
     }
     let moved: f32 = c.z.iter().zip(p.z.iter()).zip(c.noise.tangential.iter()).map(|((a, b), w)| w * ((a.0 - b.0) * (a.0 - b.0) + (a.1 - b.1) * (a.1 - b.1))).sum();
-    moved < RESPLIT_DISTANCE
+    moved < echoes::RESPLIT_DISTANCE
 }
 
 /// Writes a split into the stage 2 planes of a block where it replaces the single echo's
@@ -778,7 +769,7 @@ impl CpuDecoder {
                     }
                     let Some(c) = cands.get(y * W + x).filter(|c| c.on) else { continue };
                     // the seeds' turns go along the lattice
-                    let turn = ((y / echoes::SEED_STEP) as u64 * cols + (x / echoes::SEED_STEP) as u64 + frame).is_multiple_of(RESPLIT);
+                    let turn = ((y / echoes::SEED_STEP) as u64 * cols + (x / echoes::SEED_STEP) as u64 + frame).is_multiple_of(echoes::RESPLIT);
                     if let Some(p) = pv.get(i_in).filter(|p| takes_over(reuse, c, p, turn)) {
                         if let Some(slot) = sd.get_mut(i_in) {
                             *slot = (p.split.u1, p.split.u2);
@@ -840,7 +831,7 @@ impl CpuDecoder {
                 }
                 let Some(c) = cands.get(y * W + x).filter(|c| c.on) else { continue };
                 // the turns of the pixels between spread over the image
-                let turn = ((y * W + x) as u64 * 5 + frame).is_multiple_of(RESPLIT);
+                let turn = ((y * W + x) as u64 * echoes::RESPLIT_SPREAD + frame).is_multiple_of(echoes::RESPLIT);
                 if let Some(p) = pv.get(i_in).filter(|p| takes_over(reuse, c, p, turn)) {
                     write_split(&p.split, c.near, margin_prior, s2, s2b, fl, i_in);
                     continue;
