@@ -68,8 +68,11 @@ const W_GAPC: usize = 12;
 const W_CSIR: usize = 13;
 /// depth and confidence after the resolver
 const W_RES: usize = 14;
+/// the two-echo split's seeds: u1, u2 as f32 bits (u1 < 0: no solution)
+const W_SEED1: usize = 15;
+const W_SEED2: usize = 16;
 /// the push-pull pyramid starts after the planes
-const W_PLANES: usize = 15;
+const W_PLANES: usize = 17;
 /// planes read back
 const READ_BACK: usize = 3;
 
@@ -211,6 +214,8 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("W_GAPC", W_GAPC),
         ("W_CSIR", W_CSIR),
         ("W_RES", W_RES),
+        ("W_SEED1", W_SEED1),
+        ("W_SEED2", W_SEED2),
         ("EXP_WORD", Pyramid::new().filled.first().copied().unwrap_or(0)),
     ] {
         s.push_str(&u(name, v));
@@ -265,6 +270,11 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("COARSE", echoes::COARSE as u32),
         ("MIN_SEPARATION", echoes::MIN_SEPARATION as u32),
         ("SAME_FIRST", echoes::SAME_FIRST as u32),
+        ("FIRST_BEYOND", echoes::FIRST_BEYOND as u32),
+        ("SEED_STEP", echoes::SEED_STEP as u32),
+        ("LEVELS", echoes::LEVELS),
+        ("REPEATS", echoes::REPEATS as u32),
+        ("BETWEEN_LEVELS", echoes::BETWEEN_LEVELS),
     ] {
         s.push_str(&format!("const {name}: u32 = {v}u;\n"));
     }
@@ -280,6 +290,7 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("NOISE_PRIOR_DOF", NOISE_PRIOR_DOF),
         ("IMPLAUSIBLE", IMPLAUSIBLE),
         ("DOF_TWO", echoes::DOF_TWO),
+        ("MIN_SEP_U", echoes::MIN_SEP_U),
         ("FIRST_MIN", echoes::FIRST_MIN),
         ("STRONG_SECOND", echoes::STRONG_SECOND),
         ("SPLIT_MOVES", SPLIT_MOVES),
@@ -355,8 +366,9 @@ const P_PP_INIT: usize = 5;
 const P_PP_DOWN: usize = 6;
 const P_PP_TOP: usize = 7;
 const P_PP_UP: usize = 8;
-const P_SPLIT: usize = 9;
-const ENTRY_POINTS: [&str; 10] = ["stage1", "stage2", "stage3_compat", "resolve", "finish", "pp_init", "pp_down", "pp_top", "pp_up", "split_pass"];
+const P_SPLIT_SEEDS: usize = 9;
+const P_SPLIT_BETWEEN: usize = 10;
+const ENTRY_POINTS: [&str; 11] = ["stage1", "stage2", "stage3_compat", "resolve", "finish", "pp_init", "pp_down", "pp_top", "pp_up", "split_seeds", "split_between"];
 
 /// The depth/infrared decoder on the GPU.
 pub struct GpuDecoder {
@@ -613,7 +625,10 @@ impl GpuDecoder {
                 dispatch(&mut pass, pl.get(P_STAGE3_COMPAT), fx, fy);
             } else {
                 if self.cfg.ext.two_echoes {
-                    dispatch(&mut pass, pl.get(P_SPLIT), fx, fy);
+                    // the seeds one workgroup each, then the pixels between
+                    let seeds = |n: usize| n.div_ceil(echoes::SEED_STEP) as u32;
+                    dispatch(&mut pass, pl.get(P_SPLIT_SEEDS), seeds(WIDTH), seeds(HEIGHT));
+                    dispatch(&mut pass, pl.get(P_SPLIT_BETWEEN), fx, fy);
                 }
                 if self.cfg.ext.spatial_resolve {
                     for s in &self.steps {
@@ -695,7 +710,7 @@ impl GpuDecoder {
         }
         let ms = |a: Instant, b: Instant| b.duration_since(a).as_secs_f64() * 1000.0;
         let t4 = Instant::now();
-        self.timings = TofTimings { stage1_ms: ms(t0, t1), stage2_ms: ms(t1, t2), stage3_ms: ms(t2, t3), fill_ms: ms(t3, t4), total_ms: ms(t0, t4) };
+        self.timings = TofTimings { stage1_ms: ms(t0, t1), stage2_ms: ms(t1, t2), stage3_ms: ms(t2, t3), fill_ms: ms(t3, t4), split_ms: 0.0, total_ms: ms(t0, t4) };
         Ok(())
     }
 }

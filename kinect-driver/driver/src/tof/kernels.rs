@@ -414,6 +414,8 @@ pub struct S2OutExt<'a> {
     pub sat: &'a mut RowU8,
     /// flags (WEAK_BOOSTED, NO_SIGNAL added)
     pub flags: &'a mut RowFlags,
+    /// the inputs of the two-echo split of the row (`two_echoes`)
+    pub cands: Option<&'a mut [super::echoes::Cand]>,
 }
 
 /// The per-pixel constants of one step of the bilateral filter.
@@ -676,7 +678,7 @@ multiversion! {
             unwrap_extended::<Isa>(&f, i, p, o, x, &mut misfit);
         }
         if p.two_echoes {
-            split_echoes(&af, &bf, &misfit, i.illum, p, o);
+            collect_candidates(&af, &bf, &misfit, i.illum, p, o);
         }
     }
 }
@@ -688,22 +690,25 @@ pub const SPLIT_MOVES: f32 = 0.0013;
 /// See [`SPLIT_MOVES`].
 pub const SPLIT_MOVES_REL: f32 = 0.01;
 
-/// The pixels of a row that one echo does not explain: split into two, where the first is
-/// unambiguous ([`super::echoes`]). Its distance replaces the single echo's (which lies between
-/// the two), flag [`flags::SECOND_ECHO`].
-fn split_echoes(af: &[Row; 3], bf: &[Row; 3], misfit: &RowU8, illum: &Row, p: &S2Params, o: &mut S2OutExt) {
+/// The inputs of the split of the pixels of a row that one echo does not explain
+/// ([`super::echoes`]); the split itself runs after stage 2 (`CpuDecoder::split_pass`).
+fn collect_candidates(af: &[Row; 3], bf: &[Row; 3], misfit: &RowU8, illum: &Row, p: &S2Params, o: &mut S2OutExt) {
     let rho_max = if p.penalty_scale > 0.0 { p.ln_max_reflectivity.exp() } else { f32::INFINITY };
     let to_m2 = (U_RANGE_MM * 0.001) * (U_RANGE_MM * 0.001);
-    for (x, _) in misfit.iter().enumerate().filter(|(_, m)| **m != 0) {
-        let Some(fl) = o.flags.get(x).copied() else { continue };
-        // the complex value per frequency in amplitude units, gain corrected; the noise per
-        // component: the sensor's, a rebuilt sample's more, and the floor relative to the signal
+    let Some(cands) = o.cands.as_deref_mut() else { return };
+    for (x, (c, m)) in cands.iter_mut().zip(misfit.iter()).enumerate() {
+        c.on = *m != 0;
+        if !c.on {
+            continue;
+        }
+        let fl = o.flags.get(x).copied().unwrap_or(0);
+        // the complex value per frequency in amplitude units, gain corrected
         let z: [(f32, f32); 3] = std::array::from_fn(|k| {
             let g = p.ab_multiplier * p.gain[k];
             (af[k].get(x).copied().unwrap_or(0.0) * g, bf[k].get(x).copied().unwrap_or(0.0) * g)
         });
         // the noise: along the value the gains of the frequencies differ (echo_amplitude_floor of
-        // the mean), across it the phases (noise_floor)
+        // the mean), across it the phases (noise_floor); the sensor's, a rebuilt sample's more
         let m: [f32; 3] = z.map(|(a, b)| (a * a + b * b).sqrt());
         let mean = (m[0] + m[1] + m[2]) / 3.0;
         let sensor: [f32; 3] = std::array::from_fn(|k| {
@@ -711,7 +716,8 @@ fn split_echoes(af: &[Row; 3], bf: &[Row; 3], misfit: &RowU8, illum: &Row, p: &S
             let s = p.noise_coeff[k] * p.gain[k] * if rebuilt { REBUILT_NOISE } else { 1.0 };
             s * s
         });
-        let noise = super::echoes::Noise {
+        c.z = z;
+        c.noise = super::echoes::Noise {
             radial: std::array::from_fn(|k| 1.0 / (sensor[k] + (p.echo_amplitude_floor * mean).powi(2)).max(1e-12)),
             tangential: std::array::from_fn(|k| 1.0 / (sensor[k] + (p.noise_floor * m[k]).powi(2)).max(1e-12)),
             // as bright as plausible (max_reflectivity) at its distance: else a strong echo far
@@ -719,28 +725,20 @@ fn split_echoes(af: &[Row; 3], bf: &[Row; 3], misfit: &RowU8, illum: &Row, p: &S
             max_amp_u2: rho_max / (p.ir_output * illum.get(x).copied().unwrap_or(1.0) * p.inv_brightness * to_m2).max(1e-30),
             penalty_scale: p.penalty_scale * p.echo_plausibility,
         };
-        let Some(s) = super::echoes::split(&z, &noise) else { continue };
-        // a weak second echo moves the single echo's distance less than the split's noise
-        if s.a2 < super::echoes::STRONG_SECOND * s.a1 {
-            continue;
-        }
-        let margin = (s.gap - p.margin_prior).min(80.0);
-        let post = 1.0 / (1.0 + exp(-0.5 * margin));
-        // the single echo's distance lies between two strong echoes: wrong for both. The first
-        // replaces it, as sure as the pixel alone can tell (often hardly: several pairs fit almost
-        // as well); the neighbors confirm it where their first echoes agree (resolve.rs). Where
-        // the first lies at the single echo's distance, the single echo is the less noisy one.
-        let single_u = o.u1.get(x).copied().unwrap_or(0.0);
-        if (s.u1 - single_u).abs() <= SPLIT_MOVES + SPLIT_MOVES_REL * single_u {
-            continue;
-        }
-        let outs = (o.u1.get_mut(x), o.u2.get_mut(x), o.gap.get_mut(x), o.conf.get_mut(x), o.anchor.get_mut(x), o.kind.get_mut(x), o.flags.get_mut(x));
-        if let (Some(u1), Some(u2), Some(gap), Some(conf), Some(anchor), Some(kd), Some(f)) = outs {
-            (*u1, *u2, *gap, *conf, *anchor) = (s.u1, s.u2, s.gap, post, 0.0);
-            *kd = kind::MULTI | kind::FIRST_ECHO;
-            *f |= flags::SECOND_ECHO;
-        }
+        c.near = o.u1.get(x).copied().unwrap_or(0.0);
     }
+}
+
+/// Whether a split replaces the single echo's distance `near`, and with what confidence: the
+/// second echo strong, the first elsewhere than the mixture. The confidence is what the pixel
+/// alone can tell (often hardly: several pairs fit almost as well); the neighbors confirm it
+/// where their first echoes agree (resolve.rs).
+pub fn split_replaces(s: &super::echoes::Split, near: f32, margin_prior: f32) -> Option<f32> {
+    // a weak second echo moves the single echo's distance less than the split's noise
+    if s.a2 < super::echoes::STRONG_SECOND * s.a1 || (s.u1 - near).abs() <= SPLIT_MOVES + SPLIT_MOVES_REL * near {
+        return None;
+    }
+    Some(1.0 / (1.0 + exp(-0.5 * (s.gap - margin_prior).min(80.0))))
 }
 
 /// The filtered row of stage 2 (extended), input of the unwrapping.

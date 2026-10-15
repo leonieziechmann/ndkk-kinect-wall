@@ -16,6 +16,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use super::config::{TofConfig, TofMode};
+use super::echoes;
+use super::lanes::LANES;
 use super::fill::PushPull;
 use super::kernels::{
     self, EdgeParams, Row, RowU8, S1Out, S1Params, S1Tabs, S2In, S2OutCompat, S2OutExt, S2Params, S3In, S3Params,
@@ -314,6 +316,10 @@ pub struct CpuDecoder {
     scratch: Vec<Scratch>,
     /// the phase cost of the best distance per pixel (empty unless [`CpuDecoder::record_costs`])
     costs: Vec<f32>,
+    /// the two-echo split (`two_echoes`): its inputs per pixel, the seeds' solutions (u1, u2;
+    /// NaN where none)
+    cands: Vec<echoes::Cand>,
+    seeds: Vec<(f32, f32)>,
     /// how long the last frame took per phase
     pub timings: TofTimings,
 }
@@ -362,7 +368,30 @@ fn split_row<T, const P: usize>(row: &mut [T]) -> Option<[&mut [T; W]; P]> {
 
 /// A block of rows of stage 2: first row, the 16-bit planes, the byte planes, the flags, and
 /// the costs if they are recorded.
-type S2Block<'a> = (usize, &'a mut [u16], &'a mut [u8], &'a mut [u32], Option<&'a mut [f32]>);
+type S2Block<'a> = (usize, &'a mut [u16], &'a mut [u8], &'a mut [u32], Option<&'a mut [f32]>, Option<&'a mut [echoes::Cand]>);
+
+/// A block of rows of the split pass: first row, the 16-bit planes, the byte planes, the flags,
+/// the seeds' solutions.
+type SplitBlock<'a> = (usize, &'a mut [u16], &'a mut [u8], &'a mut [u32], &'a mut [(f32, f32)]);
+
+/// Writes a split into the stage 2 planes of a block where it replaces the single echo's
+/// distance (`kernels::split_replaces`): the first echo, the second, the margin, the confidence,
+/// no anchor, kind FIRST_ECHO, flag SECOND_ECHO. `i_in` = the pixel within the block.
+fn write_split(s: &echoes::Split, near: f32, margin_prior: f32, s2: &mut [u16], s2b: &mut [u8], fl: &mut [u32], i_in: usize) {
+    let Some(conf) = kernels::split_replaces(s, near, margin_prior) else { return };
+    let (r, x) = (i_in / W, i_in % W);
+    for (p, v) in [(plane::U1, s.u1), (plane::U2, s.u2), (plane::GAP, s.gap), (plane::CONF, conf), (plane::ANCHOR, 0.0)] {
+        if let (Some(slot), Some(codec)) = (s2.get_mut((r * P2 + p) * W + x), S2_CODECS.get(p)) {
+            *slot = pack(*codec, v);
+        }
+    }
+    if let Some(k) = s2b.get_mut((r * P2B + plane::KIND) * W + x) {
+        *k = kernels::kind::MULTI | kernels::kind::FIRST_ECHO;
+    }
+    if let Some(f) = fl.get_mut(i_in) {
+        *f |= kernels::flags::SECOND_ECHO;
+    }
+}
 
 /// The rows y-2 ..= y+2, clamped at the image border.
 fn rows5(y: usize) -> [usize; 5] {
@@ -388,6 +417,7 @@ impl CpuDecoder {
             }
         );
         let scratch = (0..workers.threads()).map(|_| Scratch::new()).collect();
+        let cfg_two_echoes = cfg.mode == TofMode::Extended && cfg.ext.two_echoes;
         Ok(CpuDecoder {
             workers,
             describe,
@@ -407,6 +437,8 @@ impl CpuDecoder {
             saturation_level: 0.0,
             scratch,
             costs: Vec::new(),
+            cands: if cfg_two_echoes { vec![echoes::Cand::default(); PIXELS] } else { Vec::new() },
+            seeds: if cfg_two_echoes { vec![(f32::NAN, f32::NAN); PIXELS] } else { Vec::new() },
             timings: TofTimings::default(),
         })
     }
@@ -476,10 +508,16 @@ impl CpuDecoder {
         out.timestamp = packet.timestamp;
         let t0 = Instant::now();
         self.timings.fill_ms = 0.0;
+        self.timings.split_ms = 0.0;
         self.stage1(packet, out)?;
         self.timings.stage1_ms = ms_since(t0);
         let t1 = Instant::now();
         self.stage2()?;
+        if self.cfg.mode == TofMode::Extended && self.cfg.ext.two_echoes {
+            let ts = Instant::now();
+            self.split_pass()?;
+            self.timings.split_ms = ms_since(ts);
+        }
         self.timings.stage2_ms = ms_since(t1);
         let t2 = Instant::now();
         match self.cfg.mode {
@@ -579,15 +617,17 @@ impl CpuDecoder {
         let usable = &self.usable;
         // the costs only where they are recorded (empty: none for every block)
         let costs = self.costs.chunks_mut(W * ROWS_PER_BLOCK).map(Some).chain(std::iter::repeat_with(|| None));
+        let cands = self.cands.chunks_mut(W * ROWS_PER_BLOCK).map(Some).chain(std::iter::repeat_with(|| None));
         let blocks = self
             .s2
             .chunks_mut(W * P2 * ROWS_PER_BLOCK)
             .zip(self.s2b.chunks_mut(W * P2B * ROWS_PER_BLOCK))
             .zip(self.flags.chunks_mut(W * ROWS_PER_BLOCK))
             .zip(costs)
+            .zip(cands)
             .enumerate()
-            .map(|(b, (((s2, s2b), fl), cost))| (b * ROWS_PER_BLOCK, s2, s2b, fl, cost));
-        let work = |sc: &mut Scratch, (y0, s2, s2b, fl, mut cost): S2Block| {
+            .map(|(b, ((((s2, s2b), fl), cost), cand))| (b * ROWS_PER_BLOCK, s2, s2b, fl, cost, cand));
+        let work = |sc: &mut Scratch, (y0, s2, s2b, fl, mut cost, mut cand): S2Block| {
             let Scratch { ring, s2_out, .. } = sc;
             // the five rows around each row of every stage 1 plane; the amplitudes as squares
             ring.start(P1, 5, y0.saturating_sub(2));
@@ -633,7 +673,8 @@ impl CpuDecoder {
                 let Some([edge_ok, kind, sat]) = split_row::<u8, P2B>(s2brow) else { continue };
                 if extended {
                     let cost = cost.as_deref_mut().and_then(|c| c.get_mut(r * W..(r + 1) * W)).and_then(|c| <&mut Row>::try_from(c).ok());
-                    let mut o = S2OutExt { u1: f0, u2: f1, gap: f2, cost, conf: f3, csingle: f4, ir_sum: f5, anchor: f6, kind, edge_ok, sat, flags };
+                    let cands = cand.as_deref_mut().and_then(|c| c.get_mut(r * W..(r + 1) * W));
+                    let mut o = S2OutExt { u1: f0, u2: f1, gap: f2, cost, conf: f3, csingle: f4, ir_sum: f5, anchor: f6, kind, edge_ok, sat, flags, cands };
                     kernels::stage2_extended(&input, &p, &mut o);
                     for ((src, dst), codec) in s2_out.as_chunks::<W>().0.iter().zip(s2row.as_chunks_mut::<W>().0.iter_mut()).zip(S2_CODECS) {
                         pack_row(codec, src, dst);
@@ -647,6 +688,135 @@ impl CpuDecoder {
                         }
                     }
                 }
+            }
+        };
+        self.workers.for_each_with(&mut self.scratch, blocks, &work)
+    }
+
+    /// The two-echo split of the pixels stage 2 collected: first the seeds (the whole search),
+    /// then the pixels between them (from the seeds' solutions). A split that replaces the single
+    /// echo's distance is written into the stage 2 planes.
+    fn split_pass(&mut self) -> Result<()> {
+        let margin_prior = self.cfg.ext.margin_prior;
+        let cands = &self.cands;
+        // the seeds
+        {
+            let blocks = self
+                .s2
+                .chunks_mut(W * P2 * ROWS_PER_BLOCK)
+                .zip(self.s2b.chunks_mut(W * P2B * ROWS_PER_BLOCK))
+                .zip(self.flags.chunks_mut(W * ROWS_PER_BLOCK))
+                .zip(self.seeds.chunks_mut(W * ROWS_PER_BLOCK))
+                .enumerate()
+                .map(|(b, (((s2, s2b), fl), sd))| (b * ROWS_PER_BLOCK, s2, s2b, fl, sd));
+            let work = |_: &mut Scratch, (y0, s2, s2b, fl, sd): SplitBlock| {
+                // eight seeds at a time
+                let mut batch = [echoes::Cand::default(); LANES];
+                let mut at = [0usize; LANES];
+                let mut n = 0;
+                let run = |batch: &mut [echoes::Cand; LANES], at: &[usize; LANES], n: usize, s2: &mut [u16], s2b: &mut [u8], fl: &mut [u32], sd: &mut [(f32, f32)]| {
+                    for b in batch.iter_mut().skip(n) {
+                        b.on = false;
+                    }
+                    let res = echoes::split_seeds(batch);
+                    for ((r, &i_in), c) in res.iter().zip(at).zip(batch.iter()).take(n) {
+                        if let Some(s) = r {
+                            if let Some(slot) = sd.get_mut(i_in) {
+                                *slot = (s.u1, s.u2);
+                            }
+                            write_split(s, c.near, margin_prior, s2, s2b, fl, i_in);
+                        }
+                    }
+                };
+                sd.fill((f32::NAN, f32::NAN));
+                for i_in in 0..fl.len() {
+                    let (y, x) = (y0 + i_in / W, i_in % W);
+                    if x % echoes::SEED_STEP != 0 || y % echoes::SEED_STEP != 0 {
+                        continue;
+                    }
+                    let Some(c) = cands.get(y * W + x).filter(|c| c.on) else { continue };
+                    if let (Some(bc), Some(ba)) = (batch.get_mut(n), at.get_mut(n)) {
+                        (*bc, *ba) = (*c, i_in);
+                    }
+                    n += 1;
+                    if n == LANES {
+                        run(&mut batch, &at, n, s2, s2b, fl, sd);
+                        n = 0;
+                    }
+                }
+                if n > 0 {
+                    run(&mut batch, &at, n, s2, s2b, fl, sd);
+                }
+            };
+            self.workers.for_each_with(&mut self.scratch, blocks, &work)?;
+        }
+        let seeds_done = &self.seeds;
+        // the pixels between
+        let blocks = self
+            .s2
+            .chunks_mut(W * P2 * ROWS_PER_BLOCK)
+            .zip(self.s2b.chunks_mut(W * P2B * ROWS_PER_BLOCK))
+            .zip(self.flags.chunks_mut(W * ROWS_PER_BLOCK))
+            .enumerate()
+            .map(|(b, ((s2, s2b), fl))| (b * ROWS_PER_BLOCK, s2, s2b, fl));
+        let work = |_: &mut Scratch, (y0, s2, s2b, fl): (usize, &mut [u16], &mut [u8], &mut [u32])| {
+            let step = echoes::SEED_STEP;
+            // eight pixels at a time: their inputs, the seeds' solutions around them
+            let mut batch = [echoes::Cand::default(); LANES];
+            let mut at = [0usize; LANES];
+            let mut starts = [[(0f32, 0f32); 4]; LANES];
+            let mut count = [0usize; LANES];
+            let mut n = 0;
+            let run = |batch: &mut [echoes::Cand; LANES], at: &[usize; LANES], starts: &[[(f32, f32); 4]; LANES], count: &[usize; LANES], n: usize, s2: &mut [u16], s2b: &mut [u8], fl: &mut [u32]| {
+                for b in batch.iter_mut().skip(n) {
+                    b.on = false;
+                }
+                let res = echoes::split_between(batch, starts, count);
+                for ((r, &i_in), c) in res.iter().zip(at).zip(batch.iter()).take(n) {
+                    if let Some(s) = r {
+                        write_split(s, c.near, margin_prior, s2, s2b, fl, i_in);
+                    }
+                }
+            };
+            for i_in in 0..fl.len() {
+                let (y, x) = (y0 + i_in / W, i_in % W);
+                if x % step == 0 && y % step == 0 {
+                    continue;
+                }
+                let Some(c) = cands.get(y * W + x).filter(|c| c.on) else { continue };
+                // the seeds around: the lattice points of the cell, else of the ring around it
+                let (x0, ys) = (x - x % step, y - y % step);
+                let mut k = 0;
+                const CELL: [(isize, isize); 4] = [(0, 0), (1, 0), (0, 1), (1, 1)];
+                const RING: [(isize, isize); 12] = [(-1, -1), (0, -1), (1, -1), (2, -1), (-1, 0), (2, 0), (-1, 1), (2, 1), (-1, 2), (0, 2), (1, 2), (2, 2)];
+                for (idx, (dx, dy)) in CELL.iter().chain(RING.iter()).enumerate() {
+                    // the ring only where the cell has no seed with a solution
+                    if k == 4 || (idx == CELL.len() && k > 0) {
+                        break;
+                    }
+                    let (sx, sy) = (x0 as isize + dx * step as isize, ys as isize + dy * step as isize);
+                    if sx < 0 || sy < 0 || sx >= W as isize || sy >= HEIGHT as isize {
+                        continue;
+                    }
+                    let (sx, sy) = (sx as usize, sy as usize);
+                    if let Some(&(u1, u2)) = seeds_done.get(sy * W + sx).filter(|v| v.0.is_finite())
+                        && let Some(slot) = starts.get_mut(n).and_then(|st| st.get_mut(k))
+                    {
+                        *slot = (u1, u2);
+                        k += 1;
+                    }
+                }
+                if let (Some(bc), Some(ba), Some(bn)) = (batch.get_mut(n), at.get_mut(n), count.get_mut(n)) {
+                    (*bc, *ba, *bn) = (*c, i_in, k);
+                }
+                n += 1;
+                if n == LANES {
+                    run(&mut batch, &at, &starts, &count, n, s2, s2b, fl);
+                    n = 0;
+                }
+            }
+            if n > 0 {
+                run(&mut batch, &at, &starts, &count, n, s2, s2b, fl);
             }
         };
         self.workers.for_each_with(&mut self.scratch, blocks, &work)

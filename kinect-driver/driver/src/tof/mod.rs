@@ -71,6 +71,8 @@ pub struct TofTimings {
     pub stage3_ms: f64,
     /// infrared fill (CPU: runs alongside the start of stage 3 and is part of `stage3_ms`)
     pub fill_ms: f64,
+    /// the two-echo split (CPU: part of `stage2_ms`; the GPU does not time it apart)
+    pub split_ms: f64,
     /// all of it
     pub total_ms: f64,
 }
