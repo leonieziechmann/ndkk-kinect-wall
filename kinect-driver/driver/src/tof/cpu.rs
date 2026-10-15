@@ -39,7 +39,9 @@ const S1_CODECS: [Codec; P1] = {
     use formats::{AB, AMPLITUDE, DIRECTION};
     [AB, AB, AB, AB, AB, AB, AMPLITUDE, AMPLITUDE, AMPLITUDE, DIRECTION, DIRECTION, DIRECTION, DIRECTION, DIRECTION, DIRECTION]
 };
-/// The amplitude planes of stage 1 (unpacked as squares: what the filters compare).
+/// The amplitude planes of stage 1, stored as n (n² spans more orders of magnitude than f16
+/// holds: dim pixels lost their weight and jumped) and unpacked as squares (what the filters
+/// compare).
 const S1_AMPLITUDES: std::ops::Range<usize> = 6..9;
 /// stage 2 planes (`resolve::plane`): extended u1, u2, gap, conf, csingle, ir_sum, anchor;
 /// compat raw depth (in u1's place) and ir_sum
