@@ -106,8 +106,8 @@ pub struct S1Out<'a> {
     pub a: [&'a mut Row; 3],
     /// imaginary part per frequency
     pub b: [&'a mut Row; 3],
-    /// squared amplitude per frequency (what the filter compares)
-    pub n2: [&'a mut Row; 3],
+    /// amplitude per frequency (stored as it is; the filter compares its square)
+    pub n: [&'a mut Row; 3],
     /// a / amplitude
     pub na: [&'a mut Row; 3],
     /// b / amplitude
@@ -174,7 +174,7 @@ fn stage1_compat_lanes<I: Isa>(v: &[Row; 9], freq_ok: [bool; 3], t: &S1Tabs, o: 
         let (av, bv) = (sat.select(zero, av), sat.select(zero, bv));
         av.store(o.a[k], x);
         bv.store(o.b[k], x);
-        (nn * nn).store(o.n2[k], x);
+        nn.store(o.n[k], x);
         let inv = nn.gt(zero).and(F8::splat(1.0) / nn.max(F8::splat(1e-30)));
         (av * inv).store(o.na[k], x);
         (bv * inv).store(o.nb[k], x);
@@ -239,7 +239,7 @@ fn stage1_extended_lanes<I: Isa>(v: &[Row; 9], sub_ok: [bool; 9], t: &S1Tabs, o:
         let nn = av.mul_add::<I>(av, bv * bv).sqrt();
         av.store(o.a[k], x);
         bv.store(o.b[k], x);
-        (nn * nn).store(o.n2[k], x);
+        nn.store(o.n[k], x);
         let inv = nn.gt(zero).and(one / nn.max(F8::splat(1e-30)));
         (av * inv).store(o.na[k], x);
         (bv * inv).store(o.nb[k], x);
@@ -361,10 +361,8 @@ pub struct S2OutExt<'a> {
     pub u1: &'a mut Row,
     /// second best
     pub u2: &'a mut Row,
-    /// cost of the best (chi-square like)
-    pub e1: &'a mut Row,
-    /// cost of the second best
-    pub e2: &'a mut Row,
+    /// how much more the second best costs than the best (chi-square like, >= 0)
+    pub gap: &'a mut Row,
     /// confidence 0..1
     pub conf: &'a mut Row,
     /// `kind::*`
@@ -764,8 +762,7 @@ fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutEx
     let conf = multi.and(post * cons);
     single.select(c_ref * inv_ref, u1).store(o.u1, x);
     single.select((c_ref + one) * inv_ref, u2).store(o.u2, x);
-    e1.store(o.e1, x);
-    e2.store(o.e2, x);
+    (e2 - e1).max(zero).store(o.gap, x);
     conf.store(o.conf, x);
     (multi & conf.ge(F8::splat(ANCHOR_CONFIDENCE))).and(conf).store(o.anchor, x);
     c_ref.store(o.csingle, x);

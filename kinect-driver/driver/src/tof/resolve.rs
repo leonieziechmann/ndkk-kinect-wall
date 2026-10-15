@@ -14,7 +14,7 @@
 
 use super::kernels::{RowFlags, depth_of_u, flags, kind, u_of_depth};
 use super::lanes::{F8, LANES};
-use crate::consts::{FREQ_MULTIPLES, HEIGHT, WIDTH};
+use crate::consts::{FREQ_MULTIPLES, WIDTH};
 
 const W: usize = WIDTH;
 
@@ -24,14 +24,9 @@ pub const SURE_CONFIDENCE: f32 = 0.9;
 /// A pixel whose best distance is this confident and far ahead of the second needs no support.
 pub const CONFIRMED_CONFIDENCE: f32 = 0.75;
 
-/// The whole-image inputs of the resolver. Stage 2 stores its planes row-interleaved (row y:
-/// `planes` rows of `WIDTH`, one per plane); the accessors below read them.
+/// The whole-image inputs of the resolver.
 pub struct ResolveIn<'a> {
-    /// stage 2 float planes (u1, u2, e1, e2, conf, csingle, ir_sum, anchor)
-    pub s2: &'a [f32],
-    /// number of float planes
-    pub p2: usize,
-    /// stage 2 byte planes (edge_ok, kind)
+    /// stage 2 byte planes (edge_ok, kind, sat), row-interleaved (row y: `p2b` rows of `WIDTH`)
     pub s2b: &'a [u8],
     /// number of byte planes
     pub p2b: usize,
@@ -49,24 +44,40 @@ pub struct ResolveIn<'a> {
     pub min_conf: f32,
 }
 
-/// Float plane indices of stage 2 (extended).
+/// The stage 2 values of the row being resolved (unpacked from their 16-bit planes).
+pub struct ResolveRow<'a> {
+    /// best u
+    pub u1: &'a [f32],
+    /// second best u
+    pub u2: &'a [f32],
+    /// how much more the second best costs
+    pub gap: &'a [f32],
+    /// confidence
+    pub conf: &'a [f32],
+    /// phase of the single frequency
+    pub csingle: &'a [f32],
+    /// anchor weight
+    pub anchor: &'a [f32],
+}
+
+/// The planes of stage 2: 16 bits each (formats in `cpu.rs`), and bytes.
 pub mod plane {
     /// best u
     pub const U1: usize = 0;
     /// second best u
     pub const U2: usize = 1;
-    /// cost of the best
-    pub const E1: usize = 2;
-    /// cost of the second best
-    pub const E2: usize = 3;
+    /// how much more the second best costs than the best
+    pub const GAP: usize = 2;
     /// confidence
-    pub const CONF: usize = 4;
+    pub const CONF: usize = 3;
     /// phase of the single frequency
-    pub const CSINGLE: usize = 5;
+    pub const CSINGLE: usize = 4;
     /// amplitude sum
-    pub const IR_SUM: usize = 6;
+    pub const IR_SUM: usize = 5;
     /// anchor weight: the confidence if the pixel is a reliable multi-frequency result, else 0
-    pub const ANCHOR: usize = 7;
+    pub const ANCHOR: usize = 6;
+    /// compat: the depth before the edge filter (in place of U1)
+    pub const RAW_DEPTH: usize = 0;
     /// byte plane: bilateral edge test
     pub const EDGE_OK: usize = 0;
     /// byte plane: kind
@@ -75,67 +86,63 @@ pub mod plane {
     pub const SAT: usize = 2;
 }
 
-/// One row of a stage-2 float plane.
-fn frow<'a>(i: &ResolveIn<'a>, p: usize, y: usize) -> Option<&'a [f32]> {
-    let start = (y * i.p2 + p) * W;
-    i.s2.get(start..start + W)
-}
-
 /// One row of a stage-2 byte plane.
-fn brow<'a>(i: &ResolveIn<'a>, p: usize, y: usize) -> Option<&'a [u8]> {
+pub fn byte_row<'a>(i: &ResolveIn<'a>, p: usize, y: usize) -> Option<&'a [u8]> {
     let start = (y * i.p2b + p) * W;
     i.s2b.get(start..start + W)
 }
 
 /// Rows of the largest window (`spatial_radius` is at most 16).
-const WINDOW_ROWS: usize = 33;
+pub const WINDOW_ROWS: usize = 33;
 
 type WindowRow<'a> = (&'a [f32], &'a [f32], &'a [u8]);
 
 /// The rows of the neighborhood window: u1, anchor weight, saturation bits.
-struct Window<'a> {
+pub struct Window<'a> {
     rows: [WindowRow<'a>; WINDOW_ROWS],
     n: usize,
 }
 
 impl<'a> Window<'a> {
+    /// An empty window.
+    pub fn new() -> Window<'a> {
+        Window { rows: [(&[], &[], &[]); WINDOW_ROWS], n: 0 }
+    }
+
+    /// Adds the next row (ignored beyond [`WINDOW_ROWS`]).
+    pub fn push(&mut self, u1: &'a [f32], anchor: &'a [f32], sat: &'a [u8]) {
+        if let Some(slot) = self.rows.get_mut(self.n) {
+            *slot = (u1, anchor, sat);
+            self.n += 1;
+        }
+    }
+
     fn rows(&self) -> &[WindowRow<'a>] {
         self.rows.get(..self.n).unwrap_or(&[])
     }
 }
 
-/// Resolves one row: writes the depth (mm, 0 = none) and confidence, adds flags.
-pub fn resolve_row(i: &ResolveIn, y: usize, depth: &mut [f32], conf_out: &mut [f32], fl: &mut RowFlags) {
-    let r = i.radius;
-    let (Some(u1r), Some(u2r), Some(e1r), Some(e2r), Some(cr), Some(csr), Some(kr)) = (
-        frow(i, plane::U1, y),
-        frow(i, plane::U2, y),
-        frow(i, plane::E1, y),
-        frow(i, plane::E2, y),
-        frow(i, plane::CONF, y),
-        frow(i, plane::CSINGLE, y),
-        brow(i, plane::KIND, y),
-    ) else {
-        return;
-    };
-    let (Some(xtr), Some(ztr), Some(anr)) = (i.xt.get(y * W..(y + 1) * W), i.zt.get(y * W..(y + 1) * W), frow(i, plane::ANCHOR, y)) else { return };
-    let mut window = Window { rows: [(&[], &[], &[]); WINDOW_ROWS], n: 0 };
-    for yy in y.saturating_sub(r)..=(y + r).min(HEIGHT - 1) {
-        if let (Some(u), Some(a), Some(sat)) = (frow(i, plane::U1, yy), frow(i, plane::ANCHOR, yy), brow(i, plane::SAT, yy))
-            && let Some(slot) = window.rows.get_mut(window.n)
-        {
-            *slot = (u, a, sat);
-            window.n += 1;
-        }
+impl Default for Window<'_> {
+    fn default() -> Self {
+        Window::new()
     }
+}
+
+/// Resolves one row: writes the depth (mm, 0 = none) and confidence, adds flags. `window` holds
+/// the rows `y - radius ..= y + radius` (clamped at the image border).
+pub fn resolve_row(i: &ResolveIn, y: usize, row: &ResolveRow, window: &Window, depth: &mut [f32], conf_out: &mut [f32], fl: &mut RowFlags) {
+    let r = i.radius;
+    let ResolveRow { u1: u1r, u2: u2r, gap: gapr, conf: cr, csingle: csr, anchor: anr } = *row;
+    let Some(kr) = byte_row(i, plane::KIND, y) else { return };
+    let (Some(xtr), Some(ztr)) = (i.xt.get(y * W..(y + 1) * W), i.zt.get(y * W..(y + 1) * W)) else { return };
     // the anchors' support for both candidates, where a multi-frequency pixel needs it
     let mut need = [0u8; W];
-    for ((n, &k), (&c, (&e1, &e2))) in need.iter_mut().zip(kr).zip(cr.iter().zip(e1r.iter().zip(e2r))) {
-        *n = u8::from((k & 0x0f == kind::MULTI) & !settled(c, e2 - e1));
+    for ((n, &k), (&c, &gap)) in need.iter_mut().zip(kr).zip(cr.iter().zip(gapr)) {
+        *n = u8::from((k & 0x0f == kind::MULTI) & !settled(c, gap));
     }
     let mut sums = [[0f32; W]; 3];
     if need.iter().any(|n| *n != 0) {
-        support_row(&window, r, u1r, u2r, &need, &mut sums);
+        support_row(window, r, u1r, u2r, &need, &mut sums);
     }
     let [sum1, sum2, sum_total] = &sums;
     // first as if no neighbor were asked: a multi-frequency pixel keeps its best candidate, the
@@ -146,15 +153,14 @@ pub fn resolve_row(i: &ResolveIn, y: usize, depth: &mut [f32], conf_out: &mut [f
         *d_out = if multi { depth_of_u(u1, xt, zt) } else { 0.0 };
         *c_out = if multi { c } else { 0.0 };
     }
-    let rows = u1r.iter().zip(u2r).zip(e1r.iter().zip(e2r)).zip(cr.iter().zip(csr)).zip(kr.iter().zip(xtr.iter().zip(ztr)));
-    for (x, ((((&u1, &u2), (&e1, &e2)), (&c, &cref)), (&k, (&xt, &zt)))) in rows.enumerate() {
+    let rows = u1r.iter().zip(u2r).zip(gapr).zip(cr.iter().zip(csr)).zip(kr.iter().zip(xtr.iter().zip(ztr)));
+    for (x, ((((&u1, &u2), &gap), (&c, &cref)), (&k, (&xt, &zt)))) in rows.enumerate() {
         let base = k & 0x0f;
         if base != kind::SINGLE && need.get(x).is_none_or(|n| *n == 0) {
             continue;
         }
         let (Some(d_out), Some(c_out), Some(f)) = (depth.get_mut(x), conf_out.get_mut(x), fl.get_mut(x)) else { continue };
         if base == kind::MULTI {
-            let gap = e2 - e1;
             let h = bandwidth(u1);
             let (Some(&s1), Some(&s2), Some(&total)) = (sum1.get(x), sum2.get(x), sum_total.get(x)) else { continue };
             let (mut s1, mut s2, mut total) = (s1, s2, total);
@@ -179,7 +185,7 @@ pub fn resolve_row(i: &ResolveIn, y: usize, depth: &mut [f32], conf_out: &mut [f
             let n = FREQ_MULTIPLES.get(fi).copied().unwrap_or(1) as f32;
             *f |= flags::SINGLE_FREQUENCY;
             let saturated = *f & flags::SATURATED_ANY != 0;
-            let (votes, total) = vote(&window, x, r, n, cref, saturated);
+            let (votes, total) = vote(window, x, r, n, cref, saturated);
             let (best_m, best_v) = votes.iter().enumerate().fold((0usize, 0f32), |acc, (m, v)| if *v > acc.1 { (m, *v) } else { acc });
             let (u, conf) = if total >= 1.5 && best_v > 0.6 * total {
                 *f |= flags::RESOLVED;

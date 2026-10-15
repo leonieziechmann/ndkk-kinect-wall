@@ -122,14 +122,29 @@ impl Workers {
     where
         I: Iterator<Item = B> + Send,
     {
+        // (a Vec of zero-sized values never allocates)
+        let mut none = vec![(); self.threads()];
+        self.for_each_with(&mut none, items, &|_, b| f(b))
+    }
+
+    /// [`Workers::for_each`] with a scratch per thread: each thread that takes part gets one
+    /// element of `scratch` for all its items (a thread without one, if there are fewer than
+    /// [`Workers::threads`], leaves the items to the others).
+    pub fn for_each_with<S, I, B>(&self, scratch: &mut [S], items: I, f: &(dyn Fn(&mut S, B) + Sync)) -> Result<()>
+    where
+        S: Send,
+        I: Iterator<Item = B> + Send,
+    {
+        let slots = Mutex::new(scratch.iter_mut());
         let items = Mutex::new(items);
         let first_error: Mutex<Option<String>> = Mutex::new(None);
         let work = || {
+            let Some(s) = lock(&slots).next() else { return };
             loop {
                 // the lock only while taking the next item
                 let next = lock(&items).next();
                 let Some(b) = next else { break };
-                if let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(b))) {
+                if let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&mut *s, b))) {
                     lock(&first_error).get_or_insert_with(|| panic_message(p.as_ref()));
                 }
             }
