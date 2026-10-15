@@ -95,9 +95,9 @@ pub fn byte_row<'a>(i: &ResolveIn<'a>, p: usize, y: usize) -> Option<&'a [u8]> {
 /// Rows of the largest window (`spatial_radius` is at most 16).
 pub const WINDOW_ROWS: usize = 33;
 
-type WindowRow<'a> = (&'a [f32], &'a [f32], &'a [u8]);
+type WindowRow<'a> = (&'a [f32], &'a [f32], &'a [u8], &'a [u8]);
 
-/// The rows of the neighborhood window: u1, anchor weight, saturation bits.
+/// The rows of the neighborhood window: u1, anchor weight, saturation bits, kind.
 pub struct Window<'a> {
     rows: [WindowRow<'a>; WINDOW_ROWS],
     n: usize,
@@ -106,13 +106,13 @@ pub struct Window<'a> {
 impl<'a> Window<'a> {
     /// An empty window.
     pub fn new() -> Window<'a> {
-        Window { rows: [(&[], &[], &[]); WINDOW_ROWS], n: 0 }
+        Window { rows: [(&[], &[], &[], &[]); WINDOW_ROWS], n: 0 }
     }
 
     /// Adds the next row (ignored beyond [`WINDOW_ROWS`]).
-    pub fn push(&mut self, u1: &'a [f32], anchor: &'a [f32], sat: &'a [u8]) {
+    pub fn push(&mut self, u1: &'a [f32], anchor: &'a [f32], sat: &'a [u8], kind: &'a [u8]) {
         if let Some(slot) = self.rows.get_mut(self.n) {
-            *slot = (u1, anchor, sat);
+            *slot = (u1, anchor, sat, kind);
             self.n += 1;
         }
     }
@@ -161,9 +161,19 @@ pub fn resolve_row(i: &ResolveIn, y: usize, row: &ResolveRow, window: &Window, d
         }
         let (Some(d_out), Some(c_out), Some(f)) = (depth.get_mut(x), conf_out.get_mut(x), fl.get_mut(x)) else { continue };
         if base == kind::MULTI {
+            // the first of two echoes: confirmed where the neighbors' first echoes or sure
+            // distances agree
+            if k & kind::FIRST_ECHO != 0 {
+                let (s, total) = first_echo_support(window, x, r, u1);
+                if total > 1.0 && s > 0.5 * total {
+                    *c_out = c.max((0.55 + 0.4 * s / total).min(0.95));
+                    *f |= flags::RESOLVED;
+                }
+                continue;
+            }
             // the phases of a pixel that mixes several echoes are wrong, not ambiguous: the
             // neighbors neither confirm nor replace its distance
-            if *f & (flags::MULTIPATH | flags::SECOND_ECHO) != 0 {
+            if *f & flags::MULTIPATH != 0 {
                 continue;
             }
             let h = bandwidth(u1);
@@ -243,7 +253,7 @@ crate::multiversion! {
             let h = u1.map_lanes(bandwidth);
             let inv_h2 = one / (h * h).max(F8::splat(1e-12));
             let (mut s1, mut s2, mut total) = (zero, zero, zero);
-            for (ur, ar, _) in w.rows() {
+            for (ur, ar, _, _) in w.rows() {
                 for at in x - r..=x + r {
                     let (uj, aj) = (F8::load(ur, at), F8::load(ar, at));
                     let (d1, d2) = (uj - u1, uj - u2);
@@ -273,7 +283,7 @@ fn support2(w: &Window, x: usize, r: usize, u1: f32, u2: f32, h: f32) -> (f32, f
     let (mut s1, mut s2, mut total) = (0f32, 0f32, 0f32);
     let inv_h2 = 1.0 / (h * h).max(1e-12);
     let (x0, x1) = (x.saturating_sub(r), (x + r).min(W - 1));
-    for (ur, ar, _) in w.rows() {
+    for (ur, ar, _, _) in w.rows() {
         let (Some(us), Some(aws)) = (ur.get(x0..=x1), ar.get(x0..=x1)) else { continue };
         for (&uj, &aj) in us.iter().zip(aws) {
             let d1 = uj - u1;
@@ -286,13 +296,44 @@ fn support2(w: &Window, x: usize, r: usize, u1: f32, u2: f32, h: f32) -> (f32, f
     (s1, s2, total)
 }
 
+/// How much a neighbor that is itself the first of two echoes counts against an anchor.
+pub const FIRST_ECHO_WEIGHT: f32 = 0.5;
+
+/// Support of the neighbors around `x` (the pixel itself left out) for a first echo at `u1`:
+/// anchors with their weight, other first echoes with [`FIRST_ECHO_WEIGHT`] (Epanechnikov
+/// kernel); and their total weight.
+fn first_echo_support(w: &Window, x: usize, r: usize, u1: f32) -> (f32, f32) {
+    let h = bandwidth(u1);
+    let inv_h2 = 1.0 / (h * h).max(1e-12);
+    let (mut s, mut total) = (0f32, 0f32);
+    let (x0, x1) = (x.saturating_sub(r), (x + r).min(W - 1));
+    let rows = w.rows();
+    let me = rows.len() / 2;
+    for (ri, (ur, ar, _, kr)) in rows.iter().enumerate() {
+        let (Some(us), Some(aws), Some(ks)) = (ur.get(x0..=x1), ar.get(x0..=x1), kr.get(x0..=x1)) else { continue };
+        for (xi, ((&uj, &aj), &kj)) in us.iter().zip(aws).zip(ks).enumerate() {
+            if ri == me && x0 + xi == x {
+                continue;
+            }
+            let wj = if kj & 0x0f == kind::MULTI && kj & kind::FIRST_ECHO != 0 { FIRST_ECHO_WEIGHT } else { aj };
+            if wj <= 0.0 {
+                continue;
+            }
+            let d = uj - u1;
+            total += wj;
+            s += wj * (1.0 - d * d * inv_h2).max(0.0);
+        }
+    }
+    (s, total)
+}
+
 /// Votes of the anchors around `x` for the candidates `(c + m) / n`; a saturated pixel listens
 /// mostly to saturated anchors (the same bright object, not what is behind it).
 fn vote(w: &Window, x: usize, r: usize, n: f32, cref: f32, saturated: bool) -> ([f32; 16], f32) {
     let mut votes = [0f32; 16];
     let mut total = 0f32;
     let (x0, x1) = (x.saturating_sub(r), (x + r).min(W - 1));
-    for (ur, ar, sr) in w.rows() {
+    for (ur, ar, sr, _) in w.rows() {
         let (Some(us), Some(aws), Some(ss)) = (ur.get(x0..=x1), ar.get(x0..=x1), sr.get(x0..=x1)) else { continue };
         for ((&uj, &aj), &sj) in us.iter().zip(aws).zip(ss) {
             if aj <= 0.0 {

@@ -154,6 +154,8 @@ fn params(cfg: &TofConfig) -> Vec<(&'static str, Value)> {
         ("multipath_tolerance", F(s2.multipath_tolerance)),
         ("two_echoes", U(u32::from(s2.two_echoes))),
         ("echo_amplitude_floor", F(s2.echo_amplitude_floor)),
+        ("echo_plausibility", F(s2.echo_plausibility)),
+        ("echo_rho_max", F(s2.ln_max_reflectivity.exp())),
         ("margin_prior", F(s2.margin_prior)),
         ("min_depth", F(e.min_depth)),
         ("max_depth", F(e.max_depth)),
@@ -241,6 +243,7 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("KIND_MULTI", u32::from(kind::MULTI)),
         ("KIND_SINGLE", u32::from(kind::SINGLE)),
         ("KIND_SECOND_IMPLAUSIBLE", u32::from(kind::SECOND_IMPLAUSIBLE)),
+        ("KIND_FIRST_ECHO", u32::from(kind::FIRST_ECHO)),
         ("FL_SATURATED_ANY", flags::SATURATED_ANY),
         ("FL_REPAIRED_80", flags::REPAIRED_80),
         ("FL_IR_FILLED", flags::IR_FILLED),
@@ -257,6 +260,8 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("FL_PLAUSIBILITY", flags::PLAUSIBILITY),
         ("FL_MULTIPATH", flags::MULTIPATH),
         ("FL_SECOND_ECHO", flags::SECOND_ECHO),
+        // internal: stage 2 marks the pixels for the split pass, which clears the bit
+        ("FL_SPLIT_CANDIDATE", 1 << 31),
         ("COARSE", echoes::COARSE as u32),
         ("MIN_SEPARATION", echoes::MIN_SEPARATION as u32),
         ("SAME_FIRST", echoes::SAME_FIRST as u32),
@@ -275,11 +280,13 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("NOISE_PRIOR_DOF", NOISE_PRIOR_DOF),
         ("IMPLAUSIBLE", IMPLAUSIBLE),
         ("DOF_TWO", echoes::DOF_TWO),
+        ("FIRST_MIN", echoes::FIRST_MIN),
         ("STRONG_SECOND", echoes::STRONG_SECOND),
         ("SPLIT_MOVES", SPLIT_MOVES),
         ("SPLIT_MOVES_REL", SPLIT_MOVES_REL),
         ("SURE_CONFIDENCE", SURE_CONFIDENCE),
         ("CONFIRMED_CONFIDENCE", CONFIRMED_CONFIDENCE),
+        ("FIRST_ECHO_WEIGHT", crate::tof::resolve::FIRST_ECHO_WEIGHT),
     ] {
         s.push_str(&format!("const {name}: f32 = {};\n", f32c(v)));
     }
@@ -348,7 +355,8 @@ const P_PP_INIT: usize = 5;
 const P_PP_DOWN: usize = 6;
 const P_PP_TOP: usize = 7;
 const P_PP_UP: usize = 8;
-const ENTRY_POINTS: [&str; 9] = ["stage1", "stage2", "stage3_compat", "resolve", "finish", "pp_init", "pp_down", "pp_top", "pp_up"];
+const P_SPLIT: usize = 9;
+const ENTRY_POINTS: [&str; 10] = ["stage1", "stage2", "stage3_compat", "resolve", "finish", "pp_init", "pp_down", "pp_top", "pp_up", "split_pass"];
 
 /// The depth/infrared decoder on the GPU.
 pub struct GpuDecoder {
@@ -604,6 +612,9 @@ impl GpuDecoder {
             if self.cfg.mode == TofMode::Compat {
                 dispatch(&mut pass, pl.get(P_STAGE3_COMPAT), fx, fy);
             } else {
+                if self.cfg.ext.two_echoes {
+                    dispatch(&mut pass, pl.get(P_SPLIT), fx, fy);
+                }
                 if self.cfg.ext.spatial_resolve {
                     for s in &self.steps {
                         pass.set_bind_group(1, &s.group, &[]);

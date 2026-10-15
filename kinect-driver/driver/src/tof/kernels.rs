@@ -95,6 +95,9 @@ pub mod kind {
     /// added to MULTI: the second best distance needs an implausible brightness (the neighbors
     /// may not choose it)
     pub const SECOND_IMPLAUSIBLE: u8 = 0x40;
+    /// added to MULTI: the distance is the first of two echoes (flag SECOND_ECHO); the neighbors
+    /// confirm it where their first echoes or sure distances agree
+    pub const FIRST_ECHO: u8 = 0x10;
 }
 
 // ---- stage 1: samples -> complex value per frequency -------------------------------------
@@ -367,6 +370,8 @@ pub struct S2Params {
     pub two_echoes: bool,
     /// extended: relative spread of the amplitudes of the frequencies in the split
     pub echo_amplitude_floor: f32,
+    /// extended: how much stricter the brightness prior of the split is than the unwrapping's
+    pub echo_plausibility: f32,
     /// extended: how much better (in cost) the best distance must be than the second best to
     /// count as even odds
     pub margin_prior: f32,
@@ -671,21 +676,24 @@ multiversion! {
             unwrap_extended::<Isa>(&f, i, p, o, x, &mut misfit);
         }
         if p.two_echoes {
-            split_echoes(&af, &bf, &misfit, p, o);
+            split_echoes(&af, &bf, &misfit, i.illum, p, o);
         }
     }
 }
 
 /// The first of two echoes replaces the single echo's distance only if it lies farther from it
-/// than this (fraction of the unambiguous range: 56 mm) plus [`SPLIT_MOVES_REL`] of the distance.
-pub const SPLIT_MOVES: f32 = 0.003;
+/// than this (fraction of the unambiguous range: 24 mm) plus [`SPLIT_MOVES_REL`] of the distance:
+/// closer, the single echo is the less noisy one.
+pub const SPLIT_MOVES: f32 = 0.0013;
 /// See [`SPLIT_MOVES`].
-pub const SPLIT_MOVES_REL: f32 = 0.02;
+pub const SPLIT_MOVES_REL: f32 = 0.01;
 
 /// The pixels of a row that one echo does not explain: split into two, where the first is
 /// unambiguous ([`super::echoes`]). Its distance replaces the single echo's (which lies between
 /// the two), flag [`flags::SECOND_ECHO`].
-fn split_echoes(af: &[Row; 3], bf: &[Row; 3], misfit: &RowU8, p: &S2Params, o: &mut S2OutExt) {
+fn split_echoes(af: &[Row; 3], bf: &[Row; 3], misfit: &RowU8, illum: &Row, p: &S2Params, o: &mut S2OutExt) {
+    let rho_max = if p.penalty_scale > 0.0 { p.ln_max_reflectivity.exp() } else { f32::INFINITY };
+    let to_m2 = (U_RANGE_MM * 0.001) * (U_RANGE_MM * 0.001);
     for (x, _) in misfit.iter().enumerate().filter(|(_, m)| **m != 0) {
         let Some(fl) = o.flags.get(x).copied() else { continue };
         // the complex value per frequency in amplitude units, gain corrected; the noise per
@@ -706,6 +714,10 @@ fn split_echoes(af: &[Row; 3], bf: &[Row; 3], misfit: &RowU8, p: &S2Params, o: &
         let noise = super::echoes::Noise {
             radial: std::array::from_fn(|k| 1.0 / (sensor[k] + (p.echo_amplitude_floor * mean).powi(2)).max(1e-12)),
             tangential: std::array::from_fn(|k| 1.0 / (sensor[k] + (p.noise_floor * m[k]).powi(2)).max(1e-12)),
+            // as bright as plausible (max_reflectivity) at its distance: else a strong echo far
+            // away is the alias of a near one
+            max_amp_u2: rho_max / (p.ir_output * illum.get(x).copied().unwrap_or(1.0) * p.inv_brightness * to_m2).max(1e-30),
+            penalty_scale: p.penalty_scale * p.echo_plausibility,
         };
         let Some(s) = super::echoes::split(&z, &noise) else { continue };
         // a weak second echo moves the single echo's distance less than the split's noise
@@ -714,16 +726,18 @@ fn split_echoes(af: &[Row; 3], bf: &[Row; 3], misfit: &RowU8, p: &S2Params, o: &
         }
         let margin = (s.gap - p.margin_prior).min(80.0);
         let post = 1.0 / (1.0 + exp(-0.5 * margin));
-        // a credible first echo elsewhere than the single echo's distance (which then lies between
-        // the two) replaces it; where they agree, the single echo is the less noisy one
+        // the single echo's distance lies between two strong echoes: wrong for both. The first
+        // replaces it, as sure as the pixel alone can tell (often hardly: several pairs fit almost
+        // as well); the neighbors confirm it where their first echoes agree (resolve.rs). Where
+        // the first lies at the single echo's distance, the single echo is the less noisy one.
         let single_u = o.u1.get(x).copied().unwrap_or(0.0);
-        if post < 0.5 || (s.u1 - single_u).abs() <= SPLIT_MOVES + SPLIT_MOVES_REL * single_u {
+        if (s.u1 - single_u).abs() <= SPLIT_MOVES + SPLIT_MOVES_REL * single_u {
             continue;
         }
         let outs = (o.u1.get_mut(x), o.u2.get_mut(x), o.gap.get_mut(x), o.conf.get_mut(x), o.anchor.get_mut(x), o.kind.get_mut(x), o.flags.get_mut(x));
         if let (Some(u1), Some(u2), Some(gap), Some(conf), Some(anchor), Some(kd), Some(f)) = outs {
             (*u1, *u2, *gap, *conf, *anchor) = (s.u1, s.u2, s.gap, post, 0.0);
-            *kd = kind::MULTI;
+            *kd = kind::MULTI | kind::FIRST_ECHO;
             *f |= flags::SECOND_ECHO;
         }
     }

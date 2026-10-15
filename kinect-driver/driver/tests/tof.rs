@@ -203,6 +203,39 @@ fn pixels_with_two_echoes_are_not_trusted() {
 }
 
 #[test]
+fn two_echoes_give_the_near_surface() {
+    use kinect_driver::sim::{Object, Shape};
+    let wall = |z: f32, albedo: f32| Scene { objects: vec![Object::new(Shape::Plane { point: [0.0, 0.0, z], normal: [0.0, 0.0, -1.0] }, albedo)], ambient: 150.0, brightness: 16000.0 };
+    let mut s = sim();
+    // (near, far, far echo relative to the near one, near pixels at least, neither at most)
+    let cases = [
+        // a floor at 2 m and the mirror image of a wall at 4.6 m, half as strong: one echo puts
+        // most pixels between them
+        (2000.0f32, 4600.0f32, 0.5f32, 0.6f64, 0.25f64),
+        (2000.0, 3000.0, 2.0, 0.9, 0.02),
+        (1000.0, 1600.0, 1.0, 0.8, 0.02),
+        // a weak second echo: the single echo's distance stays
+        (1500.0, 3000.0, 0.25, 0.95, 0.01),
+    ];
+    for (zn, zf, ratio, near_min, neither_max) in cases {
+        let (near, _) = s.frame(&wall(zn, 0.4), 1);
+        let (far, _) = s.frame(&wall(zf, 0.4 * (zf / zn).powi(2) * ratio), 2);
+        let m = mix(&near, &far, &s.tables().lut);
+        let mut cfg = TofConfig::extended();
+        cfg.ext.two_echoes = true;
+        let mut dec = CpuDecoder::new(cfg).unwrap();
+        let mut out = TofOutput::new();
+        dec.decode(&m, s.tables(), &mut out).unwrap();
+        let n = out.depth.len() as f64;
+        let at = |z: f32| out.depth.iter().filter(|d| (**d - z).abs() < 0.03 * z).count() as f64 / n;
+        let with = out.depth.iter().filter(|d| **d > 0.0).count() as f64 / n;
+        let (on_near, on_far) = (at(zn), at(zf));
+        assert!(on_near >= near_min, "{zn} + {zf} x{ratio}: {on_near:.3} at the near surface");
+        assert!(with - on_near - on_far <= neither_max, "{zn} + {zf} x{ratio}: {:.3} at neither", with - on_near - on_far);
+    }
+}
+
+#[test]
 fn surfaces_brighter_than_plausible_keep_their_depth() {
     use kinect_driver::sim::{Object, Shape};
     // glossy paint seen head-on, a reflector: several times brighter than white paper

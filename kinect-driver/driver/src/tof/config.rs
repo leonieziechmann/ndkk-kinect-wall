@@ -192,6 +192,11 @@ pub struct ExtendedParams {
     /// ratios are what tells two echoes from one (at 80 MHz a floor and its mirror image nearly
     /// cancel), so tighter than `amplitude_floor`
     pub echo_amplitude_floor: f32,
+    /// how much stricter the brightness prior of the two-echo split is than the unwrapping's
+    /// (a factor on the penalty): with two echoes, six numbers and four unknowns, an alias far
+    /// away (16 and 80 MHz repeat after half the range) fits almost as well as the real pair,
+    /// and the brightness has to decide
+    pub echo_plausibility: f32,
     /// how much lower (chi-square units) the cost of the best distance must be than that of the
     /// second best before the unwrapping is more sure of it than of the other: the noise model
     /// knows only noise, and the errors it does not know (multipath, stray light) now and then
@@ -236,6 +241,7 @@ impl Default for ExtendedParams {
             multipath_tolerance: 10.0,
             two_echoes: false,
             echo_amplitude_floor: 0.06,
+            echo_plausibility: 16.0,
             margin_prior: 10.0,
         }
     }
@@ -384,6 +390,7 @@ impl TofConfig {
             "multipath_tolerance" => e.multipath_tolerance = f()?,
             "two_echoes" => e.two_echoes = b()?,
             "echo_amplitude_floor" => e.echo_amplitude_floor = f()?,
+            "echo_plausibility" => e.echo_plausibility = f()?,
             "margin_prior" => e.margin_prior = f()?,
             other => return Err(crate::Error::config(format!("unknown setting {other:?}"))),
         }

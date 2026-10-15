@@ -154,6 +154,7 @@ pub(crate) fn s2_params(cfg: &TofConfig) -> S2Params {
         multipath_tolerance: e.multipath_tolerance,
         two_echoes: e.two_echoes,
         echo_amplitude_floor: e.echo_amplitude_floor,
+        echo_plausibility: e.echo_plausibility,
         margin_prior: e.margin_prior,
     }
 }
@@ -772,8 +773,8 @@ impl CpuDecoder {
                 if spatial {
                     let mut window = Window::new();
                     for yy in y.saturating_sub(r)..=(y + r).min(HEIGHT - 1) {
-                        if let (Some(u), Some(a), Some(sat)) = (ring.row(0, yy), ring.row(1, yy), byte_row(&resolve, plane::SAT, yy)) {
-                            window.push(u, a, sat);
+                        if let (Some(u), Some(a), Some(sat), Some(kd)) = (ring.row(0, yy), ring.row(1, yy), byte_row(&resolve, plane::SAT, yy), byte_row(&resolve, plane::KIND, yy)) {
+                            window.push(u, a, sat, kd);
                         }
                     }
                     let row_in = ResolveRow { u1, u2, gap, conf, csingle, anchor };
