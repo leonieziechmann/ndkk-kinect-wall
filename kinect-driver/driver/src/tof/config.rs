@@ -184,6 +184,14 @@ pub struct ExtendedParams {
     /// neither distance. Where the best distance would need an implausible brightness, nothing is
     /// tolerated
     pub multipath_tolerance: f32,
+    /// split pixels that one echo does not explain into two echoes and report the first, nearer
+    /// one (flag SECOND_ECHO): a glossy floor under the mirror image in it, a grazing table top,
+    /// a depth edge
+    pub two_echoes: bool,
+    /// relative spread of the amplitudes of the frequencies in the two-echo split: the amplitude
+    /// ratios are what tells two echoes from one (at 80 MHz a floor and its mirror image nearly
+    /// cancel), so tighter than `amplitude_floor`
+    pub echo_amplitude_floor: f32,
     /// how much lower (chi-square units) the cost of the best distance must be than that of the
     /// second best before the unwrapping is more sure of it than of the other: the noise model
     /// knows only noise, and the errors it does not know (multipath, stray light) now and then
@@ -226,6 +234,8 @@ impl Default for ExtendedParams {
             multipath_check: true,
             amplitude_floor: 0.15,
             multipath_tolerance: 10.0,
+            two_echoes: false,
+            echo_amplitude_floor: 0.06,
             margin_prior: 10.0,
         }
     }
@@ -372,6 +382,8 @@ impl TofConfig {
             "multipath_check" => e.multipath_check = b()?,
             "amplitude_floor" => e.amplitude_floor = f()?,
             "multipath_tolerance" => e.multipath_tolerance = f()?,
+            "two_echoes" => e.two_echoes = b()?,
+            "echo_amplitude_floor" => e.echo_amplitude_floor = f()?,
             "margin_prior" => e.margin_prior = f()?,
             other => return Err(crate::Error::config(format!("unknown setting {other:?}"))),
         }

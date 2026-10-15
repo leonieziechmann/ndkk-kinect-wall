@@ -24,7 +24,8 @@ use crate::pipeline::TofDecoder;
 use crate::tables::DeviceTables;
 use crate::tof::config::{TofConfig, TofMode};
 use crate::tof::cpu::{Prepared, edge_params, s1_params, s2_params, s3_params};
-use crate::tof::kernels::{ANCHOR_CONFIDENCE, FULL_SCALE, IMPLAUSIBLE, MULTIPATH_MARGIN, NOISE_PRIOR_DOF, REBUILT_NOISE, TIE_BREAK, U_RANGE_MM, flags, kind};
+use crate::tof::echoes;
+use crate::tof::kernels::{ANCHOR_CONFIDENCE, FULL_SCALE, IMPLAUSIBLE, MULTIPATH_MARGIN, NOISE_PRIOR_DOF, REBUILT_NOISE, SPLIT_MOVES, SPLIT_MOVES_REL, TIE_BREAK, U_RANGE_MM, flags, kind};
 use crate::tof::pack::{self, Codec, formats};
 use crate::tof::resolve::{CONFIRMED_CONFIDENCE, SURE_CONFIDENCE};
 use crate::tof::post::PostScratch;
@@ -151,6 +152,8 @@ fn params(cfg: &TofConfig) -> Vec<(&'static str, Value)> {
         ("multipath", U(u32::from(s2.multipath))),
         ("amplitude_floor", F(s2.amplitude_floor)),
         ("multipath_tolerance", F(s2.multipath_tolerance)),
+        ("two_echoes", U(u32::from(s2.two_echoes))),
+        ("echo_amplitude_floor", F(s2.echo_amplitude_floor)),
         ("margin_prior", F(s2.margin_prior)),
         ("min_depth", F(e.min_depth)),
         ("max_depth", F(e.max_depth)),
@@ -253,6 +256,10 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("FL_SPECKLE", flags::SPECKLE),
         ("FL_PLAUSIBILITY", flags::PLAUSIBILITY),
         ("FL_MULTIPATH", flags::MULTIPATH),
+        ("FL_SECOND_ECHO", flags::SECOND_ECHO),
+        ("COARSE", echoes::COARSE as u32),
+        ("MIN_SEPARATION", echoes::MIN_SEPARATION as u32),
+        ("SAME_FIRST", echoes::SAME_FIRST as u32),
     ] {
         s.push_str(&format!("const {name}: u32 = {v}u;\n"));
     }
@@ -267,6 +274,10 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("MULTIPATH_MARGIN", MULTIPATH_MARGIN),
         ("NOISE_PRIOR_DOF", NOISE_PRIOR_DOF),
         ("IMPLAUSIBLE", IMPLAUSIBLE),
+        ("DOF_TWO", echoes::DOF_TWO),
+        ("STRONG_SECOND", echoes::STRONG_SECOND),
+        ("SPLIT_MOVES", SPLIT_MOVES),
+        ("SPLIT_MOVES_REL", SPLIT_MOVES_REL),
         ("SURE_CONFIDENCE", SURE_CONFIDENCE),
         ("CONFIRMED_CONFIDENCE", CONFIRMED_CONFIDENCE),
     ] {

@@ -286,6 +286,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut dis_map = vec![(0u16, 0f32); PIXELS];
     // extended depth flagged MULTIPATH (the amplitudes do not fit one echo), per pixel
     let mut mp_map = vec![0u16; PIXELS];
+    // extended depth from the first of two echoes (SECOND_ECHO), per pixel
+    let mut se_map = vec![0u16; PIXELS];
     let mut resid = Resid::new();
     // per pixel over the frames: count, sum, sum of squares of the depth (compat, extended)
     let mut tc = vec![(0u32, 0f64, 0f64); PIXELS];
@@ -328,8 +330,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        for (m, (d, f)) in mp_map.iter_mut().zip(oe.depth.iter().zip(&oe.flags)) {
-            *m += u16::from(*d > 0.0 && f & flags::MULTIPATH != 0);
+        for (i, (d, f)) in oe.depth.iter().zip(&oe.flags).enumerate() {
+            mp_map[i] += u16::from(*d > 0.0 && f & flags::MULTIPATH != 0);
+            se_map[i] += u16::from(*d > 0.0 && f & flags::SECOND_ECHO != 0);
         }
         for i in 0..PIXELS {
             let (c, e, f) = (oc.depth[i], oe.depth[i], oe.flags[i]);
@@ -649,9 +652,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collect();
         save_rgb(&format!("{dir}/disagree.png"), &dis)?;
         save_rgb(&format!("{dir}/multipath-heat.png"), &heat(&mp_map))?;
+        save_rgb(&format!("{dir}/second-echo-heat.png"), &heat(&se_map))?;
         let ir: Vec<[u8; 3]> = oe.ir.iter().map(|v| { let t = ((v.max(1.0).ln() / 65535f32.ln()) * 255.0) as u8; [t, t, t] }).collect();
         save_rgb(&format!("{dir}/ir.png"), &ir)?;
-        println!("  PNGs in {dir}: compat, extended (0..{:.1} m, white beyond), reasons, lost-heat, phantom-heat, disagree, multipath-heat, ir", room / 1000.0);
+        println!("  PNGs in {dir}: compat, extended (0..{:.1} m, white beyond), reasons, lost-heat, phantom-heat, disagree, multipath-heat, second-echo-heat, ir", room / 1000.0);
     }
     Ok(())
 }

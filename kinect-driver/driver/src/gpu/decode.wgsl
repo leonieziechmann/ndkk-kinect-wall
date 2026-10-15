@@ -456,6 +456,192 @@ fn weak_boost(x: u32, y: u32, k: u32, af: f32, bf: f32) -> vec3<f32> {
     return vec3<f32>(af, bf, 0.0);
 }
 
+// ---- two echoes in one pixel (tof/echoes.rs) ----------------------------------------------
+
+struct Split {
+    ok: bool,
+    u1: f32,
+    u2: f32,
+    a1: f32,
+    a2: f32,
+    cost: f32,
+    single: f32,
+    gap: f32,
+}
+
+// the pixel in the frame of its measured values: unit vectors along them, the square roots of
+// the weights (radial, tangential), the weighted measurement and energy
+var<private> se: array<vec2<f32>, 3>;
+var<private> ssr: array<f32, 3>;
+var<private> sst: array<f32, 3>;
+var<private> sy: array<f32, 3>;
+var<private> szz: f32;
+// the whitened steering vectors of the grid, the matched filter, the norms, the best cost per
+// first echo
+var<private> sr0: array<f32, COARSE>;
+var<private> sr1: array<f32, COARSE>;
+var<private> sr2: array<f32, COARSE>;
+var<private> st0: array<f32, COARSE>;
+var<private> st1: array<f32, COARSE>;
+var<private> st2: array<f32, COARSE>;
+var<private> sb: array<f32, COARSE>;
+var<private> sn: array<f32, COARSE>;
+var<private> sfirst: array<f32, COARSE>;
+
+fn steer(u: f32, k: u32) -> vec2<f32> {
+    let t = nf(k) * u;
+    let ph = TAU * (t - floor(t));
+    return vec2<f32>(cos(ph), sin(ph));
+}
+
+// whitened (radial, tangential) parts of a steering vector of frequency k
+fn proj(s: vec2<f32>, k: u32) -> vec2<f32> {
+    let e = se[k];
+    return vec2<f32>(ssr[k] * (s.x * e.x + s.y * e.y), sst[k] * (s.y * e.x - s.x * e.y));
+}
+
+// (cost, A1, A2) of two echoes; BIG where an amplitude is negative or the pair degenerate
+fn pair_cost(n1: f32, n2: f32, g: f32, b1: f32, b2: f32) -> vec3<f32> {
+    let det = n1 * n2 - g * g;
+    let inv = 1.0 / max(det, 1e-30);
+    let a1 = (n2 * b1 - g * b2) * inv;
+    let a2 = (n1 * b2 - g * b1) * inv;
+    let ok = det > 1e-6 * n1 * n2 && a1 > 0.0 && a2 > 0.0;
+    return vec3<f32>(select(BIG, max(szz - a1 * b1 - a2 * b2, 0.0), ok), a1, a2);
+}
+
+fn pair_at(u1: f32, u2: f32) -> vec3<f32> {
+    var n1 = 0.0;
+    var n2 = 0.0;
+    var g = 0.0;
+    var b1 = 0.0;
+    var b2 = 0.0;
+    for (var k = 0u; k < 3u; k++) {
+        let p = proj(steer(u1, k), k);
+        let q = proj(steer(u2, k), k);
+        n1 += p.x * p.x + p.y * p.y;
+        n2 += q.x * q.x + q.y * q.y;
+        g += p.x * q.x + p.y * q.y;
+        b1 += p.x * sy[k];
+        b2 += q.x * sy[k];
+    }
+    return pair_cost(n1, n2, g, b1, b2);
+}
+
+fn single_at(u: f32) -> f32 {
+    var n = 0.0;
+    var b = 0.0;
+    for (var k = 0u; k < 3u; k++) {
+        let p = proj(steer(u, k), k);
+        n += p.x * p.x + p.y * p.y;
+        b += p.x * sy[k];
+    }
+    if (b > 0.0 && n > 0.0) { return max(szz - b * b / n, 0.0); }
+    return BIG;
+}
+
+fn split_echoes(z: array<vec2<f32>, 3>, wr: array<f32, 3>, wt: array<f32, 3>) -> Split {
+    var none = Split(false, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    let step = 1.0 / f32(COARSE);
+    szz = 0.0;
+    for (var k = 0u; k < 3u; k++) {
+        let m = length(z[k]);
+        if (!(m > 0.0 && wr[k] > 0.0 && wt[k] > 0.0)) { return none; }
+        se[k] = z[k] / m;
+        ssr[k] = sqrt(wr[k]);
+        sst[k] = sqrt(wt[k]);
+        szz += wr[k] * m * m;
+        sy[k] = ssr[k] * m;
+    }
+    var best_single = BIG;
+    var js = 0u;
+    for (var j = 0u; j < COARSE; j++) {
+        let u = f32(j) / f32(COARSE);
+        let p0 = proj(steer(u, 0u), 0u);
+        let p1 = proj(steer(u, 1u), 1u);
+        let p2 = proj(steer(u, 2u), 2u);
+        sr0[j] = p0.x;
+        sr1[j] = p1.x;
+        sr2[j] = p2.x;
+        st0[j] = p0.y;
+        st1[j] = p1.y;
+        st2[j] = p2.y;
+        let b = p0.x * sy[0] + p1.x * sy[1] + p2.x * sy[2];
+        let n = p0.x * p0.x + p0.y * p0.y + p1.x * p1.x + p1.y * p1.y + p2.x * p2.x + p2.y * p2.y;
+        sb[j] = b;
+        sn[j] = n;
+        var c = BIG;
+        if (b > 0.0 && n > 0.0) { c = szz - b * b / n; }
+        if (c < best_single) {
+            best_single = c;
+            js = j;
+        }
+    }
+    // every pair (the first echo not at 0)
+    var best = BIG;
+    var bi = 0u;
+    var bj = 0u;
+    for (var i = 1u; i < COARSE - MIN_SEPARATION; i++) {
+        let dmax = min(COARSE - 1u - i, COARSE - MIN_SEPARATION);
+        var c_i = BIG;
+        var d_i = 0u;
+        for (var d = MIN_SEPARATION; d <= dmax; d++) {
+            let j = i + d;
+            let g = sr0[i] * sr0[j] + sr1[i] * sr1[j] + sr2[i] * sr2[j] + st0[i] * st0[j] + st1[i] * st1[j] + st2[i] * st2[j];
+            let c = pair_cost(sn[i], sn[j], g, sb[i], sb[j]).x;
+            if (c < c_i) {
+                c_i = c;
+                d_i = d;
+            }
+        }
+        sfirst[i] = c_i;
+        if (c_i < best) {
+            best = c_i;
+            bi = i;
+            bj = i + d_i;
+        }
+    }
+    if (best >= BIG) { return none; }
+    var alt = BIG;
+    for (var i = 1u; i < COARSE - MIN_SEPARATION; i++) {
+        let far = select(bi - i, i - bi, i > bi);
+        if (far > SAME_FIRST) { alt = min(alt, sfirst[i]); }
+    }
+    // refine: coordinate descent with halving steps
+    var u1 = f32(bi) * step;
+    var u2 = f32(bj) * step;
+    var r = pair_at(u1, u2);
+    var us = f32(js) * step;
+    var single = single_at(us);
+    var h = 0.5 * step;
+    while (h > step / 64.0) {
+        for (var m = 0u; m < 4u; m++) {
+            var v1 = u1;
+            var v2 = u2;
+            if (m == 0u) { v1 = u1 + h; } else if (m == 1u) { v1 = u1 - h; } else if (m == 2u) { v2 = u2 + h; } else { v2 = u2 - h; }
+            if (v1 <= 0.0 || v2 - v1 < f32(MIN_SEPARATION) * step - 1e-6 || v2 >= 1.0) { continue; }
+            let c = pair_at(v1, v2);
+            if (c.x < r.x) {
+                u1 = v1;
+                u2 = v2;
+                r = c;
+            }
+        }
+        for (var m = 0u; m < 2u; m++) {
+            let v = select(us - h, us + h, m == 0u);
+            let c = single_at(v);
+            if (c < single) {
+                us = v;
+                single = c;
+            }
+        }
+        h *= 0.5;
+    }
+    let scale = max((NOISE_PRIOR_DOF + r.x) / (NOISE_PRIOR_DOF + DOF_TWO), 1.0);
+    let margin = min(single - r.x, alt - best);
+    return Split(true, u1, u2, r.y, r.z, r.x, single, max(margin / scale, 0.0));
+}
+
 @compute @workgroup_size(16, 8, 1)
 fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x;
@@ -712,8 +898,44 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
         kind = KIND_MULTI;
         if (pen2 > IMPLAUSIBLE) { kind |= KIND_SECOND_IMPLAUSIBLE; }
     } else if (single) { kind = KIND_SINGLE | (r_idx << 4u); }
+    // one echo does not explain the pixel: try two (kernels.rs, split_echoes)
+    var gap_out = gap;
+    let expected = dof_all + 3.0 * sqrt(2.0 * dof_all) + MULTIPATH_MARGIN;
+    let unexplained = nvalid == 3.0 && (fl & FL_SATURATED_ANY) == 0u && emin + chi_amp > expected + P.multipath_tolerance;
+    if (P.two_echoes != 0u && unexplained) {
+        var z: array<vec2<f32>, 3>;
+        var m: array<f32, 3>;
+        for (var k = 0u; k < 3u; k++) {
+            z[k] = vec2<f32>(af[k], bf[k]) * (abm * gain(k));
+            m[k] = sqrt(z[k].x * z[k].x + z[k].y * z[k].y);
+        }
+        let mean = (m[0] + m[1] + m[2]) / 3.0;
+        var wr: array<f32, 3>;
+        var wt: array<f32, 3>;
+        for (var k = 0u; k < 3u; k++) {
+            var s = noise(k) * gain(k);
+            if ((fl & (FL_REPAIRED_80 << k)) != 0u) { s = s * REBUILT_NOISE; }
+            let a = P.echo_amplitude_floor * mean;
+            let t = P.noise_floor * m[k];
+            wr[k] = 1.0 / max(s * s + a * a, 1e-12);
+            wt[k] = 1.0 / max(s * s + t * t, 1e-12);
+        }
+        let sp = split_echoes(z, wr, wt);
+        if (sp.ok && sp.a2 >= STRONG_SECOND * sp.a1) {
+            let post2 = 1.0 / (1.0 + exp_(-0.5 * min(sp.gap - P.margin_prior, 80.0)));
+            if (post2 >= 0.5 && abs(sp.u1 - ou1) > SPLIT_MOVES + SPLIT_MOVES_REL * ou1) {
+                ou1 = sp.u1;
+                ou2 = sp.u2;
+                gap_out = sp.gap;
+                conf = post2;
+                anchor = 0.0;
+                kind = KIND_MULTI;
+                fl |= FL_SECOND_ECHO;
+            }
+        }
+    }
     wset(W_U12, i, pair(frac_of(ou1), frac_of(ou2)));
-    wset(W_GAPC, i, pair(f16_of(gap, GAP_SCALE), unorm_of(conf)));
+    wset(W_GAPC, i, pair(f16_of(gap_out, GAP_SCALE), unorm_of(conf)));
     wset(W_CSIR, i, pair(unorm_of(c_ref), f16_of(ir_sum, IRSUM_SCALE)));
     let small = usable | (u32(edge) << 3u) | ((fl & FL_SATURATED_ANY) << 4u) | (kind << 8u);
     wset(W_SMALL, i, pair(small, unorm_of(anchor)));
@@ -842,7 +1064,7 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
         let gap = f16_val(gapc, GAP_INV);
         // sure; or mixing several echoes (wrong, not ambiguous: the neighbors neither confirm
         // nor replace its distance)
-        if (c >= SURE_CONFIDENCE || (gap >= 20.0 && c >= CONFIRMED_CONFIDENCE) || (fl & FL_MULTIPATH) != 0u) {
+        if (c >= SURE_CONFIDENCE || (gap >= 20.0 && c >= CONFIRMED_CONFIDENCE) || (fl & (FL_MULTIPATH | FL_SECOND_ECHO)) != 0u) {
             wset(W_RES, i, pair(mm_of(depth_of_u(u1, xt, zt)), unorm_of(c)));
             return;
         }

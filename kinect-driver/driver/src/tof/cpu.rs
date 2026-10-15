@@ -152,6 +152,8 @@ pub(crate) fn s2_params(cfg: &TofConfig) -> S2Params {
         gain: e.gain_correction.map(|g| 1.0 / g),
         amplitude_floor: e.amplitude_floor,
         multipath_tolerance: e.multipath_tolerance,
+        two_echoes: e.two_echoes,
+        echo_amplitude_floor: e.echo_amplitude_floor,
         margin_prior: e.margin_prior,
     }
 }

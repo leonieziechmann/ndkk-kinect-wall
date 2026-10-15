@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod cpu;
+pub mod echoes;
 pub mod fill;
 pub mod kernels;
 pub mod lanes;

@@ -75,6 +75,9 @@ pub mod flags {
     /// the amplitudes of the frequencies do not fit a single echo (several distances mixed in
     /// the pixel: multipath, a grazing or shiny surface): the confidence is lowered
     pub const MULTIPATH: u32 = 1 << 19;
+    /// extended: two echoes arrived (a glossy floor and the mirror image in it, a grazing table
+    /// top, a depth edge); the depth is that of the first, nearer one
+    pub const SECOND_ECHO: u32 = 1 << 20;
     /// all saturation bits
     pub const SATURATED_ANY: u32 = SATURATED_80 | SATURATED_16 | SATURATED_120;
     /// all repair bits
@@ -360,6 +363,10 @@ pub struct S2Params {
     pub amplitude_floor: f32,
     /// extended: how far the amplitudes may miss one echo before the confidence drops
     pub multipath_tolerance: f32,
+    /// extended: split pixels that one echo does not explain into two ([`super::echoes`])
+    pub two_echoes: bool,
+    /// extended: relative spread of the amplitudes of the frequencies in the split
+    pub echo_amplitude_floor: f32,
     /// extended: how much better (in cost) the best distance must be than the second best to
     /// count as even odds
     pub margin_prior: f32,
@@ -659,8 +666,65 @@ multiversion! {
             }
         }
         let f = Filtered { a: &af, b: &bf, edge: &edge, boosted: &boosted };
+        let mut misfit = [0u8; W];
         for x in (0..W).step_by(LANES) {
-            unwrap_extended::<Isa>(&f, i, p, o, x);
+            unwrap_extended::<Isa>(&f, i, p, o, x, &mut misfit);
+        }
+        if p.two_echoes {
+            split_echoes(&af, &bf, &misfit, p, o);
+        }
+    }
+}
+
+/// The first of two echoes replaces the single echo's distance only if it lies farther from it
+/// than this (fraction of the unambiguous range: 56 mm) plus [`SPLIT_MOVES_REL`] of the distance.
+pub const SPLIT_MOVES: f32 = 0.003;
+/// See [`SPLIT_MOVES`].
+pub const SPLIT_MOVES_REL: f32 = 0.02;
+
+/// The pixels of a row that one echo does not explain: split into two, where the first is
+/// unambiguous ([`super::echoes`]). Its distance replaces the single echo's (which lies between
+/// the two), flag [`flags::SECOND_ECHO`].
+fn split_echoes(af: &[Row; 3], bf: &[Row; 3], misfit: &RowU8, p: &S2Params, o: &mut S2OutExt) {
+    for (x, _) in misfit.iter().enumerate().filter(|(_, m)| **m != 0) {
+        let Some(fl) = o.flags.get(x).copied() else { continue };
+        // the complex value per frequency in amplitude units, gain corrected; the noise per
+        // component: the sensor's, a rebuilt sample's more, and the floor relative to the signal
+        let z: [(f32, f32); 3] = std::array::from_fn(|k| {
+            let g = p.ab_multiplier * p.gain[k];
+            (af[k].get(x).copied().unwrap_or(0.0) * g, bf[k].get(x).copied().unwrap_or(0.0) * g)
+        });
+        // the noise: along the value the gains of the frequencies differ (echo_amplitude_floor of
+        // the mean), across it the phases (noise_floor)
+        let m: [f32; 3] = z.map(|(a, b)| (a * a + b * b).sqrt());
+        let mean = (m[0] + m[1] + m[2]) / 3.0;
+        let sensor: [f32; 3] = std::array::from_fn(|k| {
+            let rebuilt = fl & (flags::REPAIRED_80 << k) != 0;
+            let s = p.noise_coeff[k] * p.gain[k] * if rebuilt { REBUILT_NOISE } else { 1.0 };
+            s * s
+        });
+        let noise = super::echoes::Noise {
+            radial: std::array::from_fn(|k| 1.0 / (sensor[k] + (p.echo_amplitude_floor * mean).powi(2)).max(1e-12)),
+            tangential: std::array::from_fn(|k| 1.0 / (sensor[k] + (p.noise_floor * m[k]).powi(2)).max(1e-12)),
+        };
+        let Some(s) = super::echoes::split(&z, &noise) else { continue };
+        // a weak second echo moves the single echo's distance less than the split's noise
+        if s.a2 < super::echoes::STRONG_SECOND * s.a1 {
+            continue;
+        }
+        let margin = (s.gap - p.margin_prior).min(80.0);
+        let post = 1.0 / (1.0 + exp(-0.5 * margin));
+        // a credible first echo elsewhere than the single echo's distance (which then lies between
+        // the two) replaces it; where they agree, the single echo is the less noisy one
+        let single_u = o.u1.get(x).copied().unwrap_or(0.0);
+        if post < 0.5 || (s.u1 - single_u).abs() <= SPLIT_MOVES + SPLIT_MOVES_REL * single_u {
+            continue;
+        }
+        let outs = (o.u1.get_mut(x), o.u2.get_mut(x), o.gap.get_mut(x), o.conf.get_mut(x), o.anchor.get_mut(x), o.kind.get_mut(x), o.flags.get_mut(x));
+        if let (Some(u1), Some(u2), Some(gap), Some(conf), Some(anchor), Some(kd), Some(f)) = outs {
+            (*u1, *u2, *gap, *conf, *anchor) = (s.u1, s.u2, s.gap, post, 0.0);
+            *kd = kind::MULTI;
+            *f |= flags::SECOND_ECHO;
         }
     }
 }
@@ -733,7 +797,7 @@ fn single_echo_cost<I: Isa>(amp: &[F8; 3], var: &[F8; 3], used: &[M8; 3], satura
 
 /// The unwrapping of eight pixels from `x` on (stage 2, extended), all in registers.
 #[inline(always)]
-fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutExt, x: usize) {
+fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutExt, x: usize, misfit: &mut RowU8) {
     let (zero, one, inf) = (F8::zero(), F8::splat(1.0), F8::splat(f32::INFINITY));
     let nf = [FREQ_MULTIPLES[0] as f32, FREQ_MULTIPLES[1] as f32, FREQ_MULTIPLES[2] as f32];
     let abm = F8::splat(p.ab_multiplier);
@@ -854,6 +918,11 @@ fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutEx
     let post = one / (one + (half * margin).exp_fd::<I>());
     let chi_a = dof_amp + F8::splat(3.0) * (dof_amp + dof_amp).sqrt();
     let multipath = chi_amp.gt(chi_a + F8::splat(MULTIPATH_MARGIN));
+    // one echo does not explain the pixel: all three frequencies, nothing saturated, and the
+    // phases and amplitudes miss the best distance beyond the noise and the tolerance for a weak
+    // second echo (stage 2 tries two echoes)
+    let expected = dof_all + F8::splat(3.0) * (dof_all + dof_all).sqrt() + F8::splat(MULTIPATH_MARGIN);
+    let unexplained = nvalid.eq(F8::splat(3.0)) & !M8::bits_u32(o.flags, x, flags::SATURATED_ANY) & (emin + chi_amp).gt(expected + F8::splat(p.multipath_tolerance));
     let multi = nvalid.ge(F8::splat(2.0));
     let single = nvalid.eq(one);
     // the amplitudes say that more than one echo arrived: a weak second echo moves the distance
@@ -893,6 +962,11 @@ fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutEx
         eo[l] = edge[l];
         sat[l] = (fl[l] & flags::SATURATED_ANY) as u8;
         fl[l] |= added[l];
+    }
+    if let Some(m) = misfit.get_mut(x..x + LANES) {
+        for (m, u) in m.iter_mut().zip(unexplained.0) {
+            *m = (u & 1) as u8;
+        }
     }
 }
 

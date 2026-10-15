@@ -163,7 +163,7 @@ pub fn resolve_row(i: &ResolveIn, y: usize, row: &ResolveRow, window: &Window, d
         if base == kind::MULTI {
             // the phases of a pixel that mixes several echoes are wrong, not ambiguous: the
             // neighbors neither confirm nor replace its distance
-            if *f & flags::MULTIPATH != 0 {
+            if *f & (flags::MULTIPATH | flags::SECOND_ECHO) != 0 {
                 continue;
             }
             let h = bandwidth(u1);
