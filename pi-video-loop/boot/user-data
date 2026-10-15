@@ -1,0 +1,32 @@
+#cloud-config
+# wand-video: Raspberry Pi 4 plays /boot/firmware/wand-video/loop.mov in a seamless endless loop.
+# No input needed: cmdline.txt masks the login prompt (systemd.mask=getty@tty1.service), and
+# bootcmd starts wand-video/install.sh early on every boot (it returns at once once installed).
+# Setup log: wand-video/install.log. Login only with the SSH key ~/.ssh/kinect_pi_ed25519.
+
+hostname: wand-video
+manage_etc_hosts: true
+timezone: Europe/Berlin
+keyboard:
+  model: pc105
+  layout: de
+
+users:
+- name: kinect
+  gecos: Kinect Hub
+  groups: users,adm,dialout,audio,netdev,video,plugdev,cdrom,games,input,gpio,spi,i2c,render,sudo
+  shell: /bin/bash
+  lock_passwd: true
+  sudo: ALL=(ALL) NOPASSWD:ALL
+  ssh_authorized_keys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEa2d4TLn/XeH6+ki8XUspRW1tWg+WVsl2qvtXkE7TX2 kinect-pi
+
+enable_ssh: true
+ssh_pwauth: false
+
+bootcmd:
+- [systemd-run, --no-block, --unit=wand-video-install, /bin/bash, /boot/firmware/wand-video/install.sh]
+
+runcmd:
+- [systemctl, enable, --now, ssh]
+- [bash, /boot/firmware/wand-video/install.sh]
