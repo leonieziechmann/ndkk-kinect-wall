@@ -282,6 +282,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut ph_single = 0u64;
     let mut lost_map = vec![0u16; PIXELS];
     let mut ph_map = vec![0u16; PIXELS];
+    // where both have depth but disagree: count and the sum of (extended - compat) / compat
+    let mut dis_map = vec![(0u16, 0f32); PIXELS];
+    // extended depth flagged MULTIPATH (the amplitudes do not fit one echo), per pixel
+    let mut mp_map = vec![0u16; PIXELS];
     let mut resid = Resid::new();
     // per pixel over the frames: count, sum, sum of squares of the depth (compat, extended)
     let mut tc = vec![(0u32, 0f64, 0f64); PIXELS];
@@ -324,6 +328,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+        for (m, (d, f)) in mp_map.iter_mut().zip(oe.depth.iter().zip(&oe.flags)) {
+            *m += u16::from(*d > 0.0 && f & flags::MULTIPATH != 0);
+        }
         for i in 0..PIXELS {
             let (c, e, f) = (oc.depth[i], oe.depth[i], oe.flags[i]);
             c_valid += u64::from(c > 0.0);
@@ -333,6 +340,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let gap = info.gap.min(1e4);
             if c > 0.0 && e > 0.0 {
                 both += 1;
+                if (c - e).abs() > (0.01 * c).max(10.0) {
+                    dis_map[i].0 += 1;
+                    dis_map[i].1 += (e - c) / c;
+                }
                 if (c - e).abs() <= (0.01 * c).max(10.0) {
                     agree += 1;
                     if i % 3 == 0 && f & flags::SATURATED_ANY == 0 {
@@ -621,9 +632,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let heat = |m: &[u16]| -> Vec<[u8; 3]> { m.iter().map(|v| { let t = (*v as f32 / n as f32 * 255.0) as u8; [t, t, t] }).collect() };
         save_rgb(&format!("{dir}/lost-heat.png"), &heat(&lost_map))?;
         save_rgb(&format!("{dir}/phantom-heat.png"), &heat(&ph_map))?;
+        // disagreement: red = extended farther, blue = nearer; brightness = share of the frames,
+        // saturation at 5 % mean difference
+        let dis: Vec<[u8; 3]> = dis_map
+            .iter()
+            .map(|(k, sum)| {
+                if *k == 0 {
+                    return [0, 0, 0];
+                }
+                let share = *k as f32 / n as f32;
+                let rel = (sum / *k as f32 / 0.05).clamp(-1.0, 1.0);
+                let v = 80.0 + 175.0 * share;
+                let (r, b) = if rel > 0.0 { (v, v * (1.0 - rel)) } else { (v * (1.0 + rel), v) };
+                [r as u8, (v * (1.0 - rel.abs())) as u8, b as u8]
+            })
+            .collect();
+        save_rgb(&format!("{dir}/disagree.png"), &dis)?;
+        save_rgb(&format!("{dir}/multipath-heat.png"), &heat(&mp_map))?;
         let ir: Vec<[u8; 3]> = oe.ir.iter().map(|v| { let t = ((v.max(1.0).ln() / 65535f32.ln()) * 255.0) as u8; [t, t, t] }).collect();
         save_rgb(&format!("{dir}/ir.png"), &ir)?;
-        println!("  PNGs in {dir}: compat, extended (0..{:.1} m, white beyond), reasons, lost-heat, phantom-heat, ir", room / 1000.0);
+        println!("  PNGs in {dir}: compat, extended (0..{:.1} m, white beyond), reasons, lost-heat, phantom-heat, disagree, multipath-heat, ir", room / 1000.0);
     }
     Ok(())
 }
