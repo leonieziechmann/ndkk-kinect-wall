@@ -255,7 +255,7 @@ fn raise_priority() {
         #[allow(unsafe_code)]
         let ok = unsafe { win::SetPriorityClass(win::GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS) };
         if ok == 0 {
-            eprintln!("cannot raise the priority");
+            say!("cannot raise the priority");
         }
     }
     #[cfg(not(windows))]
@@ -280,7 +280,7 @@ pub fn run(mut a: Args) -> Result<(), String> {
         });
     }
     out.json(STATUS, &status_json(DriverState::Starting, &format!("kinect-driver {} ({}, {:?})", env!("CARGO_PKG_VERSION"), common.mode_name(), common.backend)));
-    eprintln!("kinect-driver worker: {} mode, {:?}, infrared {:?}", common.mode_name(), common.backend, common.ir);
+    say!("kinect-driver worker: {} mode, {:?}, infrared {:?}", common.mode_name(), common.backend, common.ir);
     let driver = Driver::start(common.driver_config()).map_err(|e| e.to_string())?;
     let mut next_beat = Instant::now();
     let mut frames = 0u64;
@@ -318,13 +318,13 @@ pub fn run(mut a: Args) -> Result<(), String> {
                 frames += 1;
                 last_ms = f.pipeline_ms;
                 if decoder != f.decoder {
-                    eprintln!("decoder: {}", f.decoder);
+                    say!("decoder: {}", f.decoder);
                     decoder = f.decoder.clone();
                 }
                 out.frame(f);
             }
             Some(Event::State { state, detail }) => {
-                eprintln!("state: {} {detail}", state.name());
+                say!("state: {} {detail}", state.name());
                 out.json(STATUS, &status_json(state, &detail));
             }
             Some(Event::Device { identity, tables }) => {
@@ -345,7 +345,7 @@ pub fn run(mut a: Args) -> Result<(), String> {
                 );
                 out.json(PARAMS, &json);
             }
-            Some(Event::Warning(w)) => eprintln!("warning: {w}"),
+            Some(Event::Warning(w)) => say!("warning: {w}"),
             Some(Event::Color(_)) => {}
             None => {}
         }
@@ -353,7 +353,7 @@ pub fn run(mut a: Args) -> Result<(), String> {
             break;
         }
     }
-    eprintln!("worker exits");
+    say!("worker exits");
     driver.stop();
     out.stop();
     Ok(())

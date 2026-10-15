@@ -4,6 +4,16 @@
 #![deny(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing, clippy::panic))]
 
+/// A line on stderr that never panics. When the hub dies, stderr is a broken pipe: `eprintln!`
+/// would panic there, and a log line from a drop during that unwinding aborts the process
+/// (0xC0000409 on Windows) while the Kinect is still open.
+macro_rules! say {
+    ($($t:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), $($t)*);
+    }};
+}
+
 mod args;
 mod opts;
 mod tools;
@@ -87,7 +97,7 @@ fn main() {
         other => Err(format!("unknown command {other:?} (kinect-driver help)")),
     };
     if let Err(e) = result {
-        eprintln!("kinect-driver: {e}");
+        say!("kinect-driver: {e}");
         std::process::exit(1);
     }
 }
@@ -101,7 +111,7 @@ fn init_log() {
         }
         fn log(&self, r: &log::Record) {
             if self.enabled(r.metadata()) {
-                eprintln!("{} {}: {}", r.level(), r.target(), r.args());
+                say!("{} {}: {}", r.level(), r.target(), r.args());
             }
         }
         fn flush(&self) {}
