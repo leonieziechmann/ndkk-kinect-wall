@@ -30,10 +30,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (rd, rir) = f.split_at(PIXELS);
         dec.decode(&p, &tables, &mut out)?;
         times.push(dec.timings.total_ms);
+        let (depth, ir) = (out.depth.to_vec(), out.ir.to_vec());
         for i in 0..PIXELS {
-            let (a, b) = (rd[i] > 0.0, out.depth[i] > 0.0);
+            let (a, b) = (rd[i] > 0.0, depth[i] > 0.0);
             if a && b {
-                let d = (rd[i] - out.depth[i]).abs();
+                let d = (rd[i] - depth[i]).abs();
                 both += 1;
                 sum_abs += f64::from(d);
                 max_abs = max_abs.max(d);
@@ -45,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ours_only += 1;
             }
             if rir[i] > 10.0 {
-                let e = (rir[i] - out.ir[i]).abs() / rir[i];
+                let e = (rir[i] - ir[i]).abs() / rir[i];
                 ir_rel += f64::from(e);
                 ir_max = ir_max.max(e);
                 ir_n += 1;

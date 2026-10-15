@@ -826,20 +826,22 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         var u = u1;
         var conf = 0.0;
-        let e = bitcast<f32>(work[EXP_WORD + i]);
         if (total >= 1.5 && best_v > 0.6 * total) {
             fl |= FL_RESOLVED;
             u = (cref + f32(best_m)) / n;
             conf = 0.5 + 0.4 * best_v / total;
-        } else if (e > 0.0) {
-            fl |= FL_RESOLVED;
-            let m = max(floor(n * e - cref + 0.5), 0.0);
-            u = (cref + m) / n;
-            conf = 0.4;
-            if (saturated) { conf = 0.6; }
-        } else if (saturated && P.near_prior_mm > 0.0 && u1 <= u_of_depth(P.near_prior_mm, zt)) {
-            fl |= FL_NEAR_PRIOR;
-            conf = 0.55;
+        } else {
+            let e = expected_at(x, y, u1, unorm_val(small >> 16u));
+            if (e > 0.0) {
+                fl |= FL_RESOLVED;
+                let m = max(floor(n * e - cref + 0.5), 0.0);
+                u = (cref + m) / n;
+                conf = 0.4;
+                if (saturated) { conf = 0.6; }
+            } else if (saturated && P.near_prior_mm > 0.0 && u1 <= u_of_depth(P.near_prior_mm, zt)) {
+                fl |= FL_NEAR_PRIOR;
+                conf = 0.55;
+            }
         }
         if (conf > 0.0) { d_out = depth_of_u(u, xt, zt); }
         wset(W_RES, i, pair(mm_of(d_out), unorm_of(conf)));
@@ -892,16 +894,33 @@ fn finish(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // ---- push-pull (tof/fill.rs): the expectation of u for the resolver ------------------------------
 
-// level 0 from the resolver's inputs: u1 weighted by the anchors (weights 0..1, premultiplied)
+// the first level above the input: sums of 2 x 2 of u1 weighted by the anchors (weights 0..1,
+// premultiplied), the weight saturating at 1 (the input itself is never stored)
 @compute @workgroup_size(16, 8, 1)
-fn pp_init(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn pp_first(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x;
     let y = gid.y;
     if (x >= L.w || y >= L.h) { return; }
-    let i = y * L.w + x;
-    let v = frac_val(wget(W_U12, i));
-    let w = clamp(anchor_at(i), 0.0, 1.0);
-    work[L.vwt + i] = pack2x16float(vec2<f32>(v * w, w));
+    var v = 0.0;
+    var t = 0.0;
+    for (var dy = 0u; dy < 2u; dy++) {
+        let sy = 2u * y + dy;
+        if (sy >= H) { continue; }
+        for (var dx = 0u; dx < 2u; dx++) {
+            let sx = 2u * x + dx;
+            if (sx >= W) { continue; }
+            let i = sy * W + sx;
+            let w = clamp(anchor_at(i), 0.0, 1.0);
+            v += frac_val(wget(W_U12, i)) * w;
+            t += w;
+        }
+    }
+    if (t > 0.0) {
+        let c = min(t, 1.0);
+        v = v / t * c;
+        t = c;
+    }
+    work[L.vwt + y * L.w + x] = pack2x16float(vec2<f32>(v, t));
 }
 
 // one level down: sums of 2 x 2, the weight saturating at 1
@@ -956,6 +975,27 @@ fn taps(x: u32, parent: u32) -> vec3<f32> {
     let a = min(x / 2u, last);
     let b = min(a + 1u, last);
     return vec3<f32>(f32(a), f32(b), 0.25);
+}
+
+// the resolver's expectation at pixel (x, y), whose own u1 and anchor weight are given: the last
+// pull of the push-pull (level 1's filled values, bilinear), worked out only where it is asked
+// for (`PushPull::at` in tof/fill.rs)
+fn expected_at(x: u32, y: u32, u1: f32, anchor: f32) -> f32 {
+    let w = clamp(anchor, 0.0, 1.0);
+    let tx = taps(x, L1_W);
+    let ty = taps(y, L1_H);
+    let xa = u32(tx.x);
+    let xb = u32(tx.y);
+    let ya = u32(ty.x);
+    let yb = u32(ty.y);
+    let a0 = bitcast<f32>(work[L1_FILLED + ya * L1_W + xa]);
+    let a1 = bitcast<f32>(work[L1_FILLED + ya * L1_W + xb]);
+    let b0 = bitcast<f32>(work[L1_FILLED + yb * L1_W + xa]);
+    let b1 = bitcast<f32>(work[L1_FILLED + yb * L1_W + xb]);
+    let up = a0 + (a1 - a0) * tx.z;
+    let dn = b0 + (b1 - b0) * tx.z;
+    let parent = up + (dn - up) * ty.z;
+    return u1 * w + (1.0 - w) * parent;
 }
 
 // one level up: what is missing comes from the (filled) parent

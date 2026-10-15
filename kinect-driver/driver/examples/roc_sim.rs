@@ -27,11 +27,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let scene = Scene::preset(name, f as f32 * 0.5).ok_or("unknown scene")?;
         let (p, gt) = sim.frame(&scene, f);
         dec.decode(&p, &tables, &mut out)?;
+        let (depth, conf) = (out.depth.to_vec(), out.confidence.to_vec());
         for i in 0..PIXELS {
             if gt.mixed[i] || i % WIDTH == 0 || i % WIDTH == WIDTH - 1 {
                 continue;
             }
-            let (t, d, c) = (gt.depth[i], out.depth[i], out.confidence[i]);
+            let (t, d, c) = (gt.depth[i], depth[i], conf[i]);
             if t > 0.0 {
                 truth_px += 1;
             }

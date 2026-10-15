@@ -37,8 +37,9 @@ struct Diff {
 
 fn compare(c: &TofOutput, g: &TofOutput) -> Diff {
     let mut d = Diff { pixels: c.depth.len(), ..Default::default() };
+    let (cd, gd, ci, gi, cc, gc) = (c.depth.to_vec(), g.depth.to_vec(), c.ir.to_vec(), g.ir.to_vec(), c.confidence.to_vec(), g.confidence.to_vec());
     for i in 0..c.depth.len() {
-        let (a, b) = (c.depth[i], g.depth[i]);
+        let (a, b) = (cd[i], gd[i]);
         if (a > 0.0) != (b > 0.0) {
             d.valid_mismatch += 1;
         } else if a > 0.0 {
@@ -49,11 +50,11 @@ fn compare(c: &TofOutput, g: &TofOutput) -> Diff {
                 d.depth_over_1mm += 1;
             }
         }
-        let (ia, ib) = (c.ir[i], g.ir[i]);
+        let (ia, ib) = (ci[i], gi[i]);
         if (ia - ib).abs() > 1e-3 * ia.abs().max(1.0) {
             d.ir_off += 1;
         }
-        if (c.confidence[i] - g.confidence[i]).abs() > 1e-3 {
+        if (cc[i] - gc[i]).abs() > 1e-3 {
             d.conf_off += 1;
         }
         if c.flags[i] != g.flags[i] {
@@ -128,11 +129,11 @@ fn lost_rows_and_garbage() {
         *b = x as u8;
     }
     g.decode(&junk, &tables, &mut og).unwrap();
-    assert!(og.depth.iter().all(|v| v.is_finite() && *v >= 0.0));
+    assert!(og.depth.iter().all(|v| v.is_finite() && v >= 0.0));
     let mut short = RawDepthPacket::zeroed(3, 3);
     short.data.truncate(10);
     assert!(g.decode(&short, &tables, &mut og).is_err());
     // and it still works afterwards
     g.decode(&p, &tables, &mut og).unwrap();
-    assert!(og.depth.iter().filter(|v| **v > 0.0).count() > 100_000);
+    assert!(og.depth.iter().filter(|v| *v > 0.0).count() > 100_000);
 }

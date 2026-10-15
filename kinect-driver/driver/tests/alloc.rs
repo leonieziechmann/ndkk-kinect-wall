@@ -13,7 +13,7 @@ use kinect_driver::frame::Frame;
 use kinect_driver::pipeline::{Backend, Pipeline};
 use kinect_driver::protocol::depth_stream::{DepthParserConfig, DepthStreamParser, encode_subpackets};
 use kinect_driver::sim::{Scene, SimConfig, Simulator};
-use kinect_driver::stages::{IrToneMap, Points, TemporalFilter};
+use kinect_driver::stages::{IrToneMap, TemporalFilter};
 use kinect_driver::tof::TofConfig;
 
 struct Counting;
@@ -71,7 +71,14 @@ fn a_frame_allocates_nothing_once_the_buffers_go_round() {
         ("extended + hub", Pipeline::decoder(TofConfig::extended(), Backend::Cpu).unwrap().with(IrToneMap::hub())),
         (
             "extended + even + temporal + points",
-            Pipeline::decoder(TofConfig::extended(), Backend::Cpu).unwrap().with(IrToneMap::even()).with(TemporalFilter::default()).with(Points),
+            Pipeline::decoder(TofConfig::extended(), Backend::Cpu).unwrap().with(IrToneMap::even()).with(TemporalFilter::default()).with_fn("points", {
+                let mut points = Vec::new();
+                move |f| {
+                    f.points_into(&mut points);
+                    assert_eq!(points.len(), kinect_driver::consts::PIXELS);
+                    Ok(())
+                }
+            }),
         ),
     ];
     for (name, mut pipeline) in pipelines {

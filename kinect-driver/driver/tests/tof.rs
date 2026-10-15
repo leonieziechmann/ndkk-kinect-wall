@@ -43,7 +43,7 @@ fn compat_is_libfreenect2_up_to_4_5_m() {
     assert!(pct(b.valid, b.truth) > 95.0, "{}", e.table("compat"));
     assert!(pct(b.outliers, b.truth) < 0.5, "{}", e.table("compat"));
     // libfreenect2 stops at 4.5 m
-    assert!(out.depth.iter().all(|d| *d <= 4500.0));
+    assert!(out.depth.iter().all(|d| d <= 4500.0));
     assert_eq!(e.phantom, 0);
 }
 
@@ -80,9 +80,10 @@ fn extended_measures_close_saturated_objects() {
     // the infrared never clips: compat is white (65535) where it saturates, extended is not
     assert!(c.ir_clipped == c.ir_saturated && c.ir_saturated > 0);
     assert_eq!(e.ir_clipped, 0, "{}", e.table("extended"));
-    let max_c = oc.ir.iter().fold(0f32, |m, v| m.max(*v));
-    assert_eq!(max_c, 65535.0);
-    assert!(oe.ir.iter().all(|v| v.is_finite() && *v >= 0.0));
+    // (libfreenect2's white, 65535, is 65536 in the 16-bit plane: the nearest f16)
+    let max_c = oc.ir.iter().fold(0f32, f32::max);
+    assert_eq!(max_c, 65536.0);
+    assert!(oe.ir.iter().all(|v| v.is_finite() && v >= 0.0));
     // flags tell what happened
     assert!(oe.flags.iter().any(|f| f & flags::SATURATED_ANY != 0));
 }
@@ -129,12 +130,12 @@ fn garbage_does_not_crash_the_decoder() {
             *b = x as u8;
         }
         dec.decode(&p, s.tables(), &mut out).unwrap();
-        assert!(out.depth.iter().all(|d| d.is_finite() && *d >= 0.0 && *d <= 18750.0));
-        assert!(out.ir.iter().all(|v| v.is_finite() && *v >= 0.0));
+        assert!(out.depth.iter().all(|d| d.is_finite() && (0.0..=18750.0).contains(&d)));
+        assert!(out.ir.iter().all(|v| v.is_finite() && v >= 0.0));
         // all zeros, nothing present
         let empty = RawDepthPacket::zeroed(2, 2);
         dec.decode(&empty, s.tables(), &mut out).unwrap();
-        assert!(out.depth.iter().all(|d| *d == 0.0));
+        assert!(out.depth.iter().all(|d| d == 0.0));
         // too short
         let mut short = RawDepthPacket::zeroed(3, 3);
         short.data.truncate(1000);

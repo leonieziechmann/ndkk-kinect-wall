@@ -45,9 +45,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     CpuDecoder::new(TofConfig::compat())?.decode(&p, &tables, &mut oc)?;
     CpuDecoder::new(TofConfig::extended())?.decode(&p, &tables, &mut oe)?;
     let max_d = gt.depth.iter().copied().fold(0f32, f32::max).max(1000.0);
+    let (oc_depth, oe_depth) = (oc.depth.to_vec(), oe.depth.to_vec());
     save_gray(&format!("{dir}/{name}-truth.png"), &gt.depth, 0.0, max_d)?;
-    save_gray(&format!("{dir}/{name}-compat.png"), &oc.depth, 0.0, max_d)?;
-    save_gray(&format!("{dir}/{name}-extended.png"), &oe.depth, 0.0, max_d)?;
+    save_gray(&format!("{dir}/{name}-compat.png"), &oc_depth, 0.0, max_d)?;
+    save_gray(&format!("{dir}/{name}-extended.png"), &oe_depth, 0.0, max_d)?;
     let ir_t: Vec<f32> = gt.ir.iter().map(|v| v.max(1.0).sqrt()).collect();
     let ir_c: Vec<f32> = oc.ir.iter().map(|v| v.max(1.0).sqrt()).collect();
     let ir_e: Vec<f32> = oe.ir.iter().map(|v| v.max(1.0).sqrt()).collect();
@@ -58,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // error map: green = right, red = wrong, blue = missing, black = no truth
     let mut px = vec![[0u8; 3]; PIXELS];
     for i in 0..PIXELS {
-        let (tr, d) = (gt.depth[i], oe.depth[i]);
+        let (tr, d) = (gt.depth[i], oe_depth[i]);
         px[i] = if tr <= 0.0 {
             if d > 0.0 { [255, 0, 255] } else { [0, 0, 0] }
         } else if d <= 0.0 {
@@ -87,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (fl & flags::REPAIRED_ANY).count_ones(),
             u8::from(fl & flags::SINGLE_FREQUENCY != 0)
         );
-        let (tr, d) = (gt.depth[i], oe.depth[i]);
+        let (tr, d) = (gt.depth[i], oe_depth[i]);
         let e = table.entry(key).or_default();
         e[0] += 1;
         e[1] += u64::from(d > 0.0);

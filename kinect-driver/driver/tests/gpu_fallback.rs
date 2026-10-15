@@ -24,7 +24,7 @@ fn no_gpu_means_cpu() {
     let (p, _) = sim.frame(&Scene::preset("room", 0.0).unwrap(), 1);
     let mut out = TofOutput::new();
     d.decode(&p, &tables, &mut out).unwrap();
-    assert!(out.depth.iter().filter(|v| **v > 0.0).count() > 100_000);
+    assert!(out.depth.iter().filter(|v| *v > 0.0).count() > 100_000);
     // the same through the pipeline API
     let mut pipe = Pipeline::decoder(TofConfig::compat(), Backend::Gpu).unwrap();
     let mut f = Frame::new(Arc::new(p), tables.clone());

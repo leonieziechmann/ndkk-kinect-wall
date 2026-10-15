@@ -4,8 +4,10 @@ use crate::consts::{HEIGHT, PIXELS, WIDTH};
 use crate::error::Result;
 use crate::frame::Frame;
 use crate::pipeline::Stage;
+use crate::plane::{Depth, Plane};
 use crate::tof::fill::PushPull;
 use crate::tof::lanes::{Baseline, Isa};
+use crate::tof::pack::{formats, pack, unpack};
 
 /// How infrared values are mapped into the output range.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -174,15 +176,21 @@ pub struct IrToneMap {
     scratch: ToneScratch,
 }
 
-/// The buffers of the tone mapping, kept between frames (not part of its settings).
+/// The buffers of the tone mapping, kept between frames (not part of its settings). The depth
+/// maps at half resolution keep the depth's 16-bit steps; the infrared is worked on row by row
+/// (as a whole image only for the local adaptation).
 #[derive(Clone, Default)]
 struct ToneScratch {
-    half: Vec<f32>,
-    med: Vec<f32>,
-    weights: Vec<f32>,
-    window: Vec<f32>,
-    smooth: Vec<f32>,
+    half: Vec<u16>,
+    med: Vec<u16>,
+    window: Vec<u16>,
+    smooth: Vec<u16>,
     pp: PushPull,
+    /// one row of infrared and of depth
+    row: Vec<f32>,
+    depth_row: Vec<f32>,
+    /// the local adaptation's whole image and its maps
+    full: Vec<f32>,
     logs: Vec<f32>,
     blur_tmp: Vec<f32>,
     blur: Vec<f32>,
@@ -245,32 +253,64 @@ impl Stage for IrToneMap {
         if frame.ir.len() != PIXELS {
             return Ok(());
         }
-        if let Some(r) = self.distance_reference_mm.filter(|r| *r > 0.0)
-            && frame.depth.len() == PIXELS
-            && frame.depth.iter().any(|d| *d > 0.0)
-            && self.scratch.smooth_depth(&frame.depth)
-        {
-            let smooth = &self.scratch.smooth;
-            let inv = 1.0 / (r * r);
+        let curve = self.curve.prepare();
+        let distance = self.distance_reference_mm.filter(|r| *r > 0.0).and_then(|r| {
+            let usable = frame.depth.len() == PIXELS && frame.depth.raw().iter().any(|q| *q != 0) && self.scratch.smooth_depth(&frame.depth);
             let (lo, hi) = self.distance_limits;
-            let (lo, hi) = (lo.max(0.0), hi.max(lo.max(0.0)));
-            let rays = &frame.tables.rays;
-            let has_rays = rays.len() == PIXELS;
-            for (i, v) in frame.ir.iter_mut().enumerate() {
-                let z = gain_depth(&frame.depth, smooth, i % WIDTH, i / WIDTH);
-                // squared distance along the ray: z^2 (1 + x^2 + y^2) in ray units
-                let k = match rays.get(i).filter(|_| has_rays) {
-                    Some(ray) => 1.0 + ray[0] * ray[0] + ray[1] * ray[1],
-                    None => 1.0,
-                };
-                *v *= (z * z * k * inv).clamp(lo, hi);
-            }
-        }
+            usable.then(|| Distance { inv: 1.0 / (r * r), lo: lo.max(0.0), hi: hi.max(lo.max(0.0)) })
+        });
+        let s = &mut self.scratch;
+        let rays = &frame.tables.rays;
         if let Some((radius, strength)) = self.local.filter(|(r, s)| *r > 0 && *s > 0.0) {
-            local_adapt(&mut frame.ir, radius, strength.min(1.0), &mut self.scratch);
+            // the local averages need the whole image
+            frame.ir.unpack_into(&mut s.full);
+            if let Some(dist) = &distance {
+                s.depth_row.resize(WIDTH, 0.0);
+                for (y, row) in s.full.chunks_exact_mut(WIDTH).enumerate() {
+                    frame.depth.unpack_row(y, &mut s.depth_row);
+                    dist.compensate(row, &s.depth_row, &s.smooth, rays, y);
+                }
+            }
+            local_adapt(&mut s.full, radius, strength.min(1.0), &mut s.logs, &mut s.blur_tmp, &mut s.blur);
+            tone_all(curve, &mut s.full);
+            frame.ir.pack_slice(0, &s.full);
+            return Ok(());
         }
-        tone_all(self.curve.prepare(), &mut frame.ir);
+        s.row.resize(WIDTH, 0.0);
+        s.depth_row.resize(WIDTH, 0.0);
+        for y in 0..HEIGHT {
+            frame.ir.unpack_row(y, &mut s.row);
+            if let Some(dist) = &distance {
+                frame.depth.unpack_row(y, &mut s.depth_row);
+                dist.compensate(&mut s.row, &s.depth_row, &s.smooth, rays, y);
+            }
+            tone_all(curve, &mut s.row);
+            frame.ir.pack_row(y, &s.row);
+        }
         Ok(())
+    }
+}
+
+/// The distance compensation of [`IrToneMap`]: 1 / reference^2 and the limits of the gain.
+struct Distance {
+    inv: f32,
+    lo: f32,
+    hi: f32,
+}
+
+impl Distance {
+    /// Multiplies row `y` of the infrared by (distance / reference)^2 within the limits.
+    fn compensate(&self, ir: &mut [f32], depth: &[f32], smooth: &[u16], rays: &[[f32; 2]], y: usize) {
+        let ray_row = rays.get(y * WIDTH..(y + 1) * WIDTH).filter(|_| rays.len() == PIXELS);
+        for (x, (v, d)) in ir.iter_mut().zip(depth).enumerate() {
+            let z = gain_depth(*d, smooth, x, y);
+            // squared distance along the ray: z^2 (1 + x^2 + y^2) in ray units
+            let k = match ray_row.and_then(|r| r.get(x)) {
+                Some(ray) => 1.0 + ray[0] * ray[0] + ray[1] * ray[1],
+                None => 1.0,
+            };
+            *v *= (z * z * k * self.inv).clamp(self.lo, self.hi);
+        }
     }
 }
 
@@ -278,68 +318,92 @@ impl ToneScratch {
     /// The smooth depth map behind the distance compensation (`smooth`, half resolution): the
     /// median of the depths around (a stray wrong depth or a hole in dark clothes takes the
     /// depth of what is around it instead of making a blotch), filled where nothing is measured
-    /// nearby. False if `depth` is not a whole image.
-    fn smooth_depth(&mut self, depth: &[f32]) -> bool {
+    /// nearby. All in the depth's 16-bit steps ([`formats::DEPTH`]: they sort like the
+    /// values). False if `depth` is not a whole image.
+    fn smooth_depth(&mut self, depth: &Plane<Depth>) -> bool {
         let (w, h) = (WIDTH, HEIGHT);
         let (hw, hh) = (w / 2, h / 2);
-        if depth.len() < w * h {
+        let d = depth.raw();
+        if d.len() < w * h {
             return false;
         }
         // half resolution: the mean of the measured pixels of each 2 x 2 block
         self.half.clear();
-        self.half.resize(hw * hh, 0.0);
+        self.half.resize(hw * hh, 0);
         for (by, hrow) in self.half.chunks_exact_mut(hw).enumerate() {
             for (bx, v) in hrow.iter_mut().enumerate() {
                 let (mut sum, mut n) = (0f32, 0f32);
                 for (dy, dx) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
-                    if let Some(&d) = depth.get((2 * by + dy) * w + 2 * bx + dx)
-                        && d > 0.0
+                    if let Some(&q) = d.get((2 * by + dy) * w + 2 * bx + dx)
+                        && q != 0
                     {
-                        sum += d;
+                        sum += unpack(formats::DEPTH, q);
                         n += 1.0;
                     }
                 }
-                *v = if n > 0.0 { sum / n } else { 0.0 };
+                *v = if n > 0.0 { pack(formats::DEPTH, sum / n) } else { 0 };
             }
         }
         // the median of the measured values in a 5 x 5 window (10 x 10 pixels)
         self.med.clear();
-        self.med.resize(hw * hh, 0.0);
+        self.med.resize(hw * hh, 0);
         for y in 0..hh {
             for x in 0..hw {
                 self.window.clear();
                 for yy in y.saturating_sub(2)..=(y + 2).min(hh - 1) {
                     let Some(row) = self.half.get(yy * hw..(yy + 1) * hw) else { continue };
                     let Some(part) = row.get(x.saturating_sub(2)..=(x + 2).min(hw - 1)) else { continue };
-                    self.window.extend(part.iter().copied().filter(|v| *v > 0.0));
+                    self.window.extend(part.iter().copied().filter(|v| *v != 0));
                 }
                 if self.window.len() >= 4 {
                     let k = self.window.len() / 2;
-                    let (_, m, _) = self.window.select_nth_unstable_by(k, f32::total_cmp);
+                    let (_, m, _) = self.window.select_nth_unstable(k);
                     if let Some(o) = self.med.get_mut(y * hw + x) {
                         *o = *m;
                     }
                 }
             }
         }
-        self.weights.clear();
-        self.weights.extend(self.med.iter().map(|v| if *v > 0.0 { 1.0 } else { 0.0 }));
+        // filled where no median is (weight 1 where one is: those stay as they are)
         self.smooth.clear();
-        if self.weights.iter().any(|v| *v > 0.0) {
-            self.smooth.extend_from_slice(self.pp.fill(&self.med, &self.weights, hw, hh));
-        } else {
-            self.smooth.extend_from_slice(&self.med);
+        self.smooth.extend_from_slice(&self.med);
+        let med = &self.med;
+        let input = |y: usize, v: &mut [f32], wt: &mut [f32]| {
+            if let Some(row) = med.get(y * hw..(y + 1) * hw) {
+                for ((v, wt), q) in v.iter_mut().zip(wt.iter_mut()).zip(row) {
+                    *v = unpack(formats::DEPTH, *q);
+                    *wt = if *q != 0 { 1.0 } else { 0.0 };
+                }
+            }
+        };
+        // (serial: cannot fail)
+        let _ = self.pp.build(hw, hh, 1.0, &input, None);
+        if self.pp.anchored() {
+            self.row.resize(WIDTH, 0.0);
+            self.depth_row.resize(WIDTH, 0.0);
+            let (Some(around), Some(tmp)) = (self.row.get_mut(..hw), self.depth_row.get_mut(..hw)) else { return true };
+            for (y, (orow, mrow)) in self.smooth.chunks_exact_mut(hw).zip(med.chunks_exact(hw)).enumerate() {
+                if !mrow.contains(&0) {
+                    continue;
+                }
+                self.pp.surroundings(y, around, tmp);
+                for ((o, q), v) in orow.iter_mut().zip(mrow).zip(around.iter()) {
+                    if *q == 0 {
+                        *o = pack(formats::DEPTH, *v);
+                    }
+                }
+            }
         }
         true
     }
 }
 
-/// The distance pixel (x, y) uses for its compensation: the smooth map (bilinear), but its own
-/// depth where it agrees with that (so object edges stay sharp).
+/// The distance pixel (x, y) with depth `d` (mm, 0 = none) uses for its compensation: the smooth
+/// map (bilinear), but its own depth where it agrees with that (so object edges stay sharp).
 #[allow(clippy::indexing_slicing)] // c is a fixed array of four
-fn gain_depth(depth: &[f32], smooth: &[f32], x: usize, y: usize) -> f32 {
+fn gain_depth(d: f32, smooth: &[u16], x: usize, y: usize) -> f32 {
     let (hw, hh) = (WIDTH / 2, HEIGHT / 2);
-    let at = |x: usize, y: usize| smooth.get(y.min(hh - 1) * hw + x.min(hw - 1)).copied().unwrap_or(0.0);
+    let at = |x: usize, y: usize| smooth.get(y.min(hh - 1) * hw + x.min(hw - 1)).map_or(0.0, |q| unpack(formats::DEPTH, *q));
     let fy = ((y as f32 + 0.5) * 0.5 - 0.5).max(0.0);
     let (y0, ty) = (fy as usize, fy.fract());
     let fx = ((x as f32 + 0.5) * 0.5 - 0.5).max(0.0);
@@ -348,19 +412,19 @@ fn gain_depth(depth: &[f32], smooth: &[f32], x: usize, y: usize) -> f32 {
     let top = c[0] + (c[1] - c[0]) * tx;
     let bottom = c[2] + (c[3] - c[2]) * tx;
     let s = top + (bottom - top) * ty;
-    let d = depth.get(y * WIDTH + x).copied().unwrap_or(0.0);
     // its own depth if it fits one of the surfaces around (at an edge, either side)
     let fits = c.iter().any(|v| (d - v).abs() <= 0.2 * v);
     if d > 0.0 && fits { d } else { s }
 }
 
-/// Divides by the local (box) average in the log domain, keeping the global average.
-fn local_adapt(ir: &mut [f32], radius: usize, strength: f32, s: &mut ToneScratch) {
-    s.logs.clear();
-    s.logs.extend(ir.iter().map(|v| (1.0 + v.max(0.0)).ln()));
-    box_blur_into(&s.logs, WIDTH, HEIGHT, radius, &mut s.blur_tmp, &mut s.blur);
-    let global = s.logs.iter().sum::<f32>() / s.logs.len().max(1) as f32;
-    for ((v, l), m) in ir.iter_mut().zip(&s.logs).zip(&s.blur) {
+/// Divides by the local (box) average in the log domain, keeping the global average (`logs`,
+/// `tmp` and `blur` are the buffers it works in).
+fn local_adapt(ir: &mut [f32], radius: usize, strength: f32, logs: &mut Vec<f32>, tmp: &mut Vec<f32>, blur: &mut Vec<f32>) {
+    logs.clear();
+    logs.extend(ir.iter().map(|v| (1.0 + v.max(0.0)).ln()));
+    box_blur_into(logs, WIDTH, HEIGHT, radius, tmp, blur);
+    let global = logs.iter().sum::<f32>() / logs.len().max(1) as f32;
+    for ((v, l), m) in ir.iter_mut().zip(logs.iter()).zip(blur.iter()) {
         *v = (l - strength * (m - global)).exp() - 1.0;
     }
 }
@@ -405,7 +469,8 @@ pub fn box_blur_into(src: &[f32], w: usize, h: usize, r: usize, tmp: &mut Vec<f3
 
 /// Temporal smoothing of the depth (and optionally the infrared): the newest frame gets weight
 /// `alpha`; a pixel that changed by more than `reset_mm` (or 3 %) takes the new value at once,
-/// so movement does not smear.
+/// so movement does not smear. Its state is kept in `f32` (rounded to the 16-bit steps it
+/// would stop short of the mean); the frame gets the smoothed values in its own steps.
 #[derive(Clone, Debug)]
 pub struct TemporalFilter {
     /// weight of the newest frame (1 = off)
@@ -416,11 +481,12 @@ pub struct TemporalFilter {
     pub infrared: bool,
     depth: Vec<f32>,
     ir: Vec<f32>,
+    row: Vec<f32>,
 }
 
 impl Default for TemporalFilter {
     fn default() -> Self {
-        TemporalFilter { alpha: 0.4, reset_mm: 60.0, infrared: false, depth: Vec::new(), ir: Vec::new() }
+        TemporalFilter { alpha: 0.4, reset_mm: 60.0, infrared: false, depth: Vec::new(), ir: Vec::new(), row: Vec::new() }
     }
 }
 
@@ -434,24 +500,33 @@ impl Stage for TemporalFilter {
     }
     fn process(&mut self, frame: &mut Frame) -> Result<()> {
         let a = self.alpha.clamp(0.01, 1.0);
+        self.row.resize(WIDTH, 0.0);
         if frame.depth.len() == PIXELS {
             if self.depth.len() != PIXELS {
-                self.depth.clone_from(&frame.depth);
+                frame.depth.unpack_into(&mut self.depth);
             } else {
-                for (new, old) in frame.depth.iter_mut().zip(self.depth.iter_mut()) {
-                    let thr = self.reset_mm.max(0.03 * *new);
-                    *old = if *new > 0.0 && *old > 0.0 && (*new - *old).abs() < thr { *old + a * (*new - *old) } else { *new };
-                    *new = *old;
+                for (y, state) in self.depth.chunks_exact_mut(WIDTH).enumerate() {
+                    frame.depth.unpack_row(y, &mut self.row);
+                    for (new, old) in self.row.iter_mut().zip(state.iter_mut()) {
+                        let thr = self.reset_mm.max(0.03 * *new);
+                        *old = if *new > 0.0 && *old > 0.0 && (*new - *old).abs() < thr { *old + a * (*new - *old) } else { *new };
+                        *new = *old;
+                    }
+                    frame.depth.pack_row(y, &self.row);
                 }
             }
         }
         if self.infrared && frame.ir.len() == PIXELS {
             if self.ir.len() != PIXELS {
-                self.ir.clone_from(&frame.ir);
+                frame.ir.unpack_into(&mut self.ir);
             } else {
-                for (new, old) in frame.ir.iter_mut().zip(self.ir.iter_mut()) {
-                    *old += a * (*new - *old);
-                    *new = *old;
+                for (y, state) in self.ir.chunks_exact_mut(WIDTH).enumerate() {
+                    frame.ir.unpack_row(y, &mut self.row);
+                    for (new, old) in self.row.iter_mut().zip(state.iter_mut()) {
+                        *old += a * (*new - *old);
+                        *new = *old;
+                    }
+                    frame.ir.pack_row(y, &self.row);
                 }
             }
         }
@@ -473,29 +548,12 @@ impl Stage for DepthRange {
         "depth range"
     }
     fn process(&mut self, frame: &mut Frame) -> Result<()> {
-        for d in &mut frame.depth {
-            if *d < self.min_mm || *d > self.max_mm {
-                *d = 0.0;
+        for q in frame.depth.raw_mut() {
+            let d = unpack(formats::DEPTH, *q);
+            if d < self.min_mm || d > self.max_mm {
+                *q = 0;
             }
         }
-        Ok(())
-    }
-}
-
-/// Computes the 3D point of every pixel (mm; x right, y down, z forward; [0, 0, 0] without
-/// depth) into `frame.points`.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Points;
-
-impl Stage for Points {
-    fn name(&self) -> &str {
-        "points"
-    }
-    fn process(&mut self, frame: &mut Frame) -> Result<()> {
-        // into the frame's (reused) plane
-        let rays = &frame.tables.rays;
-        frame.points.clear();
-        frame.points.extend(frame.depth.iter().zip(rays.iter()).map(|(z, r)| if *z > 0.0 { [r[0] * z, r[1] * z, *z] } else { [0.0; 3] }));
         Ok(())
     }
 }
@@ -565,8 +623,8 @@ mod tests {
         d[150 * WIDTH + 250] = 15000.0;
         d[40 * WIDTH + 40] = 500.0;
         let mut s = ToneScratch::default();
-        assert!(s.smooth_depth(&d));
-        let g: Vec<f32> = (0..PIXELS).map(|i| gain_depth(&d, &s.smooth, i % WIDTH, i / WIDTH)).collect();
+        assert!(s.smooth_depth(&Plane::from_values(&d)));
+        let g: Vec<f32> = (0..PIXELS).map(|i| gain_depth(d[i], &s.smooth, i % WIDTH, i / WIDTH)).collect();
         assert!((g[185 * WIDTH + 244] - 2500.0).abs() < 1.0, "{}", g[185 * WIDTH + 244]);
         assert!((g[150 * WIDTH + 250] - 2500.0).abs() < 1.0, "{}", g[150 * WIDTH + 250]);
         assert!((g[40 * WIDTH + 40] - 9000.0).abs() < 1.0, "{}", g[40 * WIDTH + 40]);

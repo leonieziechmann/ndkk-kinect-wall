@@ -19,7 +19,7 @@ Ein schlanker Kinect-v2-Treiber in Rust, der nicht abstürzt: USB direkt über l
 - `hub`: bis 3000 unverändert (wie libfreenect2 im Hub), darüber logarithmisch, weiß erst bei 65535 (für die Weiß-bei-6000-Darstellung des Hubs): was dort heute weiß ist, behält seine Zeichnung als helles Grau (6000 wird Byte 212 statt 255, 12000 wird 227, 30000 wird 243). `hub:KNIE:WEISS` stellt beides ein, z. B. `hub:2500:200000` für noch weichere Lichter (6000 wird 199). Eine Kurve je Frequenz vor dem Mitteln gäbe dasselbe Bild: die drei Amplituden messen dieselbe Helligkeit (in hellen Bereichen auf etwa 1 % gleich); nur an Kanten, wo sie auseinanderliegen, würde der Rand dunkler.
 - `even`: gleichmäßigere Belichtung: der Abfall mit der Entfernung wird herausgerechnet (auf 2,5 m bezogen; Nahes höchstens 4-fach dunkler, Fernes höchstens 2,5-fach heller, damit das Rauschen hinten nicht aufblüht), dann wie `hub`
 
-**Kompatibler Modus (`compat`).** Das Verfahren von libfreenect2 bzw. `fn2/fast_depth.cpp` mit denselben Ergebnissen bis auf die 16-Bit-Zwischenwerte (gegen fast_depth geprüft mit `tools/fastdepth_ref.cpp`: im Mittel 0,13 mm, höchstens 0,3 mm); die Flags bleiben dort leer.
+**Kompatibler Modus (`compat`).** Das Verfahren von libfreenect2 bzw. `fn2/fast_depth.cpp` mit denselben Ergebnissen bis auf die 16-Bit-Werte (gegen fast_depth geprüft mit `tools/fastdepth_ref.cpp`: Tiefe im Mittel 0,13 mm, höchstens 0,3 mm daneben, IR höchstens 0,05 %); die Flags bleiben dort leer.
 
 **Robust.** Siehe [Was bei Störungen passiert](#was-bei-störungen-passiert). Der Code verbietet `unwrap`, `expect`, `panic!` und ungeprüftes Indizieren; jeder Thread, jede Stufe und jeder USB-Callback fängt Panics ab.
 
@@ -43,25 +43,25 @@ IR, wo der Sensor sättigt: compat 100 % weiß abgeschnitten, extended 0 %. Ein 
 
 **Zeit** (Xeon 2,8 GHz, 4 vCPU, AVX2): compat 5,5 ms je Frame mit 3 Threads (14,2 ms mit einem), extended 10,6 ms im Raum und 14,5 ms mit viel Sättigung (28–31 ms mit einem); Einzelheiten unter [Rechenkerne](#rechenkerne). Auf der GPU (wgpu) dieselben Ergebnisse bis auf Rundung (Tiefe höchstens eine halbe Millimeterstufe Abweichung, 0 bis 3 Pixel je Frame mit anderer Gültigkeit oder anderen Flags, gemessen mit lavapipe); die Zeit dort hängt von der GPU ab: `kinect-driver bench`.
 
-**Strom** (geteiltes Budget einer APU): Bei 30 fps hält die CPU-Variante im erweiterten Modus etwa einen Kern beschäftigt (33 ms CPU-Zeit je Frame mit 3 Threads, 37 ms bei viel Sättigung). Der GPU-Weg braucht auf der CPU 1,4 ms je Frame (Hochladen 0,6 ms, Zurücklesen samt Entpacken 0,7 ms); nur wo etwas sättigt, kommen bis 3,3 ms für die Füllung dazu. Ob die GPU dieselbe Arbeit mit weniger Energie macht, zeigt nur eine Messung auf dem Zielrechner: `kinect-driver bench --fps 30 --seconds 120 --mode extended --backend cpu`, dann dasselbe mit `--backend gpu`, und jeweils die mittlere Leistung (z. B. HWiNFO, „CPU Package Power“, auf einer APU mit GPU) gegen den Leerlauf vergleichen. Im Taktbetrieb gibt der Befehl auch die CPU-Zeit je Frame des ganzen Prozesses aus.
+**Strom** (geteiltes Budget einer APU): Bei 30 fps hält die CPU-Variante im erweiterten Modus etwa einen Kern beschäftigt (33 ms CPU-Zeit je Frame mit 3 Threads, 37 ms bei viel Sättigung). Der GPU-Weg braucht auf der CPU 1,2 ms je Frame (Hochladen 0,6 ms, Zurücklesen 0,5 ms); nur wo etwas sättigt, kommen bis 3,3 ms für die Füllung dazu. Ob die GPU dieselbe Arbeit mit weniger Energie macht, zeigt nur eine Messung auf dem Zielrechner: `kinect-driver bench --fps 30 --seconds 120 --mode extended --backend cpu`, dann dasselbe mit `--backend gpu`, und jeweils die mittlere Leistung (z. B. HWiNFO, „CPU Package Power“, auf einer APU mit GPU) gegen den Leerlauf vergleichen. Im Taktbetrieb gibt der Befehl auch die CPU-Zeit je Frame des ganzen Prozesses aus.
 
 ## Speicher und Kopien
 
 Im laufenden Betrieb legt ein Frame keinen Bildspeicher neu an; die großen Puffer kreisen.
 
 - **Rohpakete** (2,98 MB) kommen aus einem Pool des Parsers. Die USB-Pakete landen direkt an ihrem Platz im Rohpaket (beim Teilbild nach dem zuletzt empfangenen); nur der Footer, der den richtigen Platz nennt, liegt daneben. Nennt er einen anderen Platz (nach einem verlorenen Teilbild), wird das Teilbild einmal verschoben. Je Byte also eine Kopie: vom USB-Puffer ins Rohpaket.
-- **Ausgabe-Ebenen** (Tiefe, IR, Konfidenz, Flags, Punkte: 3,47 MB, mit Punkten 6 MB) kommen aus dem Pool der Dekodierstufe und gehen zurück, wenn die Anwendung den Frame fallen lässt. Hält sie Frames länger, entstehen eben neue; beide Pools behalten höchstens 8 Stück.
-- **Dekoder:** feste Helfer-Threads, die zwischen den Phasen schlafen, statt Thread-Starts je Phase. Arbeitsebenen, Push-Pull, Flood-Fill und IR-Füllung behalten ihre Puffer. Die Ebenen zwischen den Phasen haben 16 Bit je Wert (siehe [Rechenkerne](#rechenkerne)): Arbeitsebenen 12,8 statt 23,4 MB, vorberechnete Tabellen 4,3 statt 7,8 MB, GPU-Puffer 25,0 statt 46,1 MB.
-- **Stufen** behalten ihre Puffer (`IrToneMap::even`, `TemporalFilter`); `Points` füllt die Ebene des Frames.
-- **Worker für den Hub:** schreibt Tiefe und IR direkt aus den Ebenen des Frames in die Pipe, ohne Nachrichtenpuffer und Zwischenkopie; danach gehen die Ebenen zurück in den Pool.
+- **Ausgabe-Ebenen** (Tiefe, IR und Konfidenz mit 16 Bit je Wert, die Flags mit 32: 2,17 MB statt 3,47 MB; siehe [Rechenkerne](#rechenkerne)) kommen aus dem Pool der Dekodierstufe und gehen zurück, wenn die Anwendung den Frame fallen lässt. Hält sie Frames länger, entstehen eben neue; beide Pools behalten höchstens 8 Stück. 3D-Punkte rechnet `Frame::points` bei Bedarf aus Tiefe und Strahlen, statt sie zu speichern (das waren 2,6 MB je Frame).
+- **Dekoder:** feste Helfer-Threads, die zwischen den Phasen schlafen, statt Thread-Starts je Phase. Arbeitsebenen, Push-Pull, Flood-Fill und IR-Füllung behalten ihre Puffer. Die Ebenen zwischen den Phasen haben 16 Bit je Wert (siehe [Rechenkerne](#rechenkerne)): Arbeitsebenen 12,8 statt 23,4 MB, vorberechnete Tabellen 4,3 statt 7,8 MB, GPU-Puffer 23,3 statt 46,1 MB. Die Nachschritte (Flood-Fill, Push-Pull-Erwartung, Tiefen- und IR-Füllung) brauchen 1,5 statt 8,3 MB: Die Push-Pull-Pyramide hat f16-Werte, ihre Eingabe wird zeilenweise gelesen, und das Ergebnis in voller Auflösung entsteht nur für die Zeilen und Pixel, die gefüllt werden; auf der GPU rechnet der Auflöser die Erwartung für seine wenigen Pixel selbst aus.
+- **Stufen** behalten ihre Puffer. `IrToneMap` arbeitet Zeile für Zeile auf den 16-Bit-Ebenen, seine Tiefenkarten in halber Auflösung haben ebenfalls 16 Bit (`even`: 0,5 statt 1,6 MB). `TemporalFilter` hält seinen Zustand in `f32` (0,87 MB): in Schritten von 0,5 mm bliebe der geglättete Wert bis 0,6 mm vor dem Mittel stehen.
+- **Worker für den Hub:** entpackt Tiefe und IR je 16 Zeilen in einen kleinen Puffer (32 KB) und schreibt sie als `f32` in die Pipe, wie der Hub sie erwartet, ohne Nachrichtenpuffer; danach gehen die Ebenen zurück in den Pool.
 
 Gemessen mit `cargo run --release -p kinect-driver --example alloc_count` (zählender Allocator; Parser, Pipeline, Übergabe):
 
 | je Frame | vorher | jetzt |
 |---|---|---|
 | Allokationen, CPU (compat / extended / mit `even` und Punkten) | 3.872 / 4.808 / 4.809 | 2 / 2 / 2 |
-| neu angelegte Bytes | 7,1 / 12,8 / 15,4 MB | 296 B (`Arc` des Rohpakets, `Box` des Ereignisses) |
-| GPU-Weg | 105 Allokationen, 6,7 MB | 94 kleine in wgpu, 18 KB |
+| neu angelegte Bytes | 7,1 / 12,8 / 15,4 MB | 272 B (`Arc` des Rohpakets, `Box` des Ereignisses) |
+| GPU-Weg | 105 Allokationen, 6,7 MB | 90 kleine in wgpu, 17 KB |
 | Zeit, Linux, 4 vCPU: Parser / compat / extended / ganzer Treiber | 0,35 / 9–13 / 21 / 18,7 ms | 0,21 / 8 / 20 / 17,1 ms |
 
 `driver/tests/alloc.rs` hält das fest. Im erweiterten Modus ändert sich die Zeit kaum, dort dominiert die Rechnung. Unter Windows sind Thread-Starts und große Allokationen teurer; dort dürfte der Unterschied größer sein (noch nicht gemessen).
@@ -76,6 +76,7 @@ Die Pixelkerne rechnen acht Pixel auf einmal (`driver/src/tof/lanes.rs`: Werte a
 - **Entpacken:** die 11-Bit-Codes mit einem 64-Bit-Zugriff je Code direkt in Messwerte, ohne Zwischenfeld.
 - **Nachschritte:** Push-Pull ohne gespeicherte volle Auflösung und auf den Dekoder-Threads; die IR-Füllung läuft neben der Erwartung des Auflösers; die Flutfüllung startet nur am Rand der Quellen.
 - **16 Bit je Wert zwischen den Phasen** (`driver/src/tof/pack.rs`), auf CPU und GPU in denselben Formaten: f16 für Werte über viele Größenordnungen (komplexe Werte und Amplituden, Kostenabstand, Amplitudensummen), Festkomma für Werte mit festem Bereich, dort feiner als f16 (Phasenrichtung, Konfidenz, Phase der Einzelfrequenz, Entfernungsanteil u in Stufen von 0,32 mm, Tiefe in Stufen von 0,5 mm). Was direkt die Tiefe trägt, als f16 wäre es bis 9 mm grob, ist deshalb Festkomma. Gerundet wird zur nächsten Stufe (bei Gleichstand gerade), ohne Verzweigung; der AVX2-Build wandelt f16 mit F16C, die Software-Fassung (SSE2, NEON) rundet bitgleich. Auf der CPU entpackt jeder Thread nur die Zeilen, die sein Block braucht, in einen kleinen Ring (jede Zeile einmal je Block); die Kerne rechnen weiter mit `f32`. Gegen `f32`-Ebenen: compat im Mittel 0,13 mm, höchstens 0,3 mm; extended 99,99 % der Pixel unter 0,4 mm, über 40 Frames nur 9 von 1,19 Millionen Pixeln einmal über 1,5 mm. Zeitlich unverändert (40 Frames stillstehender Szenen mit Sensorrauschen): gleiches Rauschen (auf 0,02 mm), gleich viele Sprünge über der Glättungsschwelle des Hubs und gleich viele Wechsel zwischen mit und ohne Tiefe (je unter 0,3 % Unterschied). Die Bereichsgrenze verschiebt sich um bis zu 0,25 mm: im Raum haben dadurch etwa 500 Pixel bei genau 4500 mm Tiefe, die vorher knapp darüber lagen. Kosten auf der CPU (zweite Tabelle unten): extended 1 bis 5 %, compat 9 bis 16 % mehr Zeit (das Entpacken wiegt dort mehr, weil die Kerne wenig rechnen); dafür liest der Filter aus dem Ring im Cache statt aus dem großen Puffer. Zwei Fallen, nachgemessen (`examples/tof_diff.rs` gegen `f32`): u als f16 gäbe im erweiterten Modus bis 7 mm Abweichung (11 % der Pixel über 1 mm). Und die erste Nachstellung mit f16 (nur Stufe 1) speicherte das Quadrat der Amplitude: n² umfasst mehr Größenordnungen, als f16 fasst, und wurde bei schwachen Pixeln zu grob; 0,06 % der Pixel sprangen um mehrere Millimeter bis zu einem ganzen Bereich. Gespeichert wird deshalb die Amplitude n, quadriert erst nach dem Entpacken.
+- **16 Bit auch in der Ausgabe und den Nachschritten** (`driver/src/plane.rs`, `tof/fill.rs`): Tiefe in Schritten von 0,5 mm (so rechnet der Dekoder sie ohnehin: verlustfrei), IR als f16 (höchstens 0,05 % daneben; libfreenect2s Weiß 65535 wird 65536), Konfidenz als 16-Bit-Festkomma; die Flags brauchen 19 Bit und bleiben 32. Die Push-Pull-Pyramide hält gewichteten Wert und Gewicht als f16 wie auf der GPU, ihre gefüllten Werte in `f32`. Gegen die Ausgabe davor (`tof_diff`, alle Szenen): compat bitgleich bis auf das IR, extended ebenso, nur die in gesättigten Flächen gefüllte Tiefe weicht um weniger als 0,5 mm ab; kein Pixel wechselt zwischen mit und ohne Tiefe (über 40 Frames aller Szenen einer), Rauschen, Sprünge und An/Aus-Wechsel sind dieselben. GPU gegen CPU wie vorher. Tempo auf der CPU im Rahmen der Messschwankung gleich (das Packen der Ausgabe kostet etwa 0,1 ms je Frame); auf dem GPU-Weg wird das Zurücklesen schneller (0,5 statt 0,65 ms), weil die Ausgabe die Formate der GPU-Wörter hat und nur kopiert wird.
 
 Zeit je Frame vor und nach den Änderungen oben bis auf die 16-Bit-Ebenen (Median aus fünf abwechselnden Läufen, `examples/bench_tof.rs`):
 
@@ -102,7 +103,7 @@ Genauigkeit der Änderungen oben bis auf die 16-Bit-Ebenen (die stehen in ihrem 
 | Pixel, die zwischen mit und ohne Tiefe wechseln | 1,8 von 121.700 | 34 von 157.800 |
 | zum Vergleich: dieselben Szenen mit anderem Sensorrauschen | 17.200 | 20.900 |
 
-Die wechselnden Pixel liegen genau an einer Schwelle (Konfidenz 0,6, Kanten- und Speckle-Test) oder sind Gleichstände wie oben. Der kompatible Modus lag damals gegen `fn2/fast_depth.cpp` bei höchstens 0,004 mm; seit den 16-Bit-Ebenen sind es höchstens 0,3 mm (IR 3e-5 relativ).
+Die wechselnden Pixel liegen genau an einer Schwelle (Konfidenz 0,6, Kanten- und Speckle-Test) oder sind Gleichstände wie oben. Der kompatible Modus lag damals gegen `fn2/fast_depth.cpp` bei höchstens 0,004 mm; seit den 16-Bit-Ebenen sind es höchstens 0,3 mm, beim IR seit der 16-Bit-Ausgabe höchstens 0,05 %.
 
 ## Mit dem kinect-hub
 
@@ -167,22 +168,22 @@ Eigene Pipelines: die Dekodierung ist eine Stufe wie jede andere.
 ```rust
 use kinect_driver::driver::PipelineFactory;
 use kinect_driver::pipeline::{Backend, Pipeline};
-use kinect_driver::stages::{IrToneMap, TemporalFilter, Points};
+use kinect_driver::stages::{IrToneMap, TemporalFilter};
 
 let factory: PipelineFactory = std::sync::Arc::new(|| {
     Ok(Pipeline::decoder(kinect_driver::TofConfig::extended(), Backend::Gpu)?
         .with(IrToneMap::even())
         .with(TemporalFilter::default())
-        .with(Points)
         .with_fn("mein schritt", |frame| {
-            // frame.depth, frame.ir, frame.confidence, frame.flags, frame.points, frame.set_extra(...)
+            // frame.depth.get(i), frame.ir.iter(), frame.confidence.unpack_row(y, &mut row),
+            // frame.flags[i], frame.points(), frame.set_extra(...)
             Ok(())
         }))
 });
 let cfg = kinect_driver::DriverConfig { pipeline: Some(factory), ..Default::default() };
 ```
 
-- `Frame`: Tiefe (mm), IR, Konfidenz 0..1, Flags je Pixel (`tof::flags`: gesättigt, rekonstruiert, aus Nachbarn aufgelöst, Kante, gefüllt, …), 3D-Punkte, eigene Ebenen (`extra`). Die Ebenen gehen zurück in den Pool, wenn der Frame fallen gelassen wird: Was länger gebraucht wird, mit `std::mem::take(&mut frame.depth)` herausnehmen oder kopieren.
+- `Frame`: Tiefe (mm, in Schritten von 0,5 mm), IR, Konfidenz 0..1, jeweils 16 Bit je Wert (`plane::Plane`: lesen mit `get`, `iter`, `unpack_row`, die gespeicherten Werte mit `raw`), Flags je Pixel (`tof::flags`: gesättigt, rekonstruiert, aus Nachbarn aufgelöst, Kante, gefüllt, …), 3D-Punkte bei Bedarf (`point_at`, `points`, `points_into`), eigene Ebenen (`extra`). Die Ebenen gehen zurück in den Pool, wenn der Frame fallen gelassen wird: Was länger gebraucht wird, mit `std::mem::take(&mut frame.depth)` herausnehmen oder kopieren.
 - Quellen: `Source::Kinect`, `Source::Recording` (`.k2raw`, Echtzeit oder so schnell wie möglich, in Schleife), `Source::Simulator`, `Source::Backend` (eigener USB-Backend, z. B. das simulierte Gerät `usb::mock` mit Fehlerinjektion).
 - Ohne Treiber-Threads: `CpuDecoder` / `gpu::GpuDecoder` direkt auf Rohpakete; `gpu::GpuDecoder::with_device` nutzt ein vorhandenes wgpu-Device (wgpu 30, dieselbe Version wie wall-bevy).
 - `pipeline::Backend::Gpu` fällt ohne GPU oder nach einem GPU-Fehler (Treiber-Reset, Device verloren) auf die CPU zurück und versucht die GPU alle 30 s neu.
@@ -224,7 +225,7 @@ cargo build --release --target x86_64-pc-windows-gnu -p kinect-driver-cli    # W
 cargo run --release -p kinect-driver --example eval_sim                       # weitere Auswertungen: examples/
 ```
 
-- `driver/src/tof/`: CPU-Dekoder (`kernels.rs` die Pixelkerne, je acht Pixel in `lanes.rs`-Werten, mit AVX2/FMA/F16C per Laufzeitauswahl; `pack.rs` die 16-Bit-Formate der Ebenen; `resolve.rs` die Nachbarschaftsauflösung; `post.rs` Flood-Fill und IR-Füllung; `fill.rs` Push-Pull), `config.rs` alle Parameter.
+- `driver/src/plane.rs`: die 16-Bit-Ebenen der Ausgabe. `driver/src/tof/`: CPU-Dekoder (`kernels.rs` die Pixelkerne, je acht Pixel in `lanes.rs`-Werten, mit AVX2/FMA/F16C per Laufzeitauswahl; `pack.rs` die 16-Bit-Formate der Ebenen; `resolve.rs` die Nachbarschaftsauflösung; `post.rs` Flood-Fill und IR-Füllung; `fill.rs` Push-Pull), `config.rs` alle Parameter.
 - Änderungen an den Kernen prüfen: `examples/tof_diff.rs` vergleicht die Ausgabe zweier Builds Pixel für Pixel (`dump ORDNER` in beiden, dann `compare ALT NEU`), `examples/bench_tof.rs` misst je Phase (Median).
 - `driver/src/gpu/`: `decode.wgsl` (dieselben Schritte als Compute-Shader), `mod.rs` (wgpu, Rückfall auf die CPU).
 - `driver/src/usb/`: Trait-Grenze, `libusb.rs` (echtes Gerät), `mock.rs` (simuliertes Gerät).

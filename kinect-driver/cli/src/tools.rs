@@ -141,7 +141,7 @@ pub fn stream(mut a: Args) -> R {
         }
     }
     if let (Some(dir), Some(f)) = (png, last) {
-        write_frame_pngs(&dir, "last", &f.depth, &f.ir, c.ir)?;
+        write_frame_pngs(&dir, "last", &f.depth.to_vec(), &f.ir.to_vec(), c.ir)?;
         println!("last frame written to {}", dir.display());
     }
     driver.stop();
@@ -309,13 +309,13 @@ pub fn replay(mut a: Args) -> R {
             f.decoder
         );
         if let Some(dir) = &png {
-            write_frame_pngs(dir, &format!("{:06}", f.sequence), &f.depth, &f.ir, c.ir)?;
+            write_frame_pngs(dir, &format!("{:06}", f.sequence), &f.depth.to_vec(), &f.ir.to_vec(), c.ir)?;
         }
         if let Some((op, _)) = other.as_mut() {
             let g = op.process(raw, &tables).map_err(err)?;
             cmp.add(&f, &g);
             if let Some(dir) = &png {
-                write_frame_pngs(dir, &format!("{:06}-other", f.sequence), &g.depth, &g.ir, c.ir)?;
+                write_frame_pngs(dir, &format!("{:06}-other", f.sequence), &g.depth.to_vec(), &g.ir.to_vec(), c.ir)?;
             }
         }
     }
@@ -347,22 +347,22 @@ impl Compare {
 
     fn add(&mut self, a: &Frame, b: &Frame) {
         self.frames += 1;
-        for (da, db) in a.depth.iter().zip(&b.depth) {
-            match (*da > 0.0, *db > 0.0) {
+        for (da, db) in a.depth.iter().zip(b.depth.iter()) {
+            match (da > 0.0, db > 0.0) {
                 (true, true) => {
-                    let k = Compare::band(*da);
+                    let k = Compare::band(da);
                     if let (Some(x), Some(y)) = (self.both.get_mut(k), self.close.get_mut(k)) {
                         *x += 1;
                         *y += u64::from((da - db).abs() <= (0.01 * da).max(10.0));
                     }
                 }
                 (true, false) => {
-                    if let Some(x) = self.only_a.get_mut(Compare::band(*da)) {
+                    if let Some(x) = self.only_a.get_mut(Compare::band(da)) {
                         *x += 1;
                     }
                 }
                 (false, true) => {
-                    if let Some(x) = self.only_b.get_mut(Compare::band(*db)) {
+                    if let Some(x) = self.only_b.get_mut(Compare::band(db)) {
                         *x += 1;
                     }
                 }
@@ -677,9 +677,9 @@ pub fn analyze(mut a: Args) -> R {
         let Some(p) = src.next()? else { break };
         dec.decode(&p, &tables, &mut out).map_err(err)?;
         n += 1;
-        let base = first_depth.get_or_insert_with(|| out.depth.clone());
+        let base = first_depth.get_or_insert_with(|| out.depth.to_vec());
         for i in 0..PIXELS {
-            let (Some(&d), Some(&fl), Some(&conf), Some(&ir)) = (out.depth.get(i), out.flags.get(i), out.confidence.get(i), out.ir.get(i)) else { continue };
+            let (Some(d), Some(&fl), Some(conf), Some(ir)) = (out.depth.get(i), out.flags.get(i), out.confidence.get(i), out.ir.get(i)) else { continue };
             sat += u64::from(fl & flags::SATURATED_ANY != 0);
             repaired += u64::from(fl & flags::REPAIRED_ANY != 0);
             valid += u64::from(d > 0.0);

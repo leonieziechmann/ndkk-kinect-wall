@@ -1,26 +1,67 @@
 //! The steps after the per-pixel decoding that work on whole areas (a flood fill, a percentile):
-//! shared by the CPU and the GPU decoder, which runs them on the decoded output. The infrared
-//! fill needs only what stage 1 decided, so a decoder can run it early, beside other work.
+//! shared by the CPU and the GPU decoder, which runs them on the decoded output (16-bit planes).
+//! The infrared fill needs only what stage 1 decided, so a decoder can run it early, beside
+//! other work.
 
 use super::TofConfig;
 use super::fill::PushPull;
 use super::kernels::flags;
+use super::pack::{Codec, formats, pack, unpack};
 use super::parallel::Workers;
 use crate::consts::{HEIGHT, PIXELS, WIDTH};
 use crate::error::Result;
+use crate::plane::{Confidence, Depth, Infrared, Plane};
 
 const W: usize = WIDTH;
 
+/// The scale of the infrared in f16 ([`formats::IR`]), also for its push-pull pyramid.
+const IR_SCALE: f32 = match formats::IR {
+    Codec::F16 { scale } => scale,
+    _ => 1.0,
+};
+
 /// The buffers of the steps, kept by each decoder: they grow once and are reused (the two
-/// fills never run at the same time and share them).
+/// fills never run at the same time and share them). Nothing here is as large as an `f32`
+/// image: the push-pull reads its input row by row and works out only the pixels it fills.
 #[derive(Default)]
 pub(crate) struct PostScratch {
     /// per pixel: [`OTHER`], [`SOURCE`], [`TARGET`] or [`REACHED`]
     class: Vec<u8>,
     stack: Vec<u32>,
-    repaired: Vec<f32>,
-    weights: Vec<f32>,
+    /// the infrared of the rebuilt pixels as stored (f16 bits, which sort like the values for
+    /// positive values)
+    repaired: Vec<u16>,
     pp: PushPull,
+    /// per thread: the surroundings of a row, a temporary row, the row being filled
+    rows: Vec<Rows>,
+}
+
+/// Rows a thread fills with.
+#[derive(Default)]
+struct Rows {
+    around: Vec<f32>,
+    tmp: Vec<f32>,
+    row: Vec<f32>,
+}
+
+impl Rows {
+    fn size(&mut self) {
+        for r in [&mut self.around, &mut self.tmp, &mut self.row] {
+            r.resize(W, 0.0);
+        }
+    }
+}
+
+/// Rows of the image per work item of the depth fill.
+const BLOCK_ROWS: usize = 8;
+
+/// The rows of the depth fill one work item writes (from row `y0` on).
+struct Block<'a> {
+    y0: usize,
+    class: &'a [u8],
+    flags: &'a mut [u32],
+    depth: &'a mut [u16],
+    confidence: &'a mut [u16],
 }
 
 const OTHER: u8 = 0;
@@ -35,21 +76,22 @@ const REACHED: u8 = 3;
 /// is interpolated from the measured rim of the same bright object (pixels that saturated
 /// in some sample but still have depth), never from what is behind it. With `workers`, the
 /// interpolation runs on them (fails only if one panicked).
-pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidence: &mut [f32], fl: &mut [u32], s: &mut PostScratch, workers: Option<&Workers>) -> Result<()> {
+pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut Plane<Depth>, confidence: &mut Plane<Confidence>, fl: &mut [u32], s: &mut PostScratch, workers: Option<&Workers>) -> Result<()> {
     // nothing saturated (the usual frame): nothing to fill
     if !any_bits(fl, flags::SATURATED_ANY) {
         return Ok(());
     }
-    let PostScratch { class, stack, weights, pp, .. } = s;
+    let PostScratch { class, stack, pp, rows, .. } = s;
     let rejected = flags::EDGE | flags::SPECKLE | flags::OUT_OF_RANGE;
     class.clear();
-    class.extend(depth.iter().zip(fl.iter()).map(|(d, f)| {
+    // (a stored depth of 0 is no depth; the decoders never store a negative one)
+    class.extend(depth.raw().iter().zip(fl.iter()).map(|(d, f)| {
         let sat = f & flags::SATURATED_ANY != 0;
         if !sat {
             OTHER
-        } else if *d > 0.0 {
+        } else if *d != 0 {
             SOURCE
-        } else if *d <= 0.0 && f & rejected == 0 {
+        } else if f & rejected == 0 {
             TARGET
         } else {
             OTHER
@@ -103,18 +145,55 @@ pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidenc
             visit(i + W);
         }
     }
-    weights.clear();
-    weights.extend(class.iter().map(|c| if *c == SOURCE { 1.0 } else { 0.0 }));
-    let filled = match workers {
-        Some(w) => pp.fill_with(depth, weights, W, HEIGHT, w)?,
-        None => pp.fill(depth, weights, W, HEIGHT),
-    };
+    // the depth of the sources, spread over the reached targets
+    {
+        let (d, cl): (&Plane<Depth>, &[u8]) = (depth, class);
+        let input = |y: usize, v: &mut [f32], w: &mut [f32]| {
+            d.unpack_slice(y * W, v);
+            if let Some(cr) = cl.get(y * W..(y + 1) * W) {
+                w.iter_mut().zip(cr).for_each(|(w, c)| *w = if *c == SOURCE { 1.0 } else { 0.0 });
+            }
+        };
+        pp.build(W, HEIGHT, 1.0, &input, workers)?;
+    }
+    // a target has no depth and weight 0: all of it comes from around (the rows with a
+    // target, in blocks over the workers)
     let (lo, hi) = (cfg.min_depth, cfg.max_depth);
-    for (((c, v), d), (cf, f)) in class.iter().zip(filled).zip(depth.iter_mut()).zip(confidence.iter_mut().zip(fl.iter_mut())) {
-        if *c == REACHED && *v >= lo && *v <= hi {
-            *d = *v;
-            *cf = 0.5;
-            *f = (*f | flags::DEPTH_FILLED) & !flags::LOW_CONFIDENCE;
+    let half = pack(formats::CONFIDENCE, 0.5);
+    let threads = workers.map_or(1, Workers::threads);
+    if rows.len() < threads {
+        rows.resize_with(threads, Rows::default);
+    }
+    rows.iter_mut().for_each(Rows::size);
+    let pp: &PushPull = pp;
+    let blocks = class
+        .chunks(W * BLOCK_ROWS)
+        .zip(fl.chunks_mut(W * BLOCK_ROWS))
+        .zip(depth.raw_mut().chunks_mut(W * BLOCK_ROWS).zip(confidence.raw_mut().chunks_mut(W * BLOCK_ROWS)))
+        .enumerate()
+        .map(|(b, ((class, flags), (depth, confidence)))| Block { y0: b * BLOCK_ROWS, class, flags, depth, confidence });
+    let work = |r: &mut Rows, b: Block| {
+        let rows = b.class.chunks_exact(W).zip(b.flags.chunks_exact_mut(W)).zip(b.depth.chunks_exact_mut(W).zip(b.confidence.chunks_exact_mut(W)));
+        for (k, ((cr, fr), (dr, cfr))) in rows.enumerate() {
+            if !cr.contains(&REACHED) {
+                continue;
+            }
+            pp.surroundings(b.y0 + k, &mut r.around, &mut r.tmp);
+            for (((c, f), v), (d, cf)) in cr.iter().zip(fr.iter_mut()).zip(r.around.iter()).zip(dr.iter_mut().zip(cfr.iter_mut())) {
+                if *c == REACHED && *v >= lo && *v <= hi {
+                    *d = pack(formats::DEPTH, *v);
+                    *cf = half;
+                    *f = (*f | flags::DEPTH_FILLED) & !flags::LOW_CONFIDENCE;
+                }
+            }
+        }
+    };
+    match workers {
+        Some(w) => w.for_each_with(rows, blocks, &work)?,
+        None => {
+            if let Some(r) = rows.first_mut() {
+                blocks.for_each(|b| work(r, b));
+            }
         }
     }
     Ok(())
@@ -124,38 +203,60 @@ pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidenc
 /// darker than the level at which this sensor saturates (estimated from the pixels whose
 /// saturated sample could be rebuilt: their brightness is known and just at that level).
 /// Needs only what stage 1 decided (`IR_FILLED`, the repair bits of `fl`).
-pub(crate) fn fill_ir(cfg: &TofConfig, ir: &mut [f32], fl: &[u32], saturation_level: &mut f32, s: &mut PostScratch) {
+pub(crate) fn fill_ir(cfg: &TofConfig, ir: &mut Plane<Infrared>, fl: &[u32], saturation_level: &mut f32, s: &mut PostScratch) {
     // nothing repaired or clipped (the usual frame): no level to learn, nothing to fill
     if !any_bits(fl, flags::REPAIRED_ANY | flags::IR_FILLED) {
         return;
     }
-    let PostScratch { repaired, weights, pp, .. } = s;
+    let PostScratch { repaired, pp, rows, .. } = s;
     repaired.clear();
     let mut clipped = 0usize;
-    for (v, f) in ir.iter().zip(fl) {
+    for (q, f) in ir.raw().iter().zip(fl) {
         clipped += usize::from(*f & flags::IR_FILLED != 0);
-        if *f & flags::REPAIRED_ANY != 0 && *f & flags::IR_FILLED == 0 && v.is_finite() && *v > 0.0 {
-            repaired.push(*v);
+        // positive and finite: f16 bits above 0 and below the infinities (no sign bit)
+        if *f & flags::REPAIRED_ANY != 0 && *f & flags::IR_FILLED == 0 && *q != 0 && *q < 0x7c00 {
+            repaired.push(*q);
         }
     }
     if repaired.len() >= 30 {
         let k = repaired.len() * 3 / 4;
-        let (_, level, _) = repaired.select_nth_unstable_by(k, f32::total_cmp);
-        let level = *level;
+        let (_, level, _) = repaired.select_nth_unstable(k);
+        let level = unpack(formats::IR, *level);
         *saturation_level = if *saturation_level > 0.0 { 0.8 * *saturation_level + 0.2 * level } else { level };
     }
     if clipped == 0 {
         return;
     }
-    weights.clear();
-    weights.extend(fl.iter().map(|f| if *f & flags::IR_FILLED != 0 { 0.0 } else { 1.0 }));
-    let filled = pp.fill(ir, weights, W, HEIGHT);
+    {
+        let irr: &Plane<Infrared> = ir;
+        let input = |y: usize, v: &mut [f32], w: &mut [f32]| {
+            irr.unpack_slice(y * W, v);
+            if let Some(fr) = fl.get(y * W..(y + 1) * W) {
+                w.iter_mut().zip(fr).for_each(|(w, f)| *w = if *f & flags::IR_FILLED != 0 { 0.0 } else { 1.0 });
+            }
+        };
+        // (serial: cannot fail)
+        let _ = pp.build(W, HEIGHT, IR_SCALE, &input, None);
+    }
     let gain = cfg.ext.ir_fill_gain;
     let floor = *saturation_level;
-    for ((o, f), v) in ir.iter_mut().zip(fl).zip(filled) {
-        if *f & flags::IR_FILLED != 0 {
-            *o = v.max(floor) * gain;
+    if rows.is_empty() {
+        rows.push(Rows::default());
+    }
+    let Some(r) = rows.first_mut() else { return };
+    r.size();
+    for (y, fr) in fl.chunks_exact(W).enumerate() {
+        if !fr.iter().any(|f| *f & flags::IR_FILLED != 0) {
+            continue;
         }
+        pp.surroundings(y, &mut r.around, &mut r.tmp);
+        ir.unpack_row(y, &mut r.row);
+        for ((o, f), v) in r.row.iter_mut().zip(fr).zip(r.around.iter()) {
+            if *f & flags::IR_FILLED != 0 {
+                *o = v.max(floor) * gain;
+            }
+        }
+        ir.pack_row(y, &r.row);
     }
 }
 

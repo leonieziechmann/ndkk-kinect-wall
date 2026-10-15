@@ -5,9 +5,12 @@
 //!
 //! One frame: upload the raw packet (2.7 MB), about 30 dispatches, read depth, infrared,
 //! confidence and flags back (2.6 MB). The values between the stages take 16 bits each, in the
-//! formats of `tof/pack.rs` (the CPU decoder stores the same), two to a 32-bit word. Two steps
-//! that work on whole areas (the flood fill inside saturated areas, the infrared percentile) then
-//! run on the CPU, shared with the CPU decoder; they cost only where something saturated.
+//! formats of `tof/pack.rs` (the CPU decoder stores the same), two to a 32-bit word; the output
+//! planes (`crate::plane`) have the same formats, so the read back halves are copied as they are.
+//! The push-pull pyramid of the resolver's expectation starts at half resolution, and the
+//! resolver works out the last step for the pixels that ask. Two steps that work on whole areas
+//! (the flood fill inside saturated areas, the infrared percentile) then run on the CPU, shared
+//! with the CPU decoder; they cost only where something saturated.
 //!
 //! Nothing here may take the program down: wgpu's error callbacks are installed (they would
 //! panic by default), every call runs inside `catch`, and a lost device turns into errors that
@@ -200,7 +203,9 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("W_GAPC", W_GAPC),
         ("W_CSIR", W_CSIR),
         ("W_RES", W_RES),
-        ("EXP_WORD", Pyramid::new().filled.first().copied().unwrap_or(0)),
+        ("L1_FILLED", Pyramid::new().filled.first().copied().unwrap_or(0)),
+        ("L1_W", Pyramid::new().sizes.first().map_or(1, |s| s.0)),
+        ("L1_H", Pyramid::new().sizes.first().map_or(1, |s| s.1)),
     ] {
         s.push_str(&u(name, v));
     }
@@ -287,8 +292,10 @@ struct Step {
     h: u32,
 }
 
-/// The levels of the pyramid (sizes and offsets in `work`, in words): per level the (vw, wt)
-/// pairs and the filled values; level 0's filled values are the resolver's expectation.
+/// The levels of the pyramid above the input (sizes and offsets in `work`, in words): per level
+/// the (vw, wt) pairs and the filled values. The input (level 0) is read where it is needed,
+/// and the resolver works out the last pull for the pixels that ask (as `tof/fill.rs` does):
+/// nothing here has the size of the image.
 struct Pyramid {
     sizes: Vec<(usize, usize)>,
     vwt: Vec<usize>,
@@ -298,7 +305,7 @@ struct Pyramid {
 
 impl Pyramid {
     fn new() -> Pyramid {
-        let mut sizes = vec![(WIDTH, HEIGHT)];
+        let mut sizes = vec![(WIDTH.div_ceil(2), HEIGHT.div_ceil(2))];
         while let Some(&(w, h)) = sizes.last() {
             if w <= 1 && h <= 1 {
                 break;
@@ -322,11 +329,11 @@ const P_STAGE2: usize = 1;
 const P_STAGE3_COMPAT: usize = 2;
 const P_RESOLVE: usize = 3;
 const P_FINISH: usize = 4;
-const P_PP_INIT: usize = 5;
+const P_PP_FIRST: usize = 5;
 const P_PP_DOWN: usize = 6;
 const P_PP_TOP: usize = 7;
 const P_PP_UP: usize = 8;
-const ENTRY_POINTS: [&str; 9] = ["stage1", "stage2", "stage3_compat", "resolve", "finish", "pp_init", "pp_down", "pp_top", "pp_up"];
+const ENTRY_POINTS: [&str; 9] = ["stage1", "stage2", "stage3_compat", "resolve", "finish", "pp_first", "pp_down", "pp_top", "pp_up"];
 
 /// The depth/infrared decoder on the GPU.
 pub struct GpuDecoder {
@@ -474,13 +481,14 @@ impl GpuDecoder {
             })
         };
         let no_level = level_group([0; 8]);
-        // push-pull of u1 weighted by the anchors (the resolver's expectation)
+        // push-pull of u1 weighted by the anchors (the resolver's expectation); level 0 of the
+        // pyramid is level 1 of `tof/fill.rs`, made from the input
         let mut steps = Vec::new();
         let top = pyramid.sizes.len().saturating_sub(1);
         let size = |l: usize| pyramid.sizes.get(l).copied().unwrap_or((1, 1));
         let at = |v: &Vec<usize>, l: usize| v.get(l).copied().unwrap_or(0);
         let (w0, h0) = size(0);
-        steps.push(Step { pipeline: P_PP_INIT, group: level_group([w0, h0, 0, 0, at(&pyramid.vwt, 0), 0, 0, 0]), w: w0 as u32, h: h0 as u32 });
+        steps.push(Step { pipeline: P_PP_FIRST, group: level_group([w0, h0, WIDTH, HEIGHT, at(&pyramid.vwt, 0), 0, 0, 0]), w: w0 as u32, h: h0 as u32 });
         for l in 1..=top {
             let ((w, h), (pw, ph)) = (size(l), size(l - 1));
             steps.push(Step { pipeline: P_PP_DOWN, group: level_group([w, h, pw, ph, at(&pyramid.vwt, l), 0, at(&pyramid.vwt, l - 1), 0]), w: w as u32, h: h as u32 });
@@ -635,15 +643,13 @@ impl GpuDecoder {
                 let bytes = view.get(p * N * 4..(p + 1) * N * 4).unwrap_or(&[]);
                 bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c))
             };
-            let compat = self.cfg.mode == TofMode::Compat;
-            for ((d, c), w) in out.depth.iter_mut().zip(out.confidence.iter_mut()).zip(words(W_OUT)) {
-                *d = pack::unpack(formats::DEPTH, w as u16);
-                *c = pack::unpack(formats::CONFIDENCE, (w >> 16) as u16);
+            // the output planes have the formats of the words' halves: copied as they are
+            for ((d, c), w) in out.depth.raw_mut().iter_mut().zip(out.confidence.raw_mut().iter_mut()).zip(words(W_OUT)) {
+                *d = w as u16;
+                *c = (w >> 16) as u16;
             }
-            for (v, w) in out.ir.iter_mut().zip(words(W_IRN)) {
-                let ir = pack::unpack(formats::IR, w as u16);
-                // libfreenect2's white is 65535 (in f16 it would come back as 65536)
-                *v = if compat { ir.min(65535.0) } else { ir };
+            for (v, w) in out.ir.raw_mut().iter_mut().zip(words(W_IRN)) {
+                *v = w as u16;
             }
             for (f, w) in out.flags.iter_mut().zip(words(W_FLAGS)) {
                 *f = w;

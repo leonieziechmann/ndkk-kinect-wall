@@ -62,9 +62,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pipe = pipe.with(t);
             }
             let f = pipe.process(raw.clone(), &tables)?;
-            let img = if log { log_display(&f.ir) } else { hub_display(&f.ir) };
+            let ir = f.ir.to_vec();
+            let img = if log { log_display(&ir) } else { hub_display(&ir) };
             let white = img.iter().filter(|v| **v >= 250).count();
-            println!("  {label:<16} white (>= 250): {:>5.1} %   IR max {:>8.0}", 100.0 * white as f64 / img.len() as f64, f.ir.iter().fold(0f32, |m, v| m.max(*v)));
+            println!("  {label:<16} white (>= 250): {:>5.1} %   IR max {:>8.0}", 100.0 * white as f64 / img.len() as f64, ir.iter().fold(0f32, |m, v| m.max(*v)));
             write_gray(&out.join(format!("{name}-{label}.png")), &img);
         }
     }

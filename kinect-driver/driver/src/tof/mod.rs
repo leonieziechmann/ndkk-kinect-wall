@@ -22,9 +22,10 @@ pub use cpu::CpuDecoder;
 pub use kernels::flags;
 
 use crate::consts::PIXELS;
+use crate::plane::{Confidence, Depth, Infrared, Plane};
 
 /// The decoded planes of one frame (512 x 424, row 0 at the top, mirrored like the Kinect SDK
-/// and libfreenect2 deliver it).
+/// and libfreenect2 deliver it), 16 bits per value except the flags (see [`crate::plane`]).
 #[derive(Clone, Debug, Default)]
 pub struct TofOutput {
     /// frame sequence number
@@ -32,13 +33,13 @@ pub struct TofOutput {
     /// device timestamp
     pub timestamp: u32,
     /// depth in mm (z, not the distance along the ray); 0 = no measurement
-    pub depth: Vec<f32>,
+    pub depth: Plane<Depth>,
     /// infrared amplitude in libfreenect2's scale (Compat: clipped at 65535; Extended: HDR,
     /// may exceed 65535)
-    pub ir: Vec<f32>,
+    pub ir: Plane<Infrared>,
     /// confidence 0..1 of the depth (Compat: 1 where there is depth)
-    pub confidence: Vec<f32>,
-    /// per-pixel [`flags`]
+    pub confidence: Plane<Confidence>,
+    /// per-pixel [`flags`] (19 bits in use: 32 per pixel)
     pub flags: Vec<u32>,
 }
 
@@ -52,9 +53,9 @@ impl TofOutput {
 
     /// Makes every plane `PIXELS` long.
     pub fn resize(&mut self) {
-        self.depth.resize(PIXELS, 0.0);
-        self.ir.resize(PIXELS, 0.0);
-        self.confidence.resize(PIXELS, 0.0);
+        self.depth.resize(PIXELS);
+        self.ir.resize(PIXELS);
+        self.confidence.resize(PIXELS);
         self.flags.resize(PIXELS, 0);
     }
 }
