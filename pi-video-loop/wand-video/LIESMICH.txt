@@ -1,0 +1,12 @@
+Wand-Video für den Raspberry Pi 4
+
+Karte rein, Bildschirm per HDMI dran, Strom an.
+Der erste Start dauert ein paar Minuten (Installation von der Karte, kein Internet nötig),
+danach startet der Pi einmal von selbst neu. Keine Anmeldung, keine Eingabe.
+Danach läuft das Video in nahtloser Dauerschleife, nach jedem Einschalten nach etwa 20 Sekunden.
+Ausschalten: einfach den Stecker ziehen.
+
+loop.mov           das Video (aus kinect-wand-pc.mp4: H.264 ohne B-Frames, Ton als PCM, genau 91,2 s)
+wand-video.conf    Ton (HDMI/Klinke/aus), Bildschirmmodus, Lautstärke
+install.log        Protokoll der Installation beim ersten Start
+debs/              mpv + ffmpeg für die Offline-Installation

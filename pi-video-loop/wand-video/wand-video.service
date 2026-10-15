@@ -1,0 +1,14 @@
+[Unit]
+Description=Wand-Video: video in a seamless endless loop (kiosk)
+After=systemd-user-sessions.service sound.target
+Conflicts=getty@tty1.service
+
+[Service]
+ExecStart=/usr/local/bin/wand-video
+Restart=always
+RestartSec=2
+Nice=-10
+IOSchedulingClass=realtime
+
+[Install]
+WantedBy=multi-user.target
