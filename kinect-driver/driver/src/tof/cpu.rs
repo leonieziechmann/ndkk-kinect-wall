@@ -143,14 +143,15 @@ pub(crate) fn s2_params(cfg: &TofConfig) -> S2Params {
         min_amplitude: e.min_amplitude,
         weak_boost: e.weak_boost,
         weak_threshold: e.weak_threshold,
-        plausibility: e.plausibility,
         inv_brightness: 1.0 / e.brightness_1m,
-        min_reflectivity: e.min_reflectivity,
-        max_reflectivity: e.max_reflectivity,
+        ln_min_reflectivity: e.min_reflectivity.max(1e-30).ln(),
+        ln_max_reflectivity: e.max_reflectivity.ln(),
+        penalty_scale: if e.plausibility { 1.0 / e.plausibility_spread.ln().powi(2) } else { 0.0 },
         ir_output: p.ab_output_multiplier,
         multipath: e.multipath_check,
         gain: e.gain_correction.map(|g| 1.0 / g),
         amplitude_floor: e.amplitude_floor,
+        multipath_tolerance: e.multipath_tolerance,
         margin_prior: e.margin_prior,
     }
 }

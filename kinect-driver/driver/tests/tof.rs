@@ -169,6 +169,8 @@ fn pixels_with_two_echoes_are_not_trusted() {
     // equally bright echoes from 1.0 and 1.6 m: at 120 MHz they almost cancel, at 16 MHz they add
     let (near, _) = s.frame(&wall(1000.0, 0.4), 1);
     let (far, _) = s.frame(&wall(1600.0, 0.4 * 1.6 * 1.6), 2);
+    // a weak second echo: a quarter (light from a wall on the floor)
+    let (weak, _) = s.frame(&wall(1600.0, 0.4 * 1.6 * 1.6 * 0.25), 3);
     let decode = |p: &RawDepthPacket| {
         let mut dec = CpuDecoder::new(TofConfig::extended()).unwrap();
         let mut out = TofOutput::new();
@@ -194,6 +196,27 @@ fn pixels_with_two_echoes_are_not_trusted() {
     dec.decode(&mix(&near, &far, lut), s.tables(), &mut out).unwrap();
     let neither = count(&out, &|i| out.depth[i] > 0.0 && (out.depth[i] - 1000.0).abs() > 50.0 && (out.depth[i] - 1600.0).abs() > 80.0) as f64;
     assert!(neither > 0.5 * px, "without the test {neither} of {px} pixels at neither wall");
+    // the weak second echo moves the distance little: the pixels keep the near wall
+    let o = decode(&mix(&near, &weak, lut));
+    let at_near = count(&o, &|i| (o.depth[i] - 1000.0).abs() < 50.0) as f64;
+    assert!(at_near > 0.9 * px, "weak second echo: {at_near} of {px} at the near wall");
+}
+
+#[test]
+fn surfaces_brighter_than_plausible_keep_their_depth() {
+    use kinect_driver::sim::{Object, Shape};
+    // glossy paint seen head-on, a reflector: several times brighter than white paper
+    let wall = |z: f32, albedo: f32| Scene { objects: vec![Object::new(Shape::Plane { point: [0.0, 0.0, z], normal: [0.0, 0.0, -1.0] }, albedo)], ambient: 150.0, brightness: 16000.0 };
+    let mut s = sim();
+    let (p, gt) = s.frame(&wall(4500.0, 4.0), 1);
+    let mut dec = CpuDecoder::new(TofConfig::extended()).unwrap();
+    let mut out = TofOutput::new();
+    dec.decode(&p, s.tables(), &mut out).unwrap();
+    let n = out.depth.len() as f64;
+    let right = (0..out.depth.len()).filter(|&i| gt.depth[i] > 0.0 && (out.depth[i] - gt.depth[i]).abs() <= (0.01 * gt.depth[i]).max(15.0)).count() as f64;
+    let wrong = (0..out.depth.len()).filter(|&i| out.depth[i] > 0.0 && (out.depth[i] - gt.depth[i]).abs() > 100.0).count() as f64;
+    assert!(right > 0.9 * n, "{right} of {n} right");
+    assert!(wrong < 0.001 * n, "{wrong} of {n} wrong");
 }
 
 #[test]

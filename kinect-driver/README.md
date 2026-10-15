@@ -10,10 +10,11 @@ Ein schlanker Kinect-v2-Treiber in Rust, der nicht abstürzt: USB direkt über l
 
 ## Was er anders macht
 
-**Mehr Reichweite (Modus `extended`).** libfreenect2 rechnet mit einer geschlossenen Formel nur bis 4,5 m und verwirft alles, wo eine Frequenz sättigt. Der erweiterte Modus sucht über den ganzen eindeutigen Bereich der drei Frequenzen (80, 16, 120 MHz → 18,75 m) die wahrscheinlichste Entfernung: jede Kandidatenentfernung der genauesten Frequenz wird mit allen brauchbaren Frequenzen nach ihrem Rauschen gewichtet verfeinert, die Konfidenz kommt aus dem Abstand zum zweitbesten Kandidaten und der Konsistenz der Phasen. Das Rauschmodell, das dabei wiegt, ist an der echten Kinect gemessen (siehe [Gemessen (echte Kinect)](#gemessen-echte-kinect)): Es umfasst, was die Entfaltung wirklich sieht, also das gefilterte Rauschen, Streulicht und Kalibrierfehler, nicht nur das Sensorrauschen. Dazu:
+**Mehr Reichweite (Modus `extended`).** libfreenect2 rechnet mit einer geschlossenen Formel nur bis 4,5 m und verwirft alles, wo eine Frequenz sättigt. Der erweiterte Modus sucht über den ganzen eindeutigen Bereich der drei Frequenzen (80, 16, 120 MHz → 18,75 m) die wahrscheinlichste Entfernung: jede Kandidatenentfernung der genauesten Frequenz wird mit allen brauchbaren Frequenzen nach ihrem Rauschen gewichtet verfeinert, die Konfidenz ist die Wahrscheinlichkeit, dass der beste Kandidat der richtige ist und nicht der zweitbeste. Das Rauschmodell, das dabei wiegt, ist an der echten Kinect gemessen (siehe [Gemessen (echte Kinect)](#gemessen-echte-kinect)): Es umfasst, was die Entfaltung wirklich sieht, also das gefilterte Rauschen, Streulicht und Kalibrierfehler, nicht nur das Sensorrauschen. Dazu:
 - **Nah trotz Sättigung:** Die drei Phasenproben einer Frequenz summieren sich zu null. Ist eine davon gesättigt, wird sie aus den beiden anderen rekonstruiert; ist mehr gesättigt, fällt nur diese Frequenz weg, und die Entfernung kommt aus den übrigen beiden. Bleibt nur eine Frequenz, entscheiden die Nachbarn (Abstimmung, bei gesättigten Nachbarn bevorzugt die desselben hellen Objekts), sonst eine glatte Erwartung aus der Umgebung. Wo alle Frequenzen sättigen, wird die Tiefe vom gemessenen Rand desselben Objekts nach innen interpoliert (Flag `DEPTH_FILLED`).
-- **Weit:** Kandidaten, die eine unmögliche Helligkeit bräuchten (ein heller Punkt kann nicht 12 m weg sein, ein dunkler eher ein Echo von jenseits des Bereichs), werden bei der Wahl bestraft. Die Helligkeit rechnet mit dem Beleuchtungsprofil der Kinect: in der Bildmitte fast gleichmäßig, zum Rand hin steil abfallend (auf die Hälfte bei 31° von der Achse, `illumination_angle`). Mehr als das 1,5-Fache einer weißen Fläche gilt als unplausibel (`max_reflectivity`). Die Strafe entscheidet nur zwischen den Kandidaten, die Konsistenz zählt sie nicht: Ein Reflektor, dessen Phasen eindeutig sind, behält seine Tiefe. Die Nachbarn wählen nie einen zweitbesten Kandidaten, den die Helligkeit verworfen hat. Ein Speckle-Filter nimmt einzelne Ausreißer heraus, der Kantenfilter wächst mit der Entfernung.
-- **Mehrwege (Flag `MULTIPATH`):** Ein Echo erreicht alle drei Frequenzen gleich stark. Zwei Echos aus verschiedenen Entfernungen (eine streifend gesehene Tischplatte, Kanten, Streulicht) überlagern sich je Frequenz anders, weil ihr Phasenabstand mit der Frequenz wächst. Passen die drei Amplituden nicht zu einem Echo, sinkt die Konfidenz (ein zweites Chi-Quadrat neben dem der Phasen), und die Nachbarn bestätigen oder ersetzen die Entfernung nicht. Solche Pixel gaben vorher Phasen, die zu einer Entfernung weit hinter der Rückwand passten.
+- **Weit:** Kandidaten, die eine unmögliche Helligkeit bräuchten (ein heller Punkt kann nicht 12 m weg sein, ein dunkler eher ein Echo von jenseits des Bereichs), werden bei der Wahl bestraft. Die Helligkeit rechnet mit dem Beleuchtungsprofil der Kinect: in der Bildmitte fast gleichmäßig, zum Rand hin steil abfallend (auf die Hälfte bei 31° von der Achse, `illumination_angle`). Bis zum 1,5-Fachen einer weißen Fläche kostet ein Kandidat nichts (`max_reflectivity`). Darüber wächst die Strafe mit dem Quadrat des Logarithmus (`plausibility_spread` 1,15): 1 beim 1,15-Fachen darüber, 25 beim Doppelten, 100 beim Vierfachen. Glänzende Farbe, frontal gesehen, oder ein Reflektor mit eindeutigen Phasen behält so seine Tiefe; ein Phantom zehnmal weiter weg bräuchte das Hundertfache und verliert. Vorher kostete jede Überschreitung sprunghaft 30 und überstimmte auch eindeutige Phasen (im Simulator am Bildrand der Halle). Die Nachbarn wählen nie einen zweitbesten Kandidaten, den die Helligkeit verworfen hat. Ein Speckle-Filter nimmt einzelne Ausreißer heraus, der Kantenfilter wächst mit der Entfernung.
+- **Mehrwege (Flag `MULTIPATH`):** Ein Echo erreicht alle drei Frequenzen gleich stark. Zwei Echos aus verschiedenen Entfernungen (eine streifend gesehene Tischplatte, Kanten, Streulicht) überlagern sich je Frequenz anders, weil ihr Phasenabstand mit der Frequenz wächst. Ein schwaches zweites Echo (Licht von der Wand auf dem Boden, eine Raumecke) verschiebt die Entfernung nur um Zentimeter: Bis `multipath_tolerance` (10, Chi-Quadrat-Einheiten über der Erwartung) bleibt die Konfidenz. Ein starkes (ein Spiegelbild auf glänzendem Boden, die streifende Tischplatte) gibt eine Entfernung, die zu keiner der beiden Flächen gehört, und senkt sie. Gemessen an zwei überlagerten Wänden in 1,0 und 1,6 m: Ist die hintere ein Viertel so stark, liegen alle Pixel richtig auf der vorderen; ist sie halb so stark, bekommen nur Pixel auf der vorderen Wand Tiefe (7 %, mit Toleranz 20 wären 42 % auf keiner von beiden); bei gleicher Stärke keiner. Bräuchte die beste Entfernung eine unplausible Helligkeit, gibt es keine Toleranz: Solche Pixel gaben Phasen, die zu einer Entfernung weit hinter der Rückwand passten. Die Nachbarn bestätigen oder ersetzen die Entfernung von Mehrwege-Pixeln nicht.
+- **Schlechter passend heißt nicht falsch:** Passen die Phasen des besten Kandidaten schlechter zusammen, als das Rauschmodell erwartet (Mehrwege und Streulicht verschieben jede Frequenz ein wenig anders), war das Rauschen eben größer. Der Vorsprung vor dem zweitbesten zählt dann in Einheiten dieser Abweichung: der a-posteriori-Varianzfaktor aus den Phasen- und Amplitudenkosten des Kandidaten, der zu den Phasen am besten passt, mit dem Rauschmodell als Vorwissen von 10 Freiheitsgraden (`NOISE_PRIOR_DOF`). Mehrdeutig ist ein Pixel erst, wenn der zweitbeste etwa so nah ist wie die Abweichung. Vorher senkte jede Abweichung die Konfidenz selbst: Boden, Decke, eine Papierlampe und der obere Teil einer Wand in 4 m fielen weg, obwohl ihre Entfernung eindeutig war.
 - **Vorsicht beim Entscheiden:** Der beste Kandidat muss um `margin_prior` (10) besser sein als der zweitbeste, bevor die Entfaltung ihm mehr glaubt als dem anderen. Das Modell kennt nur das Rauschen; was es nicht kennt, lässt einen falschen Kandidaten ab und zu um ein paar Einheiten gewinnen.
 - **Verlorene USB-Daten:** Fehlt ein Phasenbild (oder ein Teil davon, weil ein USB-Paket verloren ging), wird es wie eine gesättigte Probe aus den beiden anderen seiner Frequenz rekonstruiert, mit passend höherem Rauschen im Modell.
 
@@ -29,18 +30,18 @@ Ein schlanker Kinect-v2-Treiber in Rust, der nicht abstürzt: USB direkt über l
 
 Die Tabellen unten sind gegen einen physikalischen Simulator der Kamera gemessen (`driver/src/sim/`: Phasen, Rauschmodell, Sättigung, Mehrwegfehler, Pixelkanten), der den Rohpaketen der Kinect Byte für Byte gleicht. `kinect-driver eval` druckt die Tabellen. Anteil der Pixel mit Tiefe / davon richtig (innerhalb 1 % bzw. 15 mm) / falsch (über 5 % daneben):
 
-| Szene, Bereich | compat | extended | extended bis 15.10. |
-|---|---|---|---|
-| Raum, 3–4,5 m | 65 % / 54 % / 0,06 % | 77 % / 66 % / 0,04 % | 78 % / 66 % / 0,24 % |
-| Raum, 4,5–6 m (Rückwand) | 33 % / 33 % / 0 % | 99 % / 99 % / 0 % | 99 % / 99 % / 0 % |
-| nah, unter 0,5 m | 0 % | 99 % / 61 % / 0 % | 98 % / 60 % / 0 % |
-| nah, gesättigte Pixel | 0 % | 100 % / 56 % / 0 % | 100 % / 55 % / 0 % |
-| Halle, 4,5–6 m | 0,5 % / 0,2 % / 0,05 % | 33 % / 23 % / 0,21 % | 32 % / 22 % / 0,47 % |
-| Halle, 8–10 m | 0,3 % / 0 % / 0,3 % | 47 % / 41 % / 0,01 % | 44 % / 39 % / 0,13 % |
-| dunkle Flächen, 6–8 m | 0,1 % / 0 % / 0,05 % | 6 % / 5 % / 0 % | 15 % / 9 % / 1,1 % |
-| Rampe, Tiefe, wo nichts ist (2 Frames) | 552 Pixel | 106 Pixel | 3.360 Pixel |
+| Szene, Bereich | compat | extended | extended 15.10. mittags | extended bis 15.10. |
+|---|---|---|---|---|
+| Raum, 3–4,5 m | 65 % / 54 % / 0,06 % | 76 % / 65 % / 0,03 % | 77 % / 66 % / 0,04 % | 78 % / 66 % / 0,24 % |
+| Raum, 4,5–6 m (Rückwand) | 33 % / 33 % / 0 % | 99 % / 99 % / 0 % | 99 % / 99 % / 0 % | 99 % / 99 % / 0 % |
+| nah, unter 0,5 m | 0 % | 99 % / 61 % / 0 % | 99 % / 61 % / 0 % | 98 % / 60 % / 0 % |
+| nah, gesättigte Pixel | 0 % | 100 % / 56 % / 0 % | 100 % / 56 % / 0 % | 100 % / 55 % / 0 % |
+| Halle, 4,5–6 m | 0,5 % / 0,2 % / 0,05 % | 33 % / 23 % / 0,09 % | 33 % / 23 % / 0,21 % | 32 % / 22 % / 0,47 % |
+| Halle, 8–10 m | 0,3 % / 0 % / 0,3 % | 45 % / 40 % / 0 % | 47 % / 41 % / 0,01 % | 44 % / 39 % / 0,13 % |
+| dunkle Flächen, 6–8 m | 0,1 % / 0 % / 0,05 % | 4 % / 3 % / 0 % | 6 % / 5 % / 0 % | 15 % / 9 % / 1,1 % |
+| Rampe, Tiefe, wo nichts ist (2 Frames) | 552 Pixel | 69 Pixel | 106 Pixel | 3.360 Pixel |
 
-Seit dem ersten Test an der echten Kinect sind falsche Pixel auch im Simulator fast verschwunden; dafür reicht der erweiterte Modus auf dunklen Flächen nicht mehr so weit (über 6 m). Der Simulator rauscht etwa fünfmal schwächer als die echte Kinect und beleuchtet den Rand gleichmäßiger (cos²): Das Rauschmodell des Decoders ist für ihn zu vorsichtig, an der echten Kinect passt es.
+Seit dem ersten Test an der echten Kinect sind falsche Pixel auch im Simulator fast verschwunden; dafür reicht der erweiterte Modus auf dunklen Flächen nicht mehr so weit (über 6 m). Die falschen Pixel der Halle lagen am Bildrand und zu nah: Der Simulator beleuchtet den Rand heller als die echte Kinect, und die sprunghafte Helligkeitsstrafe bis 15.10. mittags überstimmte dort eindeutige Phasen (`examples/sim_outliers.rs` zählt sie nach Art). Der Simulator rauscht etwa fünfmal schwächer als die echte Kinect und beleuchtet den Rand gleichmäßiger (cos²): Das Rauschmodell des Decoders ist für ihn zu vorsichtig, an der echten Kinect passt es.
 
 IR, wo der Sensor sättigt: compat 100 % weiß abgeschnitten, extended 0 %. Ein verlorenes Phasenbild kostet im erweiterten Modus 2–15 % der richtigen Pixel (ohne Rekonstruktion bis zu 99 % oder 20-mal mehr falsche).
 
@@ -52,16 +53,26 @@ IR, wo der Sensor sättigt: compat 100 % weiß abgeschnitten, extended 0 %. Ein 
 
 Erster Test am 15.10.2026: Kinect v2 (Vorabversion, Firmware 4.0.3917.0) an einem ThinkPad X13 (Ryzen 5 4650U), ein leerer, ruhiger Raum mit Wänden und Regal bei 0,5–2,5 m und einer streifend gesehenen Tischplatte im Vordergrund. Rohdaten: `recordings/2026-10-15-rohpakete/` (nicht im Repository), dort auch `BEFUNDE-kinect-driver.md`. Gemessen mit `replay --compare --frames 60`, je Frame:
 
-| | extended bis 15.10. | extended |
-|---|---|---|
-| Pixel mit Tiefe (compat: 73,2 %) | 61,0 % | 79,7 % |
-| 0–0,5 m (die Tischplatte; compat misst erst ab 0,5 m) | 2.980 | 23.136 |
-| 0,5–2 m in beiden Modi, davon gleich (1 % / 10 mm) | 126.104, 98,2 % | 147.698, 97,8 % |
-| 0,5–2 m nur compat | 32.768 | 11.294 |
-| 0,5–2 m nur extended | 1.276 | 2.240 |
-| Phantome jenseits 4,5 m (der Raum endet bei 2,5 m) | 1.953 | 1 |
+| | extended bis 15.10. | 15.10. mittags | extended |
+|---|---|---|---|
+| Pixel mit Tiefe (compat: 73,2 %) | 61,0 % | 79,7 % | 86,0 % |
+| 0–0,5 m (die Tischplatte; compat misst erst ab 0,5 m) | 2.980 | 23.136 | 29.834 |
+| 0,5–2 m in beiden Modi, davon gleich (1 % / 10 mm) | 126.104, 98,2 % | 147.698, 97,8 % | 153.796, 96,3 % |
+| 0,5–2 m nur compat | 32.768 | 11.294 | 5.212 |
+| 0,5–2 m nur extended | 1.276 | 2.240 | 3.146 |
+| Phantome jenseits 4,5 m (der Raum endet bei 2,5 m) | 1.953 | 1 | 2 |
 
-- **Zuverlässige Pixel** (Tiefe in mindestens 90 % der Frames, zeitlich unter 1 % Streuung, mindestens 6 der 8 Nachbarn ebenso): compat 114.470, extended 114.810. Extended hat 98,2 % der zuverlässigen compat-Pixel, 98,1 % davon auf 1 % / 10 mm gleich. Was fehlt, liegt fast ganz in einer Ecke unten links, die compat bei 1 m sieht und deren Amplituden nicht zu einem Echo passen.
+- **Zuverlässige Pixel** (Tiefe in mindestens 90 % der Frames, zeitlich unter 1 % Streuung, mindestens 6 der 8 Nachbarn ebenso): Extended hat 99,2 % der zuverlässigen compat-Pixel (mittags 98,2 %), 98,5 % davon auf 1 % / 10 mm gleich. Was fehlt, liegt in einer Ecke unten links, die compat bei 1 m sieht und deren Amplituden zwei etwa gleich starke Echos zeigen.
+- **Drei weitere Aufnahmen vom 15.10.** (`diag_raw`, 60 Frames, beim Zimmer 30): Pixel mit Tiefe, in Klammern der Anteil der zuverlässigen compat-Pixel, den extended hat.
+
+  | Aufnahme | compat | extended mittags | extended |
+  |---|---|---|---|
+  | `raw-2026-10-15-wand`: Zimmer, Rückwand in 4 m, Decke, Boden, Papierlampe | 63,0 % | 74,5 % (84,8 %) | 87,8 % (99,3 %) |
+  | `raw-2026-10-15-wand-hand`: weiße Wand frontal aus der Hand, gedreht, 0,6–2 m | 94,7 % | 99,4 % (100 %) | 99,5 % (100 %) |
+  | `raw-2026-10-15-boden`: glänzender Boden, flach von Tischhöhe | 74,7 % | 59,3 % (69,2 %) | 87,5 % (99,7 %) |
+
+  Mittags fielen im Zimmer Boden, Decke, Lampe und der obere Teil der Rückwand weg (Mehrwege-Licht passte nicht zum Rauschmodell, siehe „Schlechter passend heißt nicht falsch“). Jenseits 7 m: Zimmer 58 Pixel je Frame (mittags 142; hinter dem Fenster, ob echt, ist offen), Boden 278 (mittags 1.234).
+- **Glänzender Boden:** Flach gesehen spiegelt er; die Kinect misst die Spiegelbilder von Möbeln und Wänden „im Boden“ (compat ebenso). Wo der matte Boden selbst noch ein Echo gibt, überlagern sich zwei: Ein Pixel liefert drei komplexe Werte, also sechs Zahlen, zwei Echos sind vier Unbekannte. `examples/two_echoes.rs` zerlegt jeden Pixel versuchsweise (Rastersuche, 5 s für 124 Zeilen): Auf `raw-2026-10-15-boden` liegt das erste Echo zu 48 % auf einer Ebene (±3 cm), die Tiefe des Decoders zu 25 %, 40 % davon über 5 cm unter dem Boden (das zweite Echo: 98 % darunter, die Spiegelbilder). Noch nicht im Decoder.
 - **Was compat allein hat**, sind vor allem Mischpixel: Blattränder, Kanten und diese Ecke. Ihre Werte liegen zwischen den Entfernungen, die sie mischen.
 - **CPU und GPU** liefern auf diesem Dump dasselbe (unter 0,1 Pixel je Frame mit Tiefe in nur einem, höchstens eine halbe Millimeterstufe).
 - **Zeit** unverändert: 8,8 ms je Frame mit 4 Threads auf dem Ryzen 5 4650U, auf der Radeon-iGPU 9,4 ms.

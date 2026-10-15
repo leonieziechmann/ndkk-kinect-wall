@@ -24,7 +24,7 @@ use crate::pipeline::TofDecoder;
 use crate::tables::DeviceTables;
 use crate::tof::config::{TofConfig, TofMode};
 use crate::tof::cpu::{Prepared, edge_params, s1_params, s2_params, s3_params};
-use crate::tof::kernels::{ANCHOR_CONFIDENCE, FULL_SCALE, MULTIPATH_MARGIN, REBUILT_NOISE, TIE_BREAK, U_RANGE_MM, flags, kind};
+use crate::tof::kernels::{ANCHOR_CONFIDENCE, FULL_SCALE, IMPLAUSIBLE, MULTIPATH_MARGIN, NOISE_PRIOR_DOF, REBUILT_NOISE, TIE_BREAK, U_RANGE_MM, flags, kind};
 use crate::tof::pack::{self, Codec, formats};
 use crate::tof::resolve::{CONFIRMED_CONFIDENCE, SURE_CONFIDENCE};
 use crate::tof::post::PostScratch;
@@ -143,13 +143,14 @@ fn params(cfg: &TofConfig) -> Vec<(&'static str, Value)> {
         ("min_amplitude", F(s2.min_amplitude)),
         ("weak_boost", U(u32::from(s2.weak_boost))),
         ("weak_threshold", F(s2.weak_threshold)),
-        ("plausibility", U(u32::from(s2.plausibility))),
         ("inv_brightness", F(s2.inv_brightness)),
-        ("min_reflectivity", F(s2.min_reflectivity)),
-        ("max_reflectivity", F(s2.max_reflectivity)),
+        ("ln_min_reflectivity", F(s2.ln_min_reflectivity)),
+        ("ln_max_reflectivity", F(s2.ln_max_reflectivity)),
+        ("penalty_scale", F(s2.penalty_scale)),
         ("ir_output", F(s2.ir_output)),
         ("multipath", U(u32::from(s2.multipath))),
         ("amplitude_floor", F(s2.amplitude_floor)),
+        ("multipath_tolerance", F(s2.multipath_tolerance)),
         ("margin_prior", F(s2.margin_prior)),
         ("min_depth", F(e.min_depth)),
         ("max_depth", F(e.max_depth)),
@@ -264,6 +265,8 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("ANCHOR_CONFIDENCE", ANCHOR_CONFIDENCE),
         ("TIE_BREAK", TIE_BREAK),
         ("MULTIPATH_MARGIN", MULTIPATH_MARGIN),
+        ("NOISE_PRIOR_DOF", NOISE_PRIOR_DOF),
+        ("IMPLAUSIBLE", IMPLAUSIBLE),
         ("SURE_CONFIDENCE", SURE_CONFIDENCE),
         ("CONFIRMED_CONFIDENCE", CONFIRMED_CONFIDENCE),
     ] {

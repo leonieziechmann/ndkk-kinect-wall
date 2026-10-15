@@ -658,9 +658,9 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
         let u = um - s1 * inv_wn2;
         let dm = u * (U_RANGE_MM * 0.001);
         let rho = irl * illum * dm * dm * P.inv_brightness;
-        let implausible = rho > P.max_reflectivity || rho < P.min_reflectivity;
-        var pen = 0.0;
-        if (implausible && P.plausibility != 0u) { pen = 30.0; }
+        let lr = ln_(max(rho, 1e-30));
+        let out = max(max(lr - P.ln_max_reflectivity, P.ln_min_reflectivity - lr), 0.0);
+        let pen = out * out * P.penalty_scale;
         let ep = e + mf * TIE_BREAK;
         let et = ep + pen;
         if (et < e1) {
@@ -681,12 +681,13 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
             pen_at_min = pen;
         }
     }
+    // the phase gap in units of the misfit (kernels.rs, pass C)
     let dof = max(nvalid - 1.0, 0.0);
     let dof_all = dof + dof_amp;
-    let chi = dof_all + 3.0 * sqrt(2.0 * dof_all);
-    let margin = min(e2 - e1 - P.margin_prior, 80.0);
+    let scale = max((NOISE_PRIOR_DOF + emin + chi_amp) / (NOISE_PRIOR_DOF + dof_all), 1.0);
+    let gap = max((e2 - pen2 - ep1) / scale + pen2 - pen1, 0.0);
+    let margin = min(gap - P.margin_prior, 80.0);
     let post = 1.0 / (1.0 + exp_(-0.5 * margin));
-    let cons = exp_(-0.5 * max(ep1 + chi_amp - chi, 0.0));
     let chi_a = dof_amp + 3.0 * sqrt(2.0 * dof_amp);
     let multipath = chi_amp > chi_a + MULTIPATH_MARGIN;
     let multi = nvalid >= 2.0;
@@ -698,22 +699,27 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
         ou2 = (c_ref + 1.0) / n_ref;
     }
     var conf = 0.0;
-    if (multi) { conf = post * cons; }
+    // how far the amplitudes miss one echo, beyond the tolerance (none for an implausible best;
+    // kernels.rs, pass C)
+    var tolerance = P.multipath_tolerance;
+    if (pen1 > IMPLAUSIBLE) { tolerance = 0.0; }
+    let echoes = exp_(-0.5 * max(chi_amp - chi_a - tolerance, 0.0));
+    if (multi) { conf = post * echoes; }
     var anchor = 0.0;
     if (multi && conf >= ANCHOR_CONFIDENCE) { anchor = conf; }
     var kind = KIND_NONE;
     if (multi) {
         kind = KIND_MULTI;
-        if (pen2 > 0.0) { kind |= KIND_SECOND_IMPLAUSIBLE; }
+        if (pen2 > IMPLAUSIBLE) { kind |= KIND_SECOND_IMPLAUSIBLE; }
     } else if (single) { kind = KIND_SINGLE | (r_idx << 4u); }
     wset(W_U12, i, pair(frac_of(ou1), frac_of(ou2)));
-    wset(W_GAPC, i, pair(f16_of(max(e2 - e1, 0.0), GAP_SCALE), unorm_of(conf)));
+    wset(W_GAPC, i, pair(f16_of(gap, GAP_SCALE), unorm_of(conf)));
     wset(W_CSIR, i, pair(unorm_of(c_ref), f16_of(ir_sum, IRSUM_SCALE)));
     let small = usable | (u32(edge) << 3u) | ((fl & FL_SATURATED_ANY) << 4u) | (kind << 8u);
     wset(W_SMALL, i, pair(small, unorm_of(anchor)));
     if (boosted) { fl |= FL_WEAK_BOOSTED; }
     if (nvalid == 0.0) { fl |= FL_NO_SIGNAL; }
-    if (pen_at_min > 0.0 && nvalid >= 2.0) { fl |= FL_PLAUSIBILITY; }
+    if (pen_at_min > IMPLAUSIBLE && nvalid >= 2.0) { fl |= FL_PLAUSIBILITY; }
     if (multipath) { fl |= FL_MULTIPATH; }
     wset(W_FLAGS, i, fl);
 }

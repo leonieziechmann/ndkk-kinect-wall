@@ -150,6 +150,11 @@ pub struct ExtendedParams {
     pub brightness_1m: f32,
     /// largest plausible reflectivity (1 = white paper; reflectors are brighter)
     pub max_reflectivity: f32,
+    /// how much a candidate distance costs that needs a reflectivity outside [min_reflectivity,
+    /// max_reflectivity]: 1 (chi-square unit) at this factor beyond, 4 at its square, 9 at its
+    /// cube (glossy paint seen head-on reflects a few times more than white paper; a phantom ten
+    /// times farther away than the surface would need a hundred times more)
+    pub plausibility_spread: f32,
     /// the illumination of the Kinect (light source and lens) is nearly even in the middle of
     /// the image and falls off steeply towards the edges: to half at this angle off the axis,
     /// degrees (relative illumination 1 / (1 + (tan angle / tan this)^steepness));
@@ -173,6 +178,12 @@ pub struct ExtendedParams {
     /// relative spread of the amplitude ratios of a single echo beyond the noise (pixel to
     /// pixel differences of the gains)
     pub amplitude_floor: f32,
+    /// how far (chi-square units) the amplitudes may miss a single echo before the confidence
+    /// drops: a weak second echo (light from the wall on the floor) moves the distance by a few
+    /// centimeters, a strong one (a mirror image on a glossy floor, a grazing table top) makes it
+    /// neither distance. Where the best distance would need an implausible brightness, nothing is
+    /// tolerated
+    pub multipath_tolerance: f32,
     /// how much lower (chi-square units) the cost of the best distance must be than that of the
     /// second best before the unwrapping is more sure of it than of the other: the noise model
     /// knows only noise, and the errors it does not know (multipath, stray light) now and then
@@ -205,6 +216,7 @@ impl Default for ExtendedParams {
             plausibility: true,
             brightness_1m: 25000.0,
             max_reflectivity: 1.5,
+            plausibility_spread: 1.15,
             illumination_angle: 31.0,
             illumination_steepness: 7.0,
             min_reflectivity: 0.002,
@@ -213,6 +225,7 @@ impl Default for ExtendedParams {
             fill_saturated_depth: true,
             multipath_check: true,
             amplitude_floor: 0.15,
+            multipath_tolerance: 10.0,
             margin_prior: 10.0,
         }
     }
@@ -286,6 +299,9 @@ impl TofConfig {
         if !positive(e.brightness_1m) || e.max_reflectivity.partial_cmp(&e.min_reflectivity) != Some(std::cmp::Ordering::Greater) || e.min_reflectivity < 0.0 {
             return bad("brightness_1m must be positive and min_reflectivity < max_reflectivity");
         }
+        if !(e.plausibility_spread > 1.0 && e.plausibility_spread.is_finite()) {
+            return bad("plausibility_spread must be above 1");
+        }
         if !(5.0..=80.0).contains(&e.illumination_angle) || !(0.0..=30.0).contains(&e.illumination_steepness) {
             return bad("illumination_angle must be within 5..80 degrees, illumination_steepness within 0..30");
         }
@@ -346,6 +362,7 @@ impl TofConfig {
             "plausibility" => e.plausibility = b()?,
             "brightness_1m" => e.brightness_1m = f()?,
             "max_reflectivity" => e.max_reflectivity = f()?,
+            "plausibility_spread" => e.plausibility_spread = f()?,
             "illumination_angle" => e.illumination_angle = f()?,
             "illumination_steepness" => e.illumination_steepness = f()?,
             "min_reflectivity" => e.min_reflectivity = f()?,
@@ -354,6 +371,7 @@ impl TofConfig {
             "fill_saturated_depth" => e.fill_saturated_depth = b()?,
             "multipath_check" => e.multipath_check = b()?,
             "amplitude_floor" => e.amplitude_floor = f()?,
+            "multipath_tolerance" => e.multipath_tolerance = f()?,
             "margin_prior" => e.margin_prior = f()?,
             other => return Err(crate::Error::config(format!("unknown setting {other:?}"))),
         }

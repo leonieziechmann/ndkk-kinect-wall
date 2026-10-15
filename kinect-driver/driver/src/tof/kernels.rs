@@ -341,14 +341,15 @@ pub struct S2Params {
     pub weak_boost: bool,
     /// extended: amplitude below which a pixel is weak
     pub weak_threshold: f32,
-    /// extended: brightness plausibility on/off
-    pub plausibility: bool,
     /// extended: 1 / (infrared of albedo 1 at 1 m), in libfreenect2's infrared scale
     pub inv_brightness: f32,
-    /// extended: plausible reflectivity range
-    pub min_reflectivity: f32,
-    /// extended: plausible reflectivity range
-    pub max_reflectivity: f32,
+    /// extended: ln of the plausible reflectivity range
+    pub ln_min_reflectivity: f32,
+    /// extended: ln of the plausible reflectivity range
+    pub ln_max_reflectivity: f32,
+    /// extended: cost of a candidate per (ln of the factor it lies outside that range)^2 (0 = no
+    /// plausibility)
+    pub penalty_scale: f32,
     /// libfreenect2's infrared output scale (amplitude * ab_multiplier * this = infrared)
     pub ir_output: f32,
     /// extended: test whether the amplitudes of the frequencies fit a single echo
@@ -357,6 +358,8 @@ pub struct S2Params {
     pub gain: [f32; 3],
     /// extended: relative spread of the amplitude ratios beyond the noise
     pub amplitude_floor: f32,
+    /// extended: how far the amplitudes may miss one echo before the confidence drops
+    pub multipath_tolerance: f32,
     /// extended: how much better (in cost) the best distance must be than the second best to
     /// count as even odds
     pub margin_prior: f32,
@@ -378,7 +381,8 @@ pub struct S2OutExt<'a> {
     pub u1: &'a mut Row,
     /// second best
     pub u2: &'a mut Row,
-    /// how much more the second best costs than the best (chi-square like, >= 0)
+    /// how much more the second best costs than the best (chi-square like, >= 0; the phases in
+    /// units of the misfit, see [`NOISE_PRIOR_DOF`])
     pub gap: &'a mut Row,
     /// for analysis tools: the phase cost of the best (chi-square of the phases), if wanted
     pub cost: Option<&'a mut Row>,
@@ -692,6 +696,16 @@ fn atan2_8<I: Isa>(y: F8, x: F8) -> F8 {
 /// [`flags::MULTIPATH`] (its confidence is lowered by the cost either way).
 pub const MULTIPATH_MARGIN: f32 = 4.0;
 
+/// How much the noise model counts against the misfit of a pixel when its costs are scaled (in
+/// degrees of freedom; a pixel has 1 to 4 of its own): with 10, the gap of a pixel with all
+/// three frequencies (4 degrees of freedom) halves when its best costs 18 instead of 4.
+pub const NOISE_PRIOR_DOF: f32 = 10.0;
+
+/// A candidate whose brightness costs more than this counts as implausible (flag
+/// [`flags::PLAUSIBILITY`], [`kind::SECOND_IMPLAUSIBLE`]): beyond the plausible reflectivities by
+/// more than `plausibility_spread`.
+pub const IMPLAUSIBLE: f32 = 1.0;
+
 /// The single-echo test of eight pixels: one echo reaches every frequency with the same
 /// amplitude (after the gain correction), two at different distances add up differently at each
 /// one (they interfere with a phase difference that grows with the frequency). Returns the
@@ -773,12 +787,12 @@ fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutEx
     let o_n = [use2.select(F8::splat(nf[0]), F8::splat(nf[1])), use2.select(F8::splat(nf[1]), F8::splat(nf[2]))];
     // pass B: every candidate of the reference frequency, refined by least squares; keep the
     // best two
-    let penalty = F8::splat(if p.plausibility { 30.0 } else { 0.0 });
-    // reflectivity rho = brightness * (u * to_m)^2 outside [min, max] is implausible: as bounds
-    // on u^2
+    // the reflectivity a candidate needs, rho = brightness * (u * to_m)^2: outside [min, max]
+    // it costs the more the further out (log-normal tails: glossy paint seen head-on is a few
+    // times brighter than white paper, a phantom ten times farther away needs a hundred times)
     let to_m = U_RANGE_MM * 0.001;
     let bright = irl * F8::load(i.illum, x) * F8::splat(p.inv_brightness * to_m * to_m);
-    let (u2_max, u2_min) = (F8::splat(p.max_reflectivity) / bright, F8::splat(p.min_reflectivity) / bright);
+    let (ln_max, ln_min, pen_scale) = (F8::splat(p.ln_max_reflectivity), F8::splat(p.ln_min_reflectivity), F8::splat(p.penalty_scale));
     let (mut e1, mut u1, mut e2, mut u2) = (inf, zero, inf, zero);
     // the phase cost of the best (the consistency below does not count the brightness), and
     // whether the candidate that fits the phases best had an implausible brightness
@@ -796,10 +810,10 @@ fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutEx
         let t = s1 * inv_wn2;
         let ep = (-s1).mul_add::<I>(t, s2).max(zero);
         let u = um - t;
-        // implausible reflectivities are penalized (a strong prior for the choice, not a hard
-        // limit)
-        let uu = u * u;
-        let pen = (uu.gt(u2_max) | uu.lt(u2_min)).and(penalty);
+        // implausible reflectivities are penalized (a prior for the choice, not a hard limit)
+        let lr = (bright * (u * u)).max(F8::splat(1e-30)).map_lanes(ln);
+        let out = (lr - ln_max).max(ln_min - lr).max(zero);
+        let pen = out * out * pen_scale;
         // equally good candidates (only 80 and 120 MHz usable repeat every 3.75 m): the nearer
         // one wins, not the rounding
         let ep = mf.mul_add::<I>(F8::splat(TIE_BREAK), ep);
@@ -818,26 +832,41 @@ fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutEx
         emin = bm.select(ep, emin);
         pen_at_min = bm.select(pen, pen_at_min);
     }
-    // pass C: confidence = how much better the best is than the second (posterior of two
-    // hypotheses) times how consistent the best is (chi-square of the phases with nvalid - 1
-    // dof, plus that of the amplitudes)
+    // pass C: confidence = the odds that the best is the right distance and not the second best
+    // (posterior of two hypotheses). The phase costs count in units of the noise model; where
+    // the best fits worse than the model expects (multipath, stray light shift the phases and
+    // amplitudes of the frequencies a little each), the noise was larger, and the phase gap
+    // counts in units of the misfit (the a-posteriori variance factor, with the model as a prior
+    // worth NOISE_PRIOR_DOF degrees of freedom). A worse fit does not make the distance wrong;
+    // it is ambiguous only when the second best is about as close as the misfit. The misfit is
+    // that of the distance the phases fit best: where the brightness prior chose another one,
+    // its higher cost says that it is the wrong one, not that the noise was larger.
     let dof = (nvalid - one).max(zero);
     let dof_all = dof + dof_amp;
-    let chi = dof_all + F8::splat(3.0) * (dof_all + dof_all).sqrt();
+    let nu = F8::splat(NOISE_PRIOR_DOF);
+    let scale = ((nu + emin + chi_amp) / (nu + dof_all)).max(one);
+    // the penalties are priors, not misfits: they are not scaled
+    let gap = ((e2 - pen2 - ep1) / scale + pen2 - pen1).max(zero);
     // the margin over the second best, less the prior: errors that the noise model does not
-    // know (multipath, stray light) let a wrong candidate win by a few units now and then
-    let margin = (e2 - e1 - F8::splat(p.margin_prior)).min(F8::splat(80.0));
+    // know let a wrong candidate win by a few units now and then
+    let margin = (gap - F8::splat(p.margin_prior)).min(F8::splat(80.0));
     let half = F8::splat(-0.5);
     let post = one / (one + (half * margin).exp_fd::<I>());
-    let cons = (half * (ep1 + chi_amp - chi).max(zero)).exp_fd::<I>();
     let chi_a = dof_amp + F8::splat(3.0) * (dof_amp + dof_amp).sqrt();
     let multipath = chi_amp.gt(chi_a + F8::splat(MULTIPATH_MARGIN));
     let multi = nvalid.ge(F8::splat(2.0));
     let single = nvalid.eq(one);
-    let conf = multi.and(post * cons);
+    // the amplitudes say that more than one echo arrived: a weak second echo moves the distance
+    // a little (tolerated), a strong one makes it neither distance. A best distance that needs
+    // an implausible brightness is the mixture of two echoes (a grazing surface and what it
+    // reflects) that happened to fit a distance where nothing is: no tolerance.
+    let implausible = F8::splat(IMPLAUSIBLE);
+    let tolerance = pen1.gt(implausible).select(zero, F8::splat(p.multipath_tolerance));
+    let echoes = (half * (chi_amp - chi_a - tolerance).max(zero)).exp_fd::<I>();
+    let conf = multi.and(post * echoes);
     single.select(c_ref * inv_ref, u1).store(o.u1, x);
     single.select((c_ref + one) * inv_ref, u2).store(o.u2, x);
-    (e2 - e1).max(zero).store(o.gap, x);
+    gap.store(o.gap, x);
     if let Some(c) = o.cost.as_deref_mut() {
         ep1.store(c, x);
     }
@@ -848,9 +877,9 @@ fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutEx
     // kind, with the index of the single frequency in bits 4..6
     let r_idx = use2.select_u32([2; LANES], (!use0).select_u32([1; LANES], [0; LANES]));
     let single_kind = std::array::from_fn(|l| u32::from(kind::SINGLE) | (r_idx[l] << 4));
-    let multi_kind = pen2.gt(zero).select_u32([u32::from(kind::MULTI | kind::SECOND_IMPLAUSIBLE); LANES], [u32::from(kind::MULTI); LANES]);
+    let multi_kind = pen2.gt(implausible).select_u32([u32::from(kind::MULTI | kind::SECOND_IMPLAUSIBLE); LANES], [u32::from(kind::MULTI); LANES]);
     let kinds = multi.select_u32(multi_kind, single.select_u32(single_kind, [u32::from(kind::NONE); LANES]));
-    let plaus = pen_at_min.gt(zero) & nvalid.ge(F8::splat(2.0));
+    let plaus = pen_at_min.gt(implausible) & nvalid.ge(F8::splat(2.0));
     let added = M8::bits_u8(f.boosted, x, 1).and_u32(flags::WEAK_BOOSTED);
     let added: [u32; LANES] =
         std::array::from_fn(|l| added[l] | nvalid.eq(zero).and_u32(flags::NO_SIGNAL)[l] | plaus.and_u32(flags::PLAUSIBILITY)[l] | multipath.and_u32(flags::MULTIPATH)[l]);
