@@ -12,10 +12,17 @@ usage: kinect-hub [options]
   --source kinect|synthetic|replay FILE
                          data source (default kinect; synthetic = generated test scene;
                          replay FILE = loop a recording of `kinect-hub-probe record`)
-  --worker PATH          capture worker (default: fn2/bin/fn2_capture.exe, searched upwards)
+  --worker kinect-driver|fn2|PATH
+                         capture worker (default: the Rust driver
+                         kinect-driver/target/release/kinect-driver.exe, else libfreenect2's
+                         fn2/bin/fn2_capture.exe, both searched upwards; fn2 = always libfreenect2)
+  --driver-mode compat|extended
+                         depth decoding of kinect-driver (default compat = the results of
+                         libfreenect2; extended = more range, near despite saturation, costs about
+                         twice the CPU). KINECT_DRIVER_MODE in the environment sets the default.
   --pipeline fast|cl|cpu|clkde
                          depth decoding inside the worker (default fast = on the CPU with AVX2,
-                         leaves the GPU to the scenes; cl = OpenCL on the GPU)
+                         leaves the GPU to the scenes; cl = on the GPU)
   --max-clients N        simultaneous WebSocket clients (default 64)
   --smoothing A          temporal filter for the `depth` stream: weight of the newest frame,
                          0.05..1 (default 0.4; 1 = off). `depth_raw` is never filtered.
@@ -57,6 +64,16 @@ impl SourceKind {
     }
 }
 
+/// The capture worker (`--worker`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkerChoice {
+    /// kinect-driver if it is built, else fn2_capture
+    Auto,
+    Driver,
+    Fn2,
+    Path(PathBuf),
+}
+
 /// Where the pose model runs (`--pose`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PoseDevice {
@@ -71,7 +88,9 @@ pub struct Config {
     pub source: SourceKind,
     /// The recording for `--source replay`, as given on the command line.
     pub replay: Option<PathBuf>,
-    pub worker: Option<PathBuf>,
+    pub worker: WorkerChoice,
+    /// KINECT_DRIVER_MODE for kinect-driver (fn2_capture ignores it)
+    pub driver_mode: String,
     pub pipeline: String,
     pub max_clients: usize,
     pub smoothing: f32,
@@ -96,7 +115,8 @@ impl Config {
             bind: SocketAddr::from(([127, 0, 0, 1], 8090)),
             source: SourceKind::Kinect,
             replay: None,
-            worker: None,
+            worker: WorkerChoice::Auto,
+            driver_mode: std::env::var("KINECT_DRIVER_MODE").ok().filter(|m| !m.trim().is_empty()).unwrap_or_else(|| "compat".to_string()),
             pipeline: "fast".to_string(),
             max_clients: 64,
             smoothing: 0.4,
@@ -135,7 +155,20 @@ impl Config {
                         other => return Err(format!("--source {other}: expected kinect, synthetic or replay FILE")),
                     }
                 }
-                "--worker" => cfg.worker = Some(PathBuf::from(value("--worker")?)),
+                "--worker" => {
+                    cfg.worker = match value("--worker")?.as_str() {
+                        "kinect-driver" | "rust" => WorkerChoice::Driver,
+                        "fn2" | "libfreenect2" => WorkerChoice::Fn2,
+                        path => WorkerChoice::Path(PathBuf::from(path)),
+                    }
+                }
+                "--driver-mode" => {
+                    let v = value("--driver-mode")?;
+                    if !["compat", "extended"].contains(&v.as_str()) {
+                        return Err(format!("--driver-mode {v}: expected compat or extended"));
+                    }
+                    cfg.driver_mode = v;
+                }
                 "--pipeline" => {
                     let v = value("--pipeline")?;
                     if !["fast", "cl", "cpu", "clkde"].contains(&v.as_str()) {
@@ -209,11 +242,27 @@ impl Config {
         Ok(Some(cfg))
     }
 
-    /// The worker executable, looked up again before every start (it may be rebuilt meanwhile).
+    /// The worker executable, looked up again before every start (it may be built meanwhile).
     pub fn worker_path(&self) -> Option<PathBuf> {
+        let driver = || find_upwards(&Path::new("kinect-driver").join("target").join("release").join("kinect-driver.exe"));
+        let fn2 = || find_upwards(&Path::new("fn2").join("bin").join("fn2_capture.exe"));
         match &self.worker {
-            Some(p) => p.is_file().then(|| p.clone()),
-            None => find_upwards(&Path::new("fn2").join("bin").join("fn2_capture.exe")),
+            WorkerChoice::Auto => driver().or_else(fn2),
+            WorkerChoice::Driver => driver(),
+            WorkerChoice::Fn2 => fn2(),
+            WorkerChoice::Path(p) => p.is_file().then(|| p.clone()),
+        }
+    }
+
+    /// What to build when the worker is missing.
+    pub fn worker_missing(&self) -> String {
+        let driver = "kinect-driver.exe (`cargo build --release` in kinect-driver/)";
+        let fn2 = "fn2_capture.exe (`sh fn2/build.sh`)";
+        match &self.worker {
+            WorkerChoice::Auto => format!("capture worker not found: build {driver} or {fn2}, or pass --worker"),
+            WorkerChoice::Driver => format!("capture worker not found: build {driver}"),
+            WorkerChoice::Fn2 => format!("capture worker not found: build {fn2}"),
+            WorkerChoice::Path(p) => format!("capture worker {} not found", p.display()),
         }
     }
 
@@ -303,5 +352,32 @@ mod tests {
         let names: Vec<String> = files.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
         assert_eq!(names, ["yolo11s-pose-512x448-fp16.onnx", "yolo11s-pose-384x320-fp16.onnx", "yolo11n-pose-384-fp16.onnx"]);
         assert!(files.iter().all(|p| p.is_file() && p.parent().is_some_and(|d| d.ends_with(Path::new("kinect-hub").join("models")))));
+    }
+
+    fn parse(args: &[&str]) -> Result<Option<Config>, String> {
+        Config::from_args(args.iter().map(|s| (*s).to_string()))
+    }
+
+    #[test]
+    fn worker_and_driver_mode_options() {
+        let worker = |args: &[&str]| parse(args).ok().flatten().map(|c| c.worker);
+        assert_eq!(worker(&[]), Some(WorkerChoice::Auto));
+        assert_eq!(worker(&["--worker", "fn2"]), Some(WorkerChoice::Fn2));
+        assert_eq!(worker(&["--worker", "kinect-driver"]), Some(WorkerChoice::Driver));
+        assert_eq!(worker(&["--worker", "x/w.exe"]), Some(WorkerChoice::Path(PathBuf::from("x/w.exe"))));
+        let mode = |args: &[&str]| parse(args).ok().flatten().map(|c| c.driver_mode);
+        assert_eq!(mode(&["--driver-mode", "extended"]).as_deref(), Some("extended"));
+        assert!(parse(&["--driver-mode", "fast"]).is_err());
+    }
+
+    #[test]
+    fn the_rust_driver_goes_first_when_it_is_built() {
+        let driver = find_upwards(&Path::new("kinect-driver").join("target").join("release").join("kinect-driver.exe"));
+        let auto = Config::from_args(std::iter::empty()).ok().flatten().and_then(|c| c.worker_path());
+        if driver.is_some() {
+            assert_eq!(auto, driver);
+        }
+        let fn2 = parse(&["--worker", "fn2"]).ok().flatten().and_then(|c| c.worker_path());
+        assert!(fn2.is_none_or(|p| p.ends_with(Path::new("fn2").join("bin").join("fn2_capture.exe"))));
     }
 }

@@ -97,9 +97,9 @@ fn supervise_worker(hub: &Arc<Hub>) {
     let mut backoff = BACKOFF_MIN;
     while !hub.stopping() {
         let Some(path) = hub.cfg.worker_path() else {
-            let msg = "capture worker fn2_capture.exe not found (build it with `sh fn2/build.sh` or pass --worker)";
+            let msg = hub.cfg.worker_missing();
             warn!("{msg}");
-            hub.set_sensor(SensorState::Offline, msg);
+            hub.set_sensor(SensorState::Offline, &msg);
             sleep_unless_stopping(hub, BACKOFF_MAX);
             continue;
         };
@@ -134,6 +134,7 @@ fn run_worker_once(hub: &Arc<Hub>, pipeline: &mut Pipeline, path: &Path) -> Stri
     let mut cmd = Command::new(path);
     cmd.arg("--pipeline")
         .arg(&hub.cfg.pipeline)
+        .env("KINECT_DRIVER_MODE", &hub.cfg.driver_mode) // kinect-driver takes everything but --pipeline from the environment
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

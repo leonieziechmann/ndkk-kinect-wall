@@ -8,7 +8,7 @@ pub const WIDTH: usize = 512;
 pub const HEIGHT: usize = 424;
 pub const PIXELS: usize = WIDTH * HEIGHT;
 
-// ---- worker -> hub (stdout of fn2_capture.exe) ----
+// ---- worker -> hub (stdout of kinect-driver.exe or fn2_capture.exe) ----
 
 pub const WORKER_MAGIC: u32 = 0x3157_324B; // "K2W1"
 pub const WORKER_HEADER_LEN: usize = 32;

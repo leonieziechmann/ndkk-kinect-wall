@@ -33,6 +33,7 @@ The user's one-click launcher for the exhibition. It starts the hub and the outp
 - It shares the notebook with the show, so it must stay cheap (about 5 ms CPU per second). Keep WMI, `Get-Process`, `Invoke-RestMethod`, display queries and `Write-Host` out of its loop; the header of `start-wand.ps1` says how.
 - `-Minimal` (desktop icon "Kinect-Wand starten (minimal)"), for a show that stutters now and then: the power plan is a copy of Balanced with only no sleep, lid, USB and PCIe (no CPU minimum or boost, which takes the APU's power and heat budget from the GPU), no priorities or efficiency mode, and the loop looks at windows, displays and the hub less often.
 - **R** in its window records training data while the show runs: 5 min (`-RecordMinutes`) of depth and IR from the hub with `kinect-hub-probe record`, into `recordings/wand-<date>-<time>.k2rec`. It asks for consent first and checks the free disk space.
+- `-Fn2`: the hub it starts uses libfreenect2's worker instead of the Rust driver (fallback if kinect-driver misbehaves). Its status line shows the driver ("Treiber Rust compat" / "libfreenect2").
 - It passes the hub its pose models (`kinect-hub/models/`) explicitly, so hub builds from before that folder find them too. `-Bevy` has no effect any more.
 - To test it, run `-NoWall -NoControl -Hub 8091`. For an output of your own, add `-Checkout <worktree>` and set `KINECT_WALL_DIR` (else it uses that checkout's `wall-bevy/data/`).
 - End a test run by creating `quit.flag` in that folder.
@@ -47,9 +48,9 @@ Only one process can open the Kinect at a time. **kinect-hub** owns it and serve
 - If it does not, start it in the background from the **main checkout**:
   - `MAIN=$(git worktree list --porcelain | sed -n '1s/^worktree //p')`
   - then `"$MAIN/kinect-hub/target/release/kinect-hub.exe"`
-- Worktrees have no built hub or worker (`target/` and `fn2/bin/` are not in git). Do not build them there.
+- Worktrees have no built hub or worker (`target/`, `kinect-driver/target/` and `fn2/bin/` are not in git). Do not build them there.
 - Never stop a hub you did not start yourself.
-- Do **not** start `fn2_capture.exe`, `fn2_reconnect.exe`, `viewer.py --fn2` or `pointcloud.py` without `--hub` while the hub runs; they would fight over the sensor. `viewer.py --hub` / `pointcloud.py --hub` are fine.
+- Do **not** start `fn2_capture.exe`, `fn2_reconnect.exe`, `kinect-driver.exe` on the sensor (`stream`, `record`, `info`, a worker without `KINECT_DRIVER_SOURCE`), `viewer.py --fn2` or `pointcloud.py` without `--hub` while the hub runs; they would fight over the sensor. `kinect-driver bench`/`replay` on a `.k2raw` file are fine. `viewer.py --hub` / `pointcloud.py --hub` are fine.
 - Recorded people instead of an empty room, or reproducible tests: use a **replay hub** on a separate port. It loops a recording at the original frame rate and never touches the Kinect.
   - `$MAIN/recordings/INDEX.md` lists every recording: session, length, persons, tags, use (`training`, `test`, …) and path. `recordings/README.md` has the layout and its rules: one folder per session `recordings/<date>-<place>/aufnahmen/<name>.k2rec`, with `session.json` (the classification) and `README.md`.
   - Never use what lies in `recordings/_gesperrt/` (recognizable children) or `recordings/_doppelt/` (copies); never train on `test` recordings (`final-*`, `alt-*`).
@@ -62,7 +63,8 @@ Only one process can open the Kinect at a time. **kinect-hub** owns it and serve
 - Protocol: `kinect-hub/README.md`, or `GET /api` (machine-readable).
 - Python: `kinect_hub.py` provides `Hub().depth()`, `.points()`, `.stream([...])` and `HubDepthSensor`.
 - Coordinates: x right, y down, z forward, in mm. point = (lut.x * z, lut.y * z, z). The Kinect image is mirrored.
-- The worker decodes the depth on the CPU by default (`--pipeline fast`, fn2/fast_depth.cpp, above normal priority: the sensor keeps 30 fps on a busy CPU), so the GPU belongs to the scenes and the hub's pose model. A scene that saturates the GPU still costs CPU and power on this APU; the control center's status tab and `/api/status` report the sensor rate. `--pipeline cl` = the old OpenCL decoding on the GPU.
+- The hub's capture worker is the Rust driver `kinect-driver/target/release/kinect-driver.exe` (mode `compat` = libfreenect2's results; `--driver-mode extended` = more range, about twice the CPU); without it, or with `--worker fn2` (start-wand `-Fn2`), libfreenect2's `fn2/bin/fn2_capture.exe`. `/api/status` → `worker.heartbeat.decoder` says which.
+- The worker decodes the depth on the CPU by default (`--pipeline fast`, kinect-driver compat or fn2/fast_depth.cpp, above normal priority: the sensor keeps 30 fps on a busy CPU), so the GPU belongs to the scenes and the hub's pose model. A scene that saturates the GPU still costs CPU and power on this APU; the control center's status tab and `/api/status` report the sensor rate. `--pipeline cl` = decoding on the GPU.
 - The hub tracks persons itself (streams `persons` / `persons_live`, pose model with DirectML; the models are in `kinect-hub/models/`): scenes with `persons: live` or `exact` take them automatically.
 - The hub spends the GPU where it is seen: it tracks only while a client subscribes, poses 3×/s with the cheapest model while nobody is in the room, and steps the pose model down while the output renders below its target fps.
 
@@ -71,5 +73,6 @@ Only one process can open the Kinect at a time. **kinect-hub** owns it and serve
 - Hub: `cargo build --release` in `kinect-hub/`. Once per checkout for the pose model (stream `poses`): `powershell -NoProfile -ExecutionPolicy Bypass -File kinect-hub/setup-onnxruntime.ps1` fetches `onnxruntime.dll` (not in git). Without it the hub runs without poses and says so in `/api/status`.
   - The running exe is locked. Stop the hub only if you started it yourself, or rename the running exe before building.
   - Lints deny `unwrap`/`expect`/`panic`/indexing. Run `cargo clippy --release --all-targets` before finishing.
-- Worker, DLLs, tools: `sh fn2/build.sh` (w64devkit gcc; from a worktree `T=<main>/third_party sh fn2/build.sh`). Depth decoder tools: `fn2_rawdump` (raw packets, needs the Kinect) and `depth_bench` (compares decoders offline). libfreenect2 is a patched copy in `third_party/`; the changes are in `third_party/libfreenect2-fastreconnect.patch`.
+- Worker (Rust driver, the default): `cargo build --release` in `kinect-driver/` (about 3 min; w64devkit gcc). Clippy: `cargo clippy --workspace --all-targets --all-features`. Test it without the Kinect: a hub on another port with `KINECT_DRIVER_SOURCE=<file>.k2raw` (raw packets, `recordings/2026-10-15-rohpakete/`).
+- libfreenect2 worker (fallback), DLLs, tools: `sh fn2/build.sh` (w64devkit gcc; from a worktree `T=<main>/third_party sh fn2/build.sh`). Depth decoder tools: `fn2_rawdump` (raw packets, needs the Kinect) and `depth_bench` (compares decoders offline). libfreenect2 is a patched copy in `third_party/`; the changes are in `third_party/libfreenect2-fastreconnect.patch`.
 - Robustness check after hub changes: `kinect-hub-probe abuse` must end with 0 errors, the healthy client at about 30 fps, and "http paths: ... OK".

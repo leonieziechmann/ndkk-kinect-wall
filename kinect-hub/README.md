@@ -3,7 +3,7 @@
 Middleware für die Kinect v2: **ein** Prozess besitzt den Sensor, rechnet alles, was jeder Client braucht, **einmal pro Frame** vor und streamt das Ergebnis an beliebig viele Clients (die LED-Wand-Ausgabe wall-bevy, Python, Rust, …) per WebSocket und HTTP.
 
 ```
-Kinect ─USB─▶ fn2_capture.exe   (C++/libfreenect2 + OpenCL, eigener Prozess)
+Kinect ─USB─▶ kinect-driver.exe (Rust, eigener Prozess; Rückfall: fn2_capture.exe, libfreenect2)
                  │ stdout: Tiefe+IR (float), Kameraparameter, Status, Heartbeat
                  ▼
            kinect-hub.exe       (Rust)
@@ -22,11 +22,19 @@ cargo build --release                      # im Ordner kinect-hub
 kinect-hub\target\release\kinect-hub.exe   # aus dem Projektordner
 ```
 
-Optionen (`--help`): `--bind 0.0.0.0:8090` (LAN statt nur localhost), `--source synthetic` (generierte Testszene ohne Kinect), `--source replay DATEI` (Aufnahme in Schleife abspielen, s. u.), `--pipeline fast|cl` (Tiefen-Dekodierung, s. u.), `--persons on|off`, `--persons-delay 12`, `--smoothing 0.4`, `--max-clients 64`, `--allow-origin URL`, `--worker`, `--pose dml|cpu|off`, `--pose-hz 15`, `--pose-models A,B,…`, `--onnxruntime` (s. u. „Posen“). Logging über `RUST_LOG=debug`.
+Optionen (`--help`): `--bind 0.0.0.0:8090` (LAN statt nur localhost), `--source synthetic` (generierte Testszene ohne Kinect), `--source replay DATEI` (Aufnahme in Schleife abspielen, s. u.), `--pipeline fast|cl` (Tiefen-Dekodierung, s. u.), `--persons on|off`, `--persons-delay 12`, `--smoothing 0.4`, `--max-clients 64`, `--allow-origin URL`, `--worker kinect-driver|fn2|PFAD`, `--driver-mode compat|extended` (s. u. „Worker“), `--pose dml|cpu|off`, `--pose-hz 15`, `--pose-models A,B,…`, `--onnxruntime` (s. u. „Posen“). Logging über `RUST_LOG=debug`.
 
 Für die Posen einmal je Checkout `powershell -NoProfile -ExecutionPolicy Bypass -File kinect-hub\setup-onnxruntime.ps1` (holt `onnxruntime.dll`, s. u.). Ohne läuft der Hub wie bisher, nur ohne Posen.
 
-Der Worker `fn2/bin/fn2_capture.exe` wird mit `sh fn2/build.sh` gebaut. Er braucht den libusbK-Treiber auf „Xbox NUI Sensor (Interface 0)“.
+### Worker
+
+Den Sensor liest ein eigener Prozess, der Worker. Standard ist der Rust-Treiber [`kinect-driver/target/release/kinect-driver.exe`](../kinect-driver/README.md) (`cargo build --release` in `kinect-driver/`); ist er nicht gebaut, nimmt der Hub libfreenect2s `fn2/bin/fn2_capture.exe` (`sh fn2/build.sh`). Beide werden von der exe und vom Arbeitsordner aus aufwärts gesucht und vor jedem Start neu nachgesehen. Beide brauchen den libusbK-Treiber auf „Xbox NUI Sensor (Interface 0)“.
+
+- `--worker fn2` nimmt immer libfreenect2 (im Startskript `-Fn2`), `--worker kinect-driver` immer den Rust-Treiber, `--worker PFAD` eine bestimmte exe.
+- `--driver-mode compat` (Standard): dasselbe Verfahren wie libfreenect2 bzw. `fn2/fast_depth.cpp`, dieselben Tiefen (im Mittel 0,13 mm daneben). `extended`: mehr Reichweite und Tiefe auch unter 0,5 m und auf gesättigten Flächen, kostet aber etwa die doppelte CPU (s. u.). Der Hub gibt den Modus als `KINECT_DRIVER_MODE` an den Worker; steht die Variable schon in seiner Umgebung, ist sie der Standard. Alle anderen Einstellungen des Treibers (`KINECT_DRIVER_IR`, `KINECT_DRIVER_TOF`, `KINECT_DRIVER_SOURCE`, …) erbt der Worker aus der Umgebung des Hubs, siehe `kinect-driver/README.md`.
+- `/api/status` → `worker.heartbeat` zeigt beim Rust-Treiber `driver` und `decoder` (z. B. `cpu avx2+fma, 4 threads, compat`), dazu verlorene/geflickte USB-Pakete und Neustarts.
+- Gemessen am 15.10.2026 auf dem X13 (CPU-Dekodierung, 30 fps): Worker live an der Kinect compat 0,48 Kerne, `fn2_capture` 0,66 Kerne; nur das Dekodieren (`kinect-driver bench`, Rohaufnahme des leeren Raums) compat 19 ms CPU je Frame (0,57 Kerne), extended 36 ms (1,1 Kerne), live extended mit `two_echoes` 1,45 Kerne.
+- Testen ohne Kinect: `KINECT_DRIVER_SOURCE=recordings/…/aufnahmen/raw-….k2raw` (Rohpakete, z. B. aus `recordings/2026-10-15-rohpakete/`, in Schleife) oder `sim:room` für den Hub setzen und ihn auf einem anderen Port starten; der Worker fasst die Kinect dann nicht an.
 
 ## Endpunkte
 
@@ -76,6 +84,8 @@ Die Zeiten sind µs seit 1970 auf der Uhr des Hub-Rechners. `capture_time_us` is
 **Koordinaten:** Kamerakoordinaten der Kinect: x nach rechts, y nach unten, z nach vorn, Einheit mm. 3D-Punkt eines Pixels: `(lut.x * z, lut.y * z, z)`. Die LUT enthält die Linsenentzerrung, die der Hub einmal pro Sensorstart berechnet. Das Kinect-Bild kommt gespiegelt; für eine echte 3D-Ansicht x negieren (machen die Szenen standardmäßig, Taste `m`).
 
 ## Tiefen-Dekodierung
+
+Der Rust-Treiber dekodiert im Modus `compat` auf der CPU (`--pipeline fast`) wie `fast_depth`, mit `--pipeline cl` auf der GPU (wgpu); siehe `kinect-driver/README.md`. Für `fn2_capture` gilt:
 
 Der Worker dekodiert die Rohdaten der Kinect standardmäßig selbst auf der CPU (`--pipeline fast`, `fn2/fast_depth.cpp`): dasselbe Verfahren wie libfreenect2s OpenCL-Pipeline (drei Frequenzen, bilateraler Filter, Phasen-Unwrapping, Kantenfilter), aber mit vorberechneter Trigonometrie, AVX2 und vier Threads. Die GPU bleibt damit ganz für Szenen und Pose-Modell.
 
@@ -167,7 +177,7 @@ Es gibt keine Frame-Anzahl im Kopf, damit eine abgebrochene Aufnahme lesbar blei
 ## Robustheit
 
 - Im Code gibt es kein `unwrap`, `expect`, `panic!` und keine ungeprüfte Indizierung (Clippy-Lints auf `deny`). Fehler werden behandelt und geloggt.
-- **libfreenect2 läuft nie im Hub.** Stürzt der Worker ab, hängt er (5 s ohne Heartbeat) oder spinnt die Kinect, beendet der Hub ihn und startet ihn neu (Backoff 0,25–5 s). Gemessen: harter Kill bis wieder Bilder kommen ≈ 1,1 s; die Clients bleiben verbunden.
+- **Der Sensortreiber läuft nie im Hub.** Stürzt der Worker ab, hängt er (5 s ohne Heartbeat) oder spinnt die Kinect, beendet der Hub ihn und startet ihn neu (Backoff 0,25–5 s). Gemessen: harter Kill bis wieder Bilder kommen ≈ 1,1 s; die Clients bleiben verbunden.
 - Stirbt der Hub, merkt der Worker das an seinem geschlossenen stdin und gibt die Kinect sauber frei. Es bleibt kein verwaister Prozess zurück.
 - **Standby:** Ein zweiter Hub auf demselben Port fasst die Kinect nicht an, sondern wartet. Fällt der erste aus, übernimmt er nach ≈ 3 s. wall-bevy und `kinect_hub.py` verbinden sich automatisch neu.
 - Jeder Client läuft in einer eigenen Task:

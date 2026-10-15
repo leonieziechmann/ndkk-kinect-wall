@@ -2,11 +2,12 @@
   start-wand.ps1: starts everything the LED wall needs and tunes Windows for it, only while it runs.
 
     start-wand.cmd                     double-click (or the desktop icon "Kinect-Wand starten")
-    .\start-wand.ps1 [-NoWall] [-NoControl] [-Hub 8091] [-RecordMinutes 5] [-Minimal]
+    .\start-wand.ps1 [-NoWall] [-NoControl] [-Hub 8091] [-RecordMinutes 5] [-Minimal] [-Fn2]
     .\start-wand.ps1 -Panic            NOTAUS (also Strg+Alt+Shift+N, desktop icon "Kinect-Wand NOTAUS")
 
-  Starts (or reuses, if they already run) from the main checkout: kinect-hub (real Kinect, :8090)
-  and the output wall-bevy (wall-bevy\target\release\wall-bevy.exe, see wall-bevy\README.md) on
+  Starts (or reuses, if they already run) from the main checkout: kinect-hub (real Kinect, :8090;
+  its capture worker is the Rust driver kinect-driver, or libfreenect2's fn2_capture with -Fn2 or
+  when kinect-driver is not built) and the output wall-bevy (wall-bevy\target\release\wall-bevy.exe, see wall-bevy\README.md) on
   the LED screen. The output brings the control center with it (http://127.0.0.1:8095/, also a
   remote for phones in the same network); it opens as an app window on the notebook's own panel as
   soon as the output serves it. A watchdog restarts what dies.
@@ -71,6 +72,7 @@ param(
   [int]$Hub = 8090,   # the hub to use; only the real one on 8090 is started, others must run already
   [ValidateRange(1, 60)][int]$RecordMinutes = 5,   # R: length of a recording (training data)
   [switch]$Minimal,   # nothing that could take time or power from the show (see above)
+  [switch]$Fn2,       # the hub it starts uses the old libfreenect2 worker instead of kinect-driver
   [switch]$Panic,     # NOTAUS
   [int]$Guard = 0,    # internal: be the guard of this PID
   [string]$Checkout,  # for tests: use this checkout instead of the main one
@@ -1166,7 +1168,7 @@ Enable-PowerPlan
 $script:Optimize = $true
 
 # ---- priorities and efficiency mode
-$TuneNames = @('kinect-hub.exe', 'fn2_capture.exe', 'chrome.exe', 'msedge.exe', 'msedgewebview2.exe', 'wall-bevy.exe') +
+$TuneNames = @('kinect-hub.exe', 'kinect-driver.exe', 'fn2_capture.exe', 'chrome.exe', 'msedge.exe', 'msedgewebview2.exe', 'wall-bevy.exe') +
   @($BackgroundApps | ForEach-Object { "$_.exe" })
 $BackgroundExes = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
 foreach ($a in $BackgroundApps) { [void]$BackgroundExes.Add("$a.exe") }
@@ -1179,6 +1181,11 @@ function Get-Role([string]$name, [int]$id) {
       if ([string][KinectWandNative]::CommandLine($id) -match '--bind\s+"?[^\s"]*:(\d+)') { $port = [int]$Matches[1] }
       if ($port -eq $Hub) { return 'core' }
       return 'background'   # test hubs (replay, synthetic)
+    }
+    'kinect-driver.exe' {
+      # the hub's worker has no subcommand; its tools (bench, replay, record, ...) do
+      if ([string][KinectWandNative]::CommandLine($id) -match 'kinect-driver(\.exe)?"?\s+(list|info|stream|record|replay|bench|simulate|eval|analyze|help)\b') { return 'background' }
+      return 'core'
     }
     'fn2_capture.exe' { return 'core' }
     'wall-bevy.exe' { return 'wall' }   # the output
@@ -1305,11 +1312,14 @@ function Start-Hub {
     FilePath = $HubExe; WorkingDirectory = $Main; WindowStyle = 'Hidden'; PassThru = $true; RedirectStandardInput = $NoInput
     RedirectStandardOutput = (Join-Path $LogDir "hub-$stamp.out.log"); RedirectStandardError = (Join-Path $LogDir "hub-$stamp.log")
   }
+  $hubArgs = @()
   $models = Get-PoseModels
-  if ($models) { $start.ArgumentList = @('--pose-models', "`"$models`"") }
+  if ($models) { $hubArgs += '--pose-models', "`"$models`"" }
+  if ($Fn2) { $hubArgs += '--worker', 'fn2' }
+  if ($hubArgs.Count) { $start.ArgumentList = $hubArgs }
   $p = Start-Process @start
   $script:HubOurs = Add-Started 'hub' $p.Id
-  Add-Event "Kinect-Hub gestartet (PID $($p.Id))"
+  Add-Event "Kinect-Hub gestartet (PID $($p.Id)$(if ($Fn2) { ', libfreenect2' }))"
 }
 
 # The display for the output window, found automatically every time: the second display, never the
@@ -1787,7 +1797,12 @@ function Show-Status {
     L ''
   }
   $hubText = if (Test-Ours $script:HubOurs) { "von hier gestartet (PID $($script:HubOurs.pid))" } else { 'mitbenutzt' }
-  if ($h) { $hubText += " · Worker-Neustarts $($h.worker.restarts) · Clients $($h.clients)" }
+  if ($h) {
+    $hb = $h.worker.heartbeat
+    # kinect-driver names itself and its decoder ("cpu avx2+fma, 4 threads, compat"); fn2_capture does not
+    $drv = if ($hb -and $hb.driver) { 'Rust ' + ([string]$hb.decoder -split ',\s*')[-1] } elseif ($hb) { 'libfreenect2' } else { '-' }
+    $hubText += " · Treiber $drv · Worker-Neustarts $($h.worker.restarts) · Clients $($h.clients)"
+  }
   L "  Hub        $HubUrl $hubText"
   if ($script:WallPid) { $wallText = "wall-bevy offen auf $(Format-Screen $script:WallScreen) (PID $($script:WallPid))" }
   elseif (-not (Test-Path -LiteralPath $BevyExe)) { $wallText = 'nicht gebaut (in wall-bevy: cargo build --release)' }
