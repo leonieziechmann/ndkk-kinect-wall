@@ -216,13 +216,15 @@ let cfg = kinect_driver::DriverConfig { pipeline: Some(factory), ..Default::defa
 | Kalibrierung nicht lesbar | die zwischengespeicherte desselben Geräts (`.k2cal`) |
 | verlorenes iso-Paket | mit Nullen in seiner Größe aufgefüllt, nur die betroffenen Zeilen gelten als verloren und werden rekonstruiert; jedes Paket wird an seinem eigenen Offset gelesen (libfreenect2 verrutscht nach einem Fehler) |
 | unvollständiger Frame | ab 6 von 9 Phasenbildern geliefert und dekodiert |
-| Frames bleiben aus (2 s; 8 s nach dem Start) oder der Stream stirbt | Sensor-Neustart; scheitert das wiederholt, beim nächsten Öffnen Port-Reset, danach Firmware-Neustart. Kamen wieder Frames, beginnt die Kette von vorn: Stolpert der Sensor kurz nach der Erholung noch einmal, folgt ein einfacher Neustart; erst wer mehrmals hintereinander kurz nach dem Start stirbt, bekommt Port-Reset und Firmware-Neustart |
+| Frames bleiben aus (2 s; 8 s nach dem Start) oder der Stream stirbt | Sensor-Neustart; scheitert das wiederholt, beim nächsten Öffnen Port-Reset, danach Firmware-Neustart. Kamen wieder Frames, beginnt die Kette von vorn: Stolpert der Sensor kurz nach der Erholung noch einmal, folgt ein einfacher Neustart; erst wer mehrmals hintereinander innerhalb von 3 s nach dem Start stirbt, bekommt Port-Reset und Firmware-Neustart |
 | Kinect verschwindet | wird beim Wiederauftauchen wieder aufgenommen; alte, hängende Transfers bleiben bewusst liegen statt freigegeben zu werden, ein späterer Callback kann nichts mehr kaputtmachen |
 | Anwendung liest zu langsam | alte Frames werden verworfen, nie unbegrenzt gepuffert |
 | Panic in einer Stufe, einem Thread, einem USB-Callback | abgefangen, gezählt; der Thread beginnt neu, der Callback reicht den Transfer weiter |
 | GPU-Fehler | wgpu-Fehler werden abgefangen (wgpu würde sonst abbrechen), Fehler-Scope je Frame, CPU springt ein |
 
 Getestet gegen ein simuliertes Gerät mit Fehlerinjektion (`usb/mock.rs`): verlorene und verfälschte Pakete, belegte Geräte, Befehls-Timeouts, Ausstecken und Wiedereinstecken, stehender Stream, USB 2, eine Stufe, die bei jedem zweiten Frame abstürzt.
+
+An der echten Kinect mit `driver/examples/usb_faults.rs` (unter laufendem Stream alle 5 s eine Störung: Port-Reset, Firmware-Shutdown-Befehl, `stop`-Befehl, Depth-Interface auf Alt-Setting 0; je dreimal): 12 von 12 erholt, ohne Panics und ohne Firmware-Neustart durch den Treiber. Wieder stabil nach 0,5 s (Alt-Setting 0), 6,6 s (Port-Reset und Firmware-Shutdown: die Kinect meldet sich neu am Bus an) und 9,7 s (`stop`: erste Frames nach 3,5 s, dann startet die Kinect von sich aus neu). Bis zur Änderung der Eskalation zählte jede dieser Sitzungen als gescheitert, und der Treiber startete die Firmware achtmal selbst neu.
 
 ## Plattformen
 

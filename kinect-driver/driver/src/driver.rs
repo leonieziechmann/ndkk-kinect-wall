@@ -736,8 +736,8 @@ enum Escalation {
     RebootFirmware,
 }
 
-/// Frames after which a session that dies counts as having streamed fine for a while (10 s).
-const LONG_RUN: u64 = 300;
+/// A session that dies within this many frames of its start (3 s) died soon after it.
+const SHORT_RUN: u64 = 90;
 
 /// How hard the next opening tries, from how the sessions before it ended.
 #[derive(Debug, Default)]
@@ -745,7 +745,7 @@ struct Escalator {
     /// sessions in a row that failed (the stream did not get going, or died soon after its
     /// start)
     failed: u32,
-    /// sessions in a row that streamed but died within `LONG_RUN` frames
+    /// sessions in a row that streamed but died within `SHORT_RUN` frames
     short: u32,
 }
 
@@ -765,7 +765,7 @@ impl Escalator {
             // of sessions that die soon after their start goes on to the port reset and the
             // firmware reboot (a sensor that just came back can stumble once)
             SessionEnd::Died { frames, .. } => {
-                self.short = if *frames > LONG_RUN { 0 } else { self.short + 1 };
+                self.short = if *frames > SHORT_RUN { 0 } else { self.short + 1 };
                 self.failed = self.short.max(1);
             }
             // after a firmware reboot, everything starts over
@@ -939,9 +939,9 @@ fn session(shared: &Arc<Shared>, backend: &Arc<dyn UsbBackend>, info: &UsbDevice
             drop(dev);
             if frames > 30 { SessionEnd::Good } else { SessionEnd::Failed(r) }
         }
-        // it got going (at the firmware reboot level only if it streamed fine for a while: a
-        // sensor that keeps dying soon after its start is rebooted)
-        Some(reason) if frames > LONG_RUN || (frames > 0 && escalation != Escalation::RebootFirmware) => {
+        // it got going (at the firmware reboot level only if it lasted: a sensor that keeps dying
+        // soon after its start is rebooted)
+        Some(reason) if frames > SHORT_RUN || (frames > 0 && escalation != Escalation::RebootFirmware) => {
             dev.close();
             SessionEnd::Died { reason, frames }
         }
@@ -1195,10 +1195,13 @@ mod tests {
             e.ended(&failed(), level);
         }
         assert_eq!(levels, [Normal, Normal, ResetPort, RebootFirmware, Normal]);
-        // the stream dies after streaming fine for a while: a plain restart
+        // the stream dies after streaming fine for a while: a plain restart, also when that keeps
+        // happening every few seconds
         let mut e = Escalator::default();
-        e.ended(&died(5000), Normal);
-        assert_eq!(e.next(), Normal);
+        for _ in 0..5 {
+            e.ended(&died(150), Normal);
+            assert_eq!(e.next(), Normal);
+        }
         // 15.10.: back after a port reset, the stream dies again 0.3 s later: a plain restart,
         // not on to the firmware reboot
         let mut e = Escalator::default();
