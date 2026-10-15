@@ -188,6 +188,11 @@ pub struct ExtendedParams {
     /// one (flag SECOND_ECHO): a glossy floor under the mirror image in it, a grazing table top,
     /// a depth edge
     pub two_echoes: bool,
+    /// the two-echo split on the CPU: a pixel whose input has not moved beyond the noise since its
+    /// last split takes that split over instead of splitting again (every pixel is split again at
+    /// least every 16 frames, in turn). Most of a scene stands still: the split then costs a
+    /// fraction, and the depth flickers less
+    pub split_reuse: bool,
     /// relative spread of the amplitudes of the frequencies in the two-echo split: the amplitude
     /// ratios are what tells two echoes from one (at 80 MHz a floor and its mirror image nearly
     /// cancel), so tighter than `amplitude_floor`
@@ -240,6 +245,7 @@ impl Default for ExtendedParams {
             amplitude_floor: 0.15,
             multipath_tolerance: 10.0,
             two_echoes: false,
+            split_reuse: true,
             echo_amplitude_floor: 0.06,
             echo_plausibility: 16.0,
             margin_prior: 10.0,
@@ -389,6 +395,7 @@ impl TofConfig {
             "amplitude_floor" => e.amplitude_floor = f()?,
             "multipath_tolerance" => e.multipath_tolerance = f()?,
             "two_echoes" => e.two_echoes = b()?,
+            "split_reuse" => e.split_reuse = b()?,
             "echo_amplitude_floor" => e.echo_amplitude_floor = f()?,
             "echo_plausibility" => e.echo_plausibility = f()?,
             "margin_prior" => e.margin_prior = f()?,

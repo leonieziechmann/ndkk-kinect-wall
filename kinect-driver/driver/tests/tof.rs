@@ -236,6 +236,35 @@ fn two_echoes_give_the_near_surface() {
 }
 
 #[test]
+fn a_still_scene_takes_its_splits_over() {
+    use kinect_driver::sim::{Object, Shape};
+    let wall = |z: f32, albedo: f32| Scene { objects: vec![Object::new(Shape::Plane { point: [0.0, 0.0, z], normal: [0.0, 0.0, -1.0] }, albedo)], ambient: 150.0, brightness: 16000.0 };
+    let mut s = sim();
+    let pair = |s: &mut Simulator, zn: f32, zf: f32, ratio: f32, n: u32| {
+        let (near, _) = s.frame(&wall(zn, 0.4), n);
+        let (far, _) = s.frame(&wall(zf, 0.4 * (zf / zn).powi(2) * ratio), n + 1);
+        mix(&near, &far, &s.tables().lut)
+    };
+    let (still, other) = (pair(&mut s, 2000.0, 4600.0, 0.5, 1), pair(&mut s, 1500.0, 3000.0, 2.0, 3));
+    let mut cfg = TofConfig::extended();
+    cfg.ext.two_echoes = true;
+    let mut dec = CpuDecoder::new(cfg.clone()).unwrap();
+    let (mut a, mut b) = (TofOutput::new(), TofOutput::new());
+    // the same input again: every pixel takes its split over, or splits again (its turn) to the
+    // same result
+    dec.decode(&still, s.tables(), &mut a).unwrap();
+    for _ in 0..3 {
+        dec.decode(&still, s.tables(), &mut b).unwrap();
+        assert!(a.depth == b.depth && a.flags == b.flags);
+    }
+    // another scene: as a decoder that never saw the first
+    dec.decode(&other, s.tables(), &mut a).unwrap();
+    let mut fresh = CpuDecoder::new(cfg).unwrap();
+    fresh.decode(&other, s.tables(), &mut b).unwrap();
+    assert!(a.depth == b.depth && a.flags == b.flags);
+}
+
+#[test]
 fn surfaces_brighter_than_plausible_keep_their_depth() {
     use kinect_driver::sim::{Object, Shape};
     // glossy paint seen head-on, a reflector: several times brighter than white paper
