@@ -218,7 +218,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let f = fits[i];
         println!(
             "  x {x:>3} y {y:>3}: decoder {:>6.0} mm | one echo {:>6.0} mm res {:>8.2} | two: {:>6.0} mm a {:>6.1} + {:>6.0} mm a {:>6.1} res {:>8.2}",
-            out.depth[i], mm(f.u_single, i), f.r1, mm(f.u1, i), f.a1, mm(f.u2, i), f.a2, f.r2
+            out.depth.get(i).unwrap_or(0.0), mm(f.u_single, i), f.r1, mm(f.u1, i), f.a1, mm(f.u2, i), f.a2, f.r2
         );
     }
     if let Some(dir) = png {
@@ -227,7 +227,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let pick = |g: &dyn Fn(usize, &Fit) -> f32| -> Vec<[u8; 3]> {
             (0..PIXELS).map(|i| color(if fits[i].r2.is_finite() && fits[i].a1 + fits[i].a2 >= 1.0 { g(i, &fits[i]) } else { 0.0 }, max)).collect()
         };
-        save_rgb(&format!("{dir}/decoder.png"), &out.depth.iter().map(|d| color(*d, max)).collect::<Vec<_>>())?;
+        save_rgb(&format!("{dir}/decoder.png"), &out.depth.iter().map(|d| color(d, max)).collect::<Vec<_>>())?;
         save_rgb(&format!("{dir}/first-echo.png"), &pick(&|i, f| mm(f.u1, i)))?;
         save_rgb(&format!("{dir}/second-echo.png"), &pick(&|i, f| mm(f.u2, i)))?;
         // share of the first echo: black 0, white 1
@@ -238,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for i in 0..PIXELS {
             let f = fits[i];
             let ok = f.r2.is_finite() && f.a1 + f.a2 >= 1.0;
-            for v in [out.depth[i], if ok { mm(f.u1, i) } else { 0.0 }, if ok { mm(f.u2, i) } else { 0.0 }, if ok { f.a1 / (f.a1 + f.a2) } else { 0.0 }] {
+            for v in [out.depth.get(i).unwrap_or(0.0), if ok { mm(f.u1, i) } else { 0.0 }, if ok { mm(f.u2, i) } else { 0.0 }, if ok { f.a1 / (f.a1 + f.a2) } else { 0.0 }] {
                 raw.extend_from_slice(&v.to_le_bytes());
             }
         }

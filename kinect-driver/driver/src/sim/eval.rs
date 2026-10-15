@@ -54,7 +54,7 @@ impl Evaluation {
     pub fn add(&mut self, gt: &GroundTruth, out: &TofOutput) {
         self.frames += 1;
         for i in 0..PIXELS {
-            let (Some(&truth), Some(&d), Some(&mixed), Some(&sat)) = (gt.depth.get(i), out.depth.get(i), gt.mixed.get(i), gt.saturated.get(i)) else {
+            let (Some(&truth), Some(d), Some(&mixed), Some(&sat)) = (gt.depth.get(i), out.depth.get(i), gt.mixed.get(i), gt.saturated.get(i)) else {
                 continue;
             };
             if mixed || i % WIDTH == 0 || i % WIDTH == WIDTH - 1 {
@@ -77,7 +77,7 @@ impl Evaluation {
                     band.abs_err_sum += f64::from(err);
                 }
             }
-            let (Some(&ir_true), Some(&ir)) = (gt.ir.get(i), out.ir.get(i)) else { continue };
+            let (Some(&ir_true), Some(ir)) = (gt.ir.get(i), out.ir.get(i)) else { continue };
             if ir_true <= 0.0 {
                 continue;
             }

@@ -12,6 +12,7 @@
 
 #![allow(clippy::indexing_slicing)]
 
+use super::fill::PushPull;
 use super::kernels::{RowFlags, depth_of_u, flags, kind, u_of_depth};
 use super::lanes::{F8, LANES};
 use crate::consts::{FREQ_MULTIPLES, WIDTH};
@@ -30,8 +31,9 @@ pub struct ResolveIn<'a> {
     pub s2b: &'a [u8],
     /// number of byte planes
     pub p2b: usize,
-    /// smooth expectation of `u` filled from the confident pixels (push-pull), 0 = none
-    pub expected: &'a [f32],
+    /// smooth expectation of `u` filled in from the confident pixels (push-pull of u1 weighted
+    /// by the anchors; at a pixel: [`PushPull::at`] with its own u1 and anchor), 0 = none
+    pub expected: Option<&'a PushPull>,
     /// x table
     pub xt: &'a [f32],
     /// z table
@@ -205,7 +207,7 @@ pub fn resolve_row(i: &ResolveIn, y: usize, row: &ResolveRow, window: &Window, d
             let (u, conf) = if total >= 1.5 && best_v > 0.6 * total {
                 *f |= flags::RESOLVED;
                 ((cref + best_m as f32) / n, 0.5 + 0.4 * best_v / total)
-            } else if let Some(&e) = i.expected.get(y * W + x).filter(|e| **e > 0.0) {
+            } else if let Some(e) = i.expected.map(|pp| pp.at(x, y, u1, anr.get(x).copied().unwrap_or(0.0))).filter(|e| *e > 0.0) {
                 *f |= flags::RESOLVED;
                 let m = (n * e - cref + 0.5).floor().max(0.0);
                 ((cref + m) / n, if saturated { 0.6 } else { 0.4 })

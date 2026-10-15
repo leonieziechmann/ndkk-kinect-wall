@@ -57,7 +57,7 @@ fn run(file: &str, a: usize, b: usize, map: Option<&Acc>) -> (Acc, [Vec<f64>; 3]
         d.decode(&p, &tables, &mut o).unwrap();
         for i in 0..PIXELS {
             let f = o.flags[i];
-            if o.depth[i] <= 0.0 || f & (flags::SATURATED_ANY | flags::MULTIPATH | flags::EDGE | flags::RESOLVED | flags::REPAIRED_ANY) != 0 {
+            if o.depth.get(i).unwrap_or(0.0) <= 0.0 || f & (flags::SATURATED_ANY | flags::MULTIPATH | flags::EDGE | flags::RESOLVED | flags::REPAIRED_ANY) != 0 {
                 continue;
             }
             let Some(info) = d.unwrap_info(i) else { continue };

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use crate::consts::{PIXELS, WIDTH};
 use crate::packet::RawDepthPacket;
+use crate::plane::{Confidence, Depth, Infrared, Plane};
 use crate::pool::Pool;
 use crate::tables::DeviceTables;
 
@@ -11,16 +12,18 @@ use crate::tables::DeviceTables;
 /// decoder's pool, and a later frame is decoded into them.
 #[derive(Debug, Default)]
 pub struct Planes {
-    depth: Vec<f32>,
-    ir: Vec<f32>,
-    confidence: Vec<f32>,
+    depth: Plane<Depth>,
+    ir: Plane<Infrared>,
+    confidence: Plane<Confidence>,
     flags: Vec<u32>,
-    points: Vec<[f32; 3]>,
     decoder: String,
 }
 
 /// One processed frame. Images are 512 x 424, row-major, row 0 at the top, mirrored the way
 /// the Kinect SDK and libfreenect2 deliver them. Planes that no stage produced are empty.
+/// Depth, infrared and confidence take 16 bits per value ([`crate::plane`]: read them with
+/// `get`, `iter` or `unpack_row`); 3D points are worked out from the depth when asked for
+/// ([`Frame::point_at`], [`Frame::points`]).
 ///
 /// The planes of a decoded frame come from the decoder's pool and go back there when the frame
 /// is dropped: keep a frame as long as you need it, but take what you want to keep longer out
@@ -37,16 +40,14 @@ pub struct Frame {
     pub raw: Option<Arc<RawDepthPacket>>,
     /// the device's tables (camera parameters, rays for point clouds)
     pub tables: Arc<DeviceTables>,
-    /// depth in mm (0 = none)
-    pub depth: Vec<f32>,
+    /// depth in mm (0 = none), in steps of 0.5 mm
+    pub depth: Plane<Depth>,
     /// infrared, libfreenect2's scale (HDR in the extended mode until a tone mapping stage)
-    pub ir: Vec<f32>,
+    pub ir: Plane<Infrared>,
     /// confidence 0..1 of the depth
-    pub confidence: Vec<f32>,
+    pub confidence: Plane<Confidence>,
     /// per-pixel flags (`kinect_driver::tof::flags`)
     pub flags: Vec<u32>,
-    /// 3D points in mm (x right, y down, z forward), filled by the `Points` stage
-    pub points: Vec<[f32; 3]>,
     /// planes added by custom stages
     pub extra: Vec<(String, Vec<f32>)>,
     /// which decoder made depth and infrared
@@ -65,7 +66,6 @@ impl Drop for Frame {
                 ir: std::mem::take(&mut self.ir),
                 confidence: std::mem::take(&mut self.confidence),
                 flags: std::mem::take(&mut self.flags),
-                points: std::mem::take(&mut self.points),
                 decoder: std::mem::take(&mut self.decoder),
             });
         }
@@ -81,11 +81,10 @@ impl Frame {
             host_time_us: raw.host_time_us,
             raw: Some(raw),
             tables,
-            depth: Vec::new(),
-            ir: Vec::new(),
-            confidence: Vec::new(),
+            depth: Plane::new(),
+            ir: Plane::new(),
+            confidence: Plane::new(),
             flags: Vec::new(),
-            points: Vec::new(),
             extra: Vec::new(),
             decoder: String::new(),
             pipeline_ms: 0.0,
@@ -101,20 +100,17 @@ impl Frame {
             return;
         }
         let p = pool.take_or(Planes::default);
-        let swap_in = |mine: &mut Vec<f32>, theirs: Vec<f32>| {
-            if mine.is_empty() {
-                *mine = theirs;
-            }
-        };
-        swap_in(&mut self.depth, p.depth);
-        swap_in(&mut self.ir, p.ir);
-        swap_in(&mut self.confidence, p.confidence);
+        if self.depth.is_empty() {
+            self.depth = p.depth;
+        }
+        if self.ir.is_empty() {
+            self.ir = p.ir;
+        }
+        if self.confidence.is_empty() {
+            self.confidence = p.confidence;
+        }
         if self.flags.is_empty() {
             self.flags = p.flags;
-        }
-        if self.points.is_empty() {
-            self.points = p.points;
-            self.points.clear();
         }
         if self.decoder.is_empty() {
             self.decoder = p.decoder;
@@ -128,14 +124,27 @@ impl Frame {
         if x >= WIDTH {
             return 0.0;
         }
-        self.depth.get(y * WIDTH + x).copied().unwrap_or(0.0)
+        self.depth.get(y * WIDTH + x).unwrap_or(0.0)
     }
 
-    /// The 3D point of a pixel (mm), if it has depth.
+    /// The 3D point of a pixel (mm; x right, y down, z forward), if it has depth.
     pub fn point_at(&self, x: usize, y: usize) -> Option<[f32; 3]> {
         let z = self.depth_at(x, y);
         let r = self.tables.rays.get(y * WIDTH + x)?;
         (z > 0.0).then(|| [r[0] * z, r[1] * z, z])
+    }
+
+    /// The 3D point of every pixel in order (mm; [0, 0, 0] without depth), worked out from the
+    /// depth and the rays of the device (nothing is stored: collect them with
+    /// [`Frame::points_into`] where a buffer is wanted).
+    pub fn points(&self) -> impl Iterator<Item = [f32; 3]> + '_ {
+        self.depth.iter().zip(self.tables.rays.iter()).map(|(z, r)| if z > 0.0 { [r[0] * z, r[1] * z, z] } else { [0.0; 3] })
+    }
+
+    /// [`Frame::points`] into `out` (cleared first; a reused buffer allocates nothing).
+    pub fn points_into(&self, out: &mut Vec<[f32; 3]>) {
+        out.clear();
+        out.extend(self.points());
     }
 
     /// A custom plane by name.
@@ -153,7 +162,8 @@ impl Frame {
 
     /// Pixels with depth.
     pub fn valid_pixels(&self) -> usize {
-        self.depth.iter().filter(|d| **d > 0.0).count()
+        // (a depth of 0 is stored as 0, and the decoders never deliver a negative one)
+        self.depth.raw().iter().filter(|q| **q != 0).count()
     }
 
     /// True if the depth plane has the full size.

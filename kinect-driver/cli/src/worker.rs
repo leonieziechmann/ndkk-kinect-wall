@@ -23,6 +23,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use kinect_driver::consts::{HEIGHT, PIXELS, WIDTH};
 use kinect_driver::driver::{Driver, DriverState, Event};
 use kinect_driver::frame::Frame;
+use kinect_driver::plane::{Format, Plane};
 
 use crate::args::Args;
 use crate::opts::Common;
@@ -87,20 +88,39 @@ enum Message {
     Frame(Box<Frame>),
 }
 
-/// A plane as little-endian f32, cut or padded to `PIXELS`: on a little-endian machine straight
-/// from the frame's memory into the pipe (no message buffer, no copy), elsewhere through `buf`.
-fn write_plane(out: &mut impl Write, v: &[f32], buf: &mut Vec<u8>) -> std::io::Result<()> {
-    let v = v.get(..PIXELS).unwrap_or(v);
-    if cfg!(target_endian = "little") {
-        out.write_all(bytemuck::cast_slice(v))?;
-    } else {
-        buf.clear();
-        buf.extend(v.iter().flat_map(|x| x.to_le_bytes()));
-        out.write_all(buf)?;
+/// Values unpacked at a time on their way into the pipe: 16 rows.
+const CHUNK: usize = 16 * WIDTH;
+
+/// The worker's buffers for the frames it writes (kept between frames): a few rows of `f32`,
+/// and their bytes on a big-endian machine.
+#[derive(Default)]
+struct WriteBuf {
+    values: Vec<f32>,
+    bytes: Vec<u8>,
+}
+
+/// A plane as little-endian f32 (as the hub reads it), cut or padded to `PIXELS`: unpacked from
+/// its 16 bits a few rows at a time straight into the pipe (no message buffer).
+fn write_plane<F: Format>(out: &mut impl Write, plane: &Plane<F>, buf: &mut WriteBuf) -> std::io::Result<()> {
+    let n = plane.len().min(PIXELS);
+    buf.values.resize(CHUNK, 0.0);
+    let mut start = 0;
+    while start < n {
+        let len = CHUNK.min(n - start);
+        let Some(values) = buf.values.get_mut(..len) else { break };
+        plane.unpack_slice(start, values);
+        if cfg!(target_endian = "little") {
+            out.write_all(bytemuck::cast_slice(values))?;
+        } else {
+            buf.bytes.clear();
+            buf.bytes.extend(values.iter().flat_map(|x| x.to_le_bytes()));
+            out.write_all(&buf.bytes)?;
+        }
+        start += len;
     }
     // a short plane is padded with zeros (never happens with the driver's frames)
     const ZEROS: [u8; 4096] = [0; 4096];
-    let mut missing = (PIXELS - v.len()) * 4;
+    let mut missing = (PIXELS - n) * 4;
     while missing > 0 {
         let n = missing.min(ZEROS.len());
         out.write_all(ZEROS.get(..n).unwrap_or(&[]))?;
@@ -110,7 +130,7 @@ fn write_plane(out: &mut impl Write, v: &[f32], buf: &mut Vec<u8>) -> std::io::R
 }
 
 /// One FRAME message: header, depth, infrared (if the frame has it).
-fn write_frame(out: &mut impl Write, f: &Frame, buf: &mut Vec<u8>) -> std::io::Result<()> {
+fn write_frame(out: &mut impl Write, f: &Frame, buf: &mut WriteBuf) -> std::io::Result<()> {
     let has_ir = f.ir.len() == PIXELS;
     let len = if has_ir { 2 * PIXELS * 4 } else { PIXELS * 4 };
     out.write_all(&header(FRAME, if has_ir { FLAG_HAS_IR } else { 0 }, len, f.sequence, f.timestamp, f.host_time_us))?;
@@ -143,7 +163,7 @@ impl Output {
             .name("worker-output".into())
             .spawn(move || {
                 let mut out = std::io::stdout().lock();
-                let mut buf = Vec::new();
+                let mut buf = WriteBuf::default();
                 loop {
                     let msg = {
                         let (m, cv) = &*p;
@@ -380,23 +400,24 @@ mod tests {
     fn frames_go_out_as_little_endian_planes() {
         let sim = kinect_driver::sim::Simulator::new(kinect_driver::sim::SimConfig { supersample: false, ..Default::default() }).unwrap();
         let mut f = Frame::new(std::sync::Arc::new(kinect_driver::RawDepthPacket::zeroed(5, 6)), sim.tables().clone());
-        f.depth = (0..PIXELS).map(|i| i as f32).collect();
-        f.ir = vec![2.5; PIXELS];
+        f.depth = Plane::from_values(&(0..PIXELS).map(|i| (i % 20000) as f32).collect::<Vec<_>>());
+        f.ir = Plane::from_values(&vec![2.5; PIXELS]);
         f.host_time_us = 77;
         let mut out = Vec::new();
-        write_frame(&mut out, &f, &mut Vec::new()).unwrap();
+        write_frame(&mut out, &f, &mut WriteBuf::default()).unwrap();
         assert_eq!(out.len(), 32 + 2 * PIXELS * 4);
         assert_eq!(&out[0..4], b"K2W1");
         assert_eq!(u16::from_le_bytes([out[6], out[7]]), FLAG_HAS_IR);
         assert_eq!(u32::from_le_bytes([out[8], out[9], out[10], out[11]]) as usize, 2 * PIXELS * 4);
         let at = |i: usize| f32::from_le_bytes([out[i], out[i + 1], out[i + 2], out[i + 3]]);
         assert_eq!(at(32 + 4 * 1000), 1000.0);
+        assert_eq!(at(32 + 4 * (PIXELS - 1)), ((PIXELS - 1) % 20000) as f32);
         assert_eq!(at(32 + 4 * PIXELS + 8), 2.5);
         // a frame without infrared, with a short depth plane: padded
         f.ir.clear();
         f.depth.truncate(10);
         let mut out = Vec::new();
-        write_frame(&mut out, &f, &mut Vec::new()).unwrap();
+        write_frame(&mut out, &f, &mut WriteBuf::default()).unwrap();
         assert_eq!(out.len(), 32 + PIXELS * 4);
         assert_eq!(u16::from_le_bytes([out[6], out[7]]), 0);
         assert!(out[32 + 40..].iter().all(|b| *b == 0));

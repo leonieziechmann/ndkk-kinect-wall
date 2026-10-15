@@ -50,7 +50,7 @@ fn cases(seed: u64) -> Result<Cases, Box<dyn std::error::Error>> {
 
 fn write_planes(path: &Path, o: &TofOutput) -> std::io::Result<()> {
     let mut buf = Vec::with_capacity(PIXELS * 16);
-    for v in o.depth.iter().chain(&o.ir).chain(&o.confidence) {
+    for v in o.depth.iter().chain(o.ir.iter()).chain(o.confidence.iter()) {
         buf.extend_from_slice(&v.to_le_bytes());
     }
     for v in &o.flags {

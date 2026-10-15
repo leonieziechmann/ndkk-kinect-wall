@@ -2,7 +2,7 @@
 //!
 //! The time-of-flight decoding itself is a stage ([`TofStage`], on the CPU or the GPU, in the
 //! Compat or Extended mode); after it come as many stages as wanted: the built-in ones in
-//! [`crate::stages`] (infrared tone mapping, temporal filter, depth range, point cloud) or your
+//! [`crate::stages`] (infrared tone mapping, temporal filter, depth range) or your
 //! own (implement [`Stage`] or wrap a closure with [`FnStage`]).
 //!
 //! ```no_run

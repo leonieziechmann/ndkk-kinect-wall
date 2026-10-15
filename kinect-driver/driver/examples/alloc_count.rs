@@ -16,7 +16,7 @@ use kinect_driver::record::{RawHeader, RawWriter};
 use kinect_driver::pipeline::{Backend, Pipeline};
 use kinect_driver::protocol::depth_stream::{DepthParserConfig, DepthStreamParser, encode_subpackets};
 use kinect_driver::sim::{Scene, SimConfig, Simulator};
-use kinect_driver::stages::{IrToneMap, Points};
+use kinect_driver::stages::IrToneMap;
 use kinect_driver::tof::TofConfig;
 
 struct Counting;
@@ -95,7 +95,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("compat, cpu", Pipeline::decoder(TofConfig::compat(), Backend::Cpu)?),
         ("extended, cpu, ir hub", Pipeline::decoder(TofConfig::extended(), Backend::Cpu)?.with(IrToneMap::hub())),
         ("extended, cpu, ir even", Pipeline::decoder(TofConfig::extended(), Backend::Cpu)?.with(IrToneMap::even())),
-        ("extended, cpu, hub + points", Pipeline::decoder(TofConfig::extended(), Backend::Cpu)?.with(IrToneMap::hub()).with(Points)),
+        (
+            "extended, cpu, hub + points",
+            Pipeline::decoder(TofConfig::extended(), Backend::Cpu)?.with(IrToneMap::hub()).with_fn("points", {
+                let mut points = Vec::new();
+                move |f| {
+                    f.points_into(&mut points);
+                    Ok(())
+                }
+            }),
+        ),
         #[cfg(feature = "gpu")]
         ("extended, gpu, ir hub", Pipeline::decoder(TofConfig::extended(), Backend::Gpu)?.with(IrToneMap::hub())),
     ];

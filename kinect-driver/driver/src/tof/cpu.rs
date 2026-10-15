@@ -10,7 +10,7 @@
 //! format per plane below), stored row-interleaved (row y holds all planes of the phase one after
 //! the other), so one block of rows is one contiguous slice for every plane. The kernels work on
 //! `f32` rows: each thread unpacks the rows its block needs into a small ring (every row once per
-//! block) and packs what it computed.
+//! block) and packs what it computed, also into the output planes (16 bits, `crate::plane`).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -30,6 +30,7 @@ use super::{TofOutput, TofTimings};
 use crate::consts::{HEIGHT, PIXELS, WIDTH};
 use crate::error::{Error, Result};
 use crate::packet::{RawDepthPacket, unpack_row_values};
+use crate::plane::{Infrared, Plane};
 use crate::tables::DeviceTables;
 
 const W: usize = WIDTH;
@@ -185,31 +186,27 @@ pub(crate) fn s3_params(cfg: &TofConfig) -> S3Params {
 
 /// The serial steps of stage 3 that do not depend on each other: run as two tasks at once.
 enum Serial<'a> {
-    /// the smooth expectation of u for the resolver, from the confident pixels
-    Expected { s2: &'a [u16], u: &'a mut Vec<f32>, w: &'a mut Vec<f32>, pp: &'a mut PushPull, anchored: &'a mut bool },
+    /// the smooth expectation of u for the resolver, from the confident pixels (the pyramid:
+    /// the resolver asks it for the few pixels that need it)
+    Expected { s2: &'a [u16], pp: &'a mut PushPull, anchored: &'a mut bool },
     /// the infrared where every frequency saturated
-    FillIr { cfg: &'a TofConfig, ir: &'a mut [f32], flags: &'a [u32], level: &'a mut f32, scratch: &'a mut PostScratch, ms: &'a mut f64 },
+    FillIr { cfg: &'a TofConfig, ir: &'a mut Plane<Infrared>, flags: &'a [u32], level: &'a mut f32, scratch: &'a mut PostScratch, ms: &'a mut f64 },
 }
 
 impl Serial<'_> {
     fn run(self) {
         match self {
-            Serial::Expected { s2, u, w, pp, anchored } => {
-                // (sized once, then reused)
-                u.resize(PIXELS, 0.0);
-                w.resize(PIXELS, 0.0);
-                for (y, (ur, wr)) in u.as_chunks_mut::<W>().0.iter_mut().zip(w.as_chunks_mut::<W>().0.iter_mut()).enumerate() {
+            Serial::Expected { s2, pp, anchored } => {
+                // u1 weighted by the anchors, read row by row from the stage 2 planes
+                let input = |y: usize, u: &mut [f32], w: &mut [f32]| {
                     if let (Some(us), Some(ws)) = (prow(s2, P2, y, plane::U1), prow(s2, P2, y, plane::ANCHOR)) {
-                        unpack_row(formats::U, us, ur);
-                        unpack_row(formats::CONFIDENCE, ws, wr);
+                        unpack_row(formats::U, us, u);
+                        unpack_row(formats::CONFIDENCE, ws, w);
                     }
-                }
-                *anchored = w.iter().any(|w| *w > 0.0);
-                if *anchored {
-                    pp.fill(u, w, W, HEIGHT);
-                } else {
-                    u.fill(0.0);
-                }
+                };
+                // (serial: cannot fail)
+                let _ = pp.build(W, HEIGHT, 1.0, &input, None);
+                *anchored = pp.anchored();
             }
             Serial::FillIr { cfg, ir, flags, level, scratch, ms } => {
                 let t = Instant::now();
@@ -278,13 +275,15 @@ struct Scratch {
     s2_out: Vec<f32>,
     /// other rows of the row being worked on (4 rows)
     cur: Vec<f32>,
+    /// output rows before packing: depth and confidence, or infrared
+    out_rows: Vec<f32>,
 }
 
 impl Scratch {
     fn new() -> Scratch {
         let mut ring = Ring::default();
         ring.data.resize(RING_ROWS * W, 0.0);
-        Scratch { ring, s1_out: vec![0.0; P1 * W], tabs: vec![0.0; 7 * W], s2_out: vec![0.0; P2 * W], cur: vec![0.0; 4 * W] }
+        Scratch { ring, s1_out: vec![0.0; P1 * W], tabs: vec![0.0; 7 * W], s2_out: vec![0.0; P2 * W], cur: vec![0.0; 4 * W], out_rows: vec![0.0; 2 * W] }
     }
 }
 
@@ -305,9 +304,7 @@ pub struct CpuDecoder {
     /// depth after the resolver ([`formats::DEPTH`]) and its confidence
     depth_res: Vec<u16>,
     conf_res: Vec<u16>,
-    /// the resolver's expectation: input, weights, push-pull
-    exp_u: Vec<f32>,
-    exp_w: Vec<f32>,
+    /// the resolver's expectation (push-pull pyramid)
     exp_pp: PushPull,
     post: PostScratch,
     /// estimated infrared level at which this sensor saturates (running, 0 = not yet seen)
@@ -452,8 +449,6 @@ impl CpuDecoder {
             s2b: vec![0; PIXELS * P2B],
             depth_res: vec![0; PIXELS],
             conf_res: vec![0; PIXELS],
-            exp_u: Vec::new(),
-            exp_w: Vec::new(),
             exp_pp: PushPull::new(),
             post: PostScratch::default(),
             saturation_level: 0.0,
@@ -564,18 +559,16 @@ impl CpuDecoder {
         let blocks = self
             .s1
             .chunks_mut(W * P1 * ROWS_PER_BLOCK)
-            .zip(out.ir.chunks_mut(W * ROWS_PER_BLOCK))
+            .zip(out.ir.raw_mut().chunks_mut(W * ROWS_PER_BLOCK))
             .zip(self.usable.chunks_mut(W * ROWS_PER_BLOCK))
             .zip(self.flags.chunks_mut(W * ROWS_PER_BLOCK))
             .enumerate()
             .map(|(b, (((s1, ir), us), fl))| (b * ROWS_PER_BLOCK, s1, ir, us, fl));
-        let work = |sc: &mut Scratch, (y0, s1, ir, us, fl): (usize, &mut [u16], &mut [f32], &mut [u8], &mut [u32])| {
-            let Scratch { s1_out, tabs, .. } = sc;
+        let work = |sc: &mut Scratch, (y0, s1, ir, us, fl): (usize, &mut [u16], &mut [u16], &mut [u8], &mut [u32])| {
+            let Scratch { s1_out, tabs, out_rows, .. } = sc;
             let mut vals = [[0f32; W]; 9];
-            for ((r, s1row), ((ir, usable), flags)) in s1
-                .as_chunks_mut::<{ W * P1 }>()
-                .0
-                .iter_mut()
+            for ((r, s1row), ((irrow, usrow), flrow)) in s1
+                .as_chunks_mut::<{ W * P1 }>().0.iter_mut()
                 .enumerate()
                 .zip(ir.as_chunks_mut::<W>().0.iter_mut().zip(us.as_chunks_mut::<W>().0.iter_mut()).zip(fl.as_chunks_mut::<W>().0.iter_mut()))
             {
@@ -609,22 +602,26 @@ impl CpuDecoder {
                     *v = if *z > 0.0 { 1.0 } else { 0.0 };
                 }
                 let Some([mc0, mc1, mc2, ms0, ms1, ms2, valid]) = split_row::<f32, 7>(tabs).filter(|_| have_tabs) else {
-                    ir.fill(0.0);
-                    usable.fill(0);
+                    irrow.fill(0);
+                    usrow.fill(0);
                     continue;
                 };
                 let tabs_row = S1Tabs { mc: [mc0, mc1, mc2], ms: [ms0, ms1, ms2], valid };
                 let Some([a0, a1, a2, b0, b1, b2, n0, n1, n2, na0, na1, na2, nb0, nb1, nb2]) = split_row::<f32, P1>(s1_out) else {
-                    ir.fill(0.0);
-                    usable.fill(0);
+                    irrow.fill(0);
+                    usrow.fill(0);
                     continue;
                 };
-                let mut o = S1Out { a: [a0, a1, a2], b: [b0, b1, b2], n: [n0, n1, n2], na: [na0, na1, na2], nb: [nb0, nb1, nb2], ir, usable, flags };
+                let Some([ir, _]) = split_row::<f32, 2>(out_rows) else {
+                    continue;
+                };
+                let mut o = S1Out { a: [a0, a1, a2], b: [b0, b1, b2], n: [n0, n1, n2], na: [na0, na1, na2], nb: [nb0, nb1, nb2], ir, usable: usrow, flags: flrow };
                 if extended {
                     kernels::stage1_extended(&vals, sub_ok, &tabs_row, &mut o, &p);
                 } else {
                     kernels::stage1_compat(&vals, freq_ok, &tabs_row, &mut o, &p);
                 }
+                pack_row(formats::IR, o.ir, irrow);
                 for ((src, dst), codec) in s1_out.as_chunks::<W>().0.iter().zip(s1row.as_chunks_mut::<W>().0.iter_mut()).zip(S1_CODECS) {
                     pack_row(codec, src, dst);
                 }
@@ -880,12 +877,13 @@ impl CpuDecoder {
         let s2b = &self.s2b;
         let blocks = out
             .depth
+            .raw_mut()
             .chunks_mut(W * ROWS_PER_BLOCK)
-            .zip(out.confidence.chunks_mut(W * ROWS_PER_BLOCK))
+            .zip(out.confidence.raw_mut().chunks_mut(W * ROWS_PER_BLOCK))
             .enumerate()
             .map(|(b, (d, c))| (b * ROWS_PER_BLOCK, d, c));
-        let work = |sc: &mut Scratch, (y0, d, c): (usize, &mut [f32], &mut [f32])| {
-            let ring = &mut sc.ring;
+        let work = |sc: &mut Scratch, (y0, d, c): (usize, &mut [u16], &mut [u16])| {
+            let Scratch { ring, out_rows, .. } = sc;
             // the depth and the amplitude sums of the rows around
             ring.start(2, 3, y0.saturating_sub(1));
             let mut unpack_s2 = |yy: usize, p: usize, out: &mut [f32]| {
@@ -898,17 +896,19 @@ impl CpuDecoder {
                 let y = y0 + r;
                 ring.fill_to(y + 1, &mut unpack_s2);
                 let (ya, yc) = (y.saturating_sub(1), (y + 1).min(HEIGHT - 1));
-                let (Some(d0), Some(d1), Some(d2), Some(s0), Some(s1), Some(s2r), Some(edge)) =
-                    (ring.row(0, ya), ring.row(0, y), ring.row(0, yc), ring.row(1, ya), ring.row(1, y), ring.row(1, yc), row(s2b, P2B, y, plane::EDGE_OK))
+                let (Some(d0), Some(d1), Some(d2), Some(s0), Some(s1), Some(s2r), Some(edge), Some([dout, cout])) =
+                    (ring.row(0, ya), ring.row(0, y), ring.row(0, yc), ring.row(1, ya), ring.row(1, y), ring.row(1, yc), row(s2b, P2B, y, plane::EDGE_OK), split_row::<f32, 2>(out_rows))
                 else {
-                    drow.fill(0.0);
-                    crow.fill(0.0);
+                    drow.fill(0);
+                    crow.fill(0);
                     continue;
                 };
-                kernels::stage3_compat(y, [d0, d1, d2], [s0, s1, s2r], edge, &e, drow);
-                for (cv, dv) in crow.iter_mut().zip(drow.iter()) {
+                kernels::stage3_compat(y, [d0, d1, d2], [s0, s1, s2r], edge, &e, dout);
+                for (cv, dv) in cout.iter_mut().zip(dout.iter()) {
                     *cv = if *dv > 0.0 { 1.0 } else { 0.0 };
                 }
+                pack_row(formats::DEPTH, dout, drow);
+                pack_row(formats::CONFIDENCE, cout, crow);
             }
         };
         self.workers.for_each_with(&mut self.scratch, blocks, &work)
@@ -926,7 +926,7 @@ impl CpuDecoder {
         // are serial, so they run side by side
         let mut anchored = false;
         let tasks = [
-            want_expected.then_some(Serial::Expected { s2: &self.s2, u: &mut self.exp_u, w: &mut self.exp_w, pp: &mut self.exp_pp, anchored: &mut anchored }),
+            want_expected.then_some(Serial::Expected { s2: &self.s2, pp: &mut self.exp_pp, anchored: &mut anchored }),
             self.cfg.ext.ir_fill_clipped.then_some(Serial::FillIr {
                 cfg: &self.cfg,
                 ir: &mut out.ir,
@@ -937,12 +937,8 @@ impl CpuDecoder {
             }),
         ];
         self.workers.for_each(tasks.into_iter().flatten(), &Serial::run)?;
-        let expected: &[f32] = match (want_expected, anchored) {
-            (true, true) => self.exp_pp.result(),
-            // no anchor anywhere: an expectation of 0 everywhere
-            (true, false) => &self.exp_u,
-            (false, _) => &[],
-        };
+        // (no anchor anywhere: no expectation)
+        let expected = (want_expected && anchored).then_some(&self.exp_pp);
         let spatial = self.cfg.ext.spatial_resolve;
         let resolve = ResolveIn {
             s2b: &self.s2b,
@@ -974,8 +970,7 @@ impl CpuDecoder {
                     unpack_row(codec, src, out);
                 }
             };
-            let rows = d.as_chunks_mut::<W>().0.iter_mut().zip(c.as_chunks_mut::<W>().0.iter_mut()).zip(f.as_chunks_mut::<W>().0.iter_mut());
-            for (r_in_block, ((drow, crow), fl)) in rows.enumerate() {
+            for (r_in_block, ((drow, crow), fl)) in d.as_chunks_mut::<W>().0.iter_mut().zip(c.as_chunks_mut::<W>().0.iter_mut()).zip(f.as_chunks_mut::<W>().0.iter_mut()).enumerate() {
                 let y = y0 + r_in_block;
                 ring.fill_to(y + r, &mut unpack_window);
                 // the row's other planes: u2, gap, conf, csingle
@@ -1025,13 +1020,14 @@ impl CpuDecoder {
         let (dres, cres, s2b) = (&self.depth_res, &self.conf_res, &self.s2b);
         let blocks = out
             .depth
+            .raw_mut()
             .chunks_mut(W * ROWS_PER_BLOCK)
-            .zip(out.confidence.chunks_mut(W * ROWS_PER_BLOCK))
+            .zip(out.confidence.raw_mut().chunks_mut(W * ROWS_PER_BLOCK))
             .zip(self.flags.chunks_mut(W * ROWS_PER_BLOCK))
             .enumerate()
             .map(|(b, ((d, c), f))| (b * ROWS_PER_BLOCK, d, c, f));
-        let work = |sc: &mut Scratch, (y0, d, c, f): (usize, &mut [f32], &mut [f32], &mut [u32])| {
-            let Scratch { ring, cur, .. } = sc;
+        let work = |sc: &mut Scratch, (y0, d, c, f): (usize, &mut [u16], &mut [u16], &mut [u32])| {
+            let Scratch { ring, cur, out_rows, .. } = sc;
             // the resolved depth and the amplitude sums of the rows around
             ring.start(2, 5, y0.saturating_sub(2));
             let mut unpack_rows = |yy: usize, p: usize, out: &mut [f32]| {
@@ -1040,8 +1036,7 @@ impl CpuDecoder {
                     unpack_row(if p == 0 { formats::DEPTH } else { formats::AMPLITUDE_SUM }, src, out);
                 }
             };
-            let rows = d.as_chunks_mut::<W>().0.iter_mut().zip(c.as_chunks_mut::<W>().0.iter_mut()).zip(f.as_chunks_mut::<W>().0.iter_mut());
-            for (r, ((drow, crow), fl)) in rows.enumerate() {
+            for (r, ((drow, crow), frow)) in d.as_chunks_mut::<W>().0.iter_mut().zip(c.as_chunks_mut::<W>().0.iter_mut()).zip(f.as_chunks_mut::<W>().0.iter_mut()).enumerate() {
                 let y = y0 + r;
                 ring.fill_to(y + 2, &mut unpack_rows);
                 let Some(conf_row) = cur.get_mut(..W) else { continue };
@@ -1050,18 +1045,20 @@ impl CpuDecoder {
                 }
                 let ys = rows5(y);
                 let (Some(d0), Some(d1), Some(d2), Some(d3), Some(d4)) = (ring.row(0, ys[0]), ring.row(0, ys[1]), ring.row(0, y), ring.row(0, ys[3]), ring.row(0, ys[4])) else {
-                    drow.fill(0.0);
-                    crow.fill(0.0);
+                    drow.fill(0);
+                    crow.fill(0);
                     continue;
                 };
                 let (Some(s0), Some(s1), Some(s2r), Some(edge)) = (ring.row(1, ys[1]), ring.row(1, y), ring.row(1, ys[3]), row(s2b, P2B, y, plane::EDGE_OK)) else {
-                    drow.fill(0.0);
-                    crow.fill(0.0);
+                    drow.fill(0);
+                    crow.fill(0);
                     continue;
                 };
-                let Ok(cr) = <&Row>::try_from(&*conf_row) else { continue };
+                let (Ok(cr), Some([dout, cout])) = (<&Row>::try_from(&*conf_row), split_row::<f32, 2>(out_rows)) else { continue };
                 let input = S3In { y, d: [d0, d1, d2, d3, d4], s: [s0, s1, s2r], edge_ok: edge, conf: cr };
-                kernels::stage3_extended(&input, &e, &q, drow, crow, fl);
+                kernels::stage3_extended(&input, &e, &q, dout, cout, frow);
+                pack_row(formats::DEPTH, dout, drow);
+                pack_row(formats::CONFIDENCE, cout, crow);
             }
         };
         self.workers.for_each_with(&mut self.scratch, blocks, &work)

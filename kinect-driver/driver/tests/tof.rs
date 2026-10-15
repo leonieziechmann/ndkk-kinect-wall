@@ -43,7 +43,7 @@ fn compat_is_libfreenect2_up_to_4_5_m() {
     assert!(pct(b.valid, b.truth) > 95.0, "{}", e.table("compat"));
     assert!(pct(b.outliers, b.truth) < 0.5, "{}", e.table("compat"));
     // libfreenect2 stops at 4.5 m
-    assert!(out.depth.iter().all(|d| *d <= 4500.0));
+    assert!(out.depth.iter().all(|d| d <= 4500.0));
     assert_eq!(e.phantom, 0);
 }
 
@@ -80,9 +80,10 @@ fn extended_measures_close_saturated_objects() {
     // the infrared never clips: compat is white (65535) where it saturates, extended is not
     assert!(c.ir_clipped == c.ir_saturated && c.ir_saturated > 0);
     assert_eq!(e.ir_clipped, 0, "{}", e.table("extended"));
-    let max_c = oc.ir.iter().fold(0f32, |m, v| m.max(*v));
-    assert_eq!(max_c, 65535.0);
-    assert!(oe.ir.iter().all(|v| v.is_finite() && *v >= 0.0));
+    // (libfreenect2's white, 65535, is 65536 in the 16-bit plane: the nearest f16)
+    let max_c = oc.ir.iter().fold(0f32, f32::max);
+    assert_eq!(max_c, 65536.0);
+    assert!(oe.ir.iter().all(|v| v.is_finite() && v >= 0.0));
     // flags tell what happened
     assert!(oe.flags.iter().any(|f| f & flags::SATURATED_ANY != 0));
 }
@@ -129,12 +130,12 @@ fn garbage_does_not_crash_the_decoder() {
             *b = x as u8;
         }
         dec.decode(&p, s.tables(), &mut out).unwrap();
-        assert!(out.depth.iter().all(|d| d.is_finite() && *d >= 0.0 && *d <= 18750.0));
-        assert!(out.ir.iter().all(|v| v.is_finite() && *v >= 0.0));
+        assert!(out.depth.iter().all(|d| d.is_finite() && (0.0..=18750.0).contains(&d)));
+        assert!(out.ir.iter().all(|v| v.is_finite() && v >= 0.0));
         // all zeros, nothing present
         let empty = RawDepthPacket::zeroed(2, 2);
         dec.decode(&empty, s.tables(), &mut out).unwrap();
-        assert!(out.depth.iter().all(|d| *d == 0.0));
+        assert!(out.depth.iter().all(|d| d == 0.0));
         // too short
         let mut short = RawDepthPacket::zeroed(3, 3);
         short.data.truncate(1000);
@@ -181,11 +182,11 @@ fn pixels_with_two_echoes_are_not_trusted() {
     let single = decode(&near);
     let px = single.depth.len() as f64;
     assert!((count(&single, &|i| single.flags[i] & flags::MULTIPATH != 0) as f64) < 0.001 * px, "a single echo is not flagged");
-    assert!(count(&single, &|i| single.depth[i] > 0.0) as f64 > 0.9 * px);
+    assert!(count(&single, &|i| single.depth.get(i).unwrap_or(0.0) > 0.0) as f64 > 0.9 * px);
     let lut = &s.tables().lut;
     let both = decode(&mix(&near, &far, lut));
     let flagged = count(&both, &|i| both.flags[i] & flags::MULTIPATH != 0) as f64;
-    let with_depth = count(&both, &|i| both.depth[i] > 0.0) as f64;
+    let with_depth = count(&both, &|i| both.depth.get(i).unwrap_or(0.0) > 0.0) as f64;
     assert!(flagged > 0.8 * px, "flagged {flagged} of {px}");
     assert!(with_depth < 0.01 * px, "depth on {with_depth} of {px}");
     // without the test, the mixture passes for a distance that is neither wall
@@ -194,11 +195,11 @@ fn pixels_with_two_echoes_are_not_trusted() {
     let mut dec = CpuDecoder::new(cfg).unwrap();
     let mut out = TofOutput::new();
     dec.decode(&mix(&near, &far, lut), s.tables(), &mut out).unwrap();
-    let neither = count(&out, &|i| out.depth[i] > 0.0 && (out.depth[i] - 1000.0).abs() > 50.0 && (out.depth[i] - 1600.0).abs() > 80.0) as f64;
+    let neither = count(&out, &|i| out.depth.get(i).unwrap_or(0.0) > 0.0 && (out.depth.get(i).unwrap_or(0.0) - 1000.0).abs() > 50.0 && (out.depth.get(i).unwrap_or(0.0) - 1600.0).abs() > 80.0) as f64;
     assert!(neither > 0.5 * px, "without the test {neither} of {px} pixels at neither wall");
     // the weak second echo moves the distance little: the pixels keep the near wall
     let o = decode(&mix(&near, &weak, lut));
-    let at_near = count(&o, &|i| (o.depth[i] - 1000.0).abs() < 50.0) as f64;
+    let at_near = count(&o, &|i| (o.depth.get(i).unwrap_or(0.0) - 1000.0).abs() < 50.0) as f64;
     assert!(at_near > 0.9 * px, "weak second echo: {at_near} of {px} at the near wall");
 }
 
@@ -227,8 +228,8 @@ fn two_echoes_give_the_near_surface() {
         let mut out = TofOutput::new();
         dec.decode(&m, s.tables(), &mut out).unwrap();
         let n = out.depth.len() as f64;
-        let at = |z: f32| out.depth.iter().filter(|d| (**d - z).abs() < 0.03 * z).count() as f64 / n;
-        let with = out.depth.iter().filter(|d| **d > 0.0).count() as f64 / n;
+        let at = |z: f32| out.depth.iter().filter(|d| (*d - z).abs() < 0.03 * z).count() as f64 / n;
+        let with = out.depth.iter().filter(|d| *d > 0.0).count() as f64 / n;
         let (on_near, on_far) = (at(zn), at(zf));
         assert!(on_near >= near_min, "{zn} + {zf} x{ratio}: {on_near:.3} at the near surface");
         assert!(with - on_near - on_far <= neither_max, "{zn} + {zf} x{ratio}: {:.3} at neither", with - on_near - on_far);
@@ -275,8 +276,8 @@ fn surfaces_brighter_than_plausible_keep_their_depth() {
     let mut out = TofOutput::new();
     dec.decode(&p, s.tables(), &mut out).unwrap();
     let n = out.depth.len() as f64;
-    let right = (0..out.depth.len()).filter(|&i| gt.depth[i] > 0.0 && (out.depth[i] - gt.depth[i]).abs() <= (0.01 * gt.depth[i]).max(15.0)).count() as f64;
-    let wrong = (0..out.depth.len()).filter(|&i| out.depth[i] > 0.0 && (out.depth[i] - gt.depth[i]).abs() > 100.0).count() as f64;
+    let right = (0..out.depth.len()).filter(|&i| gt.depth[i] > 0.0 && (out.depth.get(i).unwrap_or(0.0) - gt.depth[i]).abs() <= (0.01 * gt.depth[i]).max(15.0)).count() as f64;
+    let wrong = (0..out.depth.len()).filter(|&i| out.depth.get(i).unwrap_or(0.0) > 0.0 && (out.depth.get(i).unwrap_or(0.0) - gt.depth[i]).abs() > 100.0).count() as f64;
     assert!(right > 0.9 * n, "{right} of {n} right");
     assert!(wrong < 0.001 * n, "{wrong} of {n} wrong");
 }

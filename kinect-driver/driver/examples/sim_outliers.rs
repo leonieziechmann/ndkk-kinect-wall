@@ -36,7 +36,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (p, gt) = sim.frame(&s, f);
         de.decode(&p, &tables, &mut out)?;
         for i in 0..PIXELS {
-            let (t, d) = (gt.depth[i], out.depth[i]);
+            let (t, d) = (gt.depth[i], out.depth.get(i).unwrap_or(0.0));
             if t <= 0.0 || d <= 0.0 || gt.mixed[i] || i % WIDTH == 0 || i % WIDTH == WIDTH - 1 {
                 continue;
             }
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let k = if rel.abs() < 0.1 { 0 } else if rel.abs() < 0.3 { 1 } else { 2 };
             n[k] += 1;
             near[k] += u64::from(rel < 0.0);
-            conf[k] += f64::from(out.confidence[i]);
+            conf[k] += f64::from(out.confidence.get(i).unwrap_or(0.0));
             let g = out.flags[i];
             for (j, b) in [flags::MULTIPATH, flags::RESOLVED, flags::PLAUSIBILITY, flags::SATURATED_ANY, flags::DEPTH_FILLED].into_iter().enumerate() {
                 fl[k][j] += u64::from(g & b != 0);

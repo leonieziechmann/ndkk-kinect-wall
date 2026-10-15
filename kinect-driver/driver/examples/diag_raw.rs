@@ -100,7 +100,7 @@ impl Resid {
                 if (x + 3 * y) % 4 != 0 {
                     continue;
                 }
-                let c = oc.depth[i];
+                let c = oc.depth.get(i).unwrap_or(0.0);
                 if !(500.0..=3000.0).contains(&c) {
                     continue;
                 }
@@ -113,7 +113,7 @@ impl Resid {
                     continue;
                 }
                 // the 3 x 3 neighbors at a similar depth
-                let near: Vec<usize> = (0..9).map(|j| i + (j % 3) + (j / 3) * WIDTH - WIDTH - 1).filter(|&j| (oc.depth[j] - c).abs() < 0.03 * c).collect();
+                let near: Vec<usize> = (0..9).map(|j| i + (j % 3) + (j / 3) * WIDTH - WIDTH - 1).filter(|&j| (oc.depth.get(j).unwrap_or(0.0) - c).abs() < 0.03 * c).collect();
                 for k in 0..3 {
                     let Some((a, b)) = de.sample(k, i) else { continue };
                     let (mut sa, mut sb) = (0f32, 0f32);
@@ -311,31 +311,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Some(g) = gpu.as_mut() {
             g.decode(&p, &tables, &mut og)?;
             for i in 0..PIXELS {
-                let (a, b) = (oe.depth[i], og.depth[i]);
+                let (a, b) = (oe.depth.get(i).unwrap_or(0.0), og.depth.get(i).unwrap_or(0.0));
                 g_mismatch += u64::from((a > 0.0) != (b > 0.0));
                 if a > 0.0 && b > 0.0 {
                     g_over1 += u64::from((a - b).abs() > 1.0);
                     g_max = g_max.max((a - b).abs());
                 }
                 g_flags += u64::from(oe.flags[i] != og.flags[i]);
-                g_conf += u64::from((oe.confidence[i] - og.confidence[i]).abs() > 0.01);
+                g_conf += u64::from((oe.confidence.get(i).unwrap_or(0.0) - og.confidence.get(i).unwrap_or(0.0)).abs() > 0.01);
             }
         }
         for (t, o) in [(&mut tc, &oc), (&mut te, &oe)] {
-            for (s, d) in t.iter_mut().zip(&o.depth) {
-                if *d > 0.0 {
+            for (s, d) in t.iter_mut().zip(o.depth.iter()) {
+                if d > 0.0 {
                     s.0 += 1;
-                    s.1 += f64::from(*d);
-                    s.2 += f64::from(*d) * f64::from(*d);
+                    s.1 += f64::from(d);
+                    s.2 += f64::from(d) * f64::from(d);
                 }
             }
         }
         for (i, (d, f)) in oe.depth.iter().zip(&oe.flags).enumerate() {
-            mp_map[i] += u16::from(*d > 0.0 && f & flags::MULTIPATH != 0);
-            se_map[i] += u16::from(*d > 0.0 && f & flags::SECOND_ECHO != 0);
+            mp_map[i] += u16::from(d > 0.0 && f & flags::MULTIPATH != 0);
+            se_map[i] += u16::from(d > 0.0 && f & flags::SECOND_ECHO != 0);
         }
         for i in 0..PIXELS {
-            let (c, e, f) = (oc.depth[i], oe.depth[i], oe.flags[i]);
+            let (c, e, f) = (oc.depth.get(i).unwrap_or(0.0), oe.depth.get(i).unwrap_or(0.0), oe.flags[i]);
             c_valid += u64::from(c > 0.0);
             e_valid += u64::from(e > 0.0);
             e_near += u64::from(e > 0.0 && e <= room);
@@ -354,14 +354,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let t2 = ray[0] * ray[0] + ray[1] * ray[1];
                         let ang = t2.sqrt().atan().to_degrees();
                         let r = e / 1000.0 * (t2 + 1.0).sqrt();
-                        prof[((ang / 5.0) as usize).min(9)].v.push(oe.ir[i] * r * r);
+                        prof[((ang / 5.0) as usize).min(9)].v.push(oe.ir.get(i).unwrap_or(0.0) * r * r);
                         let model = kinect_driver::tof::cpu::inverse_illumination(&ray, &de.config().ext) as f32;
                         let (x, y) = (i % WIDTH, i / WIDTH);
                         if (120..300).contains(&y) {
-                            colp[x / 32].v.push(oe.ir[i] * r * r * model);
+                            colp[x / 32].v.push(oe.ir.get(i).unwrap_or(0.0) * r * r * model);
                         }
                         if (150..360).contains(&x) {
-                            rowp[(y / 32).min(13)].v.push(oe.ir[i] * r * r * model);
+                            rowp[(y / 32).min(13)].v.push(oe.ir.get(i).unwrap_or(0.0) * r * r * model);
                         }
                     }
                     mp_ok[usize::from(f & flags::MULTIPATH != 0)] += 1;
@@ -415,7 +415,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let to_mm = |u: f32| kinect_driver::tables::depth_from_u(u, tables.xtable[i], tables.ztable[i]);
                     println!(
                         "  phantom x {:>3} y {:>3}: {:>6.0} mm (2nd {:>6.0}) e1 {:>6.2} e2 {:>6.2} conf {:.2}->{:.2} ir_sum {:>5.1} raw phases@amp {} flags {:#x}",
-                        i % WIDTH, i / WIDTH, e, to_mm(info.u2), info.cost, info.cost + info.gap, info.confidence, oe.confidence[i], info.ir_sum, ph.join(" "), f
+                        i % WIDTH, i / WIDTH, e, to_mm(info.u2), info.cost, info.cost + info.gap, info.confidence, oe.confidence.get(i).unwrap_or(0.0), info.ir_sum, ph.join(" "), f
                     );
                 }
                 ph_e1.v.push(info.cost);
@@ -434,7 +434,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ph8_conf0.v.push(info.confidence);
                 }
                 ph_gap.v.push(gap);
-                ph_conf.v.push(oe.confidence[i]);
+                ph_conf.v.push(oe.confidence.get(i).unwrap_or(0.0));
                 ph_ir.v.push(info.ir_sum);
                 ph_compat.v.push(c);
                 ph_single += u64::from(info.kind & 0x0f == 2);
@@ -581,7 +581,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let i = y * WIDTH + x;
                 let info = de.unwrap_info(i).unwrap_or_default();
                 let mm = kinect_driver::tables::depth_from_u(info.u1, tables.xtable[i], tables.ztable[i]);
-                println!("    x {x:>3} y {y:>3}: {:>6.0} {:>6.0} {:>6.0} {:.2} {:#x} ir {:.0}", oc.depth[i], oe.depth[i], mm, info.confidence, oe.flags[i], oc.ir[i]);
+                println!("    x {x:>3} y {y:>3}: {:>6.0} {:>6.0} {:>6.0} {:.2} {:#x} ir {:.0}", oc.depth.get(i).unwrap_or(0.0), oe.depth.get(i).unwrap_or(0.0), mm, info.confidence, oe.flags[i], oc.ir.get(i).unwrap_or(0.0));
             }
         }
     }
@@ -600,13 +600,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(dir) = png {
         std::fs::create_dir_all(&dir)?;
         let max = room;
-        save_rgb(&format!("{dir}/compat.png"), &oc.depth.iter().map(|d| color(*d, max)).collect::<Vec<_>>())?;
-        save_rgb(&format!("{dir}/extended.png"), &oe.depth.iter().map(|d| if *d > room { [255, 255, 255] } else { color(*d, max) }).collect::<Vec<_>>())?;
+        save_rgb(&format!("{dir}/compat.png"), &oc.depth.iter().map(|d| color(d, max)).collect::<Vec<_>>())?;
+        save_rgb(&format!("{dir}/extended.png"), &oe.depth.iter().map(|d| if d > room { [255, 255, 255] } else { color(d, max) }).collect::<Vec<_>>())?;
         // last frame: green both, blue extended only, red/orange/... lost by reason, white phantom
         let rcol = [[80, 80, 80], [255, 0, 255], [255, 255, 0], [0, 255, 255], [255, 0, 0], [255, 128, 0], [128, 0, 255]];
         let map: Vec<[u8; 3]> = (0..PIXELS)
             .map(|i| {
-                let (c, e) = (oc.depth[i], oe.depth[i]);
+                let (c, e) = (oc.depth.get(i).unwrap_or(0.0), oe.depth.get(i).unwrap_or(0.0));
                 if e > room {
                     [255, 255, 255]
                 } else if c > 0.0 && e > 0.0 {
