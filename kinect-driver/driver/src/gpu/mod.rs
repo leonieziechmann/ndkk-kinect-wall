@@ -87,12 +87,6 @@ const W_LAST: usize = 30;
 const W_PLANES: usize = 35;
 const LIST_ROWS: usize = 8;
 const LISTS: usize = HEIGHT.div_ceil(LIST_ROWS);
-/// `split_reuse` as on the CPU (`tof/cpu.rs`): every pixel splits again at least every RESPLIT
-/// frames, the pixels between the seeds in the order of i * RESPLIT_SPREAD; it takes its last
-/// split over while its input moved less than RESPLIT_DISTANCE
-const RESPLIT: u64 = 16;
-const RESPLIT_SPREAD: usize = 5;
-const RESPLIT_DISTANCE: f32 = 16.0;
 /// split_between's workgroup (`decode.wgsl`, BETWEEN_THREADS)
 const BETWEEN_THREADS: usize = 64;
 /// planes read back
@@ -282,8 +276,8 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("LIST_COUNT", Pyramid::new().words),
         ("SPLIT_FRAME", Pyramid::new().words + LISTS),
         ("SEED_COLS", WIDTH.div_ceil(echoes::SEED_STEP)),
-        ("RESPLIT", RESPLIT as usize),
-        ("RESPLIT_SPREAD", RESPLIT_SPREAD),
+        ("RESPLIT", echoes::RESPLIT as usize),
+        ("RESPLIT_SPREAD", echoes::RESPLIT_SPREAD as usize),
         ("EXP_WORD", Pyramid::new().filled.first().copied().unwrap_or(0)),
     ] {
         s.push_str(&u(name, v));
@@ -366,7 +360,7 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("SURE_CONFIDENCE", SURE_CONFIDENCE),
         ("CONFIRMED_CONFIDENCE", CONFIRMED_CONFIDENCE),
         ("FIRST_ECHO_WEIGHT", crate::tof::resolve::FIRST_ECHO_WEIGHT),
-        ("RESPLIT_DISTANCE", RESPLIT_DISTANCE),
+        ("RESPLIT_DISTANCE", echoes::RESPLIT_DISTANCE),
     ] {
         s.push_str(&format!("const {name}: f32 = {};\n", f32c(v)));
     }
@@ -708,7 +702,7 @@ impl GpuDecoder {
         let split = self.cfg.mode == TofMode::Extended && self.cfg.ext.two_echoes;
         if split {
             // whose turn it is (only the frame modulo RESPLIT counts)
-            let turn = (self.split_frames % RESPLIT) as u32;
+            let turn = (self.split_frames % echoes::RESPLIT) as u32;
             self.queue.write_buffer(&self.work, self.split_frame_at, &turn.to_le_bytes());
             self.split_frames = self.split_frames.wrapping_add(1);
         }
