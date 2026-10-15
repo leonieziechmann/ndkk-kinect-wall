@@ -748,13 +748,15 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // a pixel in the frame of its measured values (echoes.rs, Frame): per frequency the unit vector
 // along the measurement (ex, ey), the square roots of the weights (radial, tangential), the
-// weighted measurement; its energy, the brightness prior, stage 2's single echo
+// weighted measurement, the tangential weights themselves (split_reuse measures with them); its
+// energy, the brightness prior, stage 2's single echo
 struct Frame {
     ex: vec3<f32>,
     ey: vec3<f32>,
     sr: vec3<f32>,
     st: vec3<f32>,
     y: vec3<f32>,
+    wt: vec3<f32>,
     zz: f32,
     inv_lim: f32,
     ps: f32,
@@ -940,20 +942,24 @@ fn finish_split(f: Frame, p: Pair, single: f32, alt_margin: f32) -> Split {
     return Split(p.u1, p.u2, p.a1, p.a2, max(margin / scale, 0.0));
 }
 
-// the inputs of the split of a pixel: the filtered values stage 2 kept, their noise, the
-// brightness prior (kernels.rs, collect_candidates)
+// the complex value of frequency k at pixel i, gain corrected, from the filtered values stage 2
+// kept (kernels.rs, collect_candidates)
+fn split_z(i: u32, k: u32) -> vec2<f32> {
+    return vec2<f32>(bitcast<f32>(wget(W_Z + 2u * k, i)), bitcast<f32>(wget(W_Z + 2u * k + 1u, i))) * (P.ab_multiplier * gain(k));
+}
+
+// the inputs of the split of a pixel: its complex values, their noise, the brightness prior
+// (kernels.rs, collect_candidates); the tangential weights also where it cannot be split (ok 0)
 fn split_frame(i: u32, fl: u32) -> Frame {
-    var f = Frame(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), 0.0, 0.0, 0.0, 0.0, 0u);
+    var f = Frame(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), 0.0, 0.0, 0.0, 0.0, 0u);
     var z: array<vec2<f32>, 3>;
     var m: array<f32, 3>;
-    let abm = P.ab_multiplier;
     for (var k = 0u; k < 3u; k++) {
-        let a = bitcast<f32>(wget(W_Z + 2u * k, i));
-        let b = bitcast<f32>(wget(W_Z + 2u * k + 1u, i));
-        z[k] = vec2<f32>(a, b) * (abm * gain(k));
+        z[k] = split_z(i, k);
         m[k] = sqrt(z[k].x * z[k].x + z[k].y * z[k].y);
     }
     let mean = (m[0] + m[1] + m[2]) / 3.0;
+    var ok = true;
     for (var k = 0u; k < 3u; k++) {
         var s = noise(k) * gain(k);
         if ((fl & (FL_REPAIRED_80 << k)) != 0u) { s = s * REBUILT_NOISE; }
@@ -961,13 +967,18 @@ fn split_frame(i: u32, fl: u32) -> Frame {
         let t = P.noise_floor * m[k];
         let wr = 1.0 / max(s * s + a * a, 1e-12);
         let wt = 1.0 / max(s * s + t * t, 1e-12);
-        if (!(m[k] > 0.0)) { return f; }
+        f.wt[k] = wt;
+        if (!(m[k] > 0.0)) {
+            ok = false;
+            continue;
+        }
         f.ex[k] = z[k].x / m[k];
         f.ey[k] = z[k].y / m[k];
         f.sr[k] = sqrt(wr);
         f.st[k] = sqrt(wt);
         f.y[k] = f.sr[k] * m[k];
     }
+    if (!ok) { return f; }
     f.zz = dot(f.y, f.y);
     if (P.penalty_scale > 0.0) {
         let lim = P.echo_rho_max / max(P.ir_output * tget(T_ILLUM, i) * P.inv_brightness * (U_RANGE_MM * 0.001) * (U_RANGE_MM * 0.001), 1e-30);
@@ -990,6 +1001,46 @@ fn apply_split(i: u32, sp: Split, near: f32, fl: u32) -> u32 {
     let small = wget(W_SMALL, i);
     wset(W_SMALL, i, pair((small & 0xffu) | ((KIND_MULTI | KIND_FIRST_ECHO) << 8u), 0u));
     return fl | FL_SECOND_ECHO;
+}
+
+// split_reuse (cpu.rs, takes_over): a pixel whose input moved less than RESPLIT_DISTANCE since
+// its last split (squared, weighted with the phase noise) takes that split over, unless it is
+// its turn to split again: every RESPLIT frames, the seeds in turn along their lattice, the
+// pixels between in the order of i * RESPLIT_SPREAD
+fn split_turn(order: u32) -> bool { return (order + work[SPLIT_FRAME]) % RESPLIT == 0u; }
+
+fn takes_over(i: u32, f: Frame, turn: bool) -> bool {
+    if (P.split_reuse == 0u || turn || !(bitcast<f32>(wget(W_LAST, i)) > 0.0)) { return false; }
+    var moved = 0.0;
+    for (var k = 0u; k < 3u; k++) {
+        let d = split_z(i, k) - vec2<f32>(bitcast<f32>(wget(W_LAST_Z + 2u * k, i)), bitcast<f32>(wget(W_LAST_Z + 2u * k + 1u, i)));
+        moved += f.wt[k] * (d.x * d.x + d.y * d.y);
+    }
+    return moved < RESPLIT_DISTANCE;
+}
+
+fn last_split(i: u32) -> Split {
+    return Split(bitcast<f32>(wget(W_LAST, i)), bitcast<f32>(wget(W_LAST + 1u, i)), bitcast<f32>(wget(W_LAST + 2u, i)), bitcast<f32>(wget(W_LAST + 3u, i)), bitcast<f32>(wget(W_LAST + 4u, i)));
+}
+
+// keeps the split of a pixel and its input for split_reuse
+fn keep_split(i: u32, sp: Split) {
+    if (P.split_reuse == 0u) { return; }
+    for (var k = 0u; k < 3u; k++) {
+        let z = split_z(i, k);
+        wset(W_LAST_Z + 2u * k, i, bitcast<u32>(z.x));
+        wset(W_LAST_Z + 2u * k + 1u, i, bitcast<u32>(z.y));
+    }
+    wset(W_LAST, i, bitcast<u32>(sp.u1));
+    wset(W_LAST + 1u, i, bitcast<u32>(sp.u2));
+    wset(W_LAST + 2u, i, bitcast<u32>(sp.a1));
+    wset(W_LAST + 3u, i, bitcast<u32>(sp.a2));
+    wset(W_LAST + 4u, i, bitcast<u32>(sp.gap));
+}
+
+// a split was tried and found nothing: nothing to take over
+fn forget_split(i: u32) {
+    if (P.split_reuse != 0u) { wset(W_LAST, i, bitcast<u32>(-1.0)); }
 }
 
 // cost (non-negative, as f32 bits with the 8 low bits cleared) and grid point in one word: the
@@ -1048,13 +1099,23 @@ fn split_seeds(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_
         // no solution yet (the pixels between read the seed planes)
         wset(W_SEED1, i, bitcast<u32>(-1.0));
         var go = 0u;
-        let fl = wget(W_FLAGS, i);
+        var fl = wget(W_FLAGS, i);
         if ((fl & FL_SPLIT_CANDIDATE) != 0u) {
+            fl = fl & ~FL_SPLIT_CANDIDATE;
             let f = split_frame(i, fl);
-            wg_frame = f;
-            go = f.ok;
+            if (takes_over(i, f, split_turn(wid.y * SEED_COLS + wid.x))) {
+                let sp = last_split(i);
+                wset(W_SEED1, i, bitcast<u32>(sp.u1));
+                wset(W_SEED2, i, bitcast<u32>(sp.u2));
+                fl = apply_split(i, sp, f.near, fl);
+            } else if (f.ok != 0u) {
+                wg_frame = f;
+                go = 1u;
+            } else {
+                forget_split(i);
+            }
         }
-        wset(W_FLAGS, i, fl & ~FL_SPLIT_CANDIDATE);
+        wset(W_FLAGS, i, fl);
         wg_go = go;
         atomicStore(&wg_single, NO_KEY);
         atomicStore(&wg_best, NO_KEY);
@@ -1114,7 +1175,10 @@ fn split_seeds(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_
         if (i1 > 0u && k != NO_KEY && key_cost(k) < BIG) { atomicMin(&wg_best, (k & ~0xffu) | i1); }
     }
     let best = workgroupUniformLoad(&wg_best);
-    if (best == NO_KEY) { return; }
+    if (best == NO_KEY) {
+        if (lid == 0u) { forget_split(i); }
+        return;
+    }
     // the best pair whose first echo lies elsewhere
     let bi = best & 0xffu;
     for (var i1 = lid; i1 < last; i1 += SEED_THREADS) {
@@ -1158,9 +1222,13 @@ fn split_refine(@builtin(global_invocation_id) gid: vec3<u32>) {
     var sc = BIG;
     if (js != NO_SINGLE) { sc = refine_single(f, f32(js) * step, 0.5 * step, LEVELS); }
     if (p.cost < BIG) {
+        let sp = finish_split(f, p, sc, alt);
+        keep_split(i, sp);
         wset(W_SEED1, i, bitcast<u32>(p.u1));
         wset(W_SEED2, i, bitcast<u32>(p.u2));
-        wset(W_FLAGS, i, apply_split(i, finish_split(f, p, sc, alt), f.near, fl));
+        wset(W_FLAGS, i, apply_split(i, sp, f.near, fl));
+    } else {
+        forget_split(i);
     }
 }
 
@@ -1188,7 +1256,8 @@ fn seed_offset(k: u32) -> vec2<i32> {
 
 // the pixels between the seeds to split, per band of LIST_ROWS rows: their indices (plane W_LIST,
 // from the band's first pixel on, in no particular order) and their number (word LIST_COUNT +
-// band); split_between then keeps its invocations busy
+// band); split_between then keeps its invocations busy. Pixels that take their last split over
+// (split_reuse) do it here and are not listed.
 const LIST_PIXELS: u32 = LIST_ROWS * W;
 const LIST_THREADS: u32 = 256u;
 const BETWEEN_THREADS: u32 = 64u;
@@ -1202,6 +1271,14 @@ fn split_list(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_i
     for (var o = lid; o < LIST_PIXELS; o += LIST_THREADS) {
         let i = first + o;
         if (i < N && (wget(W_FLAGS, i) & FL_SPLIT_CANDIDATE) != 0u) {
+            if (P.split_reuse != 0u) {
+                let fl = wget(W_FLAGS, i) & ~FL_SPLIT_CANDIDATE;
+                let f = split_frame(i, fl);
+                if (takes_over(i, f, split_turn(i * RESPLIT_SPREAD))) {
+                    wset(W_FLAGS, i, apply_split(i, last_split(i), f.near, fl));
+                    continue;
+                }
+            }
             wset(W_LIST, first + atomicAdd(&wg_count, 1u), i);
         }
     }
@@ -1242,12 +1319,19 @@ fn split_between(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocatio
             let c = pair_at(f, steering(su1), steering(su2), su1, su2);
             if (c.cost < best.cost) { best = c; }
         }
+        var found = false;
         if (best.cost < BIG) {
             let p = refine_pair(f, best, 0.25 / f32(COARSE), BETWEEN_LEVELS, 1u);
             if (p.cost < BIG) {
-                fl = apply_split(i, finish_split(f, p, single_at(f, steering(f.near), f.near), BIG), f.near, fl);
+                let sp = finish_split(f, p, single_at(f, steering(f.near), f.near), BIG);
+                keep_split(i, sp);
+                found = true;
+                fl = apply_split(i, sp, f.near, fl);
             }
         }
+        if (!found) { forget_split(i); }
+    } else {
+        forget_split(i);
     }
     wset(W_FLAGS, i, fl);
 }

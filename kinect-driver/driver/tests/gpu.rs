@@ -156,6 +156,45 @@ fn two_echoes_match_the_cpu() {
 }
 
 #[test]
+fn split_reuse_matches_the_cpu() {
+    use kinect_driver::sim::{Object, Shape};
+    let mut cfg = TofConfig::extended();
+    cfg.ext.two_echoes = true;
+    assert!(cfg.ext.split_reuse);
+    let Some(mut g) = gpu(cfg.clone()) else { return };
+    let mut c = CpuDecoder::new(cfg).unwrap();
+    let wall = |z: f32, albedo: f32| Scene { objects: vec![Object::new(Shape::Plane { point: [0.0, 0.0, z], normal: [0.0, 0.0, -1.0] }, albedo)], ambient: 150.0, brightness: 16000.0 };
+    let mut sim = Simulator::new(SimConfig { supersample: false, ..Default::default() }).unwrap();
+    let tables = sim.tables().clone();
+    let mut pair = |zn: f32, zf: f32, ratio: f32, n: u32| {
+        let (near, _) = sim.frame(&wall(zn, 0.4), n);
+        let (far, _) = sim.frame(&wall(zf, 0.4 * (zf / zn).powi(2) * ratio), n + 1);
+        mix(&near, &far, &tables.lut)
+    };
+    // a floor and its mirror image with new sensor noise every frame (pixels take their splits
+    // over or split again, in turn), then another scene (every pixel splits again)
+    let mut frames: Vec<RawDepthPacket> = (0..5).map(|f| pair(2000.0, 4600.0, 0.5, 1 + 2 * f)).collect();
+    frames.push(pair(1500.0, 3000.0, 2.0, 11));
+    let (mut oc, mut og) = (TofOutput::new(), TofOutput::new());
+    for (n, p) in frames.iter().enumerate() {
+        c.decode(p, &tables, &mut oc).unwrap();
+        g.decode(p, &tables, &mut og).unwrap();
+        let d = compare(&oc, &og);
+        eprintln!("frame {n}: {d:?} (gpu split {:.2} ms)", g.timings.split_ms);
+        let px = d.pixels as f64;
+        assert!((d.valid_mismatch as f64) < 0.002 * px, "frame {n}: {d:?}");
+        assert!((d.depth_over_1mm as f64) < 0.005 * px, "frame {n}: {d:?}");
+        assert!((d.flags_off as f64) < 0.005 * px, "frame {n}: {d:?}");
+    }
+    // the same input again: every pixel takes its split over, or splits again to the same result
+    let first = og.clone();
+    for _ in 0..3 {
+        g.decode(&frames[5], &tables, &mut og).unwrap();
+        assert!(og.depth == first.depth && og.flags == first.flags);
+    }
+}
+
+#[test]
 fn lost_rows_and_garbage() {
     let Some(mut g) = gpu(TofConfig::extended()) else { return };
     let mut c = CpuDecoder::new(TofConfig::extended()).unwrap();

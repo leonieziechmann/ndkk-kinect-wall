@@ -78,10 +78,21 @@ const W_SEED2: usize = 16;
 const W_Z: usize = 17;
 /// the pixels to split between the seeds, listed per band of LIST_ROWS rows
 const W_LIST: usize = 23;
-/// the push-pull pyramid starts after the planes, the lists' lengths after the pyramid
-const W_PLANES: usize = 24;
+/// `split_reuse`: per pixel the input of its last split (z per frequency, gain corrected, as
+/// f32 bits: six planes) and that split (u1, u2, a1, a2, margin; u1 <= 0: none)
+const W_LAST_Z: usize = 24;
+const W_LAST: usize = 30;
+/// the push-pull pyramid starts after the planes; after the pyramid the lists' lengths, then
+/// the frame counter of `split_reuse`
+const W_PLANES: usize = 35;
 const LIST_ROWS: usize = 8;
 const LISTS: usize = HEIGHT.div_ceil(LIST_ROWS);
+/// `split_reuse` as on the CPU (`tof/cpu.rs`): every pixel splits again at least every RESPLIT
+/// frames, the pixels between the seeds in the order of i * RESPLIT_SPREAD; it takes its last
+/// split over while its input moved less than RESPLIT_DISTANCE
+const RESPLIT: u64 = 16;
+const RESPLIT_SPREAD: usize = 5;
+const RESPLIT_DISTANCE: f32 = 16.0;
 /// split_between's workgroup (`decode.wgsl`, BETWEEN_THREADS)
 const BETWEEN_THREADS: usize = 64;
 /// planes read back
@@ -202,6 +213,7 @@ fn params(cfg: &TofConfig) -> Vec<(&'static str, Value)> {
         ("amplitude_floor", F(s2.amplitude_floor)),
         ("multipath_tolerance", F(s2.multipath_tolerance)),
         ("two_echoes", U(u32::from(s2.two_echoes))),
+        ("split_reuse", U(u32::from(cfg.ext.split_reuse))),
         ("echo_amplitude_floor", F(s2.echo_amplitude_floor)),
         ("echo_plausibility", F(s2.echo_plausibility)),
         ("echo_rho_max", F(s2.ln_max_reflectivity.exp())),
@@ -264,8 +276,14 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("W_SEED2", W_SEED2),
         ("W_Z", W_Z),
         ("W_LIST", W_LIST),
+        ("W_LAST_Z", W_LAST_Z),
+        ("W_LAST", W_LAST),
         ("LIST_ROWS", LIST_ROWS),
         ("LIST_COUNT", Pyramid::new().words),
+        ("SPLIT_FRAME", Pyramid::new().words + LISTS),
+        ("SEED_COLS", WIDTH.div_ceil(echoes::SEED_STEP)),
+        ("RESPLIT", RESPLIT as usize),
+        ("RESPLIT_SPREAD", RESPLIT_SPREAD),
         ("EXP_WORD", Pyramid::new().filled.first().copied().unwrap_or(0)),
     ] {
         s.push_str(&u(name, v));
@@ -348,6 +366,7 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("SURE_CONFIDENCE", SURE_CONFIDENCE),
         ("CONFIRMED_CONFIDENCE", CONFIRMED_CONFIDENCE),
         ("FIRST_ECHO_WEIGHT", crate::tof::resolve::FIRST_ECHO_WEIGHT),
+        ("RESPLIT_DISTANCE", RESPLIT_DISTANCE),
     ] {
         s.push_str(&format!("const {name}: f32 = {};\n", f32c(v)));
     }
@@ -449,6 +468,10 @@ pub struct GpuDecoder {
     saturation_level: f32,
     lost: Arc<AtomicBool>,
     timer: Option<Timer>,
+    /// the frames split so far (`split_reuse`: whose turn it is to split again), and where the
+    /// shaders read it (byte offset in `work`)
+    split_frames: u64,
+    split_frame_at: u64,
     /// how long the last frame took (stage1 = upload, stage2 = GPU, stage3 = read back,
     /// fill = the CPU steps; split = the two-echo passes on the GPU's clock)
     pub timings: TofTimings,
@@ -490,7 +513,7 @@ impl GpuDecoder {
     }
 
     /// Decodes on a device the application already has (it must allow 4 storage buffers per
-    /// shader stage and buffers of 32 MB: any adapter with compute shaders does).
+    /// shader stage and buffers of 33 MB: any adapter with compute shaders does).
     pub fn with_device(device: wgpu::Device, queue: wgpu::Queue, cfg: TofConfig) -> Result<GpuDecoder> {
         cfg.validate()?;
         catch(|| GpuDecoder::build(device, queue, "shared device".into(), cfg))
@@ -555,7 +578,7 @@ impl GpuDecoder {
         let pyramid = Pyramid::new();
         let raw = buffer("kinect-driver raw", RAW_WORDS * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let tabs = buffer("kinect-driver tables", (T_PLANES * N + 2048) * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
-        let work = buffer("kinect-driver work", (pyramid.words + LISTS) * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
+        let work = buffer("kinect-driver work", (pyramid.words + LISTS + 1) * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST);
         let staging = buffer("kinect-driver readback", STAMPS_AT + STAMP_BYTES, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
         let timer = device.features().contains(wgpu::Features::TIMESTAMP_QUERY).then(|| Timer {
             set: device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("kinect-driver passes"), ty: wgpu::QueryType::Timestamp, count: 2 * MAX_PASSES as u32 }),
@@ -631,6 +654,8 @@ impl GpuDecoder {
             saturation_level: 0.0,
             lost,
             timer,
+            split_frames: 0,
+            split_frame_at: ((pyramid.words + LISTS) * 4) as u64,
             timings: TofTimings::default(),
             passes: PassTimes::default(),
         })
@@ -680,6 +705,13 @@ impl GpuDecoder {
             m.copy_from_slice(&bits.to_le_bytes());
         }
         self.queue.write_buffer(&self.raw, (MASK_BASE * 4) as u64, &self.masks);
+        let split = self.cfg.mode == TofMode::Extended && self.cfg.ext.two_echoes;
+        if split {
+            // whose turn it is (only the frame modulo RESPLIT counts)
+            let turn = (self.split_frames % RESPLIT) as u32;
+            self.queue.write_buffer(&self.work, self.split_frame_at, &turn.to_le_bytes());
+            self.split_frames = self.split_frames.wrapping_add(1);
+        }
         let t1 = Instant::now();
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("kinect-driver frame") });
