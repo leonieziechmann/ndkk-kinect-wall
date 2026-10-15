@@ -27,6 +27,9 @@ USAGE
   kinect-driver replay FILE.k2raw|sim:SCENE [OPTIONS] [--frames N] [--every K] [--png DIR] [--compare]
                                         decode a recording; --compare: compat against extended
   kinect-driver bench [--source FILE.k2raw|sim:SCENE] [--frames N] [--backend cpu|gpu] [--threads N]
+                      [--mode compat|extended] [--fps F [--seconds S]]
+                                        decoding speed; --fps: at the show's pace, with the CPU time
+                                        per frame (for power measurements)
   kinect-driver simulate --out FILE.k2raw [--scene S] [--frames N]
   kinect-driver eval [--scenes a,b] [--frames N] [--backend cpu|gpu]
                                         both modes against the simulator's ground truth

@@ -457,7 +457,13 @@ pub fn bench(mut a: Args) -> R {
     let frames: usize = a.number("--frames")?.unwrap_or(60);
     let threads: usize = a.number("--threads")?.unwrap_or(0);
     let only = a.value("--backend")?;
+    let only_mode = a.value("--mode")?;
+    let fps: Option<f64> = a.number("--fps")?;
+    let seconds: f64 = a.number("--seconds")?.unwrap_or(60.0);
     a.done()?;
+    if fps.is_some_and(|f| !(1.0..=1000.0).contains(&f)) || !(seconds > 0.0 && seconds.is_finite()) {
+        return Err("--fps 1..1000, --seconds > 0".into());
+    }
     let mut src = Packets::open(&source)?;
     let tables = src.tables();
     let mut packets = Vec::new();
@@ -474,15 +480,28 @@ pub fn bench(mut a: Args) -> R {
         Some(b) => vec![Backend::parse(b).ok_or("--backend cpu|gpu")?],
         None => vec![Backend::Cpu, Backend::Gpu],
     };
-    println!("{} frames from {source}", frames);
+    let modes = match only_mode.as_deref() {
+        None => vec![TofMode::Compat, TofMode::Extended],
+        Some("compat") => vec![TofMode::Compat],
+        Some("extended") => vec![TofMode::Extended],
+        Some(m) => return Err(format!("--mode {m:?}: compat or extended")),
+    };
+    match fps {
+        None => println!("{frames} frames from {source}"),
+        Some(f) => println!("{f} frames per second from {source}, {seconds} s per run (read the power meter during each run, e.g. HWiNFO's CPU package power, which on an APU includes the GPU, and compare with idle)"),
+    }
     for backend in backends {
-        for mode in [TofMode::Compat, TofMode::Extended] {
+        for &mode in &modes {
             let mut cfg = if mode == TofMode::Compat { TofConfig::compat() } else { TofConfig::extended() };
             cfg.threads = threads;
             let mut dec = make_decoder(cfg, backend).map_err(err)?;
             let mut out = TofOutput::new();
             for p in packets.iter().take(3) {
                 dec.decode(p, &tables, &mut out).map_err(err)?;
+            }
+            if let Some(f) = fps {
+                paced(dec.as_mut(), &packets, &tables, f, seconds)?;
+                continue;
             }
             let mut ms = Vec::with_capacity(frames);
             for i in 0..frames {
@@ -498,6 +517,86 @@ pub fn bench(mut a: Args) -> R {
         }
     }
     Ok(())
+}
+
+/// Decodes at `fps` for `seconds`, as the show does (not as fast as it can), and prints the
+/// time per frame and the CPU time of the whole process per frame: the decoding, the threads
+/// of the GPU driver and the copies, but not the waiting for the GPU.
+fn paced(dec: &mut dyn kinect_driver::pipeline::TofDecoder, packets: &[RawDepthPacket], tables: &Arc<DeviceTables>, fps: f64, seconds: f64) -> R {
+    let period = Duration::from_secs_f64(1.0 / fps);
+    let n = (seconds * fps).ceil().max(1.0) as u32;
+    let mut out = TofOutput::new();
+    let (mut busy, mut late) = (0.0, 0u32);
+    println!("  {:<60} running {seconds} s ...", dec.describe());
+    let cpu0 = process_cpu_seconds();
+    let start = Instant::now();
+    for i in 0..n {
+        let due = start + period * i;
+        let now = Instant::now();
+        match due.checked_duration_since(now) {
+            Some(wait) => std::thread::sleep(wait),
+            None if now.duration_since(due) > period => late += 1,
+            None => {}
+        }
+        let p = packets.get(i as usize % packets.len()).ok_or("no packet")?;
+        let t = Instant::now();
+        dec.decode(p, tables, &mut out).map_err(err)?;
+        busy += t.elapsed().as_secs_f64();
+    }
+    let wall = start.elapsed().as_secs_f64();
+    let per_frame = |s: f64| s * 1000.0 / f64::from(n);
+    let cpu = match process_cpu_seconds().zip(cpu0) {
+        Some((b, a)) => format!("CPU {:.2} ms/frame = {:.0} % of one core", per_frame(b - a), 100.0 * (b - a) / wall),
+        None => "CPU time unknown here".into(),
+    };
+    let behind = if late > 0 { format!(", {late} frames more than a frame late") } else { String::new() };
+    println!("  {:<60} {:>6.2} ms/frame, {cpu}{behind}", dec.describe(), per_frame(busy));
+    Ok(())
+}
+
+/// The CPU time of this process so far (all threads, user and kernel), in seconds.
+#[cfg(windows)]
+fn process_cpu_seconds() -> Option<f64> {
+    #[allow(unsafe_code)]
+    mod win {
+        use std::ffi::c_void;
+        #[repr(C)]
+        #[derive(Default)]
+        pub struct FileTime {
+            pub low: u32,
+            pub high: u32,
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            pub fn GetCurrentProcess() -> *mut c_void;
+            pub fn GetProcessTimes(process: *mut c_void, creation: *mut FileTime, exit: *mut FileTime, kernel: *mut FileTime, user: *mut FileTime) -> i32;
+        }
+    }
+    let (mut creation, mut exit, mut kernel, mut user) = (win::FileTime::default(), win::FileTime::default(), win::FileTime::default(), win::FileTime::default());
+    // SAFETY: the pseudo handle of the own process and four FILETIMEs on the stack that outlive
+    // the call
+    #[allow(unsafe_code)]
+    let ok = unsafe { win::GetProcessTimes(win::GetCurrentProcess(), &mut creation, &mut exit, &mut kernel, &mut user) };
+    // in units of 100 ns
+    let secs = |f: &win::FileTime| ((u64::from(f.high) << 32) | u64::from(f.low)) as f64 * 1e-7;
+    (ok != 0).then(|| secs(&kernel) + secs(&user))
+}
+
+/// The CPU time of this process so far (all threads, user and kernel), in seconds.
+#[cfg(target_os = "linux")]
+fn process_cpu_seconds() -> Option<f64> {
+    // fields 14 and 15 of /proc/self/stat (utime, stime) in ticks of 1/100 s; the name before
+    // them is in parentheses and may contain spaces
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    let tick = |i: usize| fields.get(i).and_then(|v| v.parse::<f64>().ok());
+    Some((tick(11)? + tick(12)?) / 100.0)
+}
+
+/// The CPU time of this process so far: not known on this platform.
+#[cfg(not(any(windows, target_os = "linux")))]
+fn process_cpu_seconds() -> Option<f64> {
+    None
 }
 
 /// `simulate`: a simulated recording (for tests without a Kinect).

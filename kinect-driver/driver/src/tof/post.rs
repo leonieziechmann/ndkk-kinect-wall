@@ -36,6 +36,10 @@ const REACHED: u8 = 3;
 /// in some sample but still have depth), never from what is behind it. With `workers`, the
 /// interpolation runs on them (fails only if one panicked).
 pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidence: &mut [f32], fl: &mut [u32], s: &mut PostScratch, workers: Option<&Workers>) -> Result<()> {
+    // nothing saturated (the usual frame): nothing to fill
+    if !any_bits(fl, flags::SATURATED_ANY) {
+        return Ok(());
+    }
     let PostScratch { class, stack, weights, pp, .. } = s;
     let rejected = flags::EDGE | flags::SPECKLE | flags::OUT_OF_RANGE;
     class.clear();
@@ -121,6 +125,10 @@ pub(crate) fn fill_saturated_depth(cfg: &TofConfig, depth: &mut [f32], confidenc
 /// saturated sample could be rebuilt: their brightness is known and just at that level).
 /// Needs only what stage 1 decided (`IR_FILLED`, the repair bits of `fl`).
 pub(crate) fn fill_ir(cfg: &TofConfig, ir: &mut [f32], fl: &[u32], saturation_level: &mut f32, s: &mut PostScratch) {
+    // nothing repaired or clipped (the usual frame): no level to learn, nothing to fill
+    if !any_bits(fl, flags::REPAIRED_ANY | flags::IR_FILLED) {
+        return;
+    }
     let PostScratch { repaired, weights, pp, .. } = s;
     repaired.clear();
     let mut clipped = 0usize;
@@ -149,4 +157,10 @@ pub(crate) fn fill_ir(cfg: &TofConfig, ir: &mut [f32], fl: &[u32], saturation_le
             *o = v.max(floor) * gain;
         }
     }
+}
+
+/// True if any pixel has any of `bits`: an OR over the whole plane, which vectorizes (a quick
+/// look before the steps that would otherwise walk every pixel for nothing).
+fn any_bits(fl: &[u32], bits: u32) -> bool {
+    fl.iter().fold(0, |a, f| a | f) & bits != 0
 }

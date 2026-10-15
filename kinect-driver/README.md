@@ -43,6 +43,8 @@ IR, wo der Sensor sättigt: compat 100 % weiß abgeschnitten, extended 0 %. Ein 
 
 **Zeit** (Xeon 2,8 GHz, 4 vCPU, AVX2): compat 4,6 ms je Frame mit 3 Threads (12,5 ms mit einem), extended 10,7 ms im Raum und 12,5 ms mit viel Sättigung (27–29 ms mit einem); Einzelheiten unter [Rechenkerne](#rechenkerne). Auf der GPU (wgpu) dieselben Ergebnisse bis auf Rundung (Tiefe max. 0,005 mm Abweichung, gemessen mit lavapipe); die Zeit dort hängt von der GPU ab: `kinect-driver bench`.
 
+**Strom** (geteiltes Budget einer APU): Bei 30 fps hält die CPU-Variante im erweiterten Modus etwa einen Kern beschäftigt (32 ms CPU-Zeit je Frame mit 3 Threads, 35 ms bei viel Sättigung). Der GPU-Weg braucht auf der CPU 1,4 ms je Frame (Hochladen 0,6 ms, Zurücklesen 0,7 ms); nur wo etwas sättigt, kommen bis 3,3 ms für die Füllung dazu. Ob die GPU dieselbe Arbeit mit weniger Energie macht, zeigt nur eine Messung auf dem Zielrechner: `kinect-driver bench --fps 30 --seconds 120 --mode extended --backend cpu`, dann dasselbe mit `--backend gpu`, und jeweils die mittlere Leistung (z. B. HWiNFO, „CPU Package Power“, auf einer APU mit GPU) gegen den Leerlauf vergleichen. Im Taktbetrieb gibt der Befehl auch die CPU-Zeit je Frame des ganzen Prozesses aus.
+
 ## Speicher und Kopien
 
 Im laufenden Betrieb legt ein Frame keinen Bildspeicher neu an; die großen Puffer kreisen.
@@ -120,7 +122,7 @@ kinect-driver info [--save-calibration ORDNER]
 kinect-driver stream [OPTIONEN] [--seconds N] [--png ORDNER]
 kinect-driver record --out DATEI.k2raw [--seconds N]
 kinect-driver replay DATEI.k2raw|sim:SZENE [OPTIONEN] [--frames N] [--every K] [--png ORDNER] [--compare]
-kinect-driver bench [--source DATEI.k2raw|sim:SZENE] [--backend cpu|gpu] [--threads N]
+kinect-driver bench [--source DATEI.k2raw|sim:SZENE] [--backend cpu|gpu] [--threads N] [--mode compat|extended] [--fps F [--seconds S]]
 kinect-driver simulate --out DATEI.k2raw [--scene S] [--frames N]
 kinect-driver eval [--scenes a,b] [--frames N]
 kinect-driver analyze DATEI.k2raw [--frames N]
