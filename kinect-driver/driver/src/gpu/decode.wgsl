@@ -49,11 +49,31 @@ fn sane(v: f32) -> f32 { return select(0.0, v, v == v); }
 fn pair(lo: u32, hi: u32) -> u32 { return (lo & 0xffffu) | (hi << 16u); }
 // t rounded to the nearest integer (ties to even), the low 16 bits of its two's complement
 fn q16(t: f32) -> u32 { return bitcast<u32>(i32(round(t))) & 0xffffu; }
-// binary16 of v * scale (clamped to the finite range), and back (`inv` = 1 / scale)
-fn f16_of(v: f32, scale: f32) -> u32 {
-    return pack2x16float(vec2<f32>(clamp(sane(v * scale), -F16_MAX, F16_MAX), 0.0)) & 0xffffu;
+// binary16 bits of a finite v within +-65504, rounded to the nearest even (pack.rs f16_bits;
+// not pack2x16float, whose rounding WGSL leaves to the GPU: AMD rounds towards zero)
+fn f16_bits(v: f32) -> u32 {
+    let x = bitcast<u32>(v);
+    let sign = (x >> 16u) & 0x8000u;
+    let a = x & 0x7fffffffu;
+    let normal = (a - 0x38000000u + 0x0fffu + ((a >> 13u) & 1u)) >> 13u;
+    // below 2^-14: a multiple of 2^-24; adding 0.5 (whose last bit is 2^-24) rounds it there
+    let sub = bitcast<u32>(bitcast<f32>(a) + 0.5) - 0x3f000000u;
+    return sign | select(normal, sub, a < 0x38800000u);
 }
-fn f16_val(bits: u32, inv: f32) -> f32 { return unpack2x16float(bits & 0xffffu).x * inv; }
+// the value of binary16 bits, exact (pack.rs f16_value; subnormals included)
+fn f16_value(h: u32) -> f32 {
+    let sign = (h & 0x8000u) << 16u;
+    let em = h & 0x7fffu;
+    let normal = (em << 13u) + 0x38000000u;
+    let sub = bitcast<u32>(bitcast<f32>(0x3f000000u + em) - 0.5);
+    return bitcast<f32>(sign | select(normal, sub, em < 0x400u));
+}
+// two binary16 values in a word, and back
+fn f16x2_of(v: vec2<f32>) -> u32 { return pair(f16_bits(clamp(sane(v.x), -F16_MAX, F16_MAX)), f16_bits(clamp(sane(v.y), -F16_MAX, F16_MAX))); }
+fn f16x2_val(w: u32) -> vec2<f32> { return vec2<f32>(f16_value(w & 0xffffu), f16_value(w >> 16u)); }
+// binary16 of v * scale (clamped to the finite range), and back (`inv` = 1 / scale)
+fn f16_of(v: f32, scale: f32) -> u32 { return f16_bits(clamp(sane(v * scale), -F16_MAX, F16_MAX)); }
+fn f16_val(bits: u32, inv: f32) -> f32 { return f16_value(bits & 0xffffu) * inv; }
 fn unorm_of(v: f32) -> u32 { return q16(clamp(sane(v), 0.0, 1.0) * 65535.0); }
 fn unorm_val(bits: u32) -> f32 { return f32(bits & 0xffffu) * INV_65535; }
 fn snorm_of(v: f32) -> u32 { return q16(clamp(sane(v), -1.0, 1.0) * 32767.0); }
@@ -64,7 +84,7 @@ fn mm_of(d: f32) -> u32 { return q16(clamp(sane(d) * 2.0, 0.0, 65535.0)); }
 fn mm_val(bits: u32) -> f32 { return f32(bits & 0xffffu) * 0.5; }
 
 // stage 1 values of frequency k at pixel i: (a, b), (a, b) / amplitude, amplitude
-fn ab_at(k: u32, i: u32) -> vec2<f32> { return unpack2x16float(wget(W_AB + k, i)) * AB_INV; }
+fn ab_at(k: u32, i: u32) -> vec2<f32> { return f16x2_val(wget(W_AB + k, i)) * AB_INV; }
 fn dir_at(k: u32, i: u32) -> vec2<f32> {
     let w = wget(W_DIR + k, i);
     return vec2<f32>(snorm_val(w), snorm_val(w >> 16u));
@@ -967,7 +987,7 @@ fn pp_init(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = y * L.w + x;
     let v = frac_val(wget(W_U12, i));
     let w = clamp(anchor_at(i), 0.0, 1.0);
-    work[L.vwt + i] = pack2x16float(vec2<f32>(v * w, w));
+    work[L.vwt + i] = f16x2_of(vec2<f32>(v * w, w));
 }
 
 // one level down: sums of 2 x 2, the weight saturating at 1
@@ -984,7 +1004,7 @@ fn pp_down(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var dx = 0u; dx < 2u; dx++) {
             let sx = 2u * x + dx;
             if (sx >= L.pw) { continue; }
-            let p = unpack2x16float(work[L.pvwt + sy * L.pw + sx]);
+            let p = f16x2_val(work[L.pvwt + sy * L.pw + sx]);
             v += p.x;
             t += p.y;
         }
@@ -994,7 +1014,7 @@ fn pp_down(@builtin(global_invocation_id) gid: vec3<u32>) {
         v = v / t * c;
         t = c;
     }
-    work[L.vwt + y * L.w + x] = pack2x16float(vec2<f32>(v, t));
+    work[L.vwt + y * L.w + x] = f16x2_of(vec2<f32>(v, t));
 }
 
 // the coarsest level
@@ -1004,7 +1024,7 @@ fn pp_top(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = gid.y;
     if (x >= L.w || y >= L.h) { return; }
     let i = y * L.w + x;
-    let p = unpack2x16float(work[L.vwt + i]);
+    let p = f16x2_val(work[L.vwt + i]);
     var f = 0.0;
     if (p.y > 0.0) { f = p.x / p.y; }
     work[L.filled + i] = bitcast<u32>(f);
@@ -1044,6 +1064,6 @@ fn pp_up(@builtin(global_invocation_id) gid: vec3<u32>) {
     let dn = b0 + (b1 - b0) * tx.z;
     let parent = up + (dn - up) * ty.z;
     let i = y * L.w + x;
-    let own = unpack2x16float(work[L.vwt + i]);
+    let own = f16x2_val(work[L.vwt + i]);
     work[L.filled + i] = bitcast<u32>(own.x + (1.0 - own.y) * parent);
 }
