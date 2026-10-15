@@ -23,7 +23,8 @@
 //! - the calibration cannot be read: the one cached from an earlier session of the same device
 //! - frames stop coming (2 s, 8 s after a start) or the stream dies: the sensor is restarted;
 //!   if that keeps failing, the next opening resets the USB port, and after that the firmware
-//!   is rebooted
+//!   is rebooted. A session that got frames again starts that over: only sessions that keep
+//!   dying soon after their start go on to the port reset and the firmware reboot
 //! - the device disappears: picked up again when it returns
 //! - lost USB packets: patched or the frame decoded with the frequencies that arrived
 //! - the application reads too slowly: old frames are dropped, never queued without bound
@@ -735,10 +736,50 @@ enum Escalation {
     RebootFirmware,
 }
 
+/// Frames after which a session that dies counts as having streamed fine for a while (10 s).
+const LONG_RUN: u64 = 300;
+
+/// How hard the next opening tries, from how the sessions before it ended.
+#[derive(Debug, Default)]
+struct Escalator {
+    /// sessions in a row that failed (the stream did not get going, or died soon after its
+    /// start)
+    failed: u32,
+    /// sessions in a row that streamed but died within `LONG_RUN` frames
+    short: u32,
+}
+
+impl Escalator {
+    fn next(&self) -> Escalation {
+        match self.failed {
+            0 | 1 => Escalation::Normal,
+            2 => Escalation::ResetPort,
+            _ => Escalation::RebootFirmware,
+        }
+    }
+
+    fn ended(&mut self, end: &SessionEnd, escalation: Escalation) {
+        match end {
+            SessionEnd::Good => *self = Escalator::default(),
+            // the stream got going at this level: the next opening starts over, and only a run
+            // of sessions that die soon after their start goes on to the port reset and the
+            // firmware reboot (a sensor that just came back can stumble once)
+            SessionEnd::Died { frames, .. } => {
+                self.short = if *frames > LONG_RUN { 0 } else { self.short + 1 };
+                self.failed = self.short.max(1);
+            }
+            // after a firmware reboot, everything starts over
+            SessionEnd::Failed(_) if escalation == Escalation::RebootFirmware => *self = Escalator { failed: 1, short: 0 },
+            SessionEnd::Failed(_) => self.failed += 1,
+            SessionEnd::Fatal(_) => {}
+        }
+    }
+}
+
 fn device_loop(shared: &Arc<Shared>, backend: Arc<dyn UsbBackend>, serial: Option<String>) {
     log::info!("kinect: USB through {}", backend.name());
     let mut backoff = Duration::from_millis(200);
-    let mut failed_sessions = 0u32;
+    let mut escalator = Escalator::default();
     let mut said_none = false;
     while !shared.stopping() {
         shared.set_state(DriverState::Searching, "looking for a Kinect v2");
@@ -760,28 +801,24 @@ fn device_loop(shared: &Arc<Shared>, backend: Arc<dyn UsbBackend>, serial: Optio
             continue;
         };
         said_none = false;
-        let escalation = match failed_sessions {
-            0 | 1 => Escalation::Normal,
-            2 => Escalation::ResetPort,
-            _ => Escalation::RebootFirmware,
-        };
+        let escalation = escalator.next();
         let outcome = session(shared, &backend, &info, escalation);
         if shared.stopping() {
             break;
         }
+        escalator.ended(&outcome, escalation);
         match outcome {
-            SessionEnd::Good => {
-                failed_sessions = 0;
-                backoff = Duration::from_millis(200);
-            }
-            SessionEnd::Failed(reason) => {
-                failed_sessions += 1;
+            SessionEnd::Good => backoff = Duration::from_millis(200),
+            SessionEnd::Died { reason, .. } => {
                 lock(&shared.status).restarts += 1;
                 shared.warn(reason.clone());
                 shared.set_state(DriverState::Recovering, &reason);
-                if escalation == Escalation::RebootFirmware {
-                    failed_sessions = 1;
-                }
+                backoff = Duration::from_millis(200);
+            }
+            SessionEnd::Failed(reason) => {
+                lock(&shared.status).restarts += 1;
+                shared.warn(reason.clone());
+                shared.set_state(DriverState::Recovering, &reason);
                 backoff = (backoff * 2).min(Duration::from_secs(5));
             }
             SessionEnd::Fatal(reason) => {
@@ -808,7 +845,9 @@ fn pick(found: &[UsbDeviceInfo], serial: &Option<String>, backend: &Arc<dyn UsbB
 enum SessionEnd {
     /// streamed for a while, then ended (unplugged, stopped)
     Good,
-    /// did not get going or stalled: try harder next time
+    /// streamed `frames` frames, then stalled or died
+    Died { reason: String, frames: u64 },
+    /// did not get going: try harder next time
     Failed(String),
     /// cannot work on this port (USB 2): wait for the user
     Fatal(String),
@@ -900,15 +939,13 @@ fn session(shared: &Arc<Shared>, backend: &Arc<dyn UsbBackend>, info: &UsbDevice
             drop(dev);
             if frames > 30 { SessionEnd::Good } else { SessionEnd::Failed(r) }
         }
-        Some(r) => {
-            if frames > 300 {
-                // streamed fine for a while: an ordinary restart
-                dev.close();
-                SessionEnd::Failed(r)
-            } else {
-                end_failed(dev, escalation, r)
-            }
+        // it got going (at the firmware reboot level only if it streamed fine for a while: a
+        // sensor that keeps dying soon after its start is rebooted)
+        Some(reason) if frames > LONG_RUN || (frames > 0 && escalation != Escalation::RebootFirmware) => {
+            dev.close();
+            SessionEnd::Died { reason, frames }
         }
+        Some(r) => end_failed(dev, escalation, r),
     }
 }
 
@@ -1142,6 +1179,58 @@ mod tests {
             }
         }
         (got, log)
+    }
+
+    #[test]
+    fn escalation_starts_over_once_the_stream_came_back() {
+        use Escalation::{Normal, RebootFirmware, ResetPort};
+        let failed = || SessionEnd::Failed("no frame".into());
+        let died = |frames| SessionEnd::Died { reason: "the USB stream died".into(), frames };
+        let mut e = Escalator::default();
+        // the stream does not get going: plain restarts, the port, the firmware, then over again
+        let mut levels = Vec::new();
+        for _ in 0..5 {
+            let level = e.next();
+            levels.push(level);
+            e.ended(&failed(), level);
+        }
+        assert_eq!(levels, [Normal, Normal, ResetPort, RebootFirmware, Normal]);
+        // the stream dies after streaming fine for a while: a plain restart
+        let mut e = Escalator::default();
+        e.ended(&died(5000), Normal);
+        assert_eq!(e.next(), Normal);
+        // 15.10.: back after a port reset, the stream dies again 0.3 s later: a plain restart,
+        // not on to the firmware reboot
+        let mut e = Escalator::default();
+        for level in [Normal, Normal] {
+            assert_eq!(e.next(), level);
+            e.ended(&failed(), level);
+        }
+        assert_eq!(e.next(), ResetPort);
+        e.ended(&died(9), ResetPort);
+        assert_eq!(e.next(), Normal);
+        e.ended(&died(9), Normal);
+        assert_eq!(e.next(), ResetPort, "a second short run in a row");
+        // the same after a firmware reboot
+        let mut e = Escalator::default();
+        for level in [Normal, Normal, ResetPort, RebootFirmware] {
+            assert_eq!(e.next(), level);
+            e.ended(&failed(), level);
+        }
+        e.ended(&died(9), Normal);
+        assert_eq!(e.next(), Normal);
+        // a sensor that keeps dying soon after its start still gets the port reset and the reboot
+        let mut e = Escalator::default();
+        let mut levels = Vec::new();
+        for _ in 0..3 {
+            let level = e.next();
+            e.ended(&died(20), level);
+            levels.push(e.next());
+        }
+        assert_eq!(levels, [Normal, ResetPort, RebootFirmware]);
+        // a good session clears everything
+        e.ended(&SessionEnd::Good, RebootFirmware);
+        assert_eq!(e.next(), Normal);
     }
 
     #[test]

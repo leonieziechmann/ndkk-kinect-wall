@@ -216,7 +216,7 @@ let cfg = kinect_driver::DriverConfig { pipeline: Some(factory), ..Default::defa
 | Kalibrierung nicht lesbar | die zwischengespeicherte desselben Geräts (`.k2cal`) |
 | verlorenes iso-Paket | mit Nullen in seiner Größe aufgefüllt, nur die betroffenen Zeilen gelten als verloren und werden rekonstruiert; jedes Paket wird an seinem eigenen Offset gelesen (libfreenect2 verrutscht nach einem Fehler) |
 | unvollständiger Frame | ab 6 von 9 Phasenbildern geliefert und dekodiert |
-| Frames bleiben aus (2 s; 8 s nach dem Start) oder der Stream stirbt | Sensor-Neustart; scheitert das wiederholt, beim nächsten Öffnen Port-Reset, danach Firmware-Neustart |
+| Frames bleiben aus (2 s; 8 s nach dem Start) oder der Stream stirbt | Sensor-Neustart; scheitert das wiederholt, beim nächsten Öffnen Port-Reset, danach Firmware-Neustart. Kamen wieder Frames, beginnt die Kette von vorn: Stolpert der Sensor kurz nach der Erholung noch einmal, folgt ein einfacher Neustart; erst wer mehrmals hintereinander kurz nach dem Start stirbt, bekommt Port-Reset und Firmware-Neustart |
 | Kinect verschwindet | wird beim Wiederauftauchen wieder aufgenommen; alte, hängende Transfers bleiben bewusst liegen statt freigegeben zu werden, ein späterer Callback kann nichts mehr kaputtmachen |
 | Anwendung liest zu langsam | alte Frames werden verworfen, nie unbegrenzt gepuffert |
 | Panic in einer Stufe, einem Thread, einem USB-Callback | abgefangen, gezählt; der Thread beginnt neu, der Callback reicht den Transfer weiter |
