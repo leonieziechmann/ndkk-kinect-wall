@@ -41,10 +41,11 @@ USAGE
                                         decoding speed; --fps: at the show's pace, with the CPU time
                                         per frame (for power measurements)
   kinect-driver simulate --out FILE.k2raw [--scene S] [--frames N]
-  kinect-driver eval [--scenes a,b] [--frames N] [--backend cpu|gpu]
+  kinect-driver eval [--scenes a,b] [--frames N] [--backend cpu|gpu] [--tof key=value,...]
                                         both modes against the simulator's ground truth
-  kinect-driver analyze FILE.k2raw [--frames N]
-                                        calibration hints for a real sensor (brightness, gains, noise)
+  kinect-driver analyze FILE.k2raw [--frames N] [--tof key=value,...]
+                                        calibration of a real sensor from a still scene (brightness
+                                        and its falloff, gains, the noise model): --tof settings
 
 OPTIONS (worker, stream, replay)
   --mode extended|compat      extended (default): 0.1-18.75 m, saturation repair, HDR infrared;

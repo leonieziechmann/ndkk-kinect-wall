@@ -15,7 +15,7 @@ use std::time::Instant;
 use super::config::{TofConfig, TofMode};
 use super::fill::PushPull;
 use super::kernels::{
-    self, EdgeParams, Row, RowFlags, RowU8, S1Out, S1Params, S1Tabs, S2In, S2OutCompat, S2OutExt, S2Params, S3In, S3Params,
+    self, EdgeParams, Row, RowU8, S1Out, S1Params, S1Tabs, S2In, S2OutCompat, S2OutExt, S2Params, S3In, S3Params,
 };
 use super::parallel::{Workers, thread_count};
 use super::post::{self, PostScratch};
@@ -45,6 +45,8 @@ pub(crate) struct Prepared {
     pub(crate) valid: Vec<f32>,
     pub(crate) xt: Vec<f32>,
     pub(crate) zt: Vec<f32>,
+    /// 1 / the relative illumination of each pixel (`illumination_angle`)
+    pub(crate) illum: Vec<f32>,
     pub(crate) lut: [f32; 2048],
 }
 
@@ -65,9 +67,20 @@ impl Prepared {
             valid: t.ztable.iter().map(|z| if *z > 0.0 { 1.0 } else { 0.0 }).collect(),
             xt: t.xtable.clone(),
             zt: t.ztable.clone(),
+            illum: t.rays.iter().map(|r| inverse_illumination(r, &cfg.ext) as f32).collect(),
             lut: t.lut,
         }
     }
+}
+
+/// 1 / the relative illumination along a ray (x, y, 1): 1 + (tan angle / tan half angle)^steepness.
+pub fn inverse_illumination(ray: &[f32; 2], e: &super::ExtendedParams) -> f64 {
+    if e.illumination_steepness <= 0.0 {
+        return 1.0;
+    }
+    let tan = (f64::from(ray[0]).powi(2) + f64::from(ray[1]).powi(2)).sqrt();
+    let half = f64::from(e.illumination_angle).to_radians().tan();
+    1.0 + (tan / half).powf(f64::from(e.illumination_steepness))
 }
 
 /// Constants of stage 1 (shared with the GPU decoder).
@@ -118,6 +131,10 @@ pub(crate) fn s2_params(cfg: &TofConfig) -> S2Params {
         min_reflectivity: e.min_reflectivity,
         max_reflectivity: e.max_reflectivity,
         ir_output: p.ab_output_multiplier,
+        multipath: e.multipath_check,
+        gain: e.gain_correction.map(|g| 1.0 / g),
+        amplitude_floor: e.amplitude_floor,
+        margin_prior: e.margin_prior,
     }
 }
 
@@ -158,7 +175,7 @@ impl Serial<'_> {
                 u.clear();
                 w.clear();
                 // (the planes are row-interleaved: whole rows at a time)
-                for r in s2.chunks_exact(W * P2) {
+                for r in s2.as_chunks::<{ W * P2 }>().0 {
                     u.extend_from_slice(r.get(..W).unwrap_or(&[]));
                     w.extend_from_slice(r.get(7 * W..8 * W).unwrap_or(&[]));
                 }
@@ -176,6 +193,25 @@ impl Serial<'_> {
             }
         }
     }
+}
+
+/// The unwrapping of one pixel ([`CpuDecoder::unwrap_info`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct UnwrapInfo {
+    /// best distance, as a fraction of the unambiguous range
+    pub u1: f32,
+    /// second best
+    pub u2: f32,
+    /// cost of the best (chi-square: the sum of the squared residuals over their variance)
+    pub e1: f32,
+    /// cost of the second best
+    pub e2: f32,
+    /// confidence 0..1
+    pub confidence: f32,
+    /// `kernels::kind` (single frequency: its index in bits 4..6)
+    pub kind: u8,
+    /// sum of the usable amplitudes (after the filter, times ab_multiplier)
+    pub ir_sum: f32,
 }
 
 /// The CPU depth/infrared decoder (reusable, keeps its buffers and threads between frames: a
@@ -285,6 +321,18 @@ impl CpuDecoder {
         Some((*a, *b))
     }
 
+    /// What the unwrapping decided at pixel `i` in the last decoded frame (extended mode), before
+    /// the neighbors and the filters: for analysis tools.
+    pub fn unwrap_info(&self, i: usize) -> Option<UnwrapInfo> {
+        if self.cfg.mode != TofMode::Extended || i >= PIXELS {
+            return None;
+        }
+        let (y, x) = (i / W, i % W);
+        let f = |p: usize| self.s2.get((y * P2 + p) * W + x).copied();
+        let kind = self.s2b.get((y * P2B + 1) * W + x).copied()?;
+        Some(UnwrapInfo { u1: f(0)?, u2: f(1)?, e1: f(2)?, e2: f(3)?, confidence: f(4)?, kind, ir_sum: f(6)? })
+    }
+
     /// Decodes one packet into `out` (its planes are resized as needed).
     pub fn decode(&mut self, packet: &RawDepthPacket, tables: &Arc<DeviceTables>, out: &mut TofOutput) -> Result<()> {
         if packet.data.len() < crate::consts::PACKET_BYTES {
@@ -331,10 +379,12 @@ impl CpuDecoder {
             .map(|(b, (((s1, ir), us), fl))| (b * ROWS_PER_BLOCK, s1, ir, us, fl));
         let work = |(y0, s1, ir, us, fl): (usize, &mut [f32], &mut [f32], &mut [u8], &mut [u32])| {
             let mut vals = [[0f32; W]; 9];
-            for ((r, s1row), ((irrow, usrow), flrow)) in s1
-                .chunks_exact_mut(W * P1)
+            for ((r, s1row), ((ir, usable), flags)) in s1
+                .as_chunks_mut::<{ W * P1 }>()
+                .0
+                .iter_mut()
                 .enumerate()
-                .zip(ir.chunks_exact_mut(W).zip(us.chunks_exact_mut(W)).zip(fl.chunks_exact_mut(W)))
+                .zip(ir.as_chunks_mut::<W>().0.iter_mut().zip(us.as_chunks_mut::<W>().0.iter_mut()).zip(fl.as_chunks_mut::<W>().0.iter_mut()))
             {
                 let y = y0 + r;
                 let mut sub_ok = [false; 9];
@@ -354,17 +404,14 @@ impl CpuDecoder {
                 let (Some(mc0), Some(mc1), Some(mc2), Some(ms0), Some(ms1), Some(ms2), Some(valid)) =
                     (row1(&prep.mc[0], y), row1(&prep.mc[1], y), row1(&prep.mc[2], y), row1(&prep.ms[0], y), row1(&prep.ms[1], y), row1(&prep.ms[2], y), row1(&prep.valid, y))
                 else {
-                    irrow.fill(0.0);
-                    usrow.fill(0);
+                    ir.fill(0.0);
+                    usable.fill(0);
                     continue;
                 };
                 let tabs = S1Tabs { mc: [mc0, mc1, mc2], ms: [ms0, ms1, ms2], valid };
                 let Some([a0, a1, a2, b0, b1, b2, n0, n1, n2, na0, na1, na2, nb0, nb1, nb2]) = split_row::<f32, P1>(s1row) else {
-                    irrow.fill(0.0);
-                    usrow.fill(0);
-                    continue;
-                };
-                let (Ok(ir), Ok(usable), Ok(flags)) = (<&mut Row>::try_from(irrow), <&mut RowU8>::try_from(usrow), <&mut RowFlags>::try_from(flrow)) else {
+                    ir.fill(0.0);
+                    usable.fill(0);
                     continue;
                 };
                 let mut o = S1Out { a: [a0, a1, a2], b: [b0, b1, b2], n2: [n0, n1, n2], na: [na0, na1, na2], nb: [nb0, nb1, nb2], ir, usable, flags };
@@ -392,7 +439,8 @@ impl CpuDecoder {
             .enumerate()
             .map(|(b, ((s2, s2b), fl))| (b * ROWS_PER_BLOCK, s2, s2b, fl));
         let work = |(y0, s2, s2b, fl): (usize, &mut [f32], &mut [u8], &mut [u32])| {
-            for ((r, s2row), (s2brow, flrow)) in s2.chunks_exact_mut(W * P2).enumerate().zip(s2b.chunks_exact_mut(W * P2B).zip(fl.chunks_exact_mut(W))) {
+            let rows = s2.as_chunks_mut::<{ W * P2 }>().0.iter_mut().zip(s2b.as_chunks_mut::<{ W * P2B }>().0.iter_mut().zip(fl.as_chunks_mut::<W>().0.iter_mut()));
+            for (r, (s2row, (s2brow, flags))) in rows.enumerate() {
                 let y = y0 + r;
                 let ys = [y.saturating_sub(2), y.saturating_sub(1), y, (y + 1).min(HEIGHT - 1), (y + 2).min(HEIGHT - 1)];
                 let rows5 = |plane: usize| -> Option<[&Row; 5]> {
@@ -402,7 +450,7 @@ impl CpuDecoder {
                 let pl: [Option<[&Row; 5]>; P1] = std::array::from_fn(rows5);
                 let us5 = [urow(ys[0]), urow(ys[1]), urow(ys[2]), urow(ys[3]), urow(ys[4])];
                 let [Some(u0), Some(u1), Some(u2), Some(u3), Some(u4)] = us5 else { continue };
-                let (Some(xt), Some(zt)) = (row1(&prep.xt, y), row1(&prep.zt, y)) else { continue };
+                let (Some(xt), Some(zt), Some(illum)) = (row1(&prep.xt, y), row1(&prep.zt, y), row1(&prep.illum, y)) else { continue };
                 let g = |i: usize| pl.get(i).copied().flatten();
                 let (Some(a0), Some(a1), Some(a2), Some(b0), Some(b1), Some(b2), Some(n0), Some(n1), Some(n2)) = (g(0), g(1), g(2), g(3), g(4), g(5), g(6), g(7), g(8)) else { continue };
                 let (Some(na0), Some(na1), Some(na2), Some(nb0), Some(nb1), Some(nb2)) = (g(9), g(10), g(11), g(12), g(13), g(14)) else { continue };
@@ -416,10 +464,10 @@ impl CpuDecoder {
                     usable: [u0, u1, u2, u3, u4],
                     xt,
                     zt,
+                    illum,
                 };
                 let Some([f0, f1, f2, f3, f4, f5, f6, f7]) = split_row::<f32, P2>(s2row) else { continue };
                 let Some([edge_ok, kind, sat]) = split_row::<u8, P2B>(s2brow) else { continue };
-                let Ok(flags) = <&mut RowFlags>::try_from(flrow) else { continue };
                 if extended {
                     let mut o = S2OutExt { u1: f0, u2: f1, e1: f2, e2: f3, conf: f4, csingle: f5, ir_sum: f6, anchor: f7, kind, edge_ok, sat, flags };
                     kernels::stage2_extended(&input, &p, &mut o);
@@ -443,7 +491,7 @@ impl CpuDecoder {
             .enumerate()
             .map(|(b, (d, c))| (b * ROWS_PER_BLOCK, d, c));
         let work = |(y0, d, c): (usize, &mut [f32], &mut [f32])| {
-            for (r, (drow, crow)) in d.chunks_exact_mut(W).zip(c.chunks_exact_mut(W)).enumerate() {
+            for (r, (drow, crow)) in d.as_chunks_mut::<W>().0.iter_mut().zip(c.as_chunks_mut::<W>().0.iter_mut()).enumerate() {
                 let y = y0 + r;
                 let (ya, yc) = (y.saturating_sub(1), (y + 1).min(HEIGHT - 1));
                 let (Some(d0), Some(d1), Some(d2), Some(s0), Some(s1), Some(s2r), Some(edge)) =
@@ -453,12 +501,8 @@ impl CpuDecoder {
                     crow.fill(0.0);
                     continue;
                 };
-                let Ok(out_row) = <&mut Row>::try_from(drow) else {
-                    crow.fill(0.0);
-                    continue;
-                };
-                kernels::stage3_compat(y, [d0, d1, d2], [s0, s1, s2r], edge, &e, out_row);
-                for (cv, dv) in crow.iter_mut().zip(out_row.iter()) {
+                kernels::stage3_compat(y, [d0, d1, d2], [s0, s1, s2r], edge, &e, drow);
+                for (cv, dv) in crow.iter_mut().zip(drow.iter()) {
                     *cv = if *dv > 0.0 { 1.0 } else { 0.0 };
                 }
             }
@@ -471,7 +515,7 @@ impl CpuDecoder {
         // smooth expectation of u from the confident pixels, for large areas where only one
         // frequency is usable (a saturated hand): only computed when such pixels exist
         // (the planes are row-interleaved: whole rows at a time)
-        let kind_rows = self.s2b.chunks_exact(W * P2B).filter_map(|r| r.get(W..2 * W));
+        let kind_rows = self.s2b.as_chunks::<{ W * P2B }>().0.iter().filter_map(|r| r.get(W..2 * W));
         let singles = kind_rows.flatten().filter(|k| **k & 0x0f == kernels::kind::SINGLE).count();
         let want_expected = self.cfg.ext.spatial_resolve && singles > 0;
         // meanwhile the clipped infrared is filled (it needs only what stage 1 decided): both
@@ -517,9 +561,9 @@ impl CpuDecoder {
             .enumerate()
             .map(|(b, ((d, c), f))| (b * ROWS_PER_BLOCK, d, c, f));
         let work = |(y0, d, c, f): (usize, &mut [f32], &mut [f32], &mut [u32])| {
-            for (r, ((drow, crow), frow)) in d.chunks_exact_mut(W).zip(c.chunks_exact_mut(W)).zip(f.chunks_exact_mut(W)).enumerate() {
+            let rows = d.as_chunks_mut::<W>().0.iter_mut().zip(c.as_chunks_mut::<W>().0.iter_mut()).zip(f.as_chunks_mut::<W>().0.iter_mut());
+            for (r, ((drow, crow), fl)) in rows.enumerate() {
                 let y = y0 + r;
-                let Ok(fl) = <&mut RowFlags>::try_from(frow) else { continue };
                 if spatial {
                     resolve_row(&resolve, y, drow, crow, fl);
                 } else {
@@ -554,22 +598,22 @@ impl CpuDecoder {
             .enumerate()
             .map(|(b, ((d, c), f))| (b * ROWS_PER_BLOCK, d, c, f));
         let work = |(y0, d, c, f): (usize, &mut [f32], &mut [f32], &mut [u32])| {
-            for (r, ((drow, crow), frow)) in d.chunks_exact_mut(W).zip(c.chunks_exact_mut(W)).zip(f.chunks_exact_mut(W)).enumerate() {
+            let rows = d.as_chunks_mut::<W>().0.iter_mut().zip(c.as_chunks_mut::<W>().0.iter_mut()).zip(f.as_chunks_mut::<W>().0.iter_mut());
+            for (r, ((dout, cout), fl)) in rows.enumerate() {
                 let y = y0 + r;
                 let ys = [y.saturating_sub(2), y.saturating_sub(1), y, (y + 1).min(HEIGHT - 1), (y + 2).min(HEIGHT - 1)];
                 let (Some(d0), Some(d1), Some(d2), Some(d3), Some(d4), Some(cr)) =
                     (row1(dres, ys[0]), row1(dres, ys[1]), row1(dres, y), row1(dres, ys[3]), row1(dres, ys[4]), row1(cres, y))
                 else {
-                    drow.fill(0.0);
-                    crow.fill(0.0);
+                    dout.fill(0.0);
+                    cout.fill(0.0);
                     continue;
                 };
                 let (Some(s0), Some(s1), Some(s2r), Some(edge)) = (row(s2, P2, ys[1], 6), row(s2, P2, y, 6), row(s2, P2, ys[3], 6), row(s2b, P2B, y, 0)) else {
-                    drow.fill(0.0);
-                    crow.fill(0.0);
+                    dout.fill(0.0);
+                    cout.fill(0.0);
                     continue;
                 };
-                let (Ok(dout), Ok(cout), Ok(fl)) = (<&mut Row>::try_from(drow), <&mut Row>::try_from(crow), <&mut RowFlags>::try_from(frow)) else { continue };
                 let input = S3In { y, d: [d0, d1, d2, d3, d4], s: [s0, s1, s2r], edge_ok: edge, conf: cr };
                 kernels::stage3_extended(&input, &e, &q, dout, cout, fl);
             }

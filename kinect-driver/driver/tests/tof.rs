@@ -141,3 +141,70 @@ fn garbage_does_not_crash_the_decoder() {
         assert!(dec.decode(&short, s.tables(), &mut out).is_err());
     }
 }
+
+/// Two echoes in every pixel: the raw samples of two frames added (the sensor adds the light of
+/// both), halved.
+fn mix(a: &RawDepthPacket, b: &RawDepthPacket, lut: &[f32; 2048]) -> RawDepthPacket {
+    use kinect_driver::consts::{HEIGHT, PHASE_SUBIMAGES, ROW_BYTES, WIDTH};
+    use kinect_driver::packet::{code_for_value, pack_row, packed_row, unpack_row};
+    let mut out = a.clone();
+    for s in 0..PHASE_SUBIMAGES {
+        for y in 0..HEIGHT {
+            let (mut ca, mut cb) = ([0u16; WIDTH], [0u16; WIDTH]);
+            unpack_row(a.row_bytes(s, y).unwrap(), &mut ca);
+            unpack_row(b.row_bytes(s, y).unwrap(), &mut cb);
+            let codes: [u16; WIDTH] = std::array::from_fn(|x| code_for_value(0.5 * (lut[usize::from(ca[x])] + lut[usize::from(cb[x])])));
+            let r = packed_row(y).unwrap() * ROW_BYTES;
+            pack_row(&codes, &mut out.subimage_mut(s).unwrap()[r..r + ROW_BYTES]);
+        }
+    }
+    out
+}
+
+#[test]
+fn pixels_with_two_echoes_are_not_trusted() {
+    use kinect_driver::sim::{Object, Shape};
+    let wall = |z: f32, albedo: f32| Scene { objects: vec![Object::new(Shape::Plane { point: [0.0, 0.0, z], normal: [0.0, 0.0, -1.0] }, albedo)], ambient: 150.0, brightness: 16000.0 };
+    let mut s = sim();
+    // equally bright echoes from 1.0 and 1.6 m: at 120 MHz they almost cancel, at 16 MHz they add
+    let (near, _) = s.frame(&wall(1000.0, 0.4), 1);
+    let (far, _) = s.frame(&wall(1600.0, 0.4 * 1.6 * 1.6), 2);
+    let decode = |p: &RawDepthPacket| {
+        let mut dec = CpuDecoder::new(TofConfig::extended()).unwrap();
+        let mut out = TofOutput::new();
+        dec.decode(p, s.tables(), &mut out).unwrap();
+        out
+    };
+    let count = |o: &TofOutput, f: &dyn Fn(usize) -> bool| (0..o.depth.len()).filter(|i| f(*i)).count();
+    let single = decode(&near);
+    let px = single.depth.len() as f64;
+    assert!((count(&single, &|i| single.flags[i] & flags::MULTIPATH != 0) as f64) < 0.001 * px, "a single echo is not flagged");
+    assert!(count(&single, &|i| single.depth[i] > 0.0) as f64 > 0.9 * px);
+    let lut = &s.tables().lut;
+    let both = decode(&mix(&near, &far, lut));
+    let flagged = count(&both, &|i| both.flags[i] & flags::MULTIPATH != 0) as f64;
+    let with_depth = count(&both, &|i| both.depth[i] > 0.0) as f64;
+    assert!(flagged > 0.8 * px, "flagged {flagged} of {px}");
+    assert!(with_depth < 0.01 * px, "depth on {with_depth} of {px}");
+    // without the test, the mixture passes for a distance that is neither wall
+    let mut cfg = TofConfig::extended();
+    cfg.ext.multipath_check = false;
+    let mut dec = CpuDecoder::new(cfg).unwrap();
+    let mut out = TofOutput::new();
+    dec.decode(&mix(&near, &far, lut), s.tables(), &mut out).unwrap();
+    let neither = count(&out, &|i| out.depth[i] > 0.0 && (out.depth[i] - 1000.0).abs() > 50.0 && (out.depth[i] - 1600.0).abs() > 80.0) as f64;
+    assert!(neither > 0.5 * px, "without the test {neither} of {px} pixels at neither wall");
+}
+
+#[test]
+fn the_illumination_halves_at_its_angle() {
+    use kinect_driver::tof::cpu::inverse_illumination;
+    let e = TofConfig::extended().ext;
+    let tan = e.illumination_angle.to_radians().tan();
+    assert!((inverse_illumination(&[0.0, 0.0], &e) - 1.0).abs() < 1e-9);
+    assert!((inverse_illumination(&[tan, 0.0], &e) - 2.0).abs() < 1e-5);
+    assert!((inverse_illumination(&[0.0, tan], &e) - 2.0).abs() < 1e-5);
+    assert!(inverse_illumination(&[0.7, 0.5], &e) > inverse_illumination(&[0.5, 0.5], &e));
+    let even = kinect_driver::tof::ExtendedParams { illumination_steepness: 0.0, ..e };
+    assert_eq!(inverse_illumination(&[0.7, 0.5], &even), 1.0);
+}

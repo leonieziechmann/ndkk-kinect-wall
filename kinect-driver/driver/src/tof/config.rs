@@ -150,6 +150,13 @@ pub struct ExtendedParams {
     pub brightness_1m: f32,
     /// largest plausible reflectivity (1 = white paper; reflectors are brighter)
     pub max_reflectivity: f32,
+    /// the illumination of the Kinect (light source and lens) is nearly even in the middle of
+    /// the image and falls off steeply towards the edges: to half at this angle off the axis,
+    /// degrees (relative illumination 1 / (1 + (tan angle / tan this)^steepness));
+    /// `brightness_1m` is the value on the axis. `kinect-driver analyze` estimates both
+    pub illumination_angle: f32,
+    /// how steeply the illumination falls off beyond `illumination_angle` (0 = even everywhere)
+    pub illumination_steepness: f32,
     /// smallest plausible reflectivity
     pub min_reflectivity: f32,
     /// drop depth pixels without enough neighbors at a similar depth (isolated noise)
@@ -159,6 +166,18 @@ pub struct ExtendedParams {
     /// inside an area where every frequency saturated, interpolate the depth from the measured
     /// rim of the same bright object (flag DEPTH_FILLED); otherwise those pixels have no depth
     pub fill_saturated_depth: bool,
+    /// lower the confidence where the amplitudes of the frequencies do not fit a single echo
+    /// (flag MULTIPATH): light that reached the pixel on two paths, as on a grazing table top,
+    /// adds up to phases that can look like a consistent distance far beyond the room
+    pub multipath_check: bool,
+    /// relative spread of the amplitude ratios of a single echo beyond the noise (pixel to
+    /// pixel differences of the gains)
+    pub amplitude_floor: f32,
+    /// how much lower (chi-square units) the cost of the best distance must be than that of the
+    /// second best before the unwrapping is more sure of it than of the other: the noise model
+    /// knows only noise, and the errors it does not know (multipath, stray light) now and then
+    /// let a wrong distance win by a few units (0 = trust the model)
+    pub margin_prior: f32,
 }
 
 impl Default for ExtendedParams {
@@ -168,8 +187,8 @@ impl Default for ExtendedParams {
             repair_min_ratio: 0.6,
             full_scale_is_saturated: true,
             repair_lost: true,
-            noise_coeff: [1.27, 0.83, 1.64],
-            noise_floor: 0.015,
+            noise_coeff: [3.0, 2.5, 3.5],
+            noise_floor: 0.04,
             noise_scale: 1.0,
             min_amplitude: 0.5,
             min_confidence: 0.6,
@@ -184,12 +203,17 @@ impl Default for ExtendedParams {
             weak_boost: false,
             weak_threshold: 6.0,
             plausibility: true,
-            brightness_1m: 16000.0,
-            max_reflectivity: 4.0,
+            brightness_1m: 25000.0,
+            max_reflectivity: 1.5,
+            illumination_angle: 31.0,
+            illumination_steepness: 7.0,
             min_reflectivity: 0.002,
             speckle_filter: true,
             speckle_min_neighbors: 3,
             fill_saturated_depth: true,
+            multipath_check: true,
+            amplitude_floor: 0.15,
+            margin_prior: 10.0,
         }
     }
 }
@@ -262,6 +286,9 @@ impl TofConfig {
         if !positive(e.brightness_1m) || e.max_reflectivity.partial_cmp(&e.min_reflectivity) != Some(std::cmp::Ordering::Greater) || e.min_reflectivity < 0.0 {
             return bad("brightness_1m must be positive and min_reflectivity < max_reflectivity");
         }
+        if !(5.0..=80.0).contains(&e.illumination_angle) || !(0.0..=30.0).contains(&e.illumination_steepness) {
+            return bad("illumination_angle must be within 5..80 degrees, illumination_steepness within 0..30");
+        }
         if e.speckle_min_neighbors > 24 {
             return bad("speckle_min_neighbors must be at most 24");
         }
@@ -319,10 +346,15 @@ impl TofConfig {
             "plausibility" => e.plausibility = b()?,
             "brightness_1m" => e.brightness_1m = f()?,
             "max_reflectivity" => e.max_reflectivity = f()?,
+            "illumination_angle" => e.illumination_angle = f()?,
+            "illumination_steepness" => e.illumination_steepness = f()?,
             "min_reflectivity" => e.min_reflectivity = f()?,
             "speckle_filter" => e.speckle_filter = b()?,
             "speckle_min_neighbors" => e.speckle_min_neighbors = f()? as u32,
             "fill_saturated_depth" => e.fill_saturated_depth = b()?,
+            "multipath_check" => e.multipath_check = b()?,
+            "amplitude_floor" => e.amplitude_floor = f()?,
+            "margin_prior" => e.margin_prior = f()?,
             other => return Err(crate::Error::config(format!("unknown setting {other:?}"))),
         }
         Ok(())

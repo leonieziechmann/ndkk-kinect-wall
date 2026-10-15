@@ -23,7 +23,7 @@ use crate::pipeline::TofDecoder;
 use crate::tables::DeviceTables;
 use crate::tof::config::{TofConfig, TofMode};
 use crate::tof::cpu::{Prepared, edge_params, s1_params, s2_params, s3_params};
-use crate::tof::kernels::{ANCHOR_CONFIDENCE, FULL_SCALE, REBUILT_NOISE, TIE_BREAK, U_RANGE_MM, flags, kind};
+use crate::tof::kernels::{ANCHOR_CONFIDENCE, FULL_SCALE, MULTIPATH_MARGIN, REBUILT_NOISE, TIE_BREAK, U_RANGE_MM, flags, kind};
 use crate::tof::resolve::{CONFIRMED_CONFIDENCE, SURE_CONFIDENCE};
 use crate::tof::post::PostScratch;
 use crate::tof::{CpuDecoder, TofOutput, TofTimings, post};
@@ -62,7 +62,8 @@ const T_MS: usize = 3;
 const T_VALID: usize = 6;
 const T_XT: usize = 7;
 const T_ZT: usize = 8;
-const T_PLANES: usize = 9;
+const T_ILLUM: usize = 9;
+const T_PLANES: usize = 10;
 
 const WG_X: u32 = 16;
 const WG_Y: u32 = 8;
@@ -140,6 +141,9 @@ fn params(cfg: &TofConfig) -> Vec<(&'static str, Value)> {
         ("min_reflectivity", F(s2.min_reflectivity)),
         ("max_reflectivity", F(s2.max_reflectivity)),
         ("ir_output", F(s2.ir_output)),
+        ("multipath", U(u32::from(s2.multipath))),
+        ("amplitude_floor", F(s2.amplitude_floor)),
+        ("margin_prior", F(s2.margin_prior)),
         ("min_depth", F(e.min_depth)),
         ("max_depth", F(e.max_depth)),
         ("edge_enabled", U(u32::from(e.enabled))),
@@ -183,6 +187,7 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("T_VALID", T_VALID),
         ("T_XT", T_XT),
         ("T_ZT", T_ZT),
+        ("T_ILLUM", T_ILLUM),
         ("T_LUT", T_PLANES * N),
         ("F_DEPTH", F_DEPTH),
         ("F_CONF", F_CONF),
@@ -221,6 +226,7 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("KIND_NONE", u32::from(kind::NONE)),
         ("KIND_MULTI", u32::from(kind::MULTI)),
         ("KIND_SINGLE", u32::from(kind::SINGLE)),
+        ("KIND_SECOND_IMPLAUSIBLE", u32::from(kind::SECOND_IMPLAUSIBLE)),
         ("FL_SATURATED_ANY", flags::SATURATED_ANY),
         ("FL_REPAIRED_80", flags::REPAIRED_80),
         ("FL_IR_FILLED", flags::IR_FILLED),
@@ -235,6 +241,7 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("FL_NO_SIGNAL", flags::NO_SIGNAL),
         ("FL_SPECKLE", flags::SPECKLE),
         ("FL_PLAUSIBILITY", flags::PLAUSIBILITY),
+        ("FL_MULTIPATH", flags::MULTIPATH),
     ] {
         s.push_str(&format!("const {name}: u32 = {v}u;\n"));
     }
@@ -246,6 +253,7 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("REBUILT_NOISE", REBUILT_NOISE),
         ("ANCHOR_CONFIDENCE", ANCHOR_CONFIDENCE),
         ("TIE_BREAK", TIE_BREAK),
+        ("MULTIPATH_MARGIN", MULTIPATH_MARGIN),
         ("SURE_CONFIDENCE", SURE_CONFIDENCE),
         ("CONFIRMED_CONFIDENCE", CONFIRMED_CONFIDENCE),
     ] {
@@ -566,7 +574,7 @@ impl GpuDecoder {
         if self.tables_id != Some(tables.id) {
             let prep = Prepared::new(tables, &self.cfg);
             let mut bytes = Vec::with_capacity((T_PLANES * N + 2048) * 4);
-            for plane in prep.mc.iter().chain(prep.ms.iter()).chain([&prep.valid, &prep.xt, &prep.zt]) {
+            for plane in prep.mc.iter().chain(prep.ms.iter()).chain([&prep.valid, &prep.xt, &prep.zt, &prep.illum]) {
                 bytes.extend(plane.iter().flat_map(|v| v.to_le_bytes()));
             }
             bytes.extend(prep.lut.iter().flat_map(|v| v.to_le_bytes()));
@@ -575,7 +583,7 @@ impl GpuDecoder {
         }
         let phases = packet.data.get(..PHASE_SUBIMAGES * SUBIMAGE_BYTES).ok_or_else(|| Error::invalid("raw depth packet too short"))?;
         self.queue.write_buffer(&self.raw, 0, phases);
-        for (y, m) in self.masks.chunks_exact_mut(4).enumerate() {
+        for (y, m) in self.masks.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let bits = (0..PHASE_SUBIMAGES).fold(0u32, |acc, s| acc | (u32::from(packet.row_ok(s, y)) << s));
             m.copy_from_slice(&bits.to_le_bytes());
         }
@@ -647,8 +655,8 @@ impl GpuDecoder {
             let view = self.staging.get_mapped_range(..).map_err(|e| gpu_err("reading back", e))?;
             let floats = |p: usize, dst: &mut [f32]| {
                 if let Some(src) = view.get(p * N * 4..(p + 1) * N * 4) {
-                    for (d, c) in dst.iter_mut().zip(src.chunks_exact(4)) {
-                        *d = f32::from_le_bytes([c.first().copied().unwrap_or(0), c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0), c.get(3).copied().unwrap_or(0)]);
+                    for (d, c) in dst.iter_mut().zip(src.as_chunks::<4>().0) {
+                        *d = f32::from_le_bytes(*c);
                     }
                 }
             };
@@ -656,8 +664,8 @@ impl GpuDecoder {
             floats(F_CONF, &mut out.confidence);
             floats(F_IR, &mut out.ir);
             if let Some(src) = view.get(3 * N * 4..4 * N * 4) {
-                for (d, c) in out.flags.iter_mut().zip(src.chunks_exact(4)) {
-                    *d = u32::from_le_bytes([c.first().copied().unwrap_or(0), c.get(1).copied().unwrap_or(0), c.get(2).copied().unwrap_or(0), c.get(3).copied().unwrap_or(0)]);
+                for (d, c) in out.flags.iter_mut().zip(src.as_chunks::<4>().0) {
+                    *d = u32::from_le_bytes(*c);
                 }
             }
         }

@@ -622,12 +622,16 @@ pub fn eval(mut a: Args) -> R {
     let scenes = a.value("--scenes")?.unwrap_or_else(|| "room,near,far,ramp,hall".into());
     let frames: u32 = a.number("--frames")?.unwrap_or(2);
     let backend = Backend::parse(&a.value("--backend")?.unwrap_or_else(|| "cpu".into())).ok_or("--backend cpu|gpu")?;
+    let mut ext = TofConfig::extended();
+    if let Some(t) = a.value("--tof")? {
+        ext.apply(&t).map_err(err)?;
+    }
     a.done()?;
     for name in scenes.split(',').map(str::trim).filter(|s| !s.is_empty()) {
         let mut sim = Simulator::new(SimConfig::default()).map_err(err)?;
         let tables = sim.tables().clone();
         let mut dc = make_decoder(TofConfig::compat(), backend).map_err(err)?;
-        let mut de = make_decoder(TofConfig::extended(), backend).map_err(err)?;
+        let mut de = make_decoder(ext.clone(), backend).map_err(err)?;
         let (mut ec, mut ee) = (Evaluation::default(), Evaluation::default());
         let (mut oc, mut oe) = (TofOutput::new(), TofOutput::new());
         for f in 0..frames {
@@ -656,22 +660,130 @@ struct PhaseAcc {
     n: u16,
 }
 
-/// `analyze`: what a real recording says about this sensor: brightness of a white surface at
-/// 1 m, the relative gain of the three frequencies, their phase noise, how much saturates.
+/// Median of the chi-square distribution with 2 degrees of freedom: the cost of the best distance
+/// of a pixel with three usable frequencies, if the noise model is right.
+const CHI2_MEDIAN_2: f32 = 1.386;
+
+fn median(v: &mut [f32]) -> f32 {
+    percentile(v, 0.5)
+}
+
+fn percentile(v: &mut [f32], q: f32) -> f32 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let k = ((v.len() - 1) as f32 * q) as usize;
+    v.select_nth_unstable_by(k, f32::total_cmp);
+    v.get(k).copied().unwrap_or(0.0)
+}
+
+/// The unwrapping costs of static, clean multi-frequency pixels, split by what dominates their
+/// noise model: the amplitude-dependent noise (weak pixels) or the floor (bright pixels).
+fn unwrap_costs(file: &str, frames: usize, cfg: &TofConfig) -> Result<(Vec<f32>, Vec<f32>), String> {
+    let mut src = Packets::open(file)?;
+    let tables = src.tables();
+    let mut dec = CpuDecoder::new(cfg.clone()).map_err(err)?;
+    let mut out = TofOutput::new();
+    let e = &cfg.ext;
+    let c = (e.noise_coeff[0] + e.noise_coeff[1] + e.noise_coeff[2]) / 3.0;
+    let f2 = e.noise_floor * e.noise_floor;
+    let skip = flags::SATURATED_ANY | flags::REPAIRED_ANY | flags::DATA_LOST | flags::MULTIPATH | flags::PLAUSIBILITY | flags::EDGE;
+    let mut base: Vec<f32> = Vec::new();
+    let (mut weak, mut bright) = (Vec::new(), Vec::new());
+    for n in 0..frames {
+        let Some(p) = src.next()? else { break };
+        dec.decode(&p, &tables, &mut out).map_err(err)?;
+        let depth_of = |i: usize, u: f32| kinect_driver::tables::depth_from_u(u, tables.xtable.get(i).copied().unwrap_or(0.0), tables.ztable.get(i).copied().unwrap_or(0.0));
+        if n == 0 {
+            base = (0..PIXELS).map(|i| dec.unwrap_info(i).map(|u| depth_of(i, u.u1)).unwrap_or(0.0)).collect();
+        }
+        for i in (0..PIXELS).step_by(3) {
+            let (Some(info), Some(&fl), Some(&b)) = (dec.unwrap_info(i), out.flags.get(i), base.get(i)) else { continue };
+            let d = depth_of(i, info.u1);
+            // a static pixel, unwrapped the same way as in the first frame
+            if info.kind & 0x0f != 1 || fl & skip != 0 || !(500.0..6000.0).contains(&d) || (d - b).abs() > 0.02 * d {
+                continue;
+            }
+            let amp = info.ir_sum / 3.0;
+            let s2 = (c / amp.max(1e-3)).powi(2);
+            let q = s2 / (s2 + f2);
+            if q >= 0.75 {
+                weak.push(info.e1);
+            } else if q <= 0.25 {
+                bright.push(info.e1);
+            }
+        }
+    }
+    Ok((weak, bright))
+}
+
+/// The illumination profile 1 / (1 + (tan / tan half)^q) fitted to the brightest pixels by
+/// angle off the axis: (half angle in degrees, q), or `None` without bright surfaces towards
+/// the edges.
+fn fit_illumination(samples: &[(f32, f32)]) -> Option<(f32, f32)> {
+    // 99th percentile of brightness * r^2 in bands of 2.5 degrees
+    let mut bands: Vec<Vec<f32>> = vec![Vec::new(); 20];
+    for (b, tan) in samples {
+        let deg = tan.atan().to_degrees();
+        if let Some(v) = bands.get_mut((deg / 2.5) as usize) {
+            v.push(*b);
+        }
+    }
+    let p99: Vec<Option<f32>> = bands.iter_mut().map(|v| (v.len() >= 300).then(|| percentile(v, 0.99))).collect();
+    let mut center: Vec<f32> = p99.iter().take(8).flatten().copied().collect();
+    if center.is_empty() {
+        return None;
+    }
+    let top = median(&mut center);
+    // ln(top / p99 - 1) = q (ln tan - ln tan half), from 25 degrees on, where it falls off
+    let pts: Vec<(f32, f32)> = p99
+        .iter()
+        .enumerate()
+        .skip(10)
+        .filter_map(|(k, v)| {
+            let v = (*v)?;
+            let r = top / v - 1.0;
+            let tan = ((k as f32 + 0.5) * 2.5).to_radians().tan();
+            (v < 0.95 * top && r > 0.0).then(|| (tan.ln(), r.ln()))
+        })
+        .collect();
+    if pts.len() < 2 {
+        return None;
+    }
+    let n = pts.len() as f32;
+    let (mx, my) = (pts.iter().map(|p| p.0).sum::<f32>() / n, pts.iter().map(|p| p.1).sum::<f32>() / n);
+    let sxx: f32 = pts.iter().map(|p| (p.0 - mx) * (p.0 - mx)).sum();
+    let sxy: f32 = pts.iter().map(|p| (p.0 - mx) * (p.1 - my)).sum();
+    if sxx <= 0.0 {
+        return None;
+    }
+    let q = sxy / sxx;
+    let half = (mx - my / q).exp().atan().to_degrees();
+    (q > 1.0 && (5.0..80.0).contains(&half)).then_some((half, q))
+}
+
+/// `analyze`: what a real recording of a still scene says about this sensor: the brightness of a
+/// white surface at 1 m and how it falls off towards the edges, the relative gain of the three
+/// frequencies, their phase noise as the unwrapping sees it, how much saturates. Prints the
+/// settings for `--tof`.
 pub fn analyze(mut a: Args) -> R {
     let file = a.positional().ok_or("analyze FILE.k2raw")?;
     let frames: usize = a.number("--frames")?.unwrap_or(60);
+    let mut cfg = TofConfig::extended();
+    if let Some(t) = a.value("--tof")? {
+        cfg.apply(&t).map_err(err)?;
+    }
     a.done()?;
     let mut src = Packets::open(&file)?;
     let tables = src.tables();
-    let cfg = TofConfig::extended();
     let abm = cfg.params.ab_multiplier;
     let mut dec = CpuDecoder::new(cfg.clone()).map_err(err)?;
     let mut out = TofOutput::new();
     let mut acc = vec![[PhaseAcc::default(); 3]; PIXELS];
     let mut first_depth: Option<Vec<f32>> = None;
     let mut ratios: [Vec<f32>; 3] = Default::default();
-    let mut bright: Vec<f32> = Vec::new();
+    // brightness * r^2 and tan(angle off the axis)
+    let mut bright: Vec<(f32, f32)> = Vec::new();
     let (mut n, mut sat, mut repaired, mut valid) = (0usize, 0u64, 0u64, 0u64);
     while n < frames {
         let Some(p) = src.next()? else { break };
@@ -683,7 +795,7 @@ pub fn analyze(mut a: Args) -> R {
             sat += u64::from(fl & flags::SATURATED_ANY != 0);
             repaired += u64::from(fl & flags::REPAIRED_ANY != 0);
             valid += u64::from(d > 0.0);
-            let clean = d > 500.0 && d < 6000.0 && conf >= 0.9 && fl & (flags::SATURATED_ANY | flags::REPAIRED_ANY | flags::DATA_LOST) == 0;
+            let clean = d > 500.0 && d < 6000.0 && conf >= 0.9 && fl & (flags::SATURATED_ANY | flags::REPAIRED_ANY | flags::DATA_LOST | flags::MULTIPATH) == 0;
             if !clean {
                 continue;
             }
@@ -699,8 +811,9 @@ pub fn analyze(mut a: Args) -> R {
                 }
                 // radial distance in m (the plausibility test works with it)
                 let ray = tables.rays.get(i).copied().unwrap_or([0.0, 0.0]);
-                let r = d / 1000.0 * (ray[0] * ray[0] + ray[1] * ray[1] + 1.0).sqrt();
-                bright.push(ir * r * r);
+                let t2 = ray[0] * ray[0] + ray[1] * ray[1];
+                let r = d / 1000.0 * (t2 + 1.0).sqrt();
+                bright.push((ir * r * r, t2.sqrt()));
             }
             // a static pixel (same depth as in the first frame) adds to the phase statistics
             if base.get(i).is_some_and(|b| (b - d).abs() < 0.02 * d)
@@ -723,23 +836,7 @@ pub fn analyze(mut a: Args) -> R {
     if n == 0 {
         return Err("no frames".into());
     }
-    let median = |v: &mut Vec<f32>| -> f32 {
-        if v.is_empty() {
-            return 0.0;
-        }
-        let k = v.len() / 2;
-        v.select_nth_unstable_by(k, f32::total_cmp);
-        v.get(k).copied().unwrap_or(0.0)
-    };
-    let pct = |v: &mut Vec<f32>, q: f32| -> f32 {
-        if v.is_empty() {
-            return 0.0;
-        }
-        let k = ((v.len() - 1) as f32 * q) as usize;
-        v.select_nth_unstable_by(k, f32::total_cmp);
-        v.get(k).copied().unwrap_or(0.0)
-    };
-    let gains: Vec<f32> = ratios.iter_mut().map(&median).collect();
+    let gains: Vec<f32> = ratios.iter_mut().map(|v| median(v)).collect();
     let mut noise = [0f32; 3];
     for (k, nk) in noise.iter_mut().enumerate() {
         // phase noise times amplitude, for pixels seen often enough
@@ -756,32 +853,76 @@ pub fn analyze(mut a: Args) -> R {
         *nk = median(&mut v);
     }
     let px = (n * PIXELS) as f64;
+    let e = &cfg.ext;
     println!("{n} frames of {file}");
     println!("  depth on {:.1} % of the pixels, saturated {:.2} %, rebuilt {:.2} %", 100.0 * valid as f64 / px, 100.0 * sat as f64 / px, 100.0 * repaired as f64 / px);
-    println!(
-        "  brightness * distance^2 (IR at 1 m): median {:.0}, 90 % {:.0}, 99 % {:.0}  (brightness_1m, now {:.0})",
-        median(&mut bright.clone()),
-        pct(&mut bright.clone(), 0.9),
-        pct(&mut bright, 0.99),
-        cfg.ext.brightness_1m
-    );
-    println!("  amplitude per frequency / mean (80, 16, 120 MHz): {:.3} {:.3} {:.3}  (gain_correction, now 1:1:1)", gains.first().unwrap_or(&0.0), gains.get(1).unwrap_or(&0.0), gains.get(2).unwrap_or(&0.0));
+    // the illumination profile from the brightest surfaces at each angle (rough in a cluttered
+    // room: a white wall filling the view gives it best), then the brightness of a white surface
+    // on the axis
+    let fit = fit_illumination(&bright);
+    let mut profile = cfg.clone();
+    match fit {
+        Some((half, q)) => {
+            println!(
+                "  illumination: half at {half:.1} degrees off the axis, steepness {q:.1}  (illumination_angle / _steepness, now {:.1} / {:.1})",
+                e.illumination_angle, e.illumination_steepness
+            );
+            profile.ext.illumination_angle = half;
+            profile.ext.illumination_steepness = q;
+        }
+        None => println!("  illumination: too few bright surfaces towards the edges to measure the falloff (keeps {:.1} / {:.1})", e.illumination_angle, e.illumination_steepness),
+    }
+    let mut on_axis: Vec<f32> = bright.iter().map(|(b, tan)| b * kinect_driver::tof::cpu::inverse_illumination(&[*tan, 0.0], &profile.ext) as f32).collect();
+    let b_med = median(&mut on_axis);
+    let b90 = percentile(&mut on_axis, 0.9);
+    let b99 = percentile(&mut on_axis, 0.99);
+    println!("  brightness * distance^2 on the axis (IR at 1 m): median {b_med:.0}, 90 % {b90:.0}, 99 % {b99:.0}  (brightness_1m: a white surface, now {:.0})", e.brightness_1m);
+    println!("  amplitude per frequency / mean (80, 16, 120 MHz): {:.3} {:.3} {:.3}  (gain_correction, now {:.3}:{:.3}:{:.3})", gains.first().unwrap_or(&0.0), gains.get(1).unwrap_or(&0.0), gains.get(2).unwrap_or(&0.0), e.gain_correction[0], e.gain_correction[1], e.gain_correction[2]);
+    // the noise model: the ratios of the frequencies from their measured noise, the levels such
+    // that the unwrapping costs of static pixels follow their distribution (median 1.39 with
+    // three frequencies): the filtered phases, the stray light and the calibration errors the
+    // unwrapping sees, not only the sensor noise
+    let mut model = profile.clone();
     if noise.iter().all(|v| *v > 0.0) {
+        println!("  phase noise * amplitude of the raw samples (static pixels): {:.2} {:.2} {:.2}", noise[0], noise[1], noise[2]);
+        let (now, raw) = (e.noise_coeff.iter().sum::<f32>(), noise.iter().sum::<f32>());
+        model.ext.noise_coeff = noise.map(|v| v * now / raw);
+    } else {
+        println!("  phase noise: needs a still scene (too few unchanged pixels)");
+    }
+    let mut fitted = false;
+    for _ in 0..3 {
+        let (mut weak, mut strong) = unwrap_costs(&file, frames, &model)?;
+        if weak.len() < 1000 || strong.len() < 1000 {
+            break;
+        }
+        let (mw, ms) = (median(&mut weak), median(&mut strong));
+        let cs = (mw / CHI2_MEDIAN_2).sqrt().clamp(0.25, 4.0);
+        let fs = (ms / CHI2_MEDIAN_2).sqrt().clamp(0.25, 4.0);
+        model.ext.noise_coeff = model.ext.noise_coeff.map(|c| c * cs);
+        model.ext.noise_floor *= fs;
+        fitted = true;
+        if (cs - 1.0).abs() < 0.03 && (fs - 1.0).abs() < 0.03 {
+            break;
+        }
+    }
+    let m = &model.ext;
+    if fitted {
         println!(
-            "  phase noise * amplitude (static pixels): {:.2} {:.2} {:.2}  (noise_coeff, now {:.2} {:.2} {:.2}; before filtering, so somewhat higher)",
-            noise[0], noise[1], noise[2], cfg.ext.noise_coeff[0], cfg.ext.noise_coeff[1], cfg.ext.noise_coeff[2]
+            "  noise model of the unwrapping: noise_coeff {:.2}:{:.2}:{:.2}, noise_floor {:.3}  (now {:.2}:{:.2}:{:.2}, {:.3})",
+            m.noise_coeff[0], m.noise_coeff[1], m.noise_coeff[2], m.noise_floor, e.noise_coeff[0], e.noise_coeff[1], e.noise_coeff[2], e.noise_floor
         );
     } else {
-        println!("  phase noise: needs a static scene (too few unchanged pixels)");
+        println!("  noise model: too few static pixels with three frequencies to fit it");
     }
-    let b99 = pct(&mut bright, 0.99);
-    println!(
-        "  try: --tof brightness_1m={:.0},gain_correction={:.3}:{:.3}:{:.3}",
-        b99.max(1.0),
-        gains.first().unwrap_or(&1.0),
-        gains.get(1).unwrap_or(&1.0),
-        gains.get(2).unwrap_or(&1.0)
-    );
+    let mut tof = format!("brightness_1m={:.0},gain_correction={:.3}:{:.3}:{:.3}", b99.max(1.0), gains.first().unwrap_or(&1.0), gains.get(1).unwrap_or(&1.0), gains.get(2).unwrap_or(&1.0));
+    if fitted {
+        tof += &format!(",noise_coeff={:.2}:{:.2}:{:.2},noise_floor={:.3}", m.noise_coeff[0], m.noise_coeff[1], m.noise_coeff[2], m.noise_floor);
+    }
+    if let Some((half, q)) = fit {
+        tof += &format!(",illumination_angle={half:.1},illumination_steepness={q:.1}");
+    }
+    println!("  try: --tof {tof}");
     Ok(())
 }
 

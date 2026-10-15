@@ -26,7 +26,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(p) = reader.next_packet()? {
         let mut buf = vec![0u8; PIXELS * 8];
         reff.read_exact(&mut buf)?;
-        let f: Vec<f32> = buf.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let f: Vec<f32> = buf.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
         let (rd, rir) = f.split_at(PIXELS);
         dec.decode(&p, &tables, &mut out)?;
         times.push(dec.timings.total_ms);

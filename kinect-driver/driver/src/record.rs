@@ -41,7 +41,7 @@ fn read_exact_or(r: &mut impl Read, buf: &mut [u8], what: &str) -> Result<()> {
 fn read_f32s(r: &mut impl Read, n: usize, what: &str) -> Result<Vec<f32>> {
     let mut b = vec![0u8; n * 4];
     read_exact_or(r, &mut b, what)?;
-    Ok(b.chunks_exact(4).filter_map(|c| <[u8; 4]>::try_from(c).ok()).map(f32::from_le_bytes).collect())
+    Ok(b.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect())
 }
 
 /// The header of a recording.

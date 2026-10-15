@@ -17,7 +17,7 @@ pub mod resolve;
 pub mod simd;
 
 pub use config::{ExtendedParams, Lf2Params, TofConfig, TofMode};
-pub use cpu::CpuDecoder;
+pub use cpu::{CpuDecoder, UnwrapInfo};
 pub use kernels::flags;
 
 use crate::consts::PIXELS;

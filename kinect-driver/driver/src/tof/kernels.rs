@@ -72,6 +72,9 @@ pub mod flags {
     pub const SPECKLE: u32 = 1 << 17;
     /// a candidate distance was ruled out because the brightness would not fit it
     pub const PLAUSIBILITY: u32 = 1 << 18;
+    /// the amplitudes of the frequencies do not fit a single echo (several distances mixed in
+    /// the pixel: multipath, a grazing or shiny surface): the confidence is lowered
+    pub const MULTIPATH: u32 = 1 << 19;
     /// all saturation bits
     pub const SATURATED_ANY: u32 = SATURATED_80 | SATURATED_16 | SATURATED_120;
     /// all repair bits
@@ -86,6 +89,9 @@ pub mod kind {
     pub const MULTI: u8 = 1;
     /// one frequency (index in bits 4..6)
     pub const SINGLE: u8 = 2;
+    /// added to MULTI: the second best distance needs an implausible brightness (the neighbors
+    /// may not choose it)
+    pub const SECOND_IMPLAUSIBLE: u8 = 0x40;
 }
 
 // ---- stage 1: samples -> complex value per frequency -------------------------------------
@@ -292,6 +298,8 @@ pub struct S2In<'a> {
     pub xt: &'a Row,
     /// z table
     pub zt: &'a Row,
+    /// 1 / relative illumination (extended: brightness plausibility)
+    pub illum: &'a Row,
 }
 
 /// Constants of stage 2.
@@ -343,6 +351,15 @@ pub struct S2Params {
     pub max_reflectivity: f32,
     /// libfreenect2's infrared output scale (amplitude * ab_multiplier * this = infrared)
     pub ir_output: f32,
+    /// extended: test whether the amplitudes of the frequencies fit a single echo
+    pub multipath: bool,
+    /// extended: 1 / gain correction per frequency
+    pub gain: [f32; 3],
+    /// extended: relative spread of the amplitude ratios beyond the noise
+    pub amplitude_floor: f32,
+    /// extended: how much better (in cost) the best distance must be than the second best to
+    /// count as even odds
+    pub margin_prior: f32,
 }
 
 /// Outputs of stage 2 (compat).
@@ -671,6 +688,35 @@ fn atan2_8<I: Isa>(y: F8, x: F8) -> F8 {
     y.lt(zero).select(-r, r)
 }
 
+/// How far above its expectation the single-echo cost may be before a pixel is flagged
+/// [`flags::MULTIPATH`] (its confidence is lowered by the cost either way).
+pub const MULTIPATH_MARGIN: f32 = 4.0;
+
+/// The single-echo test of eight pixels: one echo reaches every frequency with the same
+/// amplitude (after the gain correction), two at different distances add up differently at each
+/// one (they interfere with a phase difference that grows with the frequency). Returns the
+/// chi-square of the amplitudes around their weighted mean, and its degrees of freedom. Left
+/// out: rebuilt frequencies and pixels where anything saturated (the response is not linear
+/// near the clip level).
+#[inline(always)]
+fn single_echo_cost<I: Isa>(amp: &[F8; 3], var: &[F8; 3], used: &[M8; 3], saturated: M8, p: &S2Params) -> (F8, F8) {
+    let (zero, one) = (F8::zero(), F8::splat(1.0));
+    if !p.multipath {
+        return (zero, zero);
+    }
+    let used = used.map(|u| u & !saturated);
+    let n = used.iter().fold(zero, |acc, u| acc + u.and(one));
+    let mean = (used[0].and(amp[0]) + used[1].and(amp[1]) + used[2].and(amp[2])) / n.max(one);
+    let floor = F8::splat(p.amplitude_floor) * mean;
+    let w: [F8; 3] = std::array::from_fn(|k| used[k].and(one / floor.mul_add::<I>(floor, var[k]).max(F8::splat(1e-12))));
+    let (sw, swa) = (w[0] + w[1] + w[2], w[0].mul_add::<I>(amp[0], w[1].mul_add::<I>(amp[1], w[2] * amp[2])));
+    let a = swa / sw.max(F8::splat(1e-30));
+    let d: [F8; 3] = std::array::from_fn(|k| amp[k] - a);
+    let chi = w[0].mul_add::<I>(d[0] * d[0], w[1].mul_add::<I>(d[1] * d[1], w[2] * (d[2] * d[2])));
+    let dof = (n - one).max(zero);
+    (dof.gt(zero).and(chi), dof)
+}
+
 /// The unwrapping of eight pixels from `x` on (stage 2, extended), all in registers.
 #[inline(always)]
 fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutExt, x: usize) {
@@ -682,6 +728,11 @@ fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutEx
     let mut w = [zero; 3];
     let mut ir_sum = zero;
     let mut nvalid = zero;
+    // the amplitude of each frequency (gain corrected), its noise variance (amplitude noise =
+    // phase noise * amplitude), and whether it takes part in the single-echo test
+    let mut amp = [zero; 3];
+    let mut amp_var = [zero; 3];
+    let mut amp_use = [M8::splat(false); 3];
     let floor2 = F8::splat(p.noise_floor * p.noise_floor);
     for k in 0..3 {
         let (ak, bk) = (F8::load(&f.a[k], x), F8::load(&f.b[k], x));
@@ -698,7 +749,11 @@ fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutEx
         w[k] = use_k.and(F8::splat(TAU * TAU) / var.max(F8::splat(1e-12 * TAU * TAU)));
         ir_sum = ir_sum + use_k.and(ir);
         nvalid = nvalid + use_k.and(one);
+        amp[k] = ir * F8::splat(p.gain[k]);
+        amp_var[k] = coeff * coeff;
+        amp_use[k] = use_k & !rebuilt;
     }
+    let (chi_amp, dof_amp) = single_echo_cost::<I>(&amp, &amp_var, &amp_use, M8::bits_u32(o.flags, x, flags::SATURATED_ANY), p);
     // the brightness in libfreenect2's infrared scale, for the plausibility of candidates
     let irl = ir_sum / nvalid.max(one) * F8::splat(p.ir_output);
     // reference: the most precise usable frequency (120, then 80, then 16 MHz)
@@ -722,9 +777,12 @@ fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutEx
     // reflectivity rho = brightness * (u * to_m)^2 outside [min, max] is implausible: as bounds
     // on u^2
     let to_m = U_RANGE_MM * 0.001;
-    let bright = irl * F8::splat(p.inv_brightness * to_m * to_m);
+    let bright = irl * F8::load(i.illum, x) * F8::splat(p.inv_brightness * to_m * to_m);
     let (u2_max, u2_min) = (F8::splat(p.max_reflectivity) / bright, F8::splat(p.min_reflectivity) / bright);
     let (mut e1, mut u1, mut e2, mut u2) = (inf, zero, inf, zero);
+    // the phase cost of the best (the consistency below does not count the brightness), and
+    // whether the candidate that fits the phases best had an implausible brightness
+    let (mut ep1, mut emin, mut pen_at_min, mut pen1, mut pen2) = (inf, inf, zero, zero, zero);
     for m in 0..15 {
         let mf = F8::splat(m as f32);
         let um = (c_ref + mf) * inv_ref;
@@ -736,29 +794,44 @@ fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutEx
         let s1 = q[0].mul_add::<I>(o_n[0], q[1] * o_n[1]);
         let s2 = q[0].mul_add::<I>(r[0], q[1] * r[1]);
         let t = s1 * inv_wn2;
-        let e = (-s1).mul_add::<I>(t, s2).max(zero);
+        let ep = (-s1).mul_add::<I>(t, s2).max(zero);
         let u = um - t;
-        // implausible reflectivities are penalized (a strong prior, not a hard limit)
+        // implausible reflectivities are penalized (a strong prior for the choice, not a hard
+        // limit)
         let uu = u * u;
-        let e = e + (uu.gt(u2_max) | uu.lt(u2_min)).and(penalty);
+        let pen = (uu.gt(u2_max) | uu.lt(u2_min)).and(penalty);
         // equally good candidates (only 80 and 120 MHz usable repeat every 3.75 m): the nearer
         // one wins, not the rounding
-        let e = mf.mul_add::<I>(F8::splat(TIE_BREAK), e);
-        let e = mf.lt(n_ref).select(e, inf);
+        let ep = mf.mul_add::<I>(F8::splat(TIE_BREAK), ep);
+        let valid = mf.lt(n_ref);
+        let ep = valid.select(ep, inf);
+        let e = valid.select(ep + pen, inf);
         let (b1, b2) = (e.lt(e1), e.lt(e2));
         e2 = b1.select(e1, b2.select(e, e2));
         u2 = b1.select(u1, b2.select(u, u2));
+        pen2 = b1.select(pen1, b2.select(pen, pen2));
         e1 = b1.select(e, e1);
         u1 = b1.select(u, u1);
+        pen1 = b1.select(pen, pen1);
+        ep1 = b1.select(ep, ep1);
+        let bm = ep.lt(emin);
+        emin = bm.select(ep, emin);
+        pen_at_min = bm.select(pen, pen_at_min);
     }
     // pass C: confidence = how much better the best is than the second (posterior of two
-    // hypotheses) times how consistent the best is (chi-square with nvalid - 1 dof)
+    // hypotheses) times how consistent the best is (chi-square of the phases with nvalid - 1
+    // dof, plus that of the amplitudes)
     let dof = (nvalid - one).max(zero);
-    let chi = dof + F8::splat(3.0) * (dof + dof).sqrt();
-    let margin = (e2 - e1).min(F8::splat(80.0));
+    let dof_all = dof + dof_amp;
+    let chi = dof_all + F8::splat(3.0) * (dof_all + dof_all).sqrt();
+    // the margin over the second best, less the prior: errors that the noise model does not
+    // know (multipath, stray light) let a wrong candidate win by a few units now and then
+    let margin = (e2 - e1 - F8::splat(p.margin_prior)).min(F8::splat(80.0));
     let half = F8::splat(-0.5);
     let post = one / (one + (half * margin).exp_fd::<I>());
-    let cons = (half * (e1 - chi).max(zero)).exp_fd::<I>();
+    let cons = (half * (ep1 + chi_amp - chi).max(zero)).exp_fd::<I>();
+    let chi_a = dof_amp + F8::splat(3.0) * (dof_amp + dof_amp).sqrt();
+    let multipath = chi_amp.gt(chi_a + F8::splat(MULTIPATH_MARGIN));
     let multi = nvalid.ge(F8::splat(2.0));
     let single = nvalid.eq(one);
     let conf = multi.and(post * cons);
@@ -773,10 +846,12 @@ fn unwrap_extended<I: Isa>(f: &Filtered, i: &S2In, p: &S2Params, o: &mut S2OutEx
     // kind, with the index of the single frequency in bits 4..6
     let r_idx = use2.select_u32([2; LANES], (!use0).select_u32([1; LANES], [0; LANES]));
     let single_kind = std::array::from_fn(|l| u32::from(kind::SINGLE) | (r_idx[l] << 4));
-    let kinds = multi.select_u32([u32::from(kind::MULTI); LANES], single.select_u32(single_kind, [u32::from(kind::NONE); LANES]));
-    let plaus = e1.ge(F8::splat(25.0)) & nvalid.ge(one);
+    let multi_kind = pen2.gt(zero).select_u32([u32::from(kind::MULTI | kind::SECOND_IMPLAUSIBLE); LANES], [u32::from(kind::MULTI); LANES]);
+    let kinds = multi.select_u32(multi_kind, single.select_u32(single_kind, [u32::from(kind::NONE); LANES]));
+    let plaus = pen_at_min.gt(zero) & nvalid.ge(F8::splat(2.0));
     let added = M8::bits_u8(f.boosted, x, 1).and_u32(flags::WEAK_BOOSTED);
-    let added: [u32; LANES] = std::array::from_fn(|l| added[l] | nvalid.eq(zero).and_u32(flags::NO_SIGNAL)[l] | plaus.and_u32(flags::PLAUSIBILITY)[l]);
+    let added: [u32; LANES] =
+        std::array::from_fn(|l| added[l] | nvalid.eq(zero).and_u32(flags::NO_SIGNAL)[l] | plaus.and_u32(flags::PLAUSIBILITY)[l] | multipath.and_u32(flags::MULTIPATH)[l]);
     let (Some(kd), Some(eo), Some(sat), Some(fl), Some(edge)) =
         (o.kind.get_mut(x..x + LANES), o.edge_ok.get_mut(x..x + LANES), o.sat.get_mut(x..x + LANES), o.flags.get_mut(x..x + LANES), f.edge.get(x..x + LANES))
     else {

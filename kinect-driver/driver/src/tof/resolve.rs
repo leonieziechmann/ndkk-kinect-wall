@@ -154,6 +154,11 @@ pub fn resolve_row(i: &ResolveIn, y: usize, depth: &mut [f32], conf_out: &mut [f
         }
         let (Some(d_out), Some(c_out), Some(f)) = (depth.get_mut(x), conf_out.get_mut(x), fl.get_mut(x)) else { continue };
         if base == kind::MULTI {
+            // the phases of a pixel that mixes several echoes are wrong, not ambiguous: the
+            // neighbors neither confirm nor replace its distance
+            if *f & flags::MULTIPATH != 0 {
+                continue;
+            }
             let gap = e2 - e1;
             let h = bandwidth(u1);
             let (Some(&s1), Some(&s2), Some(&total)) = (sum1.get(x), sum2.get(x), sum_total.get(x)) else { continue };
@@ -164,7 +169,7 @@ pub fn resolve_row(i: &ResolveIn, y: usize, depth: &mut [f32], conf_out: &mut [f
             s1 -= own;
             s2 -= own * (1.0 - d * d).max(0.0);
             total -= own;
-            if total > 1.0 && s2 > 2.0 * s1 && gap < 20.0 {
+            if total > 1.0 && s2 > 2.0 * s1 && gap < 20.0 && k & kind::SECOND_IMPLAUSIBLE == 0 {
                 *d_out = depth_of_u(u2, xt, zt);
                 *c_out = (0.55 + 0.4 * s2 / total).min(0.95);
                 *f |= flags::RESOLVED;

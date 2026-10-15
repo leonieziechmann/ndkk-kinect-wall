@@ -43,8 +43,8 @@ fn upsample_row(parent: &[f32], out: &mut [f32], taps: &[(usize, usize, f32)]) {
     // pairs (2i, 2i + 1) for 1 <= i <= parent.len() - 2 read parent[i - 1 ..= i + 1] unclamped
     let inner = parent.len().saturating_sub(2).min(n.saturating_sub(2) / 2);
     if let Some(rest) = out.get_mut(2..2 + 2 * inner) {
-        for (pair, win) in rest.chunks_exact_mut(2).zip(parent.windows(3)) {
-            if let ([e, o], [a, b, c]) = (pair, win) {
+        for ([e, o], win) in rest.as_chunks_mut::<2>().0.iter_mut().zip(parent.windows(3)) {
+            if let [a, b, c] = win {
                 *e = lerp(*a, *b, 0.75);
                 *o = lerp(*b, *c, 0.25);
             }
@@ -306,17 +306,11 @@ fn level_row(buf: &[f32], w: usize, h: usize, y: usize) -> &[f32] {
 fn push_row(r0: &[f32], r1: &[f32], nw: usize, out: &mut Vec<f32>) {
     let start = out.len();
     let pairs = r0.len() / 2;
-    let p0 = r0.chunks_exact(2);
+    let p0 = r0.as_chunks::<2>().0.iter();
     if r1.len() == r0.len() {
-        out.extend(p0.zip(r1.chunks_exact(2)).map(|(a, b)| match (a, b) {
-            ([a0, a1], [b0, b1]) => a0 + a1 + b0 + b1,
-            _ => 0.0,
-        }));
+        out.extend(p0.zip(r1.as_chunks::<2>().0).map(|([a0, a1], [b0, b1])| a0 + a1 + b0 + b1));
     } else {
-        out.extend(p0.map(|a| match a {
-            [a0, a1] => a0 + a1,
-            _ => 0.0,
-        }));
+        out.extend(p0.map(|[a0, a1]| a0 + a1));
     }
     if r0.len() % 2 == 1 {
         let last = r0.last().copied().unwrap_or(0.0) + if r1.len() == r0.len() { r1.last().copied().unwrap_or(0.0) } else { 0.0 };

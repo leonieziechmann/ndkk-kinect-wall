@@ -491,6 +491,11 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
     var w: array<f32, 3>;
     var ir_sum = 0.0;
     var nvalid = 0.0;
+    // the amplitude of each frequency (gain corrected), its noise variance, and whether it
+    // takes part in the single-echo test
+    var amp: array<f32, 3>;
+    var amp_var: array<f32, 3>;
+    var amp_use: array<bool, 3>;
     for (var k = 0u; k < 3u; k++) {
         let ak = af[k];
         let bk = bf[k];
@@ -510,7 +515,42 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
             ir_sum += ir;
             nvalid += 1.0;
         }
+        amp[k] = ir * gain(k);
+        amp_var[k] = nk * nk;
+        amp_use[k] = use_k && !rebuilt;
     }
+    // the single-echo test: one echo reaches every frequency with the same amplitude
+    var chi_amp = 0.0;
+    var dof_amp = 0.0;
+    if (P.multipath != 0u && (fl & FL_SATURATED_ANY) == 0u) {
+        var na = 0.0;
+        var sum = 0.0;
+        for (var k = 0u; k < 3u; k++) {
+            if (amp_use[k]) {
+                na += 1.0;
+                sum += amp[k];
+            }
+        }
+        let afloor = P.amplitude_floor * (sum / max(na, 1.0));
+        var wa: array<f32, 3>;
+        var sw = 0.0;
+        var swa = 0.0;
+        for (var k = 0u; k < 3u; k++) {
+            wa[k] = 0.0;
+            if (amp_use[k]) { wa[k] = 1.0 / max(afloor * afloor + amp_var[k], 1e-12); }
+            sw += wa[k];
+            swa += wa[k] * amp[k];
+        }
+        let am = swa / max(sw, 1e-30);
+        var chi_a = 0.0;
+        for (var k = 0u; k < 3u; k++) {
+            let d = amp[k] - am;
+            chi_a += wa[k] * d * d;
+        }
+        dof_amp = max(na - 1.0, 0.0);
+        if (dof_amp > 0.0) { chi_amp = chi_a; }
+    }
+    let illum = tget(T_ILLUM, i);
     let irl = ir_sum / max(nvalid, 1.0) * P.ir_output;
     let use2 = w[2] > 0.0;
     let use0 = w[0] > 0.0;
@@ -532,6 +572,13 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
     var u1 = 0.0;
     var e2 = BIG;
     var u2 = 0.0;
+    // the phase cost of the best, and whether the candidate that fits the phases best had an
+    // implausible brightness
+    var ep1 = BIG;
+    var emin = BIG;
+    var pen_at_min = 0.0;
+    var pen1 = 0.0;
+    var pen2 = 0.0;
     for (var m = 0; m < 15; m++) {
         let mf = f32(m);
         if (mf >= n_ref) { break; }
@@ -544,28 +591,41 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
         let r2 = d2 - round_(d2);
         let s1 = w[0] * 10.0 * r0 + w[1] * 2.0 * r1 + w[2] * 15.0 * r2;
         let s2 = w[0] * r0 * r0 + w[1] * r1 * r1 + w[2] * r2 * r2;
-        var e = max(s2 - s1 * s1 * inv_wn2, 0.0);
+        let e = max(s2 - s1 * s1 * inv_wn2, 0.0);
         let u = um - s1 * inv_wn2;
         let dm = u * (U_RANGE_MM * 0.001);
-        let rho = irl * dm * dm * P.inv_brightness;
+        let rho = irl * illum * dm * dm * P.inv_brightness;
         let implausible = rho > P.max_reflectivity || rho < P.min_reflectivity;
-        if (implausible && P.plausibility != 0u) { e += 30.0; }
-        e += mf * TIE_BREAK;
-        if (e < e1) {
+        var pen = 0.0;
+        if (implausible && P.plausibility != 0u) { pen = 30.0; }
+        let ep = e + mf * TIE_BREAK;
+        let et = ep + pen;
+        if (et < e1) {
             e2 = e1;
             u2 = u1;
-            e1 = e;
+            pen2 = pen1;
+            e1 = et;
             u1 = u;
-        } else if (e < e2) {
-            e2 = e;
+            pen1 = pen;
+            ep1 = ep;
+        } else if (et < e2) {
+            e2 = et;
             u2 = u;
+            pen2 = pen;
+        }
+        if (ep < emin) {
+            emin = ep;
+            pen_at_min = pen;
         }
     }
     let dof = max(nvalid - 1.0, 0.0);
-    let chi = dof + 3.0 * sqrt(2.0 * dof);
-    let margin = min(e2 - e1, 80.0);
+    let dof_all = dof + dof_amp;
+    let chi = dof_all + 3.0 * sqrt(2.0 * dof_all);
+    let margin = min(e2 - e1 - P.margin_prior, 80.0);
     let post = 1.0 / (1.0 + exp_(-0.5 * margin));
-    let cons = exp_(-0.5 * max(e1 - chi, 0.0));
+    let cons = exp_(-0.5 * max(ep1 + chi_amp - chi, 0.0));
+    let chi_a = dof_amp + 3.0 * sqrt(2.0 * dof_amp);
+    let multipath = chi_amp > chi_a + MULTIPATH_MARGIN;
     let multi = nvalid >= 2.0;
     let single = nvalid == 1.0;
     var ou1 = u1;
@@ -587,13 +647,17 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
     fset(F_S2 + S2_IR_SUM, i, ir_sum);
     fset(F_S2 + S2_ANCHOR, i, anchor);
     var kind = KIND_NONE;
-    if (multi) { kind = KIND_MULTI; } else if (single) { kind = KIND_SINGLE | (r_idx << 4u); }
+    if (multi) {
+        kind = KIND_MULTI;
+        if (pen2 > 0.0) { kind |= KIND_SECOND_IMPLAUSIBLE; }
+    } else if (single) { kind = KIND_SINGLE | (r_idx << 4u); }
     iset(I_KIND, i, kind);
     iset(I_EDGE, i, u32(edge));
     iset(I_SAT, i, fl & FL_SATURATED_ANY);
     if (boosted) { fl |= FL_WEAK_BOOSTED; }
     if (nvalid == 0.0) { fl |= FL_NO_SIGNAL; }
-    if (e1 >= 25.0 && nvalid >= 1.0) { fl |= FL_PLAUSIBILITY; }
+    if (pen_at_min > 0.0 && nvalid >= 2.0) { fl |= FL_PLAUSIBILITY; }
+    if (multipath) { fl |= FL_MULTIPATH; }
     iset(I_FLAGS, i, fl);
 }
 
@@ -702,7 +766,9 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
         let u2 = fget(F_S2 + S2_U2, i);
         let c = fget(F_S2 + S2_CONF, i);
         let gap = fget(F_S2 + S2_E2, i) - fget(F_S2 + S2_E1, i);
-        if (c >= SURE_CONFIDENCE || (gap >= 20.0 && c >= CONFIRMED_CONFIDENCE)) {
+        // sure; or mixing several echoes (wrong, not ambiguous: the neighbors neither confirm
+        // nor replace its distance)
+        if (c >= SURE_CONFIDENCE || (gap >= 20.0 && c >= CONFIRMED_CONFIDENCE) || (fl & FL_MULTIPATH) != 0u) {
             fset(F_DRES, i, depth_of_u(u1, xt, zt));
             fset(F_CRES, i, c);
             return;
@@ -732,7 +798,7 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
         total -= own;
         var u = u1;
         var conf = c;
-        if (total > 1.0 && s2 > 2.0 * s1 && gap < 20.0) {
+        if (total > 1.0 && s2 > 2.0 * s1 && gap < 20.0 && (k & KIND_SECOND_IMPLAUSIBLE) == 0u) {
             u = u2;
             conf = min(0.55 + 0.4 * s2 / total, 0.95);
             fl |= FL_RESOLVED;

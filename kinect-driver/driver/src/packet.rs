@@ -188,7 +188,7 @@ pub fn packed_row(y: usize) -> Option<usize> {
 /// A short row leaves `out` untouched where data is missing.
 pub fn unpack_row(row: &[u8], out: &mut [u16; WIDTH]) {
     // 16 fields of 11 bits = 22 bytes; all 16 belong to the same column phase q = x % 4
-    for (g, chunk) in row.chunks_exact(22).take(32).enumerate() {
+    for (g, chunk) in row.as_chunks::<22>().0.iter().take(32).enumerate() {
         let (Some(lo), Some(hi)) = (chunk.get(0..16), chunk.get(6..22)) else { continue };
         let (Ok(lo), Ok(hi)) = (<[u8; 16]>::try_from(lo), <[u8; 16]>::try_from(hi)) else { continue };
         let lo = u128::from_le_bytes(lo);
@@ -233,8 +233,7 @@ const CODE_AT: [(usize, u32); 16] = {
 /// [`unpack_row`] followed by the table `lut` (code -> sample value) in one pass: every code
 /// is read with one 64-bit load from its group, and its value goes straight to its pixel.
 pub fn unpack_row_values(row: &[u8], lut: &[f32; 2048], out: &mut [f32; WIDTH]) {
-    for (g, chunk) in row.chunks_exact(22).take(32).enumerate() {
-        let Ok(chunk) = <&[u8; 22]>::try_from(chunk) else { continue };
+    for (g, chunk) in row.as_chunks::<22>().0.iter().take(32).enumerate() {
         let (q, i0) = (g / 8, (g % 8) * 16);
         for (t, &(byte, shift)) in CODE_AT.iter().enumerate() {
             let Some(word) = chunk.get(byte..byte + 8).and_then(|b| <[u8; 8]>::try_from(b).ok()) else { continue };
@@ -256,7 +255,7 @@ pub fn unpack_row_values(row: &[u8], lut: &[f32; 2048], out: &mut [f32; WIDTH]) 
 
 /// The inverse of [`unpack_row`]: packs 512 codes (pixel order) into a row of 704 bytes.
 pub fn pack_row(codes: &[u16; WIDTH], row: &mut [u8]) {
-    for (g, chunk) in row.chunks_exact_mut(22).take(32).enumerate() {
+    for (g, chunk) in row.as_chunks_mut::<22>().0.iter_mut().take(32).enumerate() {
         let q = g / 8;
         let i0 = (g % 8) * 16;
         let mut bits = [0u8; 22];
@@ -335,7 +334,7 @@ mod tests {
         if !(1..=510).contains(&x) {
             return 0;
         }
-        let words: Vec<u16> = row.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        let words: Vec<u16> = row.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
         let idx = ((x >> 2) + ((x & 3) << 7)) * 11;
         let col = idx >> 4;
         let shift = idx & 15;

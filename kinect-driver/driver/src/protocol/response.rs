@@ -39,8 +39,8 @@ pub fn parse_firmware_entries(b: &[u8]) -> Vec<String> {
 /// The serial number: UTF-16 little-endian, up to the first NUL; non-ASCII becomes '?'.
 pub fn parse_serial(b: &[u8]) -> String {
     let mut s = String::new();
-    for pair in b.chunks_exact(2) {
-        let c = u16::from_le_bytes([pair.first().copied().unwrap_or(0), pair.get(1).copied().unwrap_or(0)]);
+    for pair in b.as_chunks::<2>().0 {
+        let c = u16::from_le_bytes(*pair);
         if c == 0 {
             break;
         }
@@ -101,7 +101,7 @@ pub fn parse_p0_tables(b: &[u8]) -> Result<P0Tables> {
     let table = |k: usize| -> Result<Vec<u16>> {
         let start = P0_TABLE0_OFFSET + k * P0_TABLE_STRIDE;
         let bytes = b.get(start..start + PIXELS * 2).ok_or_else(|| Error::invalid("P0 table out of range"))?;
-        Ok(bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c.first().copied().unwrap_or(0), c.get(1).copied().unwrap_or(0)])).collect())
+        Ok(bytes.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect())
     };
     let tables = [table(0)?, table(1)?, table(2)?];
     // a table of all zeros or all equal values is not a calibration
