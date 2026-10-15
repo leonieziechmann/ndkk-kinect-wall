@@ -1,0 +1,36 @@
+# kinect-driver: a lightweight, crash-proof Kinect v2 driver in Rust.
+#   driver/  the library (crate `kinect-driver`): USB, depth/IR processing on the CPU (SIMD) or the
+#            GPU (wgpu), configurable pipelines, simulator, recordings
+#   cli/     the standalone program `kinect-driver` (worker for kinect-hub, tools)
+[workspace]
+members = ["driver", "cli"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+# no unwrap/expect/panic/unchecked indexing anywhere: errors are values, never crashes
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[profile.release]
+debug = "line-tables-only"  # readable backtraces
+panic = "unwind"            # a bug in one stage or thread is caught and reported, not fatal
+codegen-units = 4
+
+# tests run the per-pixel code on whole frames: keep them fast, keep overflow checks
+[profile.dev]
+opt-level = 2

@@ -1,0 +1,25 @@
+[package]
+name = "kinect-driver-cli"
+description = "kinect-driver as a standalone program: capture worker for kinect-hub and tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "kinect-driver"
+path = "src/main.rs"
+
+[features]
+default = ["gpu"]
+# decoding on the GPU (wgpu); without it `--backend gpu` decodes on the CPU
+gpu = ["kinect-driver/gpu"]
+
+[dependencies]
+kinect-driver = { path = "../driver", features = ["usb"] }
+bytemuck = "1"
+log = "0.4"
+png = "0.18"
+
+[lints]
+workspace = true

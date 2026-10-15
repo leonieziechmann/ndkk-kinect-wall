@@ -1,0 +1,287 @@
+# kinect-driver
+
+Ein schlanker Kinect-v2-Treiber in Rust, der nicht abstürzt: USB direkt über libusb (Windows, Linux, macOS), die Tiefen- und IR-Berechnung aus den Rohdaten der Time-of-Flight-Kamera auf der CPU (SIMD, ein paar Threads) oder der GPU (wgpu-Compute-Shader), und Pipelines aus Stufen, die man konfigurieren und um eigene ergänzen kann. Als Bibliothek (Crate `kinect-driver`) oder als Programm `kinect-driver`, das auch als Capture-Worker in den kinect-hub passt.
+
+| Ordner | Was |
+|---|---|
+| `driver/` | die Bibliothek: USB, Protokoll, Tiefen-/IR-Dekodierung (CPU und GPU), Pipelines, Simulator, Aufnahmen |
+| `cli/` | das Programm `kinect-driver`: Worker für den Hub und Werkzeuge |
+| `tools/` | C++-Harness, das den kompatiblen Modus gegen `fn2/fast_depth.cpp` prüft |
+
+## Was er anders macht
+
+**Mehr Reichweite (Modus `extended`).** libfreenect2 rechnet mit einer geschlossenen Formel nur bis 4,5 m und verwirft alles, wo eine Frequenz sättigt. Der erweiterte Modus sucht über den ganzen eindeutigen Bereich der drei Frequenzen (80, 16, 120 MHz → 18,75 m) die wahrscheinlichste Entfernung: jede Kandidatenentfernung der genauesten Frequenz wird mit allen brauchbaren Frequenzen nach ihrem Rauschen gewichtet verfeinert, die Konfidenz ist die Wahrscheinlichkeit, dass der beste Kandidat der richtige ist und nicht der zweitbeste. Das Rauschmodell, das dabei wiegt, ist an der echten Kinect gemessen (siehe [Gemessen (echte Kinect)](#gemessen-echte-kinect)): Es umfasst, was die Entfaltung wirklich sieht, also das gefilterte Rauschen, Streulicht und Kalibrierfehler, nicht nur das Sensorrauschen. Dazu:
+- **Nah trotz Sättigung:** Die drei Phasenproben einer Frequenz summieren sich zu null. Ist eine davon gesättigt, wird sie aus den beiden anderen rekonstruiert; ist mehr gesättigt, fällt nur diese Frequenz weg, und die Entfernung kommt aus den übrigen beiden. Bleibt nur eine Frequenz, entscheiden die Nachbarn (Abstimmung, bei gesättigten Nachbarn bevorzugt die desselben hellen Objekts), sonst eine glatte Erwartung aus der Umgebung. Wo alle Frequenzen sättigen, wird die Tiefe vom gemessenen Rand desselben Objekts nach innen interpoliert (Flag `DEPTH_FILLED`).
+- **Weit:** Kandidaten, die eine unmögliche Helligkeit bräuchten (ein heller Punkt kann nicht 12 m weg sein, ein dunkler eher ein Echo von jenseits des Bereichs), werden bei der Wahl bestraft. Die Helligkeit rechnet mit dem Beleuchtungsprofil der Kinect: in der Bildmitte fast gleichmäßig, zum Rand hin steil abfallend (auf die Hälfte bei 31° von der Achse, `illumination_angle`). Bis zum 1,5-Fachen einer weißen Fläche kostet ein Kandidat nichts (`max_reflectivity`). Darüber wächst die Strafe mit dem Quadrat des Logarithmus (`plausibility_spread` 1,15): 1 beim 1,15-Fachen darüber, 25 beim Doppelten, 100 beim Vierfachen. Glänzende Farbe, frontal gesehen, oder ein Reflektor mit eindeutigen Phasen behält so seine Tiefe; ein Phantom zehnmal weiter weg bräuchte das Hundertfache und verliert. Vorher kostete jede Überschreitung sprunghaft 30 und überstimmte auch eindeutige Phasen (im Simulator am Bildrand der Halle). Die Nachbarn wählen nie einen zweitbesten Kandidaten, den die Helligkeit verworfen hat. Ein Speckle-Filter nimmt einzelne Ausreißer heraus, der Kantenfilter wächst mit der Entfernung.
+- **Mehrwege (Flag `MULTIPATH`):** Ein Echo erreicht alle drei Frequenzen gleich stark. Zwei Echos aus verschiedenen Entfernungen (eine streifend gesehene Tischplatte, Kanten, Streulicht) überlagern sich je Frequenz anders, weil ihr Phasenabstand mit der Frequenz wächst. Ein schwaches zweites Echo (Licht von der Wand auf dem Boden, eine Raumecke) verschiebt die Entfernung nur um Zentimeter: Bis `multipath_tolerance` (10, Chi-Quadrat-Einheiten über der Erwartung) bleibt die Konfidenz. Ein starkes (ein Spiegelbild auf glänzendem Boden, die streifende Tischplatte) gibt eine Entfernung, die zu keiner der beiden Flächen gehört, und senkt sie. Gemessen an zwei überlagerten Wänden in 1,0 und 1,6 m: Ist die hintere ein Viertel so stark, liegen alle Pixel richtig auf der vorderen; ist sie halb so stark, bekommen nur Pixel auf der vorderen Wand Tiefe (7 %, mit Toleranz 20 wären 42 % auf keiner von beiden); bei gleicher Stärke keiner. Bräuchte die beste Entfernung eine unplausible Helligkeit, gibt es keine Toleranz: Solche Pixel gaben Phasen, die zu einer Entfernung weit hinter der Rückwand passten. Die Nachbarn bestätigen oder ersetzen die Entfernung von Mehrwege-Pixeln nicht.
+- **Schlechter passend heißt nicht falsch:** Passen die Phasen des besten Kandidaten schlechter zusammen, als das Rauschmodell erwartet (Mehrwege und Streulicht verschieben jede Frequenz ein wenig anders), war das Rauschen eben größer. Der Vorsprung vor dem zweitbesten zählt dann in Einheiten dieser Abweichung: der a-posteriori-Varianzfaktor aus den Phasen- und Amplitudenkosten des Kandidaten, der zu den Phasen am besten passt, mit dem Rauschmodell als Vorwissen von 10 Freiheitsgraden (`NOISE_PRIOR_DOF`). Mehrdeutig ist ein Pixel erst, wenn der zweitbeste etwa so nah ist wie die Abweichung. Vorher senkte jede Abweichung die Konfidenz selbst: Boden, Decke, eine Papierlampe und der obere Teil einer Wand in 4 m fielen weg, obwohl ihre Entfernung eindeutig war.
+- **Vorsicht beim Entscheiden:** Der beste Kandidat muss um `margin_prior` (10) besser sein als der zweitbeste, bevor die Entfaltung ihm mehr glaubt als dem anderen. Das Modell kennt nur das Rauschen; was es nicht kennt, lässt einen falschen Kandidaten ab und zu um ein paar Einheiten gewinnen.
+- **Verlorene USB-Daten:** Fehlt ein Phasenbild (oder ein Teil davon, weil ein USB-Paket verloren ging), wird es wie eine gesättigte Probe aus den beiden anderen seiner Frequenz rekonstruiert, mit passend höherem Rauschen im Modell.
+
+**IR ohne Überbelichtung (HDR).** Statt die drei Frequenzen zu addieren und bei 65535 abzuschneiden, ist das IR der gewichtete Mittelwert der brauchbaren Frequenzen: sättigt eine, tragen die anderen (rekonstruierte schwächer gewichtet). Nur wo alle sättigen, wird aus der Umgebung gefüllt, nie dunkler als der Pegel, bei dem dieser Sensor sättigt. Die Werte gehen über 65535 hinaus; die Stufe `IrToneMap` bringt sie in einen Ausgabebereich:
+- `hub`: bis 3000 unverändert (wie libfreenect2 im Hub), darüber logarithmisch, weiß erst bei 65535 (für die Weiß-bei-6000-Darstellung des Hubs): was dort heute weiß ist, behält seine Zeichnung als helles Grau (6000 wird Byte 212 statt 255, 12000 wird 227, 30000 wird 243). `hub:KNIE:WEISS` stellt beides ein, z. B. `hub:2500:200000` für noch weichere Lichter (6000 wird 199). Eine Kurve je Frequenz vor dem Mitteln gäbe dasselbe Bild: die drei Amplituden messen dieselbe Helligkeit (in hellen Bereichen auf etwa 1 % gleich); nur an Kanten, wo sie auseinanderliegen, würde der Rand dunkler.
+- `even`: gleichmäßigere Belichtung: der Abfall mit der Entfernung wird herausgerechnet (auf 2,5 m bezogen; Nahes höchstens 4-fach dunkler, Fernes höchstens 2,5-fach heller, damit das Rauschen hinten nicht aufblüht), dann wie `hub`
+
+**Kompatibler Modus (`compat`).** Das Verfahren von libfreenect2 bzw. `fn2/fast_depth.cpp` mit denselben Ergebnissen bis auf die 16-Bit-Werte (gegen fast_depth geprüft mit `tools/fastdepth_ref.cpp`: Tiefe im Mittel 0,13 mm, höchstens 0,3 mm daneben, IR höchstens 0,05 %); die Flags bleiben dort leer.
+
+**Robust.** Siehe [Was bei Störungen passiert](#was-bei-störungen-passiert). Der Code verbietet `unwrap`, `expect`, `panic!` und ungeprüftes Indizieren; jeder Thread, jede Stufe und jeder USB-Callback fängt Panics ab.
+
+## Gemessen (Simulator)
+
+Die Tabellen unten sind gegen einen physikalischen Simulator der Kamera gemessen (`driver/src/sim/`: Phasen, Rauschmodell, Sättigung, Mehrwegfehler, Pixelkanten), der den Rohpaketen der Kinect Byte für Byte gleicht. `kinect-driver eval` druckt die Tabellen. Anteil der Pixel mit Tiefe / davon richtig (innerhalb 1 % bzw. 15 mm) / falsch (über 5 % daneben):
+
+| Szene, Bereich | compat | extended | extended 15.10. mittags | extended bis 15.10. |
+|---|---|---|---|---|
+| Raum, 3–4,5 m | 65 % / 54 % / 0,06 % | 76 % / 65 % / 0,03 % | 77 % / 66 % / 0,04 % | 78 % / 66 % / 0,24 % |
+| Raum, 4,5–6 m (Rückwand) | 33 % / 33 % / 0 % | 99 % / 99 % / 0 % | 99 % / 99 % / 0 % | 99 % / 99 % / 0 % |
+| nah, unter 0,5 m | 0 % | 99 % / 61 % / 0 % | 99 % / 61 % / 0 % | 98 % / 60 % / 0 % |
+| nah, gesättigte Pixel | 0 % | 100 % / 56 % / 0 % | 100 % / 56 % / 0 % | 100 % / 55 % / 0 % |
+| Halle, 4,5–6 m | 0,5 % / 0,2 % / 0,05 % | 33 % / 23 % / 0,09 % | 33 % / 23 % / 0,21 % | 32 % / 22 % / 0,47 % |
+| Halle, 8–10 m | 0,3 % / 0 % / 0,3 % | 45 % / 40 % / 0 % | 47 % / 41 % / 0,01 % | 44 % / 39 % / 0,13 % |
+| dunkle Flächen, 6–8 m | 0,1 % / 0 % / 0,05 % | 4 % / 3 % / 0 % | 6 % / 5 % / 0 % | 15 % / 9 % / 1,1 % |
+| Rampe, Tiefe, wo nichts ist (2 Frames) | 552 Pixel | 69 Pixel | 106 Pixel | 3.360 Pixel |
+
+Seit dem ersten Test an der echten Kinect sind falsche Pixel auch im Simulator fast verschwunden; dafür reicht der erweiterte Modus auf dunklen Flächen nicht mehr so weit (über 6 m). Die falschen Pixel der Halle lagen am Bildrand und zu nah: Der Simulator beleuchtet den Rand heller als die echte Kinect, und die sprunghafte Helligkeitsstrafe bis 15.10. mittags überstimmte dort eindeutige Phasen (`examples/sim_outliers.rs` zählt sie nach Art). Der Simulator rauscht etwa fünfmal schwächer als die echte Kinect und beleuchtet den Rand gleichmäßiger (cos²): Das Rauschmodell des Decoders ist für ihn zu vorsichtig, an der echten Kinect passt es.
+
+IR, wo der Sensor sättigt: compat 100 % weiß abgeschnitten, extended 0 %. Ein verlorenes Phasenbild kostet im erweiterten Modus 2–15 % der richtigen Pixel (ohne Rekonstruktion bis zu 99 % oder 20-mal mehr falsche).
+
+**Zeit** (Xeon 2,8 GHz, 4 vCPU, AVX2): compat 5,5 ms je Frame mit 3 Threads (14,2 ms mit einem), extended 10,6 ms im Raum und 14,5 ms mit viel Sättigung (28–31 ms mit einem); Einzelheiten unter [Rechenkerne](#rechenkerne). Auf der GPU (wgpu) dieselben Ergebnisse bis auf Rundung (Tiefe höchstens eine halbe Millimeterstufe Abweichung, 0 bis 3 Pixel je Frame mit anderer Gültigkeit oder anderen Flags, gemessen mit lavapipe); die Zeit dort hängt von der GPU ab: `kinect-driver bench`.
+
+**Strom** (geteiltes Budget einer APU): Bei 30 fps hält die CPU-Variante im erweiterten Modus etwa einen Kern beschäftigt (33 ms CPU-Zeit je Frame mit 3 Threads, 37 ms bei viel Sättigung). Der GPU-Weg braucht auf der CPU 1,2 ms je Frame (Hochladen 0,6 ms, Zurücklesen 0,5 ms); nur wo etwas sättigt, kommen bis 3,3 ms für die Füllung dazu. Ob die GPU dieselbe Arbeit mit weniger Energie macht, zeigt nur eine Messung auf dem Zielrechner: `kinect-driver bench --fps 30 --seconds 120 --mode extended --backend cpu`, dann dasselbe mit `--backend gpu`, und jeweils die mittlere Leistung (z. B. HWiNFO, „CPU Package Power“, auf einer APU mit GPU) gegen den Leerlauf vergleichen. Im Taktbetrieb gibt der Befehl auch die CPU-Zeit je Frame des ganzen Prozesses aus.
+
+## Gemessen (echte Kinect)
+
+Erster Test am 15.10.2026: Kinect v2 (Vorabversion, Firmware 4.0.3917.0) an einem ThinkPad X13 (Ryzen 5 4650U), ein leerer, ruhiger Raum mit Wänden und Regal bei 0,5–2,5 m und einer streifend gesehenen Tischplatte im Vordergrund. Rohdaten: `recordings/2026-10-15-rohpakete/` (nicht im Repository), dort auch `BEFUNDE-kinect-driver.md`. Gemessen mit `replay --compare --frames 60`, je Frame:
+
+| | extended bis 15.10. | 15.10. mittags | extended |
+|---|---|---|---|
+| Pixel mit Tiefe (compat: 73,2 %) | 61,0 % | 79,7 % | 86,0 % |
+| 0–0,5 m (die Tischplatte; compat misst erst ab 0,5 m) | 2.980 | 23.136 | 29.834 |
+| 0,5–2 m in beiden Modi, davon gleich (1 % / 10 mm) | 126.104, 98,2 % | 147.698, 97,8 % | 153.796, 96,3 % |
+| 0,5–2 m nur compat | 32.768 | 11.294 | 5.212 |
+| 0,5–2 m nur extended | 1.276 | 2.240 | 3.146 |
+| Phantome jenseits 4,5 m (der Raum endet bei 2,5 m) | 1.953 | 1 | 2 |
+
+- **Zuverlässige Pixel** (Tiefe in mindestens 90 % der Frames, zeitlich unter 1 % Streuung, mindestens 6 der 8 Nachbarn ebenso): Extended hat 99,2 % der zuverlässigen compat-Pixel (mittags 98,2 %), 98,5 % davon auf 1 % / 10 mm gleich. Was fehlt, liegt in einer Ecke unten links, die compat bei 1 m sieht und deren Amplituden zwei etwa gleich starke Echos zeigen.
+- **Drei weitere Aufnahmen vom 15.10.** (`diag_raw`, 60 Frames, beim Zimmer 30): Pixel mit Tiefe, in Klammern der Anteil der zuverlässigen compat-Pixel, den extended hat.
+
+  | Aufnahme | compat | extended mittags | extended |
+  |---|---|---|---|
+  | `raw-2026-10-15-wand`: Zimmer, Rückwand in 4 m, Decke, Boden, Papierlampe | 63,0 % | 74,5 % (84,8 %) | 87,8 % (99,3 %) |
+  | `raw-2026-10-15-wand-hand`: weiße Wand frontal aus der Hand, gedreht, 0,6–2 m | 94,7 % | 99,4 % (100 %) | 99,5 % (100 %) |
+  | `raw-2026-10-15-boden`: glänzender Boden, flach von Tischhöhe | 74,7 % | 59,3 % (69,2 %) | 87,5 % (99,7 %) |
+
+  Mittags fielen im Zimmer Boden, Decke, Lampe und der obere Teil der Rückwand weg (Mehrwege-Licht passte nicht zum Rauschmodell, siehe „Schlechter passend heißt nicht falsch“). Jenseits 7 m: Zimmer 58 Pixel je Frame (mittags 142; hinter dem Fenster, ob echt, ist offen), Boden 278 (mittags 1.234).
+- **Glänzender Boden:** Flach gesehen spiegelt er; die Kinect misst die Spiegelbilder von Möbeln und Wänden „im Boden“ (compat ebenso). Mit drei Frequenzen ist das pro Pixel oft nicht zu trennen: Im Simulator (zwei überlagerte Wände) liefert eine Mischung aus Boden in 2 m und Spiegelbild in 4,6 m, halb so stark, bei 70 % der Pixel eine sichere Tiefe, die zu keiner der beiden gehört; auch mit der schärfsten Amplitudenprüfung (5 % statt 15 % Streuung) bleiben 25 %. Solche Mischungen sehen für drei Frequenzen aus wie ein Echo in einer dritten Entfernung.
+- **Zwei Echos zerlegen (`two_echoes`, Flag `SECOND_ECHO`, noch ausgeschaltet):** Ein Pixel liefert sechs Zahlen, zwei Echos sind vier Unbekannte (`tof/echoes.rs`, CPU und GPU gleich). Für Pixel, die ein Echo nicht erklärt (jenseits `multipath_tolerance`), werden alle Paare auf einem Raster von 180 Punkten (10 cm) gesucht, das erste Echo bis 0,2 m hinter der Entfernung des Einzelechos (die Mischung liegt zwischen beiden Echos), und das beste mit einer Mustersuche verfeinert (längs, quer und diagonal: zwei nahe Echos tauschen Entfernung entlang einer Diagonale). Das Rauschen ist längs des Messwerts (Verstärkung, `echo_amplitude_floor` 0,06) und quer dazu (Phase) getrennt. Was die Zerlegung erst brauchbar macht:
+  - **Helligkeit beider Echos:** Bei 16 und 80 MHz wiederholt sich die Phase nach dem halben Bereich (9,4 m); ein Paar mit einem Echo dort passt fast so gut wie das echte. Jedes Echo kostet, was es an unplausibler Helligkeit bräuchte, 16-mal so streng wie bei der Entfaltung (`echo_plausibility`), gleitend statt hart (`(t − 1)²`, t = nötiger Reflexionsgrad durch `max_reflectivity`). Ohne diese Prüfung lagen am glänzenden Boden weniger erste Echos auf dem Boden als Tiefen des Decoders.
+  - **Wann ersetzt wird:** Das zweite Echo ist mindestens 35 % so stark wie das erste, das erste mindestens ein Viertel so stark wie das zweite (sonst passt ein winziges Echo vor jedem echten), und das erste liegt mehr als 2,4 cm + 1 % von der Entfernung des Einzelechos weg (die dann eine Mischung beider ist).
+  - **Die Nachbarn bestätigen:** Pro Pixel passen oft mehrere Paare fast gleich gut, die Konfidenz des Pixels allein ist meist klein. Der Resolver erhöht sie, wo die ersten Echos der Nachbarn und deren sichere Tiefen dieselbe Entfernung zeigen (ein Boden ist eben); sonst fällt der Pixel unter `min_confidence` weg, statt eine Mischung zu zeigen.
+  - **Schnell genug für live:** Die volle Suche bekommt nur jedes 6. Pixel in beiden Richtungen (Saatpunkte). Die Pixel dazwischen starten vom besten der Paare der vier Saatpunkte ihrer Zelle (sonst des Rings darum) und verfeinern nur (2,6 cm bis 6,5 mm). Das ist nicht schlechter, sondern besser als jedes Pixel einzeln: Der beste von vier Startpunkten trifft das richtige Paar öfter als die Suche eines Pixels allein (Simulator, weder noch bei 120 Rasterpunkten: jedes Pixel 12,8 %, jedes 3. 11,0 %, jedes 6. 10,3 %). Die CPU rechnet acht Saatpunkte zugleich (Rastersuche Pixel für Pixel, Verfeinerung in acht Spuren), die Pixel dazwischen ebenso zu acht. Die GPU nimmt für die Rastersuche eine Arbeitsgruppe aus 64 Aufrufen je Saatpunkt (jeder Aufruf hält drei zweite Echos in Registern, das beste Paar je erstes Echo per `atomicMin` auf Kosten und Rasterpunkt in einem Wort), für die Verfeinerung einen Aufruf je Saatpunkt und für die Pixel dazwischen einen Aufruf je Pixel aus einer Liste je Band aus 8 Zeilen. Die gefilterten Werte der Kandidaten legt Stufe 2 ab; die Zerlegung wiederholt den Bilateralfilter nicht. Verworfen: ein gröberes Raster (60 / 80 / 120 Punkte: schneller, aber weder noch 18,8 / 17,5 / 10,3 % statt 8,4 %); Zellen überspringen, deren Saatpunkte nicht ersetzt haben (9–11 % weniger erste Echos für 2 ms); jedes 8. Pixel als Saatpunkt (4 ms schneller, 1 % weniger Boden).
+  - **Übernehmen statt neu zerlegen (`split_reuse`, Standard an):** Ein Pixel, dessen Messung sich seit seiner letzten Zerlegung nicht über das Rauschen hinaus bewegt hat, übernimmt diese Zerlegung. Gemessen wird der Abstand, gewichtet mit dem Phasenrauschen; die Schwelle ist 16. Zwischen zwei Frames einer ruhigen Szene liegt er bei 2–16, bei einer vorbeigehenden Person bei Tausenden. Reihum zerlegt jeder Pixel spätestens alle 16 Frames neu (0,5 s). Die GPU macht dasselbe: Die Pixel zwischen den Saatpunkten, die übernehmen, erledigt schon `split_list`; `split_between` rechnet nur die übrigen, sonst müsste jede Welle wegen des Sechzehntels, das an der Reihe ist, voll rechnen. Auf der GPU Zerlegung Boden 3,3 → 2,0 ms, Raum 1,35 → 1,1 ms, Zimmer 2,4 → 1,7 ms. CPU und GPU stimmen auch über Folgen von Frames überein (32 Frames: Boden 21, Raum 109, Zimmer 27 Pixel je Frame mit mehr als 1 mm Abstand, ohne Übernahme 33 / 74 / 30); als nur die CPU übernahm, waren es Tausende (Boden 10.900). Boden: Zerlegung 15 → 5 ms, Frame 31 → 16 ms (ohne Zerlegung 11,5 ms), Zimmer 22 → 17 ms; die Zeiten weiter unten gelten ohne Übernahme. Das Bild flackert weniger: Von Frame zu Frame springen 8.000 statt 11.500 Pixel um mehr als 3 cm. Dafür gibt es 2 % weniger gültige Bodenpunkte bei gleichem Anteil auf dem Boden (8.422 → 8.192, 43,3 → 43,1 %), vermutlich weil Nachbarn aus verschiedenen Frames einander seltener bestätigen. Verworfen: nur die Saatpunkte warm starten (21 statt 16 ms, 0,8 % weniger Boden); jeden Pixel von seiner eigenen letzten Lösung aus verfeinern (kaum schneller, denn die Pixel zwischen den Saatpunkten kostet vor allem der feste Aufwand je Pixel).
+  - Gemessen, glänzender Boden (`raw-2026-10-15-boden`, Frames 40–84, Bodenzeilen 370–424, gegen die feste Bodenebene), je Frame: auf dem Boden (±3 cm) 4.649 → 8.422 Punkte, mehr als 5 cm darunter (Spiegelbilder, Mischungen) 7.504 → 2.517.
+  - Simulator, zwei überlagerte Wände (vorn / hinten in m, hintere relativ zur vorderen), Anteil richtig vorn / weder noch, ohne → mit Zerlegung: 1,0/1,6 gleich stark 0 → 88 % / 0 → 1 %; 1,0/1,6 halb so stark 6 → 73 % / 1 → 1 %; 2,0/4,6 halb so stark (wie Boden und Spiegel) 23 → 79 % / 70 → 16 %; 2,0/3,0 doppelt so stark 0 → 99 % (vorher die hintere: 97 %); 1,5/3,0 doppelt so stark 0 → 87 % / 0 → 12 %; 2,0/4,6 gleich stark 0 → 36 % / 45 → 45 %. Im Mittel über 16 Mischungen 38,2 → 85,6 % richtig vorn, weder noch 8,9 → 8,1 %. Ein schwaches zweites Echo (ein Viertel) bleibt wie es war.
+  - Raum: Tiefe 86,0 → 91,9 %, zuverlässige compat-Pixel 99,2 → 99,9 %, Phantome 2 → 2 je Frame. Zimmer: 87,8 → 88,0 %, 99,3 → 99,4 %. Boden: 87,5 → 87,7 %, 99,7 → 99,6 %. Wand frontal: unverändert. Die Simulator-Szenen (`eval`): unverändert.
+  - Zeit je Frame (Median), ohne → mit Zerlegung: CPU mit 4 Threads Raum 13,2 → 19,7 ms, Zimmer 14,5 → 24,6 ms, Boden 13,0 → 29,1 ms; GPU (Radeon-iGPU des Ryzen 5 4650U) 10,7 → 12,3–13,0 ms, 11,6 → 13,8–14,3 ms, 11,1–11,7 → 14,8–15,3 ms, davon die Zerlegung selbst 1,5–1,6 / 2,5–2,6 / 3,8–4,1 ms. Live an der Kinect (Hub, CPU): 30 fps ohne verlorene Frames, Decodieren 22–29 ms.
+  - GPU-Zeit je Durchgang (`KINECT_DRIVER_GPU_TIMES=1`, Median über 48 Frames), Boden vorher → nachher: `split_seeds` 11,4–11,7 → 2,5–2,7 ms, `split_between` 3,1–3,2 → 1,0–1,1 ms, dazu neu `split_refine` 0,3 ms und `split_list` 0,04 ms; Raum 8,9 → 1,5–1,6 ms, Zimmer 11,5–12,0 → 2,5–2,6 ms. Frame vorher 19,6 / 23,1–23,9 / 25,2–25,7 ms. Woran es lag: WGSL nullt den Workgroup-Speicher jeder Arbeitsgruppe vor dem Start, bei rund 6.100 Saatpunkt-Gruppen zu 8 KB (drei Viertel ohne Kandidat) allein 3,5 ms; der Shader schreibt ihn selbst, bevor er liest, also jetzt ohne. Die Verfeinerung lief in einem von 64 Aufrufen, die übrigen warteten (2,75 ms; jetzt ein eigener Durchgang, 0,3 ms). Beide Durchgänge rechneten Bilateralfilter und Schwachsignal-Mittel von Stufe 2 noch einmal (zusammen gut 2 ms). Die Pixel dazwischen liefen über das ganze Bild, drei Viertel der Aufrufe ohne Kandidat (mit Liste `split_between` 1,85 → 0,91 ms). Die beste Paarung suchte Aufruf 0 allein über alle ersten Echos (jetzt alle per `atomicMin`). Das Ergebnis ist bitgleich: dieselbe Rechnung in derselben Reihenfolge, geprüft auf 36 Frames aus Boden, Raum und Zimmer. Was bleibt, ist vor allem die Rastersuche selbst (Boden rund 1,5–2 ms).
+  - CPU und GPU: Mit Zerlegung weichen je Frame 15–110 Pixel um mehr als 1 mm ab (bei rund 17.000 zerlegten Pixeln): Die Suchen runden verschieden und nehmen dann ab und zu das andere von zwei gleich guten Paaren.
+  - Eine Karte der Verstärkungen je Pixel hilft nicht: Auf der weißen Wand zeigt sich ein festes Muster (1,2 / 4,1 / 4,4 %), aber aus der ruhigen Phase gelernt, ändert es die Streuung in der bewegten nicht (`examples/gain_map.rs`); das Muster war die Szene (schwaches Mehrwege-Licht), nicht der Sensor. Eine Phasenkarte überträgt sich bei 80 und 120 MHz zum Teil (Streuung 0,047 → 0,038 und 0,051 → 0,035 rad), bei 16 MHz nicht.
+- **Was compat allein hat**, sind vor allem Mischpixel: Blattränder, Kanten und diese Ecke. Ihre Werte liegen zwischen den Entfernungen, die sie mischen.
+- **CPU und GPU** liefern auf diesem Dump dasselbe (unter 0,1 Pixel je Frame mit Tiefe in nur einem, höchstens eine halbe Millimeterstufe; mit Zerlegung siehe dort).
+- **Zeit** unverändert: 8,8 ms je Frame mit 4 Threads auf dem Ryzen 5 4650U, auf der Radeon-iGPU 9,4 ms.
+- **Woran es lag** (Diagnose: `cargo run --release -p kinect-driver --features gpu --example diag_raw -- DATEI.k2raw --png ORDNER [--gpu]`):
+  - Das Rauschmodell war das der Literatur. Die echte Entfaltung sah etwa das 2,4-Fache an Phasenfehler, dazu Fehler, die mit der Helligkeit nicht kleiner werden (Kalibrierung, Streulicht; je Frequenz 0,02–0,05 rad). Die Konfidenz fiel deshalb auf hellen und dunklen Flächen gleichermaßen, und nur die Fenster um einzelne sichere Pixel blieben: die blockigen Löcher.
+  - Die Phantome lagen auf der streifend gesehenen Tischplatte (zwei Echos: die Amplituden der Frequenzen meist um Faktor 2 bis 4 verschieden) und als schwache Pixel am Bildrand, wo die Beleuchtung auf ein Viertel abfällt.
+- **Den eigenen Sensor einmessen:** eine ruhige Szene 10 s lang aufnehmen (`kinect-driver record --out recordings/….k2raw --seconds 10`), dann `kinect-driver analyze DATEI.k2raw`. Es misst die Helligkeit einer weißen Fläche auf der Achse, das Beleuchtungsprofil (grob, wenn der Raum vollgestellt ist; eine weiße Wand, die das Bild füllt, gibt es am besten), die Verstärkung der Frequenzen und das Rauschmodell: die Verhältnisse der Frequenzen aus ihrem Rauschen, die Stärke so, dass die Kosten ruhender Pixel ihrer Verteilung folgen. Es druckt die `--tof`-Einstellungen. Auf dem Dump vom 15.10. schlägt es `noise_coeff=3.54:2.69:4.33,noise_floor=0.040,brightness_1m=26029,illumination_angle=32.5` vor. Die Standardwerte (`3:2.5:3.5`, `0.04`, `25000`, `31`) liegen daneben; der Winkel ist etwas kleiner, weil das Licht zu den Seiten steiler abfällt als zu den Ecken.
+- **Noch offen:** Reichweite an der echten Kinect (Halle, über 4,5 m) und Personen im Bild.
+
+## Speicher und Kopien
+
+Im laufenden Betrieb legt ein Frame keinen Bildspeicher neu an; die großen Puffer kreisen.
+
+- **Rohpakete** (2,98 MB) kommen aus einem Pool des Parsers. Die USB-Pakete landen direkt an ihrem Platz im Rohpaket (beim Teilbild nach dem zuletzt empfangenen); nur der Footer, der den richtigen Platz nennt, liegt daneben. Nennt er einen anderen Platz (nach einem verlorenen Teilbild), wird das Teilbild einmal verschoben. Je Byte also eine Kopie: vom USB-Puffer ins Rohpaket.
+- **Ausgabe-Ebenen** (Tiefe, IR und Konfidenz mit 16 Bit je Wert, die Flags mit 32: 2,17 MB statt 3,47 MB; siehe [Rechenkerne](#rechenkerne)) kommen aus dem Pool der Dekodierstufe und gehen zurück, wenn die Anwendung den Frame fallen lässt. Hält sie Frames länger, entstehen eben neue; beide Pools behalten höchstens 8 Stück. 3D-Punkte rechnet `Frame::points` bei Bedarf aus Tiefe und Strahlen, statt sie zu speichern (das waren 2,6 MB je Frame).
+- **Dekoder:** feste Helfer-Threads, die zwischen den Phasen schlafen, statt Thread-Starts je Phase. Arbeitsebenen, Push-Pull, Flood-Fill und IR-Füllung behalten ihre Puffer. Die Ebenen zwischen den Phasen haben 16 Bit je Wert (siehe [Rechenkerne](#rechenkerne)): Arbeitsebenen 12,8 statt 23,4 MB, vorberechnete Tabellen 4,3 statt 7,8 MB, GPU-Puffer 23,3 statt 46,1 MB (die Zwei-Echo-Zerlegung braucht 15,6 MB mehr: die gefilterten Werte ihrer Pixel, deren Liste und für `split_reuse` die letzte Zerlegung je Pixel). Die Nachschritte (Flood-Fill, Push-Pull-Erwartung, Tiefen- und IR-Füllung) brauchen 1,5 statt 8,3 MB: Die Push-Pull-Pyramide hat f16-Werte, ihre Eingabe wird zeilenweise gelesen, und das Ergebnis in voller Auflösung entsteht nur für die Zeilen und Pixel, die gefüllt werden; auf der GPU rechnet der Auflöser die Erwartung für seine wenigen Pixel selbst aus.
+- **Stufen** behalten ihre Puffer. `IrToneMap` arbeitet Zeile für Zeile auf den 16-Bit-Ebenen, seine Tiefenkarten in halber Auflösung haben ebenfalls 16 Bit (`even`: 0,5 statt 1,6 MB). `TemporalFilter` hält seinen Zustand in `f32` (0,87 MB): in Schritten von 0,5 mm bliebe der geglättete Wert bis 0,6 mm vor dem Mittel stehen.
+- **Worker für den Hub:** entpackt Tiefe und IR je 16 Zeilen in einen kleinen Puffer (32 KB) und schreibt sie als `f32` in die Pipe, wie der Hub sie erwartet, ohne Nachrichtenpuffer; danach gehen die Ebenen zurück in den Pool.
+
+Gemessen mit `cargo run --release -p kinect-driver --example alloc_count` (zählender Allocator; Parser, Pipeline, Übergabe):
+
+| je Frame | vorher | jetzt |
+|---|---|---|
+| Allokationen, CPU (compat / extended / mit `even` und Punkten) | 3.872 / 4.808 / 4.809 | 2 / 2 / 2 |
+| neu angelegte Bytes | 7,1 / 12,8 / 15,4 MB | 272 B (`Arc` des Rohpakets, `Box` des Ereignisses) |
+| GPU-Weg | 105 Allokationen, 6,7 MB | 90 kleine in wgpu, 17 KB |
+| Zeit, Linux, 4 vCPU: Parser / compat / extended / ganzer Treiber | 0,35 / 9–13 / 21 / 18,7 ms | 0,21 / 8 / 20 / 17,1 ms |
+
+`driver/tests/alloc.rs` hält das fest. Im erweiterten Modus ändert sich die Zeit kaum, dort dominiert die Rechnung. Unter Windows sind Thread-Starts und große Allokationen teurer; dort dürfte der Unterschied größer sein (noch nicht gemessen).
+
+## Rechenkerne
+
+Die Pixelkerne rechnen acht Pixel auf einmal (`driver/src/tof/lanes.rs`: Werte aus acht Spuren, die der Compiler zu je einem AVX2-Befehl macht, zu zwei mit SSE2 oder NEON). So bleiben Zwischenwerte über Schleifen hinweg, die nicht über Pixel laufen, in Registern, statt als Zeilen-Arrays durch den Cache zu gehen: die 15 Kandidatenentfernungen der Entfaltung, die neun Nachbarn des bilateralen Filters, die 24 des Speckle-Filters.
+
+- **Näherungen:** exp, atan2 und ln sind dieselben Polynome wie in `fn2/fast_depth.cpp` und im GPU-Shader (exp etwa 1e-4 relativ). Eine andere, gleich genaue Näherung lag weit unter 0,1 mm, verschob aber so viele Schwellenentscheidungen, dass CPU und GPU nicht mehr gleich entschieden. Gespart wird dagegen, was sich exakt umformen lässt: Wurzel und zwei Divisionen im Kantenfilter (der Test quadriert), die Division je Kandidat (Kehrwert), der Rest der Referenzfrequenz (an ihren eigenen Kandidaten null), die Plausibilitätsprüfung als Schranke auf u², NaN-sichere `min`/`max` (drei Befehle) durch einfache. Im AVX2-Build rechnet FMA mit.
+- **Keine maskierten Speicherzugriffe:** `vmaskmovps` ist auf AMD Zen mikrocodiert und langsam; der AVX2-Code enthält keine mehr.
+- **Gleichstände:** Sind nur 80 und 120 MHz nutzbar, wiederholen sich die Kandidaten alle 3,75 m mit gleichen Kosten. Bisher entschied dann das Rundungsrauschen, jetzt ein fester Zuschlag von 0,001 je Kandidatenschritt (`TIE_BREAK`): der nähere gewinnt, auf CPU und GPU gleich.
+- **Entpacken:** die 11-Bit-Codes mit einem 64-Bit-Zugriff je Code direkt in Messwerte, ohne Zwischenfeld.
+- **Nachschritte:** Push-Pull ohne gespeicherte volle Auflösung und auf den Dekoder-Threads; die IR-Füllung läuft neben der Erwartung des Auflösers; die Flutfüllung startet nur am Rand der Quellen.
+- **16 Bit je Wert zwischen den Phasen** (`driver/src/tof/pack.rs`), auf CPU und GPU in denselben Formaten: f16 für Werte über viele Größenordnungen (komplexe Werte und Amplituden, Kostenabstand, Amplitudensummen), Festkomma für Werte mit festem Bereich, dort feiner als f16 (Phasenrichtung, Konfidenz, Phase der Einzelfrequenz, Entfernungsanteil u in Stufen von 0,32 mm, Tiefe in Stufen von 0,5 mm). Was direkt die Tiefe trägt, als f16 wäre es bis 9 mm grob, ist deshalb Festkomma. Gerundet wird zur nächsten Stufe (bei Gleichstand gerade), ohne Verzweigung; der AVX2-Build wandelt f16 mit F16C, die Software-Fassung (SSE2, NEON) rundet bitgleich. Der Shader rundet f16 ebenso selbst: Wie `pack2x16float` rundet, überlässt WGSL der GPU, und die Radeon-iGPU rundet Richtung null; damit wichen CPU und GPU bei bis zu 1,7 % der Pixel in der Konfidenz ab und einzelne Tiefen um bis zu 11 mm. Auf der CPU entpackt jeder Thread nur die Zeilen, die sein Block braucht, in einen kleinen Ring (jede Zeile einmal je Block); die Kerne rechnen weiter mit `f32`. Gegen `f32`-Ebenen: compat im Mittel 0,13 mm, höchstens 0,3 mm; extended 99,99 % der Pixel unter 0,4 mm, über 40 Frames nur 9 von 1,19 Millionen Pixeln einmal über 1,5 mm. Zeitlich unverändert (40 Frames stillstehender Szenen mit Sensorrauschen): gleiches Rauschen (auf 0,02 mm), gleich viele Sprünge über der Glättungsschwelle des Hubs und gleich viele Wechsel zwischen mit und ohne Tiefe (je unter 0,3 % Unterschied). Die Bereichsgrenze verschiebt sich um bis zu 0,25 mm: im Raum haben dadurch etwa 500 Pixel bei genau 4500 mm Tiefe, die vorher knapp darüber lagen. Kosten auf der CPU (zweite Tabelle unten): extended 1 bis 5 %, compat 9 bis 16 % mehr Zeit (das Entpacken wiegt dort mehr, weil die Kerne wenig rechnen); dafür liest der Filter aus dem Ring im Cache statt aus dem großen Puffer. Zwei Fallen, nachgemessen (`examples/tof_diff.rs` gegen `f32`): u als f16 gäbe im erweiterten Modus bis 7 mm Abweichung (11 % der Pixel über 1 mm). Und die erste Nachstellung mit f16 (nur Stufe 1) speicherte das Quadrat der Amplitude: n² umfasst mehr Größenordnungen, als f16 fasst, und wurde bei schwachen Pixeln zu grob; 0,06 % der Pixel sprangen um mehrere Millimeter bis zu einem ganzen Bereich. Gespeichert wird deshalb die Amplitude n, quadriert erst nach dem Entpacken.
+- **16 Bit auch in der Ausgabe und den Nachschritten** (`driver/src/plane.rs`, `tof/fill.rs`): Tiefe in Schritten von 0,5 mm (so rechnet der Dekoder sie ohnehin: verlustfrei), IR als f16 (höchstens 0,05 % daneben; libfreenect2s Weiß 65535 wird 65536), Konfidenz als 16-Bit-Festkomma; die Flags brauchen 19 Bit und bleiben 32. Die Push-Pull-Pyramide hält gewichteten Wert und Gewicht als f16 wie auf der GPU, ihre gefüllten Werte in `f32`. Gegen die Ausgabe davor (`tof_diff`, alle Szenen): compat bitgleich bis auf das IR, extended ebenso, nur die in gesättigten Flächen gefüllte Tiefe weicht um weniger als 0,5 mm ab; kein Pixel wechselt zwischen mit und ohne Tiefe (über 40 Frames aller Szenen einer), Rauschen, Sprünge und An/Aus-Wechsel sind dieselben. GPU gegen CPU wie vorher. Tempo auf der CPU im Rahmen der Messschwankung gleich (das Packen der Ausgabe kostet etwa 0,1 ms je Frame); auf dem GPU-Weg wird das Zurücklesen schneller (0,5 statt 0,65 ms), weil die Ausgabe die Formate der GPU-Wörter hat und nur kopiert wird.
+
+Zeit je Frame vor und nach den Änderungen oben bis auf die 16-Bit-Ebenen (Median aus fünf abwechselnden Läufen, `examples/bench_tof.rs`):
+
+| | vorher | nachher |
+|---|---|---|
+| compat, 1 / 3 / 4 Threads | 20,0 / 7,2 / 5,5 ms | 12,5 / 4,6 / 3,4 ms |
+| extended, Raum, 1 / 3 / 4 Threads | 38,2 / 14,9 / 11,6 ms | 26,7 / 10,7 / 8,7 ms |
+| extended, viel Sättigung, 1 / 3 / 4 Threads | 41,4 / 20,4 / 19,8 ms | 29,4 / 12,5 / 11,7 ms |
+
+Die 16-Bit-Ebenen gegen den Build davor (Median aus neun abwechselnden Läufen, an einem anderen Tag gemessen; viel Sättigung: Szene `near`):
+
+| | f32-Ebenen | 16-Bit-Ebenen |
+|---|---|---|
+| compat, 1 / 3 Threads | 13,0 / 4,8 ms | 14,2 / 5,5 ms |
+| extended, Raum, 1 / 3 Threads | 26,3 / 10,5 ms | 27,6 / 10,6 ms |
+| extended, viel Sättigung, 1 / 3 Threads | 29,8 / 13,9 ms | 30,8 / 14,5 ms |
+
+Genauigkeit der Änderungen oben bis auf die 16-Bit-Ebenen (die stehen in ihrem Punkt) gegen die Version davor (`examples/tof_diff.rs`: 18 Frames, alle Szenen des Simulators, ein verlorenes Phasenbild, beschädigte Zeilen):
+
+| je Frame | compat | extended |
+|---|---|---|
+| Tiefe, größte / mittlere Abweichung | 0,004 / 0,0001 mm | 0,006 / 0,0001 mm |
+| IR, größte relative Abweichung | 3e-7 | 3e-7 |
+| Pixel, die zwischen mit und ohne Tiefe wechseln | 1,8 von 121.700 | 34 von 157.800 |
+| zum Vergleich: dieselben Szenen mit anderem Sensorrauschen | 17.200 | 20.900 |
+
+Die wechselnden Pixel liegen genau an einer Schwelle (Konfidenz 0,6, Kanten- und Speckle-Test) oder sind Gleichstände wie oben. Der kompatible Modus lag damals gegen `fn2/fast_depth.cpp` bei höchstens 0,004 mm; seit den 16-Bit-Ebenen sind es höchstens 0,3 mm, beim IR seit der 16-Bit-Ausgabe höchstens 0,05 %.
+
+## Mit dem kinect-hub
+
+Der Treiber ersetzt `fn2/bin/fn2_capture.exe` (libfreenect2) als Capture-Worker, ohne Änderung am Hub:
+
+```bash
+cd kinect-driver && cargo build --release
+kinect-hub/target/release/kinect-hub.exe --worker kinect-driver/target/release/kinect-driver.exe
+```
+
+- `--pipeline fast` (Standard des Hubs) dekodiert auf der CPU, `--pipeline cl` auf der GPU (ohne GPU automatisch wieder CPU).
+- Der Hub reicht nur `--pipeline` durch, alles andere über die Umgebung: `KINECT_DRIVER_MODE=compat|extended` (Standard extended), `KINECT_DRIVER_IR=hub|even|raw` (Standard hub; `hub:KNIE:WEISS` für eine andere Schulter), `KINECT_DRIVER_TOF=key=value,…`, `KINECT_DRIVER_LED=0..1000`, `KINECT_DRIVER_SOURCE=sim:room` (Test ohne Kinect), `KINECT_DRIVER_CACHE=Ordner|off`, `KINECT_DRIVER_PRIORITY=normal`.
+- Der Heartbeat in `/api/status` → `worker.heartbeat` zeigt Dekoder, ms je Frame, verlorene/geflickte USB-Pakete, Teilframes, Neustarts.
+- Getestet mit dem echten Hub (Linux-Build, simulierte Quelle): Zustand `streaming`, 30 fps, Kameraparameter und Frames kommen an, der Worker endet, wenn der Hub geht.
+- Treiber unter Windows: derselbe wie für libfreenect2 (libusbK über Zadig auf „Xbox NUI Sensor“). Alternativ UsbDk (lässt den Microsoft-Treiber an seinem Platz): `KINECT_DRIVER_USBDK=1`.
+
+Vor dem Einsatz in der Ausstellung: mit der echten Kinect eine Weile neben `fn2_capture` vergleichen (Posen, Personenerkennung, Szenen), besonders den erweiterten Modus und `KINECT_DRIVER_IR=even`, denn das Pose-Modell sieht das IR-Bild.
+
+## Programm
+
+```
+kinect-driver [worker] [OPTIONEN]     Capture-Worker für den Hub (Binärprotokoll auf stdout)
+kinect-driver list                    Kinects am USB
+kinect-driver info [--save-calibration ORDNER]
+kinect-driver stream [OPTIONEN] [--seconds N] [--png ORDNER]
+kinect-driver record --out DATEI.k2raw [--seconds N]
+kinect-driver replay DATEI.k2raw|sim:SZENE [OPTIONEN] [--frames N] [--every K] [--png ORDNER] [--compare]
+kinect-driver bench [--source DATEI.k2raw|sim:SZENE] [--backend cpu|gpu] [--threads N] [--mode compat|extended] [--fps F [--seconds S]]
+kinect-driver simulate --out DATEI.k2raw [--scene S] [--frames N]
+kinect-driver eval [--scenes a,b] [--frames N] [--tof key=value,…]
+kinect-driver analyze DATEI.k2raw [--frames N] [--tof key=value,…]
+```
+
+Optionen: `--mode extended|compat`, `--backend cpu|gpu|auto`, `--tof key=value,…` (alle Felder von `TofConfig`/`ExtendedParams`, z. B. `min_confidence=0.7,weak_boost=on,max_depth=12000`), `--ir hub|even|raw` (auch `hub:KNIE:WEISS`), `--source kinect|kinect:SERIAL|sim:SZENE|DATEI.k2raw`, `--led`, `--calibration-cache`. `kinect-driver help` listet alles. Log: `KINECT_DRIVER_LOG=debug`.
+
+Aufnahmen zeigen den Raum im Infrarot: nur nach `recordings/` (git-ignoriert), nie committen. `.k2raw` ist das Format von `fn2/fn2_rawdump.exe`; beide Programme lesen die Dateien des anderen.
+
+## Als Bibliothek
+
+```toml
+[dependencies]
+kinect-driver = { path = "../kinect-driver/driver" }                  # USB (libusb wird mitgebaut)
+kinect-driver = { path = "...", features = ["gpu"] }                   # + GPU-Dekodierung
+kinect-driver = { path = "...", default-features = false }            # ohne USB: Aufnahmen, Simulator
+```
+
+```rust
+use kinect_driver::driver::{Driver, DriverConfig, Event};
+
+let driver = Driver::start(DriverConfig::default())?;      // sucht, startet, hält die Kinect am Laufen
+while let Some(event) = driver.recv() {
+    match event {
+        Event::Frame(f) => println!("{} Pixel mit Tiefe, {:.1} ms", f.valid_pixels(), f.pipeline_ms),
+        Event::State { state, detail } => println!("{} {detail}", state.name()),
+        _ => {}
+    }
+}
+```
+
+Eigene Pipelines: die Dekodierung ist eine Stufe wie jede andere.
+
+```rust
+use kinect_driver::driver::PipelineFactory;
+use kinect_driver::pipeline::{Backend, Pipeline};
+use kinect_driver::stages::{IrToneMap, TemporalFilter};
+
+let factory: PipelineFactory = std::sync::Arc::new(|| {
+    Ok(Pipeline::decoder(kinect_driver::TofConfig::extended(), Backend::Gpu)?
+        .with(IrToneMap::even())
+        .with(TemporalFilter::default())
+        .with_fn("mein schritt", |frame| {
+            // frame.depth.get(i), frame.ir.iter(), frame.confidence.unpack_row(y, &mut row),
+            // frame.flags[i], frame.points(), frame.set_extra(...)
+            Ok(())
+        }))
+});
+let cfg = kinect_driver::DriverConfig { pipeline: Some(factory), ..Default::default() };
+```
+
+- `Frame`: Tiefe (mm, in Schritten von 0,5 mm), IR, Konfidenz 0..1, jeweils 16 Bit je Wert (`plane::Plane`: lesen mit `get`, `iter`, `unpack_row`, die gespeicherten Werte mit `raw`), Flags je Pixel (`tof::flags`: gesättigt, rekonstruiert, aus Nachbarn aufgelöst, Kante, gefüllt, Mehrwege, …), 3D-Punkte bei Bedarf (`point_at`, `points`, `points_into`), eigene Ebenen (`extra`). Die Ebenen gehen zurück in den Pool, wenn der Frame fallen gelassen wird: Was länger gebraucht wird, mit `std::mem::take(&mut frame.depth)` herausnehmen oder kopieren.
+- Quellen: `Source::Kinect`, `Source::Recording` (`.k2raw`, Echtzeit oder so schnell wie möglich, in Schleife), `Source::Simulator`, `Source::Backend` (eigener USB-Backend, z. B. das simulierte Gerät `usb::mock` mit Fehlerinjektion).
+- Ohne Treiber-Threads: `CpuDecoder` / `gpu::GpuDecoder` direkt auf Rohpakete; `gpu::GpuDecoder::with_device` nutzt ein vorhandenes wgpu-Device (wgpu 30, dieselbe Version wie wall-bevy).
+- `pipeline::Backend::Gpu` fällt ohne GPU oder nach einem GPU-Fehler (Treiber-Reset, Device verloren) auf die CPU zurück und versucht die GPU alle 30 s neu.
+
+## Was bei Störungen passiert
+
+| Störung | Reaktion |
+|---|---|
+| keine Kinect | sucht weiter, merkt eine später eingesteckte |
+| USB-2-Port | klare Meldung, sucht weiter |
+| libusb startet nicht | versucht es alle 2 s neu |
+| Befehl schlägt fehl | Wiederholung, die Antwort-Pipe wird geleert (eine späte Antwort wird nie für die nächste gehalten); Unwichtiges wird übersprungen |
+| Kalibrierung nicht lesbar | die zwischengespeicherte desselben Geräts (`.k2cal`) |
+| verlorenes iso-Paket | mit Nullen in seiner Größe aufgefüllt, nur die betroffenen Zeilen gelten als verloren und werden rekonstruiert; jedes Paket wird an seinem eigenen Offset gelesen (libfreenect2 verrutscht nach einem Fehler) |
+| unvollständiger Frame | ab 6 von 9 Phasenbildern geliefert und dekodiert |
+| Frames bleiben aus (2 s; 8 s nach dem Start) oder der Stream stirbt | Sensor-Neustart; scheitert das wiederholt, beim nächsten Öffnen Port-Reset, danach Firmware-Neustart. Kamen wieder Frames, beginnt die Kette von vorn: Stolpert der Sensor kurz nach der Erholung noch einmal, folgt ein einfacher Neustart; erst wer mehrmals hintereinander innerhalb von 3 s nach dem Start stirbt, bekommt Port-Reset und Firmware-Neustart |
+| Kinect verschwindet | wird beim Wiederauftauchen wieder aufgenommen; alte, hängende Transfers bleiben bewusst liegen statt freigegeben zu werden, ein späterer Callback kann nichts mehr kaputtmachen |
+| Anwendung liest zu langsam | alte Frames werden verworfen, nie unbegrenzt gepuffert |
+| Panic in einer Stufe, einem Thread, einem USB-Callback | abgefangen, gezählt; der Thread beginnt neu, der Callback reicht den Transfer weiter |
+| GPU-Fehler | wgpu-Fehler werden abgefangen (wgpu würde sonst abbrechen), Fehler-Scope je Frame, CPU springt ein |
+
+Getestet gegen ein simuliertes Gerät mit Fehlerinjektion (`usb/mock.rs`): verlorene und verfälschte Pakete, belegte Geräte, Befehls-Timeouts, Ausstecken und Wiedereinstecken, stehender Stream, USB 2, eine Stufe, die bei jedem zweiten Frame abstürzt.
+
+An der echten Kinect mit `driver/examples/usb_faults.rs` (unter laufendem Stream alle 5 s eine Störung: Port-Reset, Firmware-Shutdown-Befehl, `stop`-Befehl, Depth-Interface auf Alt-Setting 0; je dreimal): 12 von 12 erholt, ohne Panics und ohne Firmware-Neustart durch den Treiber. Wieder stabil nach 0,5 s (Alt-Setting 0), 6,6 s (Port-Reset und Firmware-Shutdown: die Kinect meldet sich neu am Bus an) und 9,7 s (`stop`: erste Frames nach 3,5 s, dann startet die Kinect von sich aus neu). Bis zur Änderung der Eskalation zählte jede dieser Sitzungen als gescheitert, und der Treiber startete die Firmware achtmal selbst neu.
+
+## Plattformen
+
+- **Windows**: libusbK über Zadig (wie für libfreenect2) oder UsbDk (`KINECT_DRIVER_USBDK=1`). Baut mit `stable-x86_64-pc-windows-gnu` (w64devkit; als Cross-Build geprüft); libusb wird mitgebaut, es ist keine DLL nötig. Der Worker läuft wie `fn2_capture` mit erhöhter Priorität (`KINECT_DRIVER_PRIORITY=normal` lässt das).
+- **Linux**: Zugriff auf das Gerät per udev-Regel, z. B. `/etc/udev/rules.d/90-kinect2.rules`:
+  `SUBSYSTEM=="usb", ATTR{idVendor}=="045e", ATTR{idProduct}=="02d8", TAG+="uaccess"` (und `02c4` für die Vorabversion), dann `sudo udevadm control --reload && sudo udevadm trigger`. Bei Problemen mit großen iso-Transfers: `usbcore.usbfs_memory_mb=0` (oder ≥ 64).
+- **macOS**: libusb braucht nichts weiter. Ungetestet.
+- **GPU**: Vulkan, Metal, DirectX 12, OpenGL ES 3.1 (wgpu). `KINECT_DRIVER_GPU=low` bevorzugt die integrierte GPU; `WGPU_BACKEND`/`WGPU_ADAPTER_NAME` wählen weiter. `KINECT_DRIVER_GPU_TIMES=1` schreibt je Frame die Zeit jedes Durchgangs auf der GPU ins Log (wo die GPU Zeitstempel kann; `GpuDecoder::passes`).
+
+## Entwickeln
+
+```bash
+cargo build --release                              # Bibliothek + Programm (USB, GPU)
+cargo test --workspace --all-features              # ~65 Tests; die GPU-Tests laufen auf jeder wgpu-GPU (auch lavapipe)
+cargo clippy --workspace --all-targets --all-features
+cargo build --release --target x86_64-pc-windows-gnu -p kinect-driver-cli    # Windows-Build von Linux aus
+cargo run --release -p kinect-driver --example eval_sim                       # weitere Auswertungen: examples/
+```
+
+- `driver/src/plane.rs`: die 16-Bit-Ebenen der Ausgabe. `driver/src/tof/`: CPU-Dekoder (`kernels.rs` die Pixelkerne, je acht Pixel in `lanes.rs`-Werten, mit AVX2/FMA/F16C per Laufzeitauswahl; `pack.rs` die 16-Bit-Formate der Ebenen; `resolve.rs` die Nachbarschaftsauflösung; `post.rs` Flood-Fill und IR-Füllung; `fill.rs` Push-Pull), `config.rs` alle Parameter.
+- Änderungen an den Kernen prüfen: `examples/tof_diff.rs` vergleicht die Ausgabe zweier Builds Pixel für Pixel (`dump ORDNER` in beiden, dann `compare ALT NEU`), `examples/bench_tof.rs` misst je Phase (Median).
+- `driver/src/gpu/`: `decode.wgsl` (dieselben Schritte als Compute-Shader), `mod.rs` (wgpu, Rückfall auf die CPU).
+- `driver/src/usb/`: Trait-Grenze, `libusb.rs` (echtes Gerät), `mock.rs` (simuliertes Gerät).
+- `driver/src/protocol/`, `device.rs`: Befehle, Antworten, Paket-Zusammenbau, Startsequenz (wie libfreenect2, aber nachsichtig).
+- `driver/src/driver.rs`: Supervisor (Quellen, Watchdog, Eskalation, Ereignisse).
+- `driver/src/sim/`: Simulator mit Szenen (`room`, `near`, `far`, `ramp`, `sun`, `hall`, `flat`, `visitor`) und Auswertung.
+- IR-Vergleichsbilder (libfreenect2 / `hub` / `even`, so wie der Hub sie zeigt): `cargo run --release -p kinect-driver --example ir_demo -- ORDNER visitor near room hall`.
