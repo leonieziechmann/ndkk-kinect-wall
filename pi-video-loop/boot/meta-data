@@ -1,0 +1,5 @@
+# cloud-init meta-data (NoCloud, read from the boot partition).
+# dsmode local: user-data is applied before the network comes up.
+# A new instance_id makes cloud-init run the per-instance steps (users, runcmd) once more.
+dsmode: local
+instance_id: wand-video-2
