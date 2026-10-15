@@ -11,6 +11,7 @@ pub mod fill;
 pub mod kernels;
 pub mod lanes;
 pub mod math;
+pub mod pack;
 pub mod parallel;
 pub mod post;
 pub mod resolve;

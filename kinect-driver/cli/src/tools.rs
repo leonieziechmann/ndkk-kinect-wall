@@ -683,6 +683,7 @@ fn unwrap_costs(file: &str, frames: usize, cfg: &TofConfig) -> Result<(Vec<f32>,
     let mut src = Packets::open(file)?;
     let tables = src.tables();
     let mut dec = CpuDecoder::new(cfg.clone()).map_err(err)?;
+    dec.record_costs(true);
     let mut out = TofOutput::new();
     let e = &cfg.ext;
     let c = (e.noise_coeff[0] + e.noise_coeff[1] + e.noise_coeff[2]) / 3.0;
@@ -708,9 +709,9 @@ fn unwrap_costs(file: &str, frames: usize, cfg: &TofConfig) -> Result<(Vec<f32>,
             let s2 = (c / amp.max(1e-3)).powi(2);
             let q = s2 / (s2 + f2);
             if q >= 0.75 {
-                weak.push(info.e1);
+                weak.push(info.cost);
             } else if q <= 0.25 {
-                bright.push(info.e1);
+                bright.push(info.cost);
             }
         }
     }

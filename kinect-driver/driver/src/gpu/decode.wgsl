@@ -1,36 +1,35 @@
 // The time-of-flight decoding on the GPU: the same steps, constants and approximations as the
 // CPU decoder (tof/kernels.rs, tof/resolve.rs, tof/fill.rs), one invocation per pixel.
 //
-// The Rust side puts a prelude in front of this file: the image and plane constants and
+// The Rust side puts a prelude in front of this file: the image, plane and format constants and
 // `struct Params` (generated from the same values the CPU decoder uses).
 //
+// The values between the stages take 16 bits each, in the formats of tof/pack.rs (f16 or fixed
+// point; the CPU decoder stores the same), two to a 32-bit word.
+//
 // Buffers:
-//   raw  the nine phase sub-images as u32 words, then one row mask per image row (bit s = row
-//        of sub-image s arrived)
-//   tabs per-pixel tables (planes T_*) and the 11-to-16-bit lookup table
-//   fw   float work planes (F_*) and the push-pull pyramid
-//   iw   integer work planes (I_*)
-//   L    the level of a push-pull step
+//   raw   the nine phase sub-images as u32 words, then one row mask per image row (bit s = row
+//         of sub-image s arrived)
+//   tabs  per-pixel tables (planes T_*: m cos(p0) and m sin(p0) as a snorm pair per frequency,
+//         x and z as f32 bits) and the 11-to-16-bit lookup table (f32 bits)
+//   work  the work words (planes W_*) and the push-pull pyramid
+//   L     the level of a push-pull step
 
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> raw: array<u32>;
-@group(0) @binding(2) var<storage, read> tabs: array<f32>;
-@group(0) @binding(3) var<storage, read_write> fw: array<f32>;
-@group(0) @binding(4) var<storage, read_write> iw: array<u32>;
+@group(0) @binding(2) var<storage, read> tabs: array<u32>;
+@group(0) @binding(3) var<storage, read_write> work: array<u32>;
 
+// a push-pull level and its parent: (vw, wt) as f16 pairs, the filled values as f32 bits
 struct Level {
     w: u32,
     h: u32,
     pw: u32,
     ph: u32,
-    vw: u32,
-    wt: u32,
+    vwt: u32,
     filled: u32,
-    pvw: u32,
-    pwt: u32,
+    pvwt: u32,
     pfilled: u32,
-    src_v: u32,
-    src_w: u32,
 }
 @group(1) @binding(0) var<uniform> L: Level;
 
@@ -38,11 +37,47 @@ const PI: f32 = 3.14159265;
 const TAU: f32 = 6.28318531;
 const BIG: f32 = 3.0e38;
 
-fn fget(p: u32, i: u32) -> f32 { return fw[p * N + i]; }
-fn fset(p: u32, i: u32, v: f32) { fw[p * N + i] = v; }
-fn iget(p: u32, i: u32) -> u32 { return iw[p * N + i]; }
-fn iset(p: u32, i: u32, v: u32) { iw[p * N + i] = v; }
-fn tget(p: u32, i: u32) -> f32 { return tabs[p * N + i]; }
+fn wget(p: u32, i: u32) -> u32 { return work[p * N + i]; }
+fn wset(p: u32, i: u32, v: u32) { work[p * N + i] = v; }
+fn tget(p: u32, i: u32) -> f32 { return bitcast<f32>(tabs[p * N + i]); }
+
+// ---- the 16-bit formats (tof/pack.rs) ---------------------------------------------------------
+
+// NaN as 0
+fn sane(v: f32) -> f32 { return select(0.0, v, v == v); }
+// two halves into a word
+fn pair(lo: u32, hi: u32) -> u32 { return (lo & 0xffffu) | (hi << 16u); }
+// t rounded to the nearest integer (ties to even), the low 16 bits of its two's complement
+fn q16(t: f32) -> u32 { return bitcast<u32>(i32(round(t))) & 0xffffu; }
+// binary16 of v * scale (clamped to the finite range), and back (`inv` = 1 / scale)
+fn f16_of(v: f32, scale: f32) -> u32 {
+    return pack2x16float(vec2<f32>(clamp(sane(v * scale), -F16_MAX, F16_MAX), 0.0)) & 0xffffu;
+}
+fn f16_val(bits: u32, inv: f32) -> f32 { return unpack2x16float(bits & 0xffffu).x * inv; }
+fn unorm_of(v: f32) -> u32 { return q16(clamp(sane(v), 0.0, 1.0) * 65535.0); }
+fn unorm_val(bits: u32) -> f32 { return f32(bits & 0xffffu) * INV_65535; }
+fn snorm_of(v: f32) -> u32 { return q16(clamp(sane(v), -1.0, 1.0) * 32767.0); }
+fn snorm_val(bits: u32) -> f32 { return max(f32(bitcast<i32>(bits << 16u) >> 16u) * INV_32767, -1.0); }
+fn frac_of(u: f32) -> u32 { return q16(clamp((sane(u) + FRAC_OFFSET) * INV_FRAC_SPAN, 0.0, 1.0) * 65535.0); }
+fn frac_val(bits: u32) -> f32 { return f32(bits & 0xffffu) * INV_65535 * FRAC_SPAN - FRAC_OFFSET; }
+fn mm_of(d: f32) -> u32 { return q16(clamp(sane(d) * 2.0, 0.0, 65535.0)); }
+fn mm_val(bits: u32) -> f32 { return f32(bits & 0xffffu) * 0.5; }
+
+// stage 1 values of frequency k at pixel i: (a, b), (a, b) / amplitude, amplitude
+fn ab_at(k: u32, i: u32) -> vec2<f32> { return unpack2x16float(wget(W_AB + k, i)) * AB_INV; }
+fn dir_at(k: u32, i: u32) -> vec2<f32> {
+    let w = wget(W_DIR + k, i);
+    return vec2<f32>(snorm_val(w), snorm_val(w >> 16u));
+}
+fn amp_at(k: u32, i: u32) -> f32 {
+    if (k == 0u) { return f16_val(wget(W_N01, i), AMP_INV); }
+    if (k == 1u) { return f16_val(wget(W_N01, i) >> 16u, AMP_INV); }
+    return f16_val(wget(W_IRN, i) >> 16u, AMP_INV);
+}
+// the small word: usable bits 0..2, bilateral edge test 3, saturation bits 4..6, kind 8..15;
+// the anchor weight in the high half
+fn edge_ok_at(i: u32) -> bool { return ((wget(W_SMALL, i) >> 3u) & 1u) != 0u; }
+fn anchor_at(i: u32) -> f32 { return unorm_val(wget(W_SMALL, i) >> 16u); }
 
 // ---- math: the CPU decoder's approximations (tof/math.rs) -----------------------------------
 
@@ -169,6 +204,20 @@ fn code_at(s: u32, y: u32, x: u32) -> u32 {
     return v & 2047u;
 }
 
+// the stage 1 values of frequency k (the amplitude is stored with the others, see stage1)
+fn store_s1(k: u32, i: u32, av: f32, bv: f32, nn: f32) {
+    wset(W_AB + k, i, pair(f16_of(av, AB_SCALE), f16_of(bv, AB_SCALE)));
+    var inv = 0.0;
+    if (nn > 0.0) { inv = 1.0 / max(nn, 1e-30); }
+    wset(W_DIR + k, i, pair(snorm_of(av * inv), snorm_of(bv * inv)));
+}
+
+// the amplitudes and the infrared (two words)
+fn store_amps(i: u32, n0: f32, n1: f32, n2: f32, ir: f32) {
+    wset(W_N01, i, pair(f16_of(n0, AMP_SCALE), f16_of(n1, AMP_SCALE)));
+    wset(W_IRN, i, pair(f16_of(ir, IR_SCALE), f16_of(n2, AMP_SCALE)));
+}
+
 @compute @workgroup_size(16, 8, 1)
 fn stage1(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x;
@@ -182,11 +231,13 @@ fn stage1(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (((mask >> s) & 1u) != 0u) {
             var c = 0u;
             if (x != 0u && x != W - 1u) { c = code_at(s, y, x); }
-            val = tabs[T_LUT + c];
+            val = bitcast<f32>(tabs[T_LUT + c]);
         }
         v[s] = val;
     }
-    let valid = tget(T_VALID, i);
+    var valid = 0.0;
+    if (tget(T_ZT, i) > 0.0) { valid = 1.0; }
+    var amp: array<f32, 3>;
     if (P.mode == 0u) {
         // compat (libfreenect2): a saturated sample zeroes its frequency, white infrared
         var ir_acc = 0.0;
@@ -195,8 +246,9 @@ fn stage1(@builtin(global_invocation_id) gid: vec3<u32>) {
             let v1 = v[3u * k + 1u];
             let v2 = v[3u * k + 2u];
             let fok = ((mask >> (3u * k)) & 7u) == 7u;
-            let mc = tget(T_MC + k, i);
-            let ms = tget(T_MS + k, i);
+            let mcs = tabs[(T_MCS + k) * N + i];
+            let mc = snorm_val(mcs) * TABLE_RANGE;
+            let ms = snorm_val(mcs >> 16u) * TABLE_RANGE;
             let c = v0 * P.cos_t0 + v1 * P.cos_t1 + v2 * P.cos_t2;
             let s = v0 * P.sin_t0 + v1 * P.sin_t1 + v2 * P.sin_t2;
             var vk = 0.0;
@@ -209,18 +261,13 @@ fn stage1(@builtin(global_invocation_id) gid: vec3<u32>) {
                 av = 0.0;
                 bv = 0.0;
             }
-            fset(F_A + k, i, av);
-            fset(F_B + k, i, bv);
-            fset(F_N + k, i, nn);
-            var inv = 0.0;
-            if (nn > 0.0) { inv = 1.0 / max(nn, 1e-30); }
-            fset(F_NA + k, i, av * inv);
-            fset(F_NB + k, i, bv * inv);
+            store_s1(k, i, av, bv, nn);
+            amp[k] = nn;
             if (sat) { ir_acc += 65535.0; } else { ir_acc += nn; }
         }
-        fset(F_IR, i, min(ir_acc * P.ir_scale, 65535.0));
-        iset(I_USABLE, i, 0u);
-        iset(I_FLAGS, i, 0u);
+        store_amps(i, amp[0], amp[1], amp[2], min(ir_acc * P.ir_scale, 65535.0));
+        wset(W_SMALL, i, 0u);
+        wset(W_FLAGS, i, 0u);
         return;
     }
     // extended: one saturated or lost sample is rebuilt from the other two, HDR infrared
@@ -238,8 +285,9 @@ fn stage1(@builtin(global_invocation_id) gid: vec3<u32>) {
         let m2 = ((mask >> (3u * k + 2u)) & 1u) == 0u;
         let nmiss = u32(m0) + u32(m1) + u32(m2);
         let ok = nmiss == 0u || (nmiss == 1u && P.repair_lost != 0u);
-        let mc = tget(T_MC + k, i);
-        let ms = tget(T_MS + k, i);
+        let mcs = tabs[(T_MCS + k) * N + i];
+        let mc = snorm_val(mcs) * TABLE_RANGE;
+        let ms = snorm_val(mcs >> 16u) * TABLE_RANGE;
         let st0 = x0 == SATURATED || (P.full_scale != 0u && abs(x0) >= FULL_SCALE);
         let st1 = x1 == SATURATED || (P.full_scale != 0u && abs(x1) >= FULL_SCALE);
         let st2 = x2 == SATURATED || (P.full_scale != 0u && abs(x2) >= FULL_SCALE);
@@ -276,13 +324,8 @@ fn stage1(@builtin(global_invocation_id) gid: vec3<u32>) {
             bv = -(ms * c + mc * s);
         }
         let nn = sqrt(av * av + bv * bv);
-        fset(F_A + k, i, av);
-        fset(F_B + k, i, bv);
-        fset(F_N + k, i, nn);
-        var inv = 0.0;
-        if (nn > 0.0) { inv = 1.0 / max(nn, 1e-30); }
-        fset(F_NA + k, i, av * inv);
-        fset(F_NB + k, i, bv * inv);
+        store_s1(k, i, av, bv, nn);
+        amp[k] = nn;
         var w = 0.0;
         if (good) {
             w = 1.0;
@@ -299,9 +342,9 @@ fn stage1(@builtin(global_invocation_id) gid: vec3<u32>) {
     let clipped = w_acc <= 0.0 && (fl & FL_SATURATED_ANY) != 0u;
     if (lost) { fl |= FL_DATA_LOST; }
     if (clipped) { fl |= FL_IR_FILLED; }
-    fset(F_IR, i, ir);
-    iset(I_USABLE, i, usable);
-    iset(I_FLAGS, i, fl);
+    store_amps(i, amp[0], amp[1], amp[2], ir);
+    wset(W_SMALL, i, usable);
+    wset(W_FLAGS, i, fl);
 }
 
 // ---- stage 2: bilateral filter, unwrapping ----------------------------------------------
@@ -309,12 +352,11 @@ fn stage1(@builtin(global_invocation_id) gid: vec3<u32>) {
 // libfreenect2's joint bilateral filter of frequency k at (x, y): (a, b, edge ok)
 fn bilateral(x: u32, y: u32, k: u32, ext: bool) -> vec3<f32> {
     let i = y * W + x;
-    let a_c = fget(F_A + k, i);
-    let b_c = fget(F_B + k, i);
+    let ab_c = ab_at(k, i);
     if (P.bilateral == 0u || y < 1u || y > H - 2u || x < 1u || x > W - 2u) {
-        return vec3<f32>(a_c, b_c, 1.0);
+        return vec3<f32>(ab_c.x, ab_c.y, 1.0);
     }
-    let nn = fget(F_N + k, i);
+    let nn = amp_at(k, i);
     let c0 = nn * nn < P.jb_threshold;
     var thr = P.jb_threshold;
     var ex = P.jb_exp;
@@ -322,8 +364,7 @@ fn bilateral(x: u32, y: u32, k: u32, ext: bool) -> vec3<f32> {
         thr = 0.0;
         ex = 0.0;
     }
-    let sna = fget(F_NA + k, i);
-    let snb = fget(F_NB + k, i);
+    let sdir = dir_at(k, i);
     var wsum = 0.0;
     var wa = 0.0;
     var wb = 0.0;
@@ -334,15 +375,17 @@ fn bilateral(x: u32, y: u32, k: u32, ext: bool) -> vec3<f32> {
             let g = gauss(j);
             j++;
             let o = (y + dy - 1u) * W + (x + dx - 1u);
-            let on = fget(F_N + k, o);
+            let on = amp_at(k, o);
             var c1 = on * on < thr;
             if (ext) { c1 = c1 || on <= 0.0; }
-            let dot = sna * fget(F_NA + k, o) + snb * fget(F_NB + k, o);
+            let d = dir_at(k, o);
+            let dot = sdir.x * d.x + sdir.y * d.y;
             let dist = 0.5 * (1.0 - dot);
             var w = 0.0;
             if (!c1) { w = g * exp_(ex * dist); }
-            wa += w * fget(F_A + k, o);
-            wb += w * fget(F_B + k, o);
+            let ab = ab_at(k, o);
+            wa += w * ab.x;
+            wb += w * ab.y;
             wsum += w;
             if (!c1) { dacc += dist; }
         }
@@ -372,10 +415,11 @@ fn weak_boost(x: u32, y: u32, k: u32, af: f32, bf: f32) -> vec3<f32> {
         let yy = row_clamped(y, dy - 2);
         for (var dx = 0u; dx < 5u; dx++) {
             let o = yy * W + x + dx - 2u;
-            let on = fget(F_N + k, o);
+            let on = amp_at(k, o);
             if (on > 0.0) {
-                sa += fget(F_A + k, o);
-                sb += fget(F_B + k, o);
+                let ab = ab_at(k, o);
+                sa += ab.x;
+                sb += ab.y;
                 sm += on;
                 cnt += 1.0;
             }
@@ -383,7 +427,7 @@ fn weak_boost(x: u32, y: u32, k: u32, af: f32, bf: f32) -> vec3<f32> {
     }
     let thr = P.weak_threshold / P.ab_multiplier;
     let amp = sqrt(af * af + bf * bf);
-    let self_ok = fget(F_N + k, y * W + x) > 0.0;
+    let self_ok = amp_at(k, y * W + x) > 0.0;
     let weak = amp < thr;
     let in_phase = sqrt(sa * sa + sb * sb) > 0.8 * sm;
     let take = self_ok && weak && in_phase && cnt >= 12.0;
@@ -479,14 +523,13 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
         var pf = 0.0;
         if (strong) { pf = t10; }
         if (pf > 0.0) { pf += P.phase_offset; }
-        fset(F_S2 + 0u, i, depth_from_phase(pf, xt, zt));
-        fset(F_S2 + 1u, i, ir_sum);
-        iset(I_EDGE, i, u32(edge));
+        wset(W_U12, i, pair(mm_of(depth_from_phase(pf, xt, zt)), f16_of(ir_sum, IRSUM_SCALE)));
+        wset(W_SMALL, i, u32(edge) << 3u);
         return;
     }
     // extended: maximum-likelihood unwrapping over the whole unambiguous range
-    let usable = iget(I_USABLE, i);
-    var fl = iget(I_FLAGS, i);
+    let usable = wget(W_SMALL, i) & 7u;
+    var fl = wget(W_FLAGS, i);
     var c: array<f32, 3>;
     var w: array<f32, 3>;
     var ir_sum = 0.0;
@@ -638,35 +681,39 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (multi) { conf = post * cons; }
     var anchor = 0.0;
     if (multi && conf >= ANCHOR_CONFIDENCE) { anchor = conf; }
-    fset(F_S2 + S2_U1, i, ou1);
-    fset(F_S2 + S2_U2, i, ou2);
-    fset(F_S2 + S2_E1, i, e1);
-    fset(F_S2 + S2_E2, i, e2);
-    fset(F_S2 + S2_CONF, i, conf);
-    fset(F_S2 + S2_CSINGLE, i, c_ref);
-    fset(F_S2 + S2_IR_SUM, i, ir_sum);
-    fset(F_S2 + S2_ANCHOR, i, anchor);
     var kind = KIND_NONE;
     if (multi) {
         kind = KIND_MULTI;
         if (pen2 > 0.0) { kind |= KIND_SECOND_IMPLAUSIBLE; }
     } else if (single) { kind = KIND_SINGLE | (r_idx << 4u); }
-    iset(I_KIND, i, kind);
-    iset(I_EDGE, i, u32(edge));
-    iset(I_SAT, i, fl & FL_SATURATED_ANY);
+    wset(W_U12, i, pair(frac_of(ou1), frac_of(ou2)));
+    wset(W_GAPC, i, pair(f16_of(max(e2 - e1, 0.0), GAP_SCALE), unorm_of(conf)));
+    wset(W_CSIR, i, pair(unorm_of(c_ref), f16_of(ir_sum, IRSUM_SCALE)));
+    let small = usable | (u32(edge) << 3u) | ((fl & FL_SATURATED_ANY) << 4u) | (kind << 8u);
+    wset(W_SMALL, i, pair(small, unorm_of(anchor)));
     if (boosted) { fl |= FL_WEAK_BOOSTED; }
     if (nvalid == 0.0) { fl |= FL_NO_SIGNAL; }
     if (pen_at_min > 0.0 && nvalid >= 2.0) { fl |= FL_PLAUSIBILITY; }
     if (multipath) { fl |= FL_MULTIPATH; }
-    iset(I_FLAGS, i, fl);
+    wset(W_FLAGS, i, fl);
 }
 
 // ---- stage 3: edge filter -----------------------------------------------------------------
 
-// libfreenect2's flying-pixel test at (x, y) on the depth plane `dp` with the amplitude sums `sp`
-fn is_flying(x: u32, y: u32, dp: u32, sp: u32) -> bool {
-    let d = fget(dp, y * W + x);
-    let s = fget(sp, y * W + x);
+// the depth and the amplitude sum at pixel o: compat after stage 2, extended after the resolver
+fn depth_at(o: u32, ext: bool) -> f32 {
+    if (ext) { return mm_val(wget(W_RES, o)); }
+    return mm_val(wget(W_U12, o));
+}
+fn irsum_at(o: u32, ext: bool) -> f32 {
+    if (ext) { return f16_val(wget(W_CSIR, o) >> 16u, IRSUM_INV); }
+    return f16_val(wget(W_U12, o) >> 16u, IRSUM_INV);
+}
+
+// libfreenect2's flying-pixel test at (x, y)
+fn is_flying(x: u32, y: u32, ext: bool) -> bool {
+    let d = depth_at(y * W + x, ext);
+    let s = irsum_at(y * W + x, ext);
     var acc = s;
     var sq = s * s;
     var mn = d;
@@ -686,10 +733,10 @@ fn is_flying(x: u32, y: u32, dp: u32, sp: u32) -> bool {
             default: { dx = 2u; dy = 2u; }
         }
         let o = (y + dy - 1u) * W + x + dx - 1u;
-        let sn = fget(sp, o);
+        let sn = irsum_at(o, ext);
         acc += sn;
         sq += sn * sn;
-        let on = fget(dp, o);
+        let on = depth_at(o, ext);
         if (on > 0.0) {
             mn = min(mn, on);
             mx = max(mx, on);
@@ -712,19 +759,18 @@ fn stage3_compat(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = gid.y;
     if (x >= W || y >= H) { return; }
     let i = y * W + x;
-    let v = fget(F_S2 + 0u, i);
+    let v = depth_at(i, false);
     var out = v;
     if (P.edge_enabled != 0u) {
         let in_range = v >= P.min_depth && v <= P.max_depth;
         if (y < 1u || y > H - 2u || x < 1u || x > W - 2u) {
             out = select(0.0, v, in_range);
         } else {
-            let flying = is_flying(x, y, F_S2 + 0u, F_S2 + 1u);
-            out = select(0.0, v, in_range && !flying && iget(I_EDGE, i) != 0u);
+            let flying = is_flying(x, y, false);
+            out = select(0.0, v, in_range && !flying && edge_ok_at(i));
         }
     }
-    fset(F_DEPTH, i, out);
-    fset(F_CONF, i, select(0.0, 1.0, out > 0.0));
+    wset(W_OUT, i, pair(mm_of(out), unorm_of(select(0.0, 1.0, out > 0.0))));
 }
 
 // ---- stage 3a (extended): the neighbors decide -----------------------------------------------
@@ -742,19 +788,21 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = y * W + x;
     let xt = tget(T_XT, i);
     let zt = tget(T_ZT, i);
-    let u1 = fget(F_S2 + S2_U1, i);
-    let k = iget(I_KIND, i);
+    let u12 = wget(W_U12, i);
+    let u1 = frac_val(u12);
+    let small = wget(W_SMALL, i);
+    let k = (small >> 8u) & 255u;
     let base = k & 15u;
-    var fl = iget(I_FLAGS, i);
+    let gapc = wget(W_GAPC, i);
+    let c_in = unorm_val(gapc >> 16u);
+    var fl = wget(W_FLAGS, i);
     var d_out = 0.0;
-    var c_out = 0.0;
     if (P.spatial == 0u) {
         // no neighbors: multi-frequency results as they are, single ones dropped
         var cv = 0.0;
-        if (base == KIND_MULTI) { cv = fget(F_S2 + S2_CONF, i); }
+        if (base == KIND_MULTI) { cv = c_in; }
         if (cv > 0.0) { d_out = depth_of_u(u1, xt, zt); }
-        fset(F_DRES, i, d_out);
-        fset(F_CRES, i, cv);
+        wset(W_RES, i, pair(mm_of(d_out), unorm_of(cv)));
         return;
     }
     let r = P.radius;
@@ -763,14 +811,13 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x0 = u32(max(i32(x) - i32(r), 0));
     let x1 = min(x + r, W - 1u);
     if (base == KIND_MULTI) {
-        let u2 = fget(F_S2 + S2_U2, i);
-        let c = fget(F_S2 + S2_CONF, i);
-        let gap = fget(F_S2 + S2_E2, i) - fget(F_S2 + S2_E1, i);
+        let u2 = frac_val(u12 >> 16u);
+        let c = c_in;
+        let gap = f16_val(gapc, GAP_INV);
         // sure; or mixing several echoes (wrong, not ambiguous: the neighbors neither confirm
         // nor replace its distance)
         if (c >= SURE_CONFIDENCE || (gap >= 20.0 && c >= CONFIRMED_CONFIDENCE) || (fl & FL_MULTIPATH) != 0u) {
-            fset(F_DRES, i, depth_of_u(u1, xt, zt));
-            fset(F_CRES, i, c);
+            wset(W_RES, i, pair(mm_of(depth_of_u(u1, xt, zt)), unorm_of(c)));
             return;
         }
         let h = bandwidth(u1);
@@ -781,8 +828,8 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var yy = y0; yy <= y1; yy++) {
             for (var xx = x0; xx <= x1; xx++) {
                 let o = yy * W + xx;
-                let uj = fget(F_S2 + S2_U1, o);
-                let aj = fget(F_S2 + S2_ANCHOR, o);
+                let uj = frac_val(wget(W_U12, o));
+                let aj = anchor_at(o);
                 let dd1 = uj - u1;
                 let dd2 = uj - u2;
                 total += aj;
@@ -791,7 +838,7 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
             }
         }
         // the pixel itself does not vote
-        let own = fget(F_S2 + S2_ANCHOR, i);
+        let own = unorm_val(small >> 16u);
         let d = (u2 - u1) / h;
         s1 -= own;
         s2 -= own * max(1.0 - d * d, 0.0);
@@ -806,15 +853,14 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
             conf = max(c, min(0.55 + 0.4 * s1 / total, 0.95));
             fl |= FL_RESOLVED;
         }
-        fset(F_DRES, i, depth_of_u(u, xt, zt));
-        fset(F_CRES, i, conf);
-        iset(I_FLAGS, i, fl);
+        wset(W_RES, i, pair(mm_of(depth_of_u(u, xt, zt)), unorm_of(conf)));
+        wset(W_FLAGS, i, fl);
         return;
     }
     if (base == KIND_SINGLE) {
         let fi = (k >> 4u) & 3u;
         let n = nf(fi);
-        let cref = fget(F_S2 + S2_CSINGLE, i);
+        let cref = unorm_val(wget(W_CSIR, i));
         fl |= FL_SINGLE_FREQUENCY;
         let saturated = (fl & FL_SATURATED_ANY) != 0u;
         var votes: array<f32, 16>;
@@ -823,11 +869,12 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var yy = y0; yy <= y1; yy++) {
             for (var xx = x0; xx <= x1; xx++) {
                 let o = yy * W + xx;
-                let aj = fget(F_S2 + S2_ANCHOR, o);
+                let so = wget(W_SMALL, o);
+                let aj = unorm_val(so >> 16u);
                 if (aj <= 0.0) { continue; }
-                let uj = fget(F_S2 + S2_U1, o);
+                let uj = frac_val(wget(W_U12, o));
                 var wj = aj;
-                if (saturated && iget(I_SAT, o) != 0u) { wj = 10.0 * aj; }
+                if (saturated && ((so >> 4u) & 7u) != 0u) { wj = 10.0 * aj; }
                 let m = floor(n * uj - cref + 0.5);
                 if (m >= 0.0 && m < 16.0) {
                     votes[u32(m)] += wj;
@@ -845,7 +892,7 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         var u = u1;
         var conf = 0.0;
-        let e = fget(F_EXP, i);
+        let e = bitcast<f32>(work[EXP_WORD + i]);
         if (total >= 1.5 && best_v > 0.6 * total) {
             fl |= FL_RESOLVED;
             u = (cref + f32(best_m)) / n;
@@ -861,13 +908,11 @@ fn resolve(@builtin(global_invocation_id) gid: vec3<u32>) {
             conf = 0.55;
         }
         if (conf > 0.0) { d_out = depth_of_u(u, xt, zt); }
-        fset(F_DRES, i, d_out);
-        fset(F_CRES, i, conf);
-        iset(I_FLAGS, i, fl);
+        wset(W_RES, i, pair(mm_of(d_out), unorm_of(conf)));
+        wset(W_FLAGS, i, fl);
         return;
     }
-    fset(F_DRES, i, 0.0);
-    fset(F_CRES, i, 0.0);
+    wset(W_RES, i, 0u);
 }
 
 // ---- stage 3b (extended): edge and speckle filter, range, confidence ---------------------------
@@ -878,10 +923,11 @@ fn finish(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = gid.y;
     if (x >= W || y >= H) { return; }
     let i = y * W + x;
-    let v = fget(F_DRES, i);
+    let res = wget(W_RES, i);
+    let v = mm_val(res);
     var fly = false;
     if (P.edge_enabled != 0u && y >= 1u && y <= H - 2u && x >= 1u && x <= W - 2u) {
-        fly = v > 0.0 && (is_flying(x, y, F_DRES, F_S2 + S2_IR_SUM) || iget(I_EDGE, i) == 0u);
+        fly = v > 0.0 && (is_flying(x, y, true) || !edge_ok_at(i));
     }
     var agree = 24.0;
     if (P.speckle != 0u && y >= 2u && y <= H - 3u && x >= 2u && x <= W - 3u) {
@@ -890,48 +936,38 @@ fn finish(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var dy = 0u; dy < 5u; dy++) {
             for (var dx = 0u; dx < 5u; dx++) {
                 if (dy == 2u && dx == 2u) { continue; }
-                let o = fget(F_DRES, (y + dy - 2u) * W + x + dx - 2u);
+                let o = mm_val(wget(W_RES, (y + dy - 2u) * W + x + dx - 2u));
                 if (o > 0.0 && abs(o - v) < tol) { agree += 1.0; }
             }
         }
     }
     let in_range = v >= P.min_depth && v <= P.max_depth;
-    let c = fget(F_CRES, i);
+    let c = unorm_val(res >> 16u);
     let confident = c >= P.out_min_conf;
     let speckle = P.speckle != 0u && agree < P.speckle_min;
     let keep = v > 0.0 && in_range && !fly && confident && !speckle;
-    fset(F_DEPTH, i, select(0.0, v, keep));
-    fset(F_CONF, i, select(0.0, c, keep));
+    wset(W_OUT, i, pair(mm_of(select(0.0, v, keep)), unorm_of(select(0.0, c, keep))));
     let has = v > 0.0;
-    var fl = iget(I_FLAGS, i);
+    var fl = wget(W_FLAGS, i);
     if (has && !in_range) { fl |= FL_OUT_OF_RANGE; }
     if (has && in_range && fly) { fl |= FL_EDGE; }
     if (has && in_range && !fly && !confident) { fl |= FL_LOW_CONFIDENCE; }
     if (has && in_range && !fly && confident && speckle) { fl |= FL_SPECKLE; }
-    iset(I_FLAGS, i, fl);
+    wset(W_FLAGS, i, fl);
 }
 
 // ---- push-pull (tof/fill.rs): the expectation of u for the resolver ------------------------------
 
-fn finite(v: f32) -> bool {
-    return abs(v) <= 3.4e38;
-}
-
-// level 0 from two planes: weights clamped to 0..1, values premultiplied
+// level 0 from the resolver's inputs: u1 weighted by the anchors (weights 0..1, premultiplied)
 @compute @workgroup_size(16, 8, 1)
 fn pp_init(@builtin(global_invocation_id) gid: vec3<u32>) {
     let x = gid.x;
     let y = gid.y;
     if (x >= L.w || y >= L.h) { return; }
     let i = y * L.w + x;
-    let v = fget(L.src_v, i);
-    let w0 = fget(L.src_w, i);
-    var w = 0.0;
-    if (finite(w0)) { w = clamp(w0, 0.0, 1.0); }
-    var vw = 0.0;
-    if (finite(v)) { vw = v * w; }
-    fw[L.vw + i] = vw;
-    fw[L.wt + i] = w;
+    let v = frac_val(wget(W_U12, i));
+    let w = clamp(anchor_at(i), 0.0, 1.0);
+    work[L.vwt + i] = pack2x16float(vec2<f32>(v * w, w));
 }
 
 // one level down: sums of 2 x 2, the weight saturating at 1
@@ -948,8 +984,9 @@ fn pp_down(@builtin(global_invocation_id) gid: vec3<u32>) {
         for (var dx = 0u; dx < 2u; dx++) {
             let sx = 2u * x + dx;
             if (sx >= L.pw) { continue; }
-            v += fw[L.pvw + sy * L.pw + sx];
-            t += fw[L.pwt + sy * L.pw + sx];
+            let p = unpack2x16float(work[L.pvwt + sy * L.pw + sx]);
+            v += p.x;
+            t += p.y;
         }
     }
     if (t > 0.0) {
@@ -957,8 +994,7 @@ fn pp_down(@builtin(global_invocation_id) gid: vec3<u32>) {
         v = v / t * c;
         t = c;
     }
-    fw[L.vw + y * L.w + x] = v;
-    fw[L.wt + y * L.w + x] = t;
+    work[L.vwt + y * L.w + x] = pack2x16float(vec2<f32>(v, t));
 }
 
 // the coarsest level
@@ -968,10 +1004,10 @@ fn pp_top(@builtin(global_invocation_id) gid: vec3<u32>) {
     let y = gid.y;
     if (x >= L.w || y >= L.h) { return; }
     let i = y * L.w + x;
-    let w = fw[L.wt + i];
+    let p = unpack2x16float(work[L.vwt + i]);
     var f = 0.0;
-    if (w > 0.0) { f = fw[L.vw + i] / w; }
-    fw[L.filled + i] = f;
+    if (p.y > 0.0) { f = p.x / p.y; }
+    work[L.filled + i] = bitcast<u32>(f);
 }
 
 // the upsampling taps of fill.rs: (first, second, weight of the second)
@@ -1000,13 +1036,14 @@ fn pp_up(@builtin(global_invocation_id) gid: vec3<u32>) {
     let xb = u32(tx.y);
     let ya = u32(ty.x);
     let yb = u32(ty.y);
-    let a0 = fw[L.pfilled + ya * L.pw + xa];
-    let a1 = fw[L.pfilled + ya * L.pw + xb];
-    let b0 = fw[L.pfilled + yb * L.pw + xa];
-    let b1 = fw[L.pfilled + yb * L.pw + xb];
+    let a0 = bitcast<f32>(work[L.pfilled + ya * L.pw + xa]);
+    let a1 = bitcast<f32>(work[L.pfilled + ya * L.pw + xb]);
+    let b0 = bitcast<f32>(work[L.pfilled + yb * L.pw + xa]);
+    let b1 = bitcast<f32>(work[L.pfilled + yb * L.pw + xb]);
     let up = a0 + (a1 - a0) * tx.z;
     let dn = b0 + (b1 - b0) * tx.z;
     let parent = up + (dn - up) * ty.z;
     let i = y * L.w + x;
-    fw[L.filled + i] = fw[L.vw + i] + (1.0 - fw[L.wt + i]) * parent;
+    let own = unpack2x16float(work[L.vwt + i]);
+    work[L.filled + i] = bitcast<u32>(own.x + (1.0 - own.y) * parent);
 }

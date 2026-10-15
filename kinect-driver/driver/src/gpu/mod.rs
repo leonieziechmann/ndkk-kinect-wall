@@ -4,9 +4,10 @@
 //! an application can hand in its own device with [`GpuDecoder::with_device`]).
 //!
 //! One frame: upload the raw packet (2.7 MB), about 30 dispatches, read depth, infrared,
-//! confidence and flags back (3.5 MB). Two steps that work on whole areas (the flood fill inside
-//! saturated areas, the infrared percentile) then run on the CPU, shared with the CPU decoder;
-//! they cost only where something saturated.
+//! confidence and flags back (2.6 MB). The values between the stages take 16 bits each, in the
+//! formats of `tof/pack.rs` (the CPU decoder stores the same), two to a 32-bit word. Two steps
+//! that work on whole areas (the flood fill inside saturated areas, the infrared percentile) then
+//! run on the CPU, shared with the CPU decoder; they cost only where something saturated.
 //!
 //! Nothing here may take the program down: wgpu's error callbacks are installed (they would
 //! panic by default), every call runs inside `catch`, and a lost device turns into errors that
@@ -24,6 +25,7 @@ use crate::tables::DeviceTables;
 use crate::tof::config::{TofConfig, TofMode};
 use crate::tof::cpu::{Prepared, edge_params, s1_params, s2_params, s3_params};
 use crate::tof::kernels::{ANCHOR_CONFIDENCE, FULL_SCALE, MULTIPATH_MARGIN, REBUILT_NOISE, TIE_BREAK, U_RANGE_MM, flags, kind};
+use crate::tof::pack::{self, Codec, formats};
 use crate::tof::resolve::{CONFIRMED_CONFIDENCE, SURE_CONFIDENCE};
 use crate::tof::post::PostScratch;
 use crate::tof::{CpuDecoder, TofOutput, TofTimings, post};
@@ -34,36 +36,41 @@ const ROW_WORDS: usize = crate::consts::ROW_BYTES / 4;
 const MASK_BASE: usize = PHASE_SUBIMAGES * SUB_WORDS;
 const RAW_WORDS: usize = MASK_BASE + HEIGHT;
 
-// float planes (`fw`): the first three are read back together
-const F_DEPTH: usize = 0;
-const F_CONF: usize = 1;
-const F_IR: usize = 2;
-const F_A: usize = 3;
-const F_B: usize = 6;
-const F_N: usize = 9;
-const F_NA: usize = 12;
-const F_NB: usize = 15;
-const F_S2: usize = 18;
-const F_EXP: usize = 26;
-const F_DRES: usize = 27;
-const F_CRES: usize = 28;
+// table planes (`tabs`, words), then the lookup table
+const T_MCS: usize = 0;
+const T_XT: usize = 3;
+const T_ZT: usize = 4;
+const T_ILLUM: usize = 5;
+const T_PLANES: usize = 6;
+
+// work planes (`work`, words; two 16-bit values each, low half first): the first three are read
+// back together
+/// depth ([`formats::DEPTH`]), confidence ([`formats::CONFIDENCE`])
+const W_OUT: usize = 0;
+/// infrared ([`formats::IR`]), amplitude of 120 MHz ([`formats::AMPLITUDE`])
+const W_IRN: usize = 1;
+/// flags (32 bits)
+const W_FLAGS: usize = 2;
+/// (a, b) per frequency ([`formats::AB`])
+const W_AB: usize = 3;
+/// (a, b) / amplitude per frequency ([`formats::DIRECTION`])
+const W_DIR: usize = 6;
+/// amplitudes of 80 and 16 MHz
+const W_N01: usize = 9;
+/// usable bits, bilateral edge test, saturation bits, kind; anchor weight
+const W_SMALL: usize = 10;
+/// u1, u2 ([`formats::U`]); compat: depth before the edge filter, amplitude sum
+const W_U12: usize = 11;
+/// cost gap ([`formats::GAP`]), confidence
+const W_GAPC: usize = 12;
+/// phase of the single frequency ([`formats::PHASE`]), amplitude sum ([`formats::AMPLITUDE_SUM`])
+const W_CSIR: usize = 13;
+/// depth and confidence after the resolver
+const W_RES: usize = 14;
 /// the push-pull pyramid starts after the planes
-const F_PLANES: usize = 29;
-// integer planes (`iw`)
-const I_USABLE: usize = 0;
-const I_FLAGS: usize = 1;
-const I_EDGE: usize = 2;
-const I_KIND: usize = 3;
-const I_SAT: usize = 4;
-const I_PLANES: usize = 5;
-// table planes (`tabs`), then the lookup table
-const T_MC: usize = 0;
-const T_MS: usize = 3;
-const T_VALID: usize = 6;
-const T_XT: usize = 7;
-const T_ZT: usize = 8;
-const T_ILLUM: usize = 9;
-const T_PLANES: usize = 10;
+const W_PLANES: usize = 15;
+/// planes read back
+const READ_BACK: usize = 3;
 
 const WG_X: u32 = 16;
 const WG_Y: u32 = 8;
@@ -182,45 +189,48 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("SUB_WORDS", SUB_WORDS),
         ("ROW_WORDS", ROW_WORDS),
         ("MASK_BASE", MASK_BASE),
-        ("T_MC", T_MC),
-        ("T_MS", T_MS),
-        ("T_VALID", T_VALID),
+        ("T_MCS", T_MCS),
         ("T_XT", T_XT),
         ("T_ZT", T_ZT),
         ("T_ILLUM", T_ILLUM),
         ("T_LUT", T_PLANES * N),
-        ("F_DEPTH", F_DEPTH),
-        ("F_CONF", F_CONF),
-        ("F_IR", F_IR),
-        ("F_A", F_A),
-        ("F_B", F_B),
-        ("F_N", F_N),
-        ("F_NA", F_NA),
-        ("F_NB", F_NB),
-        ("F_S2", F_S2),
-        ("F_EXP", F_EXP),
-        ("F_DRES", F_DRES),
-        ("F_CRES", F_CRES),
-        ("I_USABLE", I_USABLE),
-        ("I_FLAGS", I_FLAGS),
-        ("I_EDGE", I_EDGE),
-        ("I_KIND", I_KIND),
-        ("I_SAT", I_SAT),
+        ("W_OUT", W_OUT),
+        ("W_IRN", W_IRN),
+        ("W_FLAGS", W_FLAGS),
+        ("W_AB", W_AB),
+        ("W_DIR", W_DIR),
+        ("W_N01", W_N01),
+        ("W_SMALL", W_SMALL),
+        ("W_U12", W_U12),
+        ("W_GAPC", W_GAPC),
+        ("W_CSIR", W_CSIR),
+        ("W_RES", W_RES),
+        ("EXP_WORD", Pyramid::new().filled.first().copied().unwrap_or(0)),
     ] {
         s.push_str(&u(name, v));
     }
-    use crate::tof::resolve::plane;
+    // the formats of tof/pack.rs: scales of the f16 ones, the fixed-point constants
+    let scale = |c: Codec| if let Codec::F16 { scale } = c { scale } else { 1.0 };
+    let range = |c: Codec| if let Codec::Snorm { range } = c { range } else { 1.0 };
     for (name, v) in [
-        ("S2_U1", plane::U1),
-        ("S2_U2", plane::U2),
-        ("S2_E1", plane::E1),
-        ("S2_E2", plane::E2),
-        ("S2_CONF", plane::CONF),
-        ("S2_CSINGLE", plane::CSINGLE),
-        ("S2_IR_SUM", plane::IR_SUM),
-        ("S2_ANCHOR", plane::ANCHOR),
+        ("AB_SCALE", scale(formats::AB)),
+        ("AB_INV", 1.0 / scale(formats::AB)),
+        ("AMP_SCALE", scale(formats::AMPLITUDE)),
+        ("AMP_INV", 1.0 / scale(formats::AMPLITUDE)),
+        ("GAP_SCALE", scale(formats::GAP)),
+        ("GAP_INV", 1.0 / scale(formats::GAP)),
+        ("IRSUM_SCALE", scale(formats::AMPLITUDE_SUM)),
+        ("IRSUM_INV", 1.0 / scale(formats::AMPLITUDE_SUM)),
+        ("IR_SCALE", scale(formats::IR)),
+        ("TABLE_RANGE", range(formats::TABLE)),
+        ("INV_65535", pack::INV_65535),
+        ("INV_32767", pack::INV_32767),
+        ("FRAC_OFFSET", pack::FRACTION_OFFSET),
+        ("FRAC_SPAN", pack::FRACTION_SPAN),
+        ("INV_FRAC_SPAN", pack::INV_FRACTION_SPAN),
+        ("F16_MAX", pack::F16_MAX),
     ] {
-        s.push_str(&u(name, v));
+        s.push_str(&format!("const {name}: f32 = {};\n", f32c(v)));
     }
     for (name, v) in [
         ("KIND_NONE", u32::from(kind::NONE)),
@@ -285,13 +295,13 @@ struct Step {
     h: u32,
 }
 
-/// The levels of the pyramid (sizes and offsets in `fw`, in floats).
+/// The levels of the pyramid (sizes and offsets in `work`, in words): per level the (vw, wt)
+/// pairs and the filled values; level 0's filled values are the resolver's expectation.
 struct Pyramid {
     sizes: Vec<(usize, usize)>,
-    vw: Vec<usize>,
-    wt: Vec<usize>,
+    vwt: Vec<usize>,
     filled: Vec<usize>,
-    floats: usize,
+    words: usize,
 }
 
 impl Pyramid {
@@ -303,22 +313,15 @@ impl Pyramid {
             }
             sizes.push((w.div_ceil(2), h.div_ceil(2)));
         }
-        let mut at = F_PLANES * N;
-        let (mut vw, mut wt, mut filled) = (Vec::new(), Vec::new(), Vec::new());
-        for (l, (w, h)) in sizes.iter().enumerate() {
+        let mut at = W_PLANES * N;
+        let (mut vwt, mut filled) = (Vec::new(), Vec::new());
+        for (w, h) in &sizes {
             let n = w * h;
-            vw.push(at);
-            wt.push(at + n);
-            // level 0's result is the expectation plane
-            if l == 0 {
-                filled.push(F_EXP * N);
-                at += 2 * n;
-            } else {
-                filled.push(at + 2 * n);
-                at += 3 * n;
-            }
+            vwt.push(at);
+            filled.push(at + n);
+            at += 2 * n;
         }
-        Pyramid { sizes, vw, wt, filled, floats: at }
+        Pyramid { sizes, vwt, filled, words: at }
     }
 }
 
@@ -343,8 +346,7 @@ pub struct GpuDecoder {
     raw: wgpu::Buffer,
     tabs: wgpu::Buffer,
     staging: wgpu::Buffer,
-    fw: wgpu::Buffer,
-    iw: wgpu::Buffer,
+    work: wgpu::Buffer,
     group0: wgpu::BindGroup,
     /// group 1 for the stages that do not use it
     no_level: wgpu::BindGroup,
@@ -427,7 +429,7 @@ impl GpuDecoder {
         };
         let layout0 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("kinect-driver buffers"),
-            entries: &[uniform(0), storage(1, true), storage(2, true), storage(3, false), storage(4, false)],
+            entries: &[uniform(0), storage(1, true), storage(2, true), storage(3, false)],
         });
         let layout1 = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("kinect-driver level"), entries: &[uniform(0)] });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -457,9 +459,8 @@ impl GpuDecoder {
         let pyramid = Pyramid::new();
         let raw = buffer("kinect-driver raw", RAW_WORDS * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let tabs = buffer("kinect-driver tables", (T_PLANES * N + 2048) * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
-        let fw = buffer("kinect-driver floats", pyramid.floats * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
-        let iw = buffer("kinect-driver ints", I_PLANES * N * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
-        let staging = buffer("kinect-driver readback", 4 * N * 4, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
+        let work = buffer("kinect-driver work", pyramid.words * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
+        let staging = buffer("kinect-driver readback", READ_BACK * N * 4, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
         let group0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("kinect-driver buffers"),
             layout: &layout0,
@@ -467,11 +468,10 @@ impl GpuDecoder {
                 wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: raw.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: tabs.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: fw.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: iw.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: work.as_entire_binding() },
             ],
         });
-        let level_group = |vals: [usize; 12]| {
+        let level_group = |vals: [usize; 8]| {
             let bytes: Vec<u8> = vals.iter().flat_map(|v| (*v as u32).to_le_bytes()).collect();
             let b = buffer("kinect-driver level", bytes.len(), wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST);
             queue.write_buffer(&b, 0, &bytes);
@@ -481,40 +481,25 @@ impl GpuDecoder {
                 entries: &[wgpu::BindGroupEntry { binding: 0, resource: b.as_entire_binding() }],
             })
         };
-        let no_level = level_group([0; 12]);
+        let no_level = level_group([0; 8]);
         // push-pull of u1 weighted by the anchors (the resolver's expectation)
         let mut steps = Vec::new();
         let top = pyramid.sizes.len().saturating_sub(1);
         let size = |l: usize| pyramid.sizes.get(l).copied().unwrap_or((1, 1));
         let at = |v: &Vec<usize>, l: usize| v.get(l).copied().unwrap_or(0);
         let (w0, h0) = size(0);
-        steps.push(Step {
-            pipeline: P_PP_INIT,
-            group: level_group([w0, h0, 0, 0, at(&pyramid.vw, 0), at(&pyramid.wt, 0), 0, 0, 0, 0, F_S2 + crate::tof::resolve::plane::U1, F_S2 + crate::tof::resolve::plane::ANCHOR]),
-            w: w0 as u32,
-            h: h0 as u32,
-        });
+        steps.push(Step { pipeline: P_PP_INIT, group: level_group([w0, h0, 0, 0, at(&pyramid.vwt, 0), 0, 0, 0]), w: w0 as u32, h: h0 as u32 });
         for l in 1..=top {
             let ((w, h), (pw, ph)) = (size(l), size(l - 1));
-            steps.push(Step {
-                pipeline: P_PP_DOWN,
-                group: level_group([w, h, pw, ph, at(&pyramid.vw, l), at(&pyramid.wt, l), 0, at(&pyramid.vw, l - 1), at(&pyramid.wt, l - 1), 0, 0, 0]),
-                w: w as u32,
-                h: h as u32,
-            });
+            steps.push(Step { pipeline: P_PP_DOWN, group: level_group([w, h, pw, ph, at(&pyramid.vwt, l), 0, at(&pyramid.vwt, l - 1), 0]), w: w as u32, h: h as u32 });
         }
         let (tw, th) = size(top);
-        steps.push(Step {
-            pipeline: P_PP_TOP,
-            group: level_group([tw, th, 0, 0, at(&pyramid.vw, top), at(&pyramid.wt, top), at(&pyramid.filled, top), 0, 0, 0, 0, 0]),
-            w: tw as u32,
-            h: th as u32,
-        });
+        steps.push(Step { pipeline: P_PP_TOP, group: level_group([tw, th, 0, 0, at(&pyramid.vwt, top), at(&pyramid.filled, top), 0, 0]), w: tw as u32, h: th as u32 });
         for l in (0..top).rev() {
             let ((w, h), (pw, ph)) = (size(l), size(l + 1));
             steps.push(Step {
                 pipeline: P_PP_UP,
-                group: level_group([w, h, pw, ph, at(&pyramid.vw, l), at(&pyramid.wt, l), at(&pyramid.filled, l), 0, 0, at(&pyramid.filled, l + 1), 0, 0]),
+                group: level_group([w, h, pw, ph, at(&pyramid.vwt, l), at(&pyramid.filled, l), 0, at(&pyramid.filled, l + 1)]),
                 w: w as u32,
                 h: h as u32,
             });
@@ -535,8 +520,7 @@ impl GpuDecoder {
             raw,
             tabs,
             staging,
-            fw,
-            iw,
+            work,
             group0,
             no_level,
             steps,
@@ -574,7 +558,11 @@ impl GpuDecoder {
         if self.tables_id != Some(tables.id) {
             let prep = Prepared::new(tables, &self.cfg);
             let mut bytes = Vec::with_capacity((T_PLANES * N + 2048) * 4);
-            for plane in prep.mc.iter().chain(prep.ms.iter()).chain([&prep.valid, &prep.xt, &prep.zt, &prep.illum]) {
+            // per frequency (m cos(p0), m sin(p0)) as one word: the CPU decoder's 16-bit values
+            for (mc, ms) in prep.mc.iter().zip(&prep.ms) {
+                bytes.extend(mc.iter().zip(ms).flat_map(|(c, s)| (u32::from(*c) | (u32::from(*s) << 16)).to_le_bytes()));
+            }
+            for plane in [&prep.xt, &prep.zt, &prep.illum] {
                 bytes.extend(plane.iter().flat_map(|v| v.to_le_bytes()));
             }
             bytes.extend(prep.lut.iter().flat_map(|v| v.to_le_bytes()));
@@ -613,9 +601,7 @@ impl GpuDecoder {
                 dispatch(&mut pass, pl.get(P_FINISH), fx, fy);
             }
         }
-        let plane = (N * 4) as u64;
-        enc.copy_buffer_to_buffer(&self.fw, 0, &self.staging, 0, 3 * plane);
-        enc.copy_buffer_to_buffer(&self.iw, I_FLAGS as u64 * plane, &self.staging, 3 * plane, plane);
+        enc.copy_buffer_to_buffer(&self.work, 0, &self.staging, 0, (READ_BACK * N * 4) as u64);
         let submission = self.queue.submit([enc.finish()]);
         let slot = self.mapped.clone();
         *slot.lock().unwrap_or_else(PoisonError::into_inner) = None;
@@ -653,20 +639,22 @@ impl GpuDecoder {
         out.timestamp = packet.timestamp;
         {
             let view = self.staging.get_mapped_range(..).map_err(|e| gpu_err("reading back", e))?;
-            let floats = |p: usize, dst: &mut [f32]| {
-                if let Some(src) = view.get(p * N * 4..(p + 1) * N * 4) {
-                    for (d, c) in dst.iter_mut().zip(src.as_chunks::<4>().0) {
-                        *d = f32::from_le_bytes(*c);
-                    }
-                }
+            let words = |p: usize| {
+                let bytes = view.get(p * N * 4..(p + 1) * N * 4).unwrap_or(&[]);
+                bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c))
             };
-            floats(F_DEPTH, &mut out.depth);
-            floats(F_CONF, &mut out.confidence);
-            floats(F_IR, &mut out.ir);
-            if let Some(src) = view.get(3 * N * 4..4 * N * 4) {
-                for (d, c) in out.flags.iter_mut().zip(src.as_chunks::<4>().0) {
-                    *d = u32::from_le_bytes(*c);
-                }
+            let compat = self.cfg.mode == TofMode::Compat;
+            for ((d, c), w) in out.depth.iter_mut().zip(out.confidence.iter_mut()).zip(words(W_OUT)) {
+                *d = pack::unpack(formats::DEPTH, w as u16);
+                *c = pack::unpack(formats::CONFIDENCE, (w >> 16) as u16);
+            }
+            for (v, w) in out.ir.iter_mut().zip(words(W_IRN)) {
+                let ir = pack::unpack(formats::IR, w as u16);
+                // libfreenect2's white is 65535 (in f16 it would come back as 65536)
+                *v = if compat { ir.min(65535.0) } else { ir };
+            }
+            for (f, w) in out.flags.iter_mut().zip(words(W_FLAGS)) {
+                *f = w;
             }
         }
         self.staging.unmap();

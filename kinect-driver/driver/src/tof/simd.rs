@@ -1,7 +1,8 @@
 //! Runtime selection of the vector instruction set. The pixel kernels are plain Rust written so
 //! the compiler vectorizes them; [`multiversion!`] compiles each kernel twice on x86-64 (baseline
-//! SSE2 and AVX2 + FMA) and picks the AVX2 build when the CPU has it. On aarch64 (Apple silicon,
-//! Raspberry Pi) NEON is always there and the baseline build uses it.
+//! SSE2 and AVX2 + FMA + F16C) and picks the AVX2 build when the CPU has it (in practice every CPU
+//! with AVX2 has FMA and F16C too). On aarch64 (Apple silicon, Raspberry Pi) NEON is always there
+//! and the baseline build uses it.
 
 use std::sync::OnceLock;
 
@@ -12,7 +13,7 @@ pub enum SimdLevel {
     Scalar,
     /// x86-64 baseline (SSE2) or aarch64 NEON
     Baseline,
-    /// x86-64 with AVX2 and FMA
+    /// x86-64 with AVX2, FMA and F16C (f16 conversion of the packed planes)
     Avx2,
 }
 
@@ -44,7 +45,10 @@ pub fn detected() -> SimdLevel {
         }
         #[cfg(target_arch = "x86_64")]
         {
-            if std::arch::is_x86_feature_detected!("avx2") && std::arch::is_x86_feature_detected!("fma") {
+            if std::arch::is_x86_feature_detected!("avx2")
+                && std::arch::is_x86_feature_detected!("fma")
+                && std::arch::is_x86_feature_detected!("f16c")
+            {
                 return SimdLevel::Avx2;
             }
         }
@@ -59,8 +63,8 @@ pub fn use_avx2() -> bool {
 }
 
 /// Defines `fn name(args) -> ret { body }` compiled twice on x86-64: once for the baseline and
-/// once with AVX2 + FMA enabled; calls dispatch on the CPU detected at run time. Helpers used
-/// in the body must be `#[inline(always)]` so they are compiled into each version. The body
+/// once with AVX2 + FMA + F16C enabled; calls dispatch on the CPU detected at run time. Helpers
+/// used in the body must be `#[inline(always)]` so they are compiled into each version. The body
 /// sees `Isa`, the [`crate::tof::lanes::Isa`] of its version.
 #[macro_export]
 #[doc(hidden)]
@@ -70,7 +74,7 @@ macro_rules! multiversion {
         $vis fn $name($($arg: $ty),*) $(-> $ret)? {
             #[cfg(target_arch = "x86_64")]
             {
-                #[target_feature(enable = "avx2,fma")]
+                #[target_feature(enable = "avx2,fma,f16c")]
                 #[allow(clippy::too_many_arguments)]
                 fn avx2($($arg: $ty),*) $(-> $ret)? {
                     #[allow(dead_code)]
@@ -78,7 +82,7 @@ macro_rules! multiversion {
                     $body
                 }
                 if $crate::tof::simd::use_avx2() {
-                    // SAFETY: the CPU supports AVX2 and FMA (checked at run time just above)
+                    // SAFETY: the CPU supports AVX2, FMA and F16C (checked at run time just above)
                     #[allow(unsafe_code)]
                     return unsafe { avx2($($arg),*) };
                 }

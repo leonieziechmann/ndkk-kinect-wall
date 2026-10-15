@@ -254,6 +254,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     cfg_e.apply(&tof)?;
     let mut dc = CpuDecoder::new(TofConfig::compat())?;
     let mut de = CpuDecoder::new(cfg_e)?;
+    de.record_costs(true);
     let (mut oc, mut oe) = (TofOutput::new(), TofOutput::new());
     let mut n = 0usize;
     let mut lost = [0u64; REASONS.len()];
@@ -329,7 +330,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             e_valid += u64::from(e > 0.0);
             e_near += u64::from(e > 0.0 && e <= room);
             let info = de.unwrap_info(i).unwrap_or_default();
-            let gap = (info.e2 - info.e1).min(1e4);
+            let gap = info.gap.min(1e4);
             if c > 0.0 && e > 0.0 {
                 both += 1;
                 if (c - e).abs() <= (0.01 * c).max(10.0) {
@@ -364,12 +365,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ok_total.v.push(t);
                         ok_frac.v.push(if t > 0.0 { f1 / t } else { f32::NAN });
                         weak_gap.v.push(gap);
-                        weak_e1.v.push(info.e1);
+                        weak_e1.v.push(info.cost);
                         weak_conf.v.push(info.confidence);
                     }
                     if i % 5 == 0 && info.kind & 0x0f == 1 {
                         rd_ok.v.push(ratio_dev(&de, i));
-                        ok_e1.v.push(info.e1);
+                        ok_e1.v.push(info.cost);
                         ok_gap.v.push(gap);
                         ok_ir.v.push(info.ir_sum);
                     }
@@ -381,7 +382,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 lost_map[i] += 1;
                 if REASONS[r].1 == flags::LOW_CONFIDENCE && i % 3 == 0 {
                     rd_lost.v.push(ratio_dev(&de, i));
-                    lc_e1.v.push(info.e1);
+                    lc_e1.v.push(info.cost);
                     lc_gap.v.push(gap);
                     lc_conf.v.push(info.confidence);
                     lc_ir.v.push(info.ir_sum);
@@ -400,10 +401,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let to_mm = |u: f32| kinect_driver::tables::depth_from_u(u, tables.xtable[i], tables.ztable[i]);
                     println!(
                         "  phantom x {:>3} y {:>3}: {:>6.0} mm (2nd {:>6.0}) e1 {:>6.2} e2 {:>6.2} conf {:.2}->{:.2} ir_sum {:>5.1} raw phases@amp {} flags {:#x}",
-                        i % WIDTH, i / WIDTH, e, to_mm(info.u2), info.e1, info.e2, info.confidence, oe.confidence[i], info.ir_sum, ph.join(" "), f
+                        i % WIDTH, i / WIDTH, e, to_mm(info.u2), info.cost, info.cost + info.gap, info.confidence, oe.confidence[i], info.ir_sum, ph.join(" "), f
                     );
                 }
-                ph_e1.v.push(info.e1);
+                ph_e1.v.push(info.cost);
                 ph_grid[(i / WIDTH) * 8 / HEIGHT][(i % WIDTH) * 8 / WIDTH] += 1;
                 ph_res[usize::from(info.confidence >= 0.6)] += 1;
                 let (t, f1) = support(&de, i, info.u1);

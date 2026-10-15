@@ -5,8 +5,8 @@
 //! only vectorizes the innermost loop of plain row code, and keeps everything else in memory.
 //!
 //! [`Isa`] tells the kernels what the vector unit can do beyond that: `multiversion!` compiles
-//! them with [`Fma`] into the AVX2 build and with [`Plain`] into the baseline build (with `Fma`
-//! on aarch64, where NEON always has fused multiply-add). Without FMA hardware a fused
+//! them with [`Fma`] into the AVX2 build (with F16C) and with [`Plain`] into the baseline build
+//! (with `Fma` on aarch64, where NEON always has fused multiply-add). Without FMA hardware a fused
 //! multiply-add would be a slow library call, so the baseline multiplies and adds.
 
 #![allow(clippy::indexing_slicing)] // lanes 0..LANES of [_; LANES]: in bounds by construction
@@ -29,6 +29,8 @@ pub struct M8(pub [u32; LANES]);
 pub trait Isa {
     /// fused multiply-add in hardware
     const FMA: bool;
+    /// f16 conversions in hardware (x86-64 F16C, part of the AVX2 build)
+    const F16C: bool;
 }
 
 /// AVX2 + FMA, NEON.
@@ -45,9 +47,11 @@ pub type Baseline = Plain;
 
 impl Isa for Fma {
     const FMA: bool = true;
+    const F16C: bool = cfg!(target_arch = "x86_64");
 }
 impl Isa for Plain {
     const FMA: bool = false;
+    const F16C: bool = false;
 }
 
 /// 1.5 * 2^23: adding it rounds an `f32` below 2^22 to an integer, kept in the low mantissa
