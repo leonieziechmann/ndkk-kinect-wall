@@ -7,7 +7,9 @@
 //! confidence and flags back (2.6 MB). The values between the stages take 16 bits each, in the
 //! formats of `tof/pack.rs` (the CPU decoder stores the same), two to a 32-bit word. Two steps
 //! that work on whole areas (the flood fill inside saturated areas, the infrared percentile) then
-//! run on the CPU, shared with the CPU decoder; they cost only where something saturated.
+//! run on the CPU, shared with the CPU decoder; they cost only where something saturated. Each
+//! step on the GPU is a compute pass of its own, timed by the GPU where it has timestamps
+//! ([`GpuDecoder::passes`]; `KINECT_DRIVER_GPU_TIMES=1` logs them every frame).
 //!
 //! Nothing here may take the program down: wgpu's error callbacks are installed (they would
 //! panic by default), every call runs inside `catch`, and a lost device turns into errors that
@@ -68,16 +70,60 @@ const W_GAPC: usize = 12;
 const W_CSIR: usize = 13;
 /// depth and confidence after the resolver
 const W_RES: usize = 14;
-/// the two-echo split's seeds: u1, u2 as f32 bits (u1 < 0: no solution)
+/// the two-echo split's seeds: u1, u2 as f32 bits (u1 < 0: no solution; between the grid search
+/// and the refinement its grid points and margin)
 const W_SEED1: usize = 15;
 const W_SEED2: usize = 16;
-/// the push-pull pyramid starts after the planes
-const W_PLANES: usize = 17;
+/// the filtered (a, b) per frequency of the pixels to split, as f32 bits (six planes)
+const W_Z: usize = 17;
+/// the pixels to split between the seeds, listed per band of LIST_ROWS rows
+const W_LIST: usize = 23;
+/// the push-pull pyramid starts after the planes, the lists' lengths after the pyramid
+const W_PLANES: usize = 24;
+const LIST_ROWS: usize = 8;
+const LISTS: usize = HEIGHT.div_ceil(LIST_ROWS);
+/// split_between's workgroup (`decode.wgsl`, BETWEEN_THREADS)
+const BETWEEN_THREADS: usize = 64;
 /// planes read back
 const READ_BACK: usize = 3;
 
 const WG_X: u32 = 16;
 const WG_Y: u32 = 8;
+
+/// Compute passes of a frame at most (each with a timestamp before and after it).
+const MAX_PASSES: usize = 10;
+/// The timestamps follow the planes in the read-back buffer.
+const STAMPS_AT: usize = READ_BACK * N * 4;
+const STAMP_BYTES: usize = 2 * MAX_PASSES * 8;
+
+/// GPU timestamps before and after every compute pass (where the device has them).
+struct Timer {
+    set: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    /// nanoseconds per tick
+    period: f32,
+    /// `KINECT_DRIVER_GPU_TIMES=1`: log the passes of every frame
+    log: bool,
+}
+
+/// The compute passes of a frame in order: name, milliseconds on the GPU (0 without timestamps).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PassTimes {
+    passes: [(&'static str, f64); MAX_PASSES],
+    count: usize,
+}
+
+impl PassTimes {
+    /// The passes of the last frame.
+    pub fn passes(&self) -> &[(&'static str, f64)] {
+        self.passes.get(..self.count).unwrap_or(&[])
+    }
+
+    /// Milliseconds of the passes whose name starts with `prefix`.
+    pub fn ms(&self, prefix: &str) -> f64 {
+        self.passes().iter().filter(|(n, _)| n.starts_with(prefix)).map(|(_, ms)| ms).sum()
+    }
+}
 
 /// An exact f32 constant in WGSL (a hexadecimal float literal: no decimal rounding).
 fn f32c(v: f32) -> String {
@@ -216,6 +262,10 @@ fn prelude(params: &[(&'static str, Value)]) -> String {
         ("W_RES", W_RES),
         ("W_SEED1", W_SEED1),
         ("W_SEED2", W_SEED2),
+        ("W_Z", W_Z),
+        ("W_LIST", W_LIST),
+        ("LIST_ROWS", LIST_ROWS),
+        ("LIST_COUNT", Pyramid::new().words),
         ("EXP_WORD", Pyramid::new().filled.first().copied().unwrap_or(0)),
     ] {
         s.push_str(&u(name, v));
@@ -368,7 +418,12 @@ const P_PP_TOP: usize = 7;
 const P_PP_UP: usize = 8;
 const P_SPLIT_SEEDS: usize = 9;
 const P_SPLIT_BETWEEN: usize = 10;
-const ENTRY_POINTS: [&str; 11] = ["stage1", "stage2", "stage3_compat", "resolve", "finish", "pp_init", "pp_down", "pp_top", "pp_up", "split_seeds", "split_between"];
+const P_SPLIT_REFINE: usize = 11;
+const P_SPLIT_LIST: usize = 12;
+const ENTRY_POINTS: [&str; 13] = ["stage1", "stage2", "stage3_compat", "resolve", "finish", "pp_init", "pp_down", "pp_top", "pp_up", "split_seeds", "split_between", "split_refine", "split_list"];
+// split_seeds: each of its 64 invocations keeps three grid points; the grid key holds a grid point
+// in its 8 low bits
+const _: () = assert!(echoes::COARSE > 128 && echoes::COARSE <= 192);
 
 /// The depth/infrared decoder on the GPU.
 pub struct GpuDecoder {
@@ -393,9 +448,12 @@ pub struct GpuDecoder {
     describe: String,
     saturation_level: f32,
     lost: Arc<AtomicBool>,
+    timer: Option<Timer>,
     /// how long the last frame took (stage1 = upload, stage2 = GPU, stage3 = read back,
-    /// fill = the CPU steps)
+    /// fill = the CPU steps; split = the two-echo passes on the GPU's clock)
     pub timings: TofTimings,
+    /// the compute passes of the last frame on the GPU's clock (where the device has timestamps)
+    pub passes: PassTimes,
 }
 
 fn gpu_err(what: &str, e: impl std::fmt::Display) -> Error {
@@ -421,6 +479,8 @@ impl GpuDecoder {
             let info = adapter.get_info();
             let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("kinect-driver"),
+                // the passes' times, where the GPU can tell them
+                required_features: adapter.features() & wgpu::Features::TIMESTAMP_QUERY,
                 required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
                 ..Default::default()
             }))
@@ -479,7 +539,9 @@ impl GpuDecoder {
                     layout: Some(&layout),
                     module: &module,
                     entry_point: Some(entry),
-                    compilation_options: Default::default(),
+                    // the shaders write their workgroup memory before they read it; zeroing it first
+                    // cost the two-echo seeds (thousands of workgroups of 8 KB) 3.5 ms per frame
+                    compilation_options: wgpu::PipelineCompilationOptions { zero_initialize_workgroup_memory: false, ..Default::default() },
                     cache: None,
                 })
             })
@@ -493,8 +555,14 @@ impl GpuDecoder {
         let pyramid = Pyramid::new();
         let raw = buffer("kinect-driver raw", RAW_WORDS * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
         let tabs = buffer("kinect-driver tables", (T_PLANES * N + 2048) * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST);
-        let work = buffer("kinect-driver work", pyramid.words * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
-        let staging = buffer("kinect-driver readback", READ_BACK * N * 4, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
+        let work = buffer("kinect-driver work", (pyramid.words + LISTS) * 4, wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC);
+        let staging = buffer("kinect-driver readback", STAMPS_AT + STAMP_BYTES, wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST);
+        let timer = device.features().contains(wgpu::Features::TIMESTAMP_QUERY).then(|| Timer {
+            set: device.create_query_set(&wgpu::QuerySetDescriptor { label: Some("kinect-driver passes"), ty: wgpu::QueryType::Timestamp, count: 2 * MAX_PASSES as u32 }),
+            resolve: buffer("kinect-driver timestamps", STAMP_BYTES, wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC),
+            period: queue.get_timestamp_period(),
+            log: std::env::var("KINECT_DRIVER_GPU_TIMES").is_ok_and(|v| v != "0"),
+        });
         let group0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("kinect-driver buffers"),
             layout: &layout0,
@@ -562,7 +630,9 @@ impl GpuDecoder {
             masks: vec![0; HEIGHT * 4],
             saturation_level: 0.0,
             lost,
+            timer,
             timings: TofTimings::default(),
+            passes: PassTimes::default(),
         })
     }
 
@@ -613,35 +683,43 @@ impl GpuDecoder {
         let t1 = Instant::now();
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("kinect-driver frame") });
+        let mut passes = PassTimes::default();
         {
-            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some("kinect-driver decode"), timestamp_writes: None });
-            pass.set_bind_group(0, &self.group0, &[]);
-            pass.set_bind_group(1, &self.no_level, &[]);
             let (fx, fy) = ((WIDTH as u32).div_ceil(WG_X), (HEIGHT as u32).div_ceil(WG_Y));
             let pl = &self.pipelines;
-            dispatch(&mut pass, pl.get(P_STAGE1), fx, fy);
-            dispatch(&mut pass, pl.get(P_STAGE2), fx, fy);
+            let mut pass = |name: &'static str, body: &dyn Fn(&mut wgpu::ComputePass<'_>)| self.pass(&mut enc, &mut passes, name, body);
+            pass("stage1", &|p| dispatch(p, pl.get(P_STAGE1), fx, fy));
+            pass("stage2", &|p| dispatch(p, pl.get(P_STAGE2), fx, fy));
             if self.cfg.mode == TofMode::Compat {
-                dispatch(&mut pass, pl.get(P_STAGE3_COMPAT), fx, fy);
+                pass("stage3", &|p| dispatch(p, pl.get(P_STAGE3_COMPAT), fx, fy));
             } else {
                 if self.cfg.ext.two_echoes {
-                    // the seeds one workgroup each, then the pixels between
+                    // the seeds' grid search one workgroup each, their refinement one invocation
+                    // each, then the pixels between: listed per band, one invocation each
                     let seeds = |n: usize| n.div_ceil(echoes::SEED_STEP) as u32;
-                    dispatch(&mut pass, pl.get(P_SPLIT_SEEDS), seeds(WIDTH), seeds(HEIGHT));
-                    dispatch(&mut pass, pl.get(P_SPLIT_BETWEEN), fx, fy);
+                    pass("split_seeds", &|p| dispatch(p, pl.get(P_SPLIT_SEEDS), seeds(WIDTH), seeds(HEIGHT)));
+                    pass("split_refine", &|p| dispatch(p, pl.get(P_SPLIT_REFINE), seeds(WIDTH).div_ceil(WG_X), seeds(HEIGHT).div_ceil(WG_Y)));
+                    pass("split_list", &|p| dispatch(p, pl.get(P_SPLIT_LIST), LISTS as u32, 1));
+                    pass("split_between", &|p| dispatch(p, pl.get(P_SPLIT_BETWEEN), (LIST_ROWS * WIDTH).div_ceil(BETWEEN_THREADS) as u32, LISTS as u32));
                 }
                 if self.cfg.ext.spatial_resolve {
-                    for s in &self.steps {
-                        pass.set_bind_group(1, &s.group, &[]);
-                        dispatch(&mut pass, pl.get(s.pipeline), s.w.div_ceil(WG_X), s.h.div_ceil(WG_Y));
-                    }
-                    pass.set_bind_group(1, &self.no_level, &[]);
+                    pass("push_pull", &|p| {
+                        for s in &self.steps {
+                            p.set_bind_group(1, &s.group, &[]);
+                            dispatch(p, pl.get(s.pipeline), s.w.div_ceil(WG_X), s.h.div_ceil(WG_Y));
+                        }
+                    });
                 }
-                dispatch(&mut pass, pl.get(P_RESOLVE), fx, fy);
-                dispatch(&mut pass, pl.get(P_FINISH), fx, fy);
+                pass("resolve", &|p| dispatch(p, pl.get(P_RESOLVE), fx, fy));
+                pass("finish", &|p| dispatch(p, pl.get(P_FINISH), fx, fy));
             }
         }
-        enc.copy_buffer_to_buffer(&self.work, 0, &self.staging, 0, (READ_BACK * N * 4) as u64);
+        enc.copy_buffer_to_buffer(&self.work, 0, &self.staging, 0, STAMPS_AT as u64);
+        if let Some(t) = &self.timer {
+            let stamps = 2 * passes.count as u32;
+            enc.resolve_query_set(&t.set, 0..stamps, &t.resolve, 0);
+            enc.copy_buffer_to_buffer(&t.resolve, 0, &self.staging, STAMPS_AT as u64, u64::from(stamps) * 8);
+        }
         let submission = self.queue.submit([enc.finish()]);
         let slot = self.mapped.clone();
         *slot.lock().unwrap_or_else(PoisonError::into_inner) = None;
@@ -696,6 +774,13 @@ impl GpuDecoder {
             for (f, w) in out.flags.iter_mut().zip(words(W_FLAGS)) {
                 *f = w;
             }
+            if let Some(t) = &self.timer {
+                let ticks = view.get(STAMPS_AT..STAMPS_AT + STAMP_BYTES).unwrap_or(&[]).as_chunks::<8>().0;
+                for (p, pair) in passes.passes.iter_mut().take(passes.count).zip(ticks.as_chunks::<2>().0) {
+                    let [start, end] = pair.map(u64::from_le_bytes);
+                    p.1 = end.saturating_sub(start) as f64 * f64::from(t.period) * 1e-6;
+                }
+            }
         }
         self.staging.unmap();
         let t3 = Instant::now();
@@ -710,8 +795,31 @@ impl GpuDecoder {
         }
         let ms = |a: Instant, b: Instant| b.duration_since(a).as_secs_f64() * 1000.0;
         let t4 = Instant::now();
-        self.timings = TofTimings { stage1_ms: ms(t0, t1), stage2_ms: ms(t1, t2), stage3_ms: ms(t2, t3), fill_ms: ms(t3, t4), split_ms: 0.0, total_ms: ms(t0, t4) };
+        self.timings = TofTimings { stage1_ms: ms(t0, t1), stage2_ms: ms(t1, t2), stage3_ms: ms(t2, t3), fill_ms: ms(t3, t4), split_ms: passes.ms("split"), total_ms: ms(t0, t4) };
+        self.passes = passes;
+        if self.timer.as_ref().is_some_and(|t| t.log) {
+            let list: Vec<String> = passes.passes().iter().map(|(n, ms)| format!("{n} {ms:.2}")).collect();
+            let gpu: f64 = passes.passes().iter().map(|(_, ms)| ms).sum();
+            log::info!("kinect-driver GPU ms: {} = {gpu:.2}", list.join(", "));
+        }
         Ok(())
+    }
+
+    /// One compute pass of the frame, with timestamps around it where the GPU has them.
+    fn pass(&self, enc: &mut wgpu::CommandEncoder, passes: &mut PassTimes, name: &'static str, body: &dyn Fn(&mut wgpu::ComputePass<'_>)) {
+        let index = passes.count;
+        let timestamp_writes = match (&self.timer, passes.passes.get_mut(index)) {
+            (Some(t), Some(slot)) => {
+                *slot = (name, 0.0);
+                passes.count += 1;
+                Some(wgpu::ComputePassTimestampWrites { query_set: &t.set, beginning_of_pass_write_index: Some(2 * index as u32), end_of_pass_write_index: Some(2 * index as u32 + 1) })
+            }
+            _ => None,
+        };
+        let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor { label: Some(name), timestamp_writes });
+        pass.set_bind_group(0, &self.group0, &[]);
+        pass.set_bind_group(1, &self.no_level, &[]);
+        body(&mut pass);
     }
 }
 

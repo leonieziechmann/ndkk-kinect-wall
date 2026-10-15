@@ -717,7 +717,14 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
     // one echo does not explain the pixel: the split pass tries two (kernels.rs, split_echoes)
     let expected = dof_all + 3.0 * sqrt(2.0 * dof_all) + MULTIPATH_MARGIN;
     let unexplained = nvalid == 3.0 && (fl & FL_SATURATED_ANY) == 0u && emin + chi_amp > expected + P.multipath_tolerance;
-    if (P.two_echoes != 0u && unexplained) { fl |= FL_SPLIT_CANDIDATE; }
+    if (P.two_echoes != 0u && unexplained) {
+        fl |= FL_SPLIT_CANDIDATE;
+        // the filtered values, for the split passes
+        for (var k = 0u; k < 3u; k++) {
+            wset(W_Z + 2u * k, i, bitcast<u32>(af[k]));
+            wset(W_Z + 2u * k + 1u, i, bitcast<u32>(bf[k]));
+        }
+    }
     wset(W_U12, i, pair(frac_of(ou1), frac_of(ou2)));
     wset(W_GAPC, i, pair(f16_of(gap, GAP_SCALE), unorm_of(conf)));
     wset(W_CSIR, i, pair(unorm_of(c_ref), f16_of(ir_sum, IRSUM_SCALE)));
@@ -732,9 +739,12 @@ fn stage2(@builtin(global_invocation_id) gid: vec3<u32>) {
 
 // ---- two echoes (tof/echoes.rs: the same search, the same polynomials) ----------------------
 //
-// Two passes over the pixels stage 2 marked: the seeds (every SEED_STEP-th pixel both ways) get
-// the whole grid search, one workgroup per pixel; the pixels between start from the seeds'
-// solutions around them, one invocation per pixel.
+// Passes over the pixels stage 2 marked (it keeps their filtered values in the planes W_Z): the
+// seeds (every SEED_STEP-th pixel both ways) get the whole grid search, one workgroup per seed
+// (split_seeds), and its refinement, one invocation per seed (split_refine); the pixels between
+// are listed (split_list) and start from the seeds' solutions around them, one invocation per
+// pixel (split_between). The same arithmetic in the same order as one pixel after the other:
+// the result does not depend on the passes.
 
 // a pixel in the frame of its measured values (echoes.rs, Frame): per frequency the unit vector
 // along the measurement (ex, ey), the square roots of the weights (radial, tangential), the
@@ -930,22 +940,16 @@ fn finish_split(f: Frame, p: Pair, single: f32, alt_margin: f32) -> Split {
     return Split(p.u1, p.u2, p.a1, p.a2, max(margin / scale, 0.0));
 }
 
-// the inputs of the split of a pixel: the filtered values as in stage 2, their noise, the
+// the inputs of the split of a pixel: the filtered values stage 2 kept, their noise, the
 // brightness prior (kernels.rs, collect_candidates)
-fn split_frame(x: u32, y: u32, i: u32, fl: u32) -> Frame {
+fn split_frame(i: u32, fl: u32) -> Frame {
     var f = Frame(vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), vec3<f32>(0.0), 0.0, 0.0, 0.0, 0.0, 0u);
     var z: array<vec2<f32>, 3>;
     var m: array<f32, 3>;
     let abm = P.ab_multiplier;
     for (var k = 0u; k < 3u; k++) {
-        let r = bilateral(x, y, k, true);
-        var a = r.x;
-        var b = r.y;
-        if (P.weak_boost != 0u) {
-            let wbst = weak_boost(x, y, k, a, b);
-            a = wbst.x;
-            b = wbst.y;
-        }
+        let a = bitcast<f32>(wget(W_Z + 2u * k, i));
+        let b = bitcast<f32>(wget(W_Z + 2u * k + 1u, i));
         z[k] = vec2<f32>(a, b) * (abm * gain(k));
         m[k] = sqrt(z[k].x * z[k].x + z[k].y * z[k].y);
     }
@@ -994,7 +998,12 @@ fn grid_key(c: f32, j: u32) -> u32 { return (bitcast<u32>(c) & ~0xffu) | j; }
 fn key_cost(k: u32) -> f32 { return bitcast<f32>(k & ~0xffu); }
 const NO_KEY: u32 = 0xffffffffu;
 const SEED_THREADS: u32 = 64u;
+// a seed's grid search found a pair (seed plane 1: this in the high byte, then the grid points
+// of the single echo (NO_SINGLE: none), the second and the first echo; plane 2: the margin)
+const SEED_FOUND: u32 = 0xff000000u;
+const NO_SINGLE: u32 = 0xffu;
 
+// (Workgroup memory is not zero-initialized: every variable is written before it is read.)
 var<workgroup> wg_frame: Frame;
 var<workgroup> wg_go: u32;
 // the whitened steering vectors of the grid, the matched filter and the norm (b, n)
@@ -1004,14 +1013,31 @@ var<workgroup> wg_bn: array<vec2<f32>, COARSE>;
 // the best pair per first echo, the best single echo (grid keys)
 var<workgroup> wg_first: array<atomic<u32>, COARSE>;
 var<workgroup> wg_single: atomic<u32>;
-// the best pair (first, second; COARSE = none), the margin over the other first echoes
-var<workgroup> wg_bi: u32;
-var<workgroup> wg_bj: u32;
-var<workgroup> wg_alt: f32;
-var<workgroup> wg_pair: Pair;
-var<workgroup> wg_single_cost: f32;
+// the best pair (its cost and first echo as a grid key), the best cost of a pair whose first
+// echo lies elsewhere
+var<workgroup> wg_best: atomic<u32>;
+var<workgroup> wg_alt: atomic<u32>;
 
-// the seeds: one workgroup per lattice point (echoes.rs, split_seeds)
+// the grid key of the pair of the first echo (i1: whitened steering vector ri, ti, matched filter
+// b1, norm n1, distance ui) with the second at grid point j (rj, tj, (b, n) bn); NO_KEY where j
+// is outside lo..=hi or the pair does not fit
+fn seed_pair(f: Frame, ri: vec3<f32>, ti: vec3<f32>, b1: f32, n1: f32, ui: f32, lo: u32, hi: u32, j: u32, rj: vec3<f32>, tj: vec3<f32>, bn: vec2<f32>) -> u32 {
+    if (j < lo || j > hi) { return NO_KEY; }
+    let g = dot(ri, rj) + dot(ti, tj);
+    let b2 = bn.x;
+    let n2 = bn.y;
+    let det = n1 * n2 - g * g;
+    let inv = 1.0 / max(det, 1e-30);
+    let a1 = (n2 * b1 - g * b2) * inv;
+    let a2 = (n1 * b2 - g * b1) * inv;
+    if (!(a1 >= FIRST_MIN * a2 && a2 > 0.0 && det > 1e-6 * n1 * n2)) { return NO_KEY; }
+    let uj = f32(j) / f32(COARSE);
+    let c = max(f.zz - a1 * b1 - a2 * b2, 0.0) + echo_pen(f, a1, ui * ui) + echo_pen(f, a2, uj * uj);
+    return grid_key(c, j);
+}
+
+// the seeds' grid search: one workgroup per lattice point (echoes.rs, split_seeds, search); the
+// refinement follows in split_refine
 @compute @workgroup_size(64, 1, 1)
 fn split_seeds(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
     let x = wid.x * SEED_STEP;
@@ -1024,18 +1050,19 @@ fn split_seeds(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_
         var go = 0u;
         let fl = wget(W_FLAGS, i);
         if ((fl & FL_SPLIT_CANDIDATE) != 0u) {
-            let f = split_frame(x, y, i, fl);
+            let f = split_frame(i, fl);
             wg_frame = f;
             go = f.ok;
         }
         wset(W_FLAGS, i, fl & ~FL_SPLIT_CANDIDATE);
         wg_go = go;
         atomicStore(&wg_single, NO_KEY);
+        atomicStore(&wg_best, NO_KEY);
+        atomicStore(&wg_alt, NO_KEY);
     }
     for (var j = lid; j < COARSE; j += SEED_THREADS) { atomicStore(&wg_first[j], NO_KEY); }
     if (workgroupUniformLoad(&wg_go) == 0u) { return; }
     let f = wg_frame;
-    let step = 1.0 / f32(COARSE);
     // the grid: the steering vectors whitened, the best single echo
     for (var j = lid; j < COARSE; j += SEED_THREADS) {
         let u = f32(j) / f32(COARSE);
@@ -1051,79 +1078,89 @@ fn split_seeds(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_
     }
     workgroupBarrier();
     // every pair whose first echo lies before the single echo's distance (not at 0): the best
-    // per first echo, each invocation over its share of the second echoes
+    // per first echo; each invocation keeps its three second echoes (j0, j1, j2) in registers
     let near_i = u32(floor(max(f.near, 0.0) * f32(COARSE) + 0.5));
     let last = min(near_i + FIRST_BEYOND + 1u, COARSE - MIN_SEPARATION);
+    let j0 = lid;
+    let j1 = lid + SEED_THREADS;
+    let j2 = lid + 2u * SEED_THREADS;
+    let k2 = min(j2, COARSE - 1u);
+    let r0 = wg_r[j0];
+    let t0 = wg_t[j0];
+    let bn0 = wg_bn[j0];
+    let r1 = wg_r[j1];
+    let t1 = wg_t[j1];
+    let bn1 = wg_bn[j1];
+    let r2 = wg_r[k2];
+    let t2 = wg_t[k2];
+    let bn2 = wg_bn[k2];
     for (var i1 = 1u; i1 < last; i1++) {
         let ri = wg_r[i1];
         let ti = wg_t[i1];
         let b1 = wg_bn[i1].x;
         let n1 = wg_bn[i1].y;
         let ui = f32(i1) / f32(COARSE);
-        let jmax = i1 + min(COARSE - 1u - i1, COARSE - MIN_SEPARATION);
-        var best = NO_KEY;
-        for (var j = lid; j < COARSE; j += SEED_THREADS) {
-            if (j < i1 + MIN_SEPARATION || j > jmax) { continue; }
-            let g = dot(ri, wg_r[j]) + dot(ti, wg_t[j]);
-            let b2 = wg_bn[j].x;
-            let n2 = wg_bn[j].y;
-            let det = n1 * n2 - g * g;
-            let inv = 1.0 / max(det, 1e-30);
-            let a1 = (n2 * b1 - g * b2) * inv;
-            let a2 = (n1 * b2 - g * b1) * inv;
-            if (!(a1 >= FIRST_MIN * a2 && a2 > 0.0 && det > 1e-6 * n1 * n2)) { continue; }
-            let uj = f32(j) / f32(COARSE);
-            let c = max(f.zz - a1 * b1 - a2 * b2, 0.0) + echo_pen(f, a1, ui * ui) + echo_pen(f, a2, uj * uj);
-            best = min(best, grid_key(c, j));
-        }
+        let lo = i1 + MIN_SEPARATION;
+        let hi = i1 + min(COARSE - 1u - i1, COARSE - MIN_SEPARATION);
+        var best = seed_pair(f, ri, ti, b1, n1, ui, lo, hi, j0, r0, t0, bn0);
+        best = min(best, seed_pair(f, ri, ti, b1, n1, ui, lo, hi, j1, r1, t1, bn1));
+        best = min(best, seed_pair(f, ri, ti, b1, n1, ui, lo, hi, j2, r2, t2, bn2));
         if (best != NO_KEY) { atomicMin(&wg_first[i1], best); }
     }
     workgroupBarrier();
-    // the best pair, and the best pair whose first echo lies elsewhere
-    if (lid == 0u) {
-        var bc = BIG;
-        var bi = COARSE;
-        var bj = COARSE;
-        for (var i1 = 1u; i1 < last; i1++) {
-            let k = atomicLoad(&wg_first[i1]);
-            if (k != NO_KEY && key_cost(k) < bc) {
-                bc = key_cost(k);
-                bi = i1;
-                bj = k & 0xffu;
-            }
-        }
-        var alt = BIG;
-        for (var i1 = 1u; i1 < last; i1++) {
-            let k = atomicLoad(&wg_first[i1]);
-            let far = select(bi - i1, i1 - bi, i1 > bi);
-            if (k != NO_KEY && far > SAME_FIRST) { alt = min(alt, key_cost(k)); }
-        }
-        wg_bi = bi;
-        wg_bj = bj;
-        wg_alt = alt - bc;
+    // the best pair: the smallest cost, among equal ones the first first echo
+    for (var i1 = lid; i1 < last; i1 += SEED_THREADS) {
+        let k = atomicLoad(&wg_first[i1]);
+        if (i1 > 0u && k != NO_KEY && key_cost(k) < BIG) { atomicMin(&wg_best, (k & ~0xffu) | i1); }
     }
-    if (workgroupUniformLoad(&wg_bi) >= COARSE) { return; }
-    // the refinements, side by side
-    if (lid == 0u) {
-        let u1 = f32(wg_bi) * step;
-        let u2 = f32(wg_bj) * step;
-        wg_pair = refine_pair(f, pair_at(f, steering(u1), steering(u2), u1, u2), 0.5 * step, LEVELS, REPEATS);
-    }
-    if (lid == 1u) {
-        let ks = atomicLoad(&wg_single);
-        var sc = BIG;
-        if (ks != NO_KEY) { sc = refine_single(f, f32(ks & 0xffu) * step, 0.5 * step, LEVELS); }
-        wg_single_cost = sc;
+    let best = workgroupUniformLoad(&wg_best);
+    if (best == NO_KEY) { return; }
+    // the best pair whose first echo lies elsewhere
+    let bi = best & 0xffu;
+    for (var i1 = lid; i1 < last; i1 += SEED_THREADS) {
+        let k = atomicLoad(&wg_first[i1]);
+        let far = select(bi - i1, i1 - bi, i1 > bi);
+        if (i1 > 0u && k != NO_KEY && far > SAME_FIRST) { atomicMin(&wg_alt, k & ~0xffu); }
     }
     workgroupBarrier();
     if (lid == 0u) {
-        let p = wg_pair;
-        if (p.cost < BIG) {
-            wset(W_SEED1, i, bitcast<u32>(p.u1));
-            wset(W_SEED2, i, bitcast<u32>(p.u2));
-            let fl = apply_split(i, finish_split(f, p, wg_single_cost, wg_alt), f.near, wget(W_FLAGS, i));
-            wset(W_FLAGS, i, fl);
-        }
+        let bj = atomicLoad(&wg_first[bi]) & 0xffu;
+        let ka = atomicLoad(&wg_alt);
+        var alt = BIG;
+        if (ka != NO_KEY) { alt = min(alt, key_cost(ka)); }
+        let ks = atomicLoad(&wg_single);
+        var js = NO_SINGLE;
+        if (ks != NO_KEY) { js = ks & 0xffu; }
+        wset(W_SEED1, i, SEED_FOUND | (js << 16u) | (bj << 8u) | bi);
+        wset(W_SEED2, i, bitcast<u32>(alt - key_cost(best)));
+    }
+}
+
+// the refinements of the seeds the grid search left a pair: one invocation per lattice point
+// (echoes.rs, split_seeds)
+@compute @workgroup_size(16, 8, 1)
+fn split_refine(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let x = gid.x * SEED_STEP;
+    let y = gid.y * SEED_STEP;
+    if (x >= W || y >= H) { return; }
+    let i = y * W + x;
+    let found = wget(W_SEED1, i);
+    if ((found & SEED_FOUND) != SEED_FOUND) { return; }
+    let alt = bitcast<f32>(wget(W_SEED2, i));
+    wset(W_SEED1, i, bitcast<u32>(-1.0));
+    let fl = wget(W_FLAGS, i);
+    let f = split_frame(i, fl);
+    let step = 1.0 / f32(COARSE);
+    let u1 = f32(found & 0xffu) * step;
+    let u2 = f32((found >> 8u) & 0xffu) * step;
+    let p = refine_pair(f, pair_at(f, steering(u1), steering(u2), u1, u2), 0.5 * step, LEVELS, REPEATS);
+    let js = (found >> 16u) & 0xffu;
+    var sc = BIG;
+    if (js != NO_SINGLE) { sc = refine_single(f, f32(js) * step, 0.5 * step, LEVELS); }
+    if (p.cost < BIG) {
+        wset(W_SEED1, i, bitcast<u32>(p.u1));
+        wset(W_SEED2, i, bitcast<u32>(p.u2));
+        wset(W_FLAGS, i, apply_split(i, finish_split(f, p, sc, alt), f.near, fl));
     }
 }
 
@@ -1149,18 +1186,42 @@ fn seed_offset(k: u32) -> vec2<i32> {
     }
 }
 
+// the pixels between the seeds to split, per band of LIST_ROWS rows: their indices (plane W_LIST,
+// from the band's first pixel on, in no particular order) and their number (word LIST_COUNT +
+// band); split_between then keeps its invocations busy
+const LIST_PIXELS: u32 = LIST_ROWS * W;
+const LIST_THREADS: u32 = 256u;
+const BETWEEN_THREADS: u32 = 64u;
+var<workgroup> wg_count: atomic<u32>;
+
+@compute @workgroup_size(256, 1, 1)
+fn split_list(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+    let first = wid.x * LIST_PIXELS;
+    if (lid == 0u) { atomicStore(&wg_count, 0u); }
+    workgroupBarrier();
+    for (var o = lid; o < LIST_PIXELS; o += LIST_THREADS) {
+        let i = first + o;
+        if (i < N && (wget(W_FLAGS, i) & FL_SPLIT_CANDIDATE) != 0u) {
+            wset(W_LIST, first + atomicAdd(&wg_count, 1u), i);
+        }
+    }
+    workgroupBarrier();
+    if (lid == 0u) { work[LIST_COUNT + wid.x] = atomicLoad(&wg_count); }
+}
+
 // the pixels between the seeds: from the best of the seeds' solutions around, a short pattern
-// search (echoes.rs, split_between)
-@compute @workgroup_size(16, 8, 1)
-fn split_between(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let x = gid.x;
-    let y = gid.y;
-    if (x >= W || y >= H) { return; }
-    let i = y * W + x;
+// search (echoes.rs, split_between); one invocation per listed pixel
+@compute @workgroup_size(64, 1, 1)
+fn split_between(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+    let at = wid.x * BETWEEN_THREADS + lid;
+    if (at >= work[LIST_COUNT + wid.y]) { return; }
+    let i = wget(W_LIST, wid.y * LIST_PIXELS + at);
+    let x = i % W;
+    let y = i / W;
     var fl = wget(W_FLAGS, i);
     if ((fl & FL_SPLIT_CANDIDATE) == 0u) { return; }
     fl = fl & ~FL_SPLIT_CANDIDATE;
-    let f = split_frame(x, y, i, fl);
+    let f = split_frame(i, fl);
     if (f.ok != 0u) {
         let cx = i32(x - x % SEED_STEP);
         let cy = i32(y - y % SEED_STEP);
