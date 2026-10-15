@@ -188,10 +188,10 @@ pub struct ExtendedParams {
     /// one (flag SECOND_ECHO): a glossy floor under the mirror image in it, a grazing table top,
     /// a depth edge
     pub two_echoes: bool,
-    /// the two-echo split on the CPU: a pixel whose input has not moved beyond the noise since its
-    /// last split takes that split over instead of splitting again (every pixel is split again at
-    /// least every 16 frames, in turn). Most of a scene stands still: the split then costs a
-    /// fraction, and the depth flickers less
+    /// the two-echo split (CPU and GPU, the same rule): a pixel whose input has not moved beyond
+    /// the noise since its last split takes that split over instead of splitting again (every
+    /// pixel is split again at least every 16 frames, in turn). Most of a scene stands still: the
+    /// split then costs a fraction, and the depth flickers less
     pub split_reuse: bool,
     /// relative spread of the amplitudes of the frequencies in the two-echo split: the amplitude
     /// ratios are what tells two echoes from one (at 80 MHz a floor and its mirror image nearly
