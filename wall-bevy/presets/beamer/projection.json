@@ -1,0 +1,17 @@
+{
+  "default": {
+    "mirror": true,
+    "field": { "near": 0.8, "far": 4.3, "nearL": 0.18, "nearR": 3.38, "farL": 0.18, "farR": 3.38, "low": 0, "high": 2 },
+    "out": { "left": 0, "right": 0, "bottom": 0, "top": 2 },
+    "apply": "person",
+    "edge": "clamp",
+    "margin": 0.25,
+    "smoothing": 0.15,
+    "body": { "scale": 1, "fit": "real", "height": 1.7 },
+    "zone": { "near": 0.8, "far": 4.6 },
+    "image": { "mode": "true", "distance": 2.8 }
+  },
+  "scenes": {
+    "fruit-ninja": { "field.nearL": 0.18, "field.nearR": 3.38, "field.farL": 0.18, "field.farR": 3.38, "margin": 0.3 }
+  }
+}

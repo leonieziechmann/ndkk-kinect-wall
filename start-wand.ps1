@@ -2,7 +2,9 @@
   start-wand.ps1: starts everything the LED wall needs and tunes Windows for it, only while it runs.
 
     start-wand.cmd                     double-click (or the desktop icon "Kinect-Wand starten")
-    .\start-wand.ps1 [-NoWall] [-NoControl] [-Hub 8091] [-RecordMinutes 5] [-Minimal] [-Fn2]
+    start-wand.cmd -Preset beamer      a 16:9 Full HD beamer instead of the LED wall, Fruit Ninja in the
+                                       game mode (desktop icon "Kinect-Beamer starten (Fruit Ninja)")
+    .\start-wand.ps1 [-NoWall] [-NoControl] [-Hub 8091] [-RecordMinutes 5] [-Minimal] [-Fn2] [-Preset beamer]
     .\start-wand.ps1 -Panic            NOTAUS (also Strg+Alt+Shift+N, desktop icon "Kinect-Wand NOTAUS")
 
   Starts (or reuses, if they already run) from the main checkout: kinect-hub (real Kinect, :8090;
@@ -43,6 +45,14 @@
   monitors change; the screen redraws only lines that changed; the C# part is compiled once and
   cached, so neither a start nor the guard nor NOTAUS runs the compiler.
 
+  -Preset beamer (desktop icon "Kinect-Beamer starten (Fruit Ninja)"): the output gets the preset of
+  wall-bevy (wall-bevy --preset beamer, see wall-bevy\README.md): a 16:9 picture (960 x 540, twice
+  that on a Full HD beamer), fitted to whatever it is (letterboxed when its aspect differs), and the game mode
+  (Spielmodus): Fruit Ninja stays on the screen for good. Its documents live in wall-bevy\data-beamer
+  (made from the preset at the first start; the LED wall's wall-bevy\data is never touched). The
+  beamer is the second display (extend the desktop: Win+P, or E here while it mirrors the notebook),
+  the control center opens on the notebook.
+
   -Minimal (desktop icon "Kinect-Wand starten (minimal)"), for when the show stutters now and then:
   everything that could take time or power from it stays off.
     - power plan: a copy of Windows' "Balanced" with only what the show needs (no sleep, display
@@ -73,6 +83,7 @@ param(
   [ValidateRange(1, 60)][int]$RecordMinutes = 5,   # R: length of a recording (training data)
   [switch]$Minimal,   # nothing that could take time or power from the show (see above)
   [switch]$Fn2,       # the hub it starts uses the old libfreenect2 worker instead of kinect-driver
+  [ValidateSet('beamer')][string]$Preset,   # the output with a preset of wall-bevy (see above)
   [switch]$Panic,     # NOTAUS
   [int]$Guard = 0,    # internal: be the guard of this PID
   [string]$Checkout,  # for tests: use this checkout instead of the main one
@@ -1041,7 +1052,10 @@ $HubExe = Join-Path $Main 'kinect-hub\target\release\kinect-hub.exe'
 $BevyExe = Join-Path $Main 'wall-bevy\target\release\wall-bevy.exe'
 if ($Checkout -and -not (Test-Path -LiteralPath $BevyExe)) { $BevyExe = Join-Path (Get-MainCheckout) 'wall-bevy\target\release\wall-bevy.exe' }
 # the output's data folder: setup, projections, show, pairing code, control.json (its control center)
-$WallDir = if ($env:KINECT_WALL_DIR) { [IO.Path]::GetFullPath($env:KINECT_WALL_DIR).TrimEnd('\', '/') } else { Join-Path $Main 'wall-bevy\data' }
+$WallDir = if ($env:KINECT_WALL_DIR) { [IO.Path]::GetFullPath($env:KINECT_WALL_DIR).TrimEnd('\', '/') }
+  elseif ($Preset) { Join-Path $Main "wall-bevy\data-$Preset" }   # a preset keeps its own (wall-bevy --preset)
+  else { Join-Path $Main 'wall-bevy\data' }
+$PresetText = switch ($Preset) { 'beamer' { 'Beamer 16:9, Spielmodus Fruit Ninja' } default { '' } }
 $HubUrl = "http://127.0.0.1:$Hub"
 $Interactive = -not [Console]::IsInputRedirected
 $Ps = Join-Path $PSHOME 'powershell.exe'
@@ -1097,8 +1111,9 @@ if (-not (Save-Journal)) {
   exit 1
 }
 
-try { $Host.UI.RawUI.WindowTitle = "Kinect-Wand  (Q beenden, Notaus $HotkeyText)" } catch { }
-Write-Host "`n  Kinect-Wand startet  ($Main)`n" -ForegroundColor Cyan
+$Name = if ($Preset) { "Kinect-Beamer ($PresetText)" } else { 'Kinect-Wand' }
+try { $Host.UI.RawUI.WindowTitle = "$Name  (Q beenden, Notaus $HotkeyText)" } catch { }
+Write-Host "`n  $Name startet  ($Main)`n" -ForegroundColor Cyan
 
 # ---- desktop icons: start and NOTAUS
 function Set-Shortcut([string]$name, [string]$target, [string]$arguments, [string]$icon) {
@@ -1120,6 +1135,7 @@ $LinkDir = if (Test-Path (Join-Path $Main 'start-wand.ps1')) { $Main } else { $H
 Set-Shortcut 'Kinect-Wand NOTAUS' $Ps "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $LinkDir 'start-wand.ps1')`" -Panic" "$env:SystemRoot\System32\shell32.dll,27"
 Set-Shortcut 'Kinect-Wand starten' (Join-Path $LinkDir 'start-wand.cmd') '' "$env:SystemRoot\System32\imageres.dll,186"
 Set-Shortcut 'Kinect-Wand starten (minimal)' (Join-Path $LinkDir 'start-wand.cmd') '-Minimal' "$env:SystemRoot\System32\imageres.dll,186"
+Set-Shortcut 'Kinect-Beamer starten (Fruit Ninja)' (Join-Path $LinkDir 'start-wand.cmd') '-Preset beamer' "$env:SystemRoot\System32\imageres.dll,186"
 
 # ---- the guard: puts everything back when this window closes or crashes; NOTAUS hotkey
 $script:HotkeyBusy = $null
@@ -1460,7 +1476,7 @@ function Get-OpenScreen {
   if (-not $screen) {
     $why = if ($script:ScreenMirrored) { 'mirror' } else { 'none' }
     if ($script:ScreenMissing -ne $why) {
-      if ($why -eq 'mirror') { Add-Event 'Der zweite Bildschirm zeigt dasselbe wie das Notebook: mit Win+P auf "Erweitern" stellen, dann geht das Wand-Fenster dort auf' 'warn' }
+      if ($why -eq 'mirror') { Add-Event 'Der zweite Bildschirm zeigt dasselbe wie das Notebook: E (oder Win+P) stellt auf "Erweitern", dann geht das Wand-Fenster dort auf' 'warn' }
       else { Add-Event 'Kein zweiter Bildschirm: die Ausgabe (und mit ihr die Steuerzentrale) bleibt zu, bis einer angeschlossen ist' 'warn' }
     }
     $script:ScreenMissing = $why
@@ -1485,8 +1501,10 @@ function Open-Wall($screen) {
   # console window (no window of its own), its output goes to the logs.
   $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
   $place = '{0},{1},{2},{3}' -f $screen.X, $screen.Y, $screen.Width, $screen.Height
+  $wallArgs = @('--hub', $HubUrl, '--data', "`"$WallDir`"", '--screen', $place)
+  if ($Preset) { $wallArgs += '--preset', $Preset }
   try {
-    $p = Start-Process -FilePath $BevyExe -ArgumentList '--hub', $HubUrl, '--data', "`"$WallDir`"", '--screen', $place -WorkingDirectory $Main `
+    $p = Start-Process -FilePath $BevyExe -ArgumentList $wallArgs -WorkingDirectory $Main `
       -NoNewWindow -PassThru -RedirectStandardInput $NoInput `
       -RedirectStandardOutput (Join-Path $LogDir "wall-bevy-$stamp.log") -RedirectStandardError (Join-Path $LogDir "wall-bevy-$stamp.err.log")
   } catch {
@@ -1773,7 +1791,7 @@ function Show-Status {
     }
     L ('  {0}  ({1:0} s)' -f $ask, ($script:ConfirmUntil - $up.TotalSeconds)) 'Yellow'
   }
-  L ('  Kinect-Wand · {0}läuft seit {1}:{2:00} h' -f $(if ($Minimal) { 'Minimalmodus · ' } else { '' }), [int][Math]::Floor($up.TotalHours), $up.Minutes) 'Cyan'
+  L ('  {0} · {1}läuft seit {2}:{3:00} h' -f $Name, $(if ($Minimal) { 'Minimalmodus · ' } else { '' }), [int][Math]::Floor($up.TotalHours), $up.Minutes) 'Cyan'
   if ($null -eq $script:HotkeyBusy) {
     $t = Get-Content -LiteralPath $HotkeyFile -ErrorAction SilentlyContinue
     if ($t) { $script:HotkeyBusy = ($t -eq 'busy') }
@@ -1806,7 +1824,7 @@ function Show-Status {
   L "  Hub        $HubUrl $hubText"
   if ($script:WallPid) { $wallText = "wall-bevy offen auf $(Format-Screen $script:WallScreen) (PID $($script:WallPid))" }
   elseif (-not (Test-Path -LiteralPath $BevyExe)) { $wallText = 'nicht gebaut (in wall-bevy: cargo build --release)' }
-  elseif ($script:ScreenMissing -eq 'mirror' -and $script:WallAuto) { $wallText = 'zu: der zweite Bildschirm spiegelt das Notebook (Win+P: Erweitern)' }
+  elseif ($script:ScreenMissing -eq 'mirror' -and $script:WallAuto) { $wallText = 'zu: der zweite Bildschirm spiegelt das Notebook (E oder Win+P: Erweitern)' }
   elseif ($script:ScreenMissing -and $script:WallAuto) { $wallText = 'zu: kein zweiter Bildschirm (nie auf dem Notebook)' }
   else { $wallText = 'zu' }
   $wallText += if ($script:WallAuto) { ' · geht sie zu, öffnet sie sich wieder' } else { ' · automatisch öffnen: aus (W)' }
@@ -1942,6 +1960,11 @@ while (-not $quit) {
         if ($script:Optimize) { Stop-Optimizing }
       } elseif ($ch -eq 'l') {
         Start-Process explorer.exe $StateDir
+      } elseif ($ch -eq 'e' -and $script:ScreenMirrored) {
+        # the second display shows the notebook's picture: extend the desktop (as Win+P "Erweitern")
+        Start-Process (Join-Path $env:SystemRoot 'System32\DisplaySwitch.exe') '/extend'
+        Add-Event 'Bildschirme auf "Erweitern" gestellt (wie Win+P): das Wand-Fenster geht gleich auf dem zweiten auf'
+        $script:NextTry.wall = 0; $nextWatch = $now + 3
       }
       $nextDraw = 0
     }

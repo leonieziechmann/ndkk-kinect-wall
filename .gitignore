@@ -27,8 +27,10 @@ fn2/logs/
 *.csv
 *.log
 # wall-bevy (native output): build output; its data folder (setup, projections, show, pairing code)
+# and those of the presets (wall-bevy --preset NAME: data-NAME/)
 wall-bevy/target/
 wall-bevy/data/
+wall-bevy/data-*/
 
 # agent worktrees (Claude Code)
 .claude/worktrees/

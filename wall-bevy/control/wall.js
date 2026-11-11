@@ -53,7 +53,7 @@ export const SETUP_FIELDS = Object.freeze([
   { key: 'cabinet.w', label: 'Kabinett breit (LEDs, Testbild)', min: 8, max: 1024, step: 1, group: 'LED-Wand' },
   { key: 'cabinet.h', label: 'Kabinett hoch (LEDs, Testbild)', min: 8, max: 1024, step: 1, group: 'LED-Wand' },
 
-  { key: 'output.fit', label: 'Abbildung', options: { 'pixelgenau 1:1 (LED-Controller)': 'pixel', 'Fenster füllen (verzerrt)': 'stretch', 'einpassen (Vorschau)': 'fit' }, group: 'Ausgabe' },
+  { key: 'output.fit', label: 'Abbildung', options: { 'pixelgenau 1:1 (LED-Controller)': 'pixel', 'Fenster füllen (verzerrt)': 'stretch', 'einpassen (Beamer, Vorschau)': 'fit' }, group: 'Ausgabe' },
   { key: 'output.x', label: 'Versatz x (Bildschirm-px)', min: 0, max: 7680, step: 1, group: 'Ausgabe' },
   { key: 'output.y', label: 'Versatz y (Bildschirm-px)', min: 0, max: 4320, step: 1, group: 'Ausgabe' },
 

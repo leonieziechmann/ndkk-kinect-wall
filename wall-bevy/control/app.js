@@ -105,12 +105,14 @@ link.on('hello', (d) => {
   proj.load(d.docs?.projection);
   renderLibrary();
   renderPairing();
+  renderPreset();
   if (!state.booted) {
     state.booted = true;
     const o = out();
     proj.select(o?.scene && state.scenes.some((x) => x.name === o.scene) ? o.scene : '');
-    selectEntry(state.show.entries.some((e) => e.id === o?.entry) ? o.entry : null);
+    selectEntry(state.show.single ?? (state.show.entries.some((e) => e.id === o?.entry) ? o.entry : null));
   } else if (state.selected) selectEntry(state.selected);
+  renderSingle();
   renderLive();
 });
 
@@ -142,9 +144,12 @@ link.on('doc', (d) => {
     proj?.setupChanged();
     drawPlan();
   } else if (d.kind === 'show') {
+    const was = state.show.single;
     state.show = normalizeShow(d.doc);
     renderPlaylist();
     renderShowSettings();
+    renderSingle();
+    if (state.show.single && state.show.single !== was) selectEntry(state.show.single);
   }
 });
 
@@ -218,6 +223,7 @@ $('patternOver').onchange = sendPattern;
 addEventListener('keydown', (e) => {
   if (e.target?.closest?.('input, textarea, select, [contenteditable]') || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === 'b' || e.key === 'B') setBlackout(!out()?.blackout);
+  else if (state.show.single && ['ArrowRight', 'ArrowLeft', 'PageDown', 'PageUp'].includes(e.key)) toast('Spielmodus: die Szene bleibt (im Tab „Show“ beenden)');
   else if (e.key === 'ArrowRight' || e.key === 'PageDown') link.send('next');
   else if (e.key === 'ArrowLeft' || e.key === 'PageUp') link.send('prev');
   else return;
@@ -293,6 +299,8 @@ function renderLive() {
   if (o?.scene) meta.push(o.scene);
   if (o?.state === 'switching') meta.push('wechselt …');
   else if (o?.state === 'error') meta.push('Fehler – neuer Versuch …');
+  if (o?.single && o.entry === o.single) meta.push('Spielmodus: bleibt');
+  else if (o?.single) meta.push('Spielmodus: gerade etwas anderes');
   if (o?.elapsed != null && o.scene) meta.push(`läuft ${fmtTime(o.elapsed)}`);
   if (o?.remaining != null && o.waiting) {
     const why = o.waiting === 'round' ? 'wartet auf Rundenende' : 'wartet, bis niemand davor steht';
@@ -310,7 +318,10 @@ function renderLive() {
   if (key !== lastLiveKey) {
     lastLiveKey = key;
     renderPlaylist();
-    if (state.booted && (state.follow || !state.selected) && o?.entry && o.entry !== state.selected) selectEntry(o.entry);
+    renderSingle();
+    // the params follow what plays (in the game mode they stay on its entry)
+    const want = state.show.single ?? o?.entry;
+    if (state.booted && (state.follow || !state.selected) && want && want !== state.selected) selectEntry(want);
   }
   renderStatus(o);
   renderScreens();
@@ -377,6 +388,9 @@ function renderPlaylist() {
       e.enabled = en.checked;
       showChanged();
     };
+    const single = el('button', 'icon single', tools, '∞');
+    single.title = 'Spielmodus: nur diesen Eintrag zeigen, dauerhaft (kein Weiterschalten)';
+    single.onclick = () => setSingle(e.id);
     const edit = el('button', 'icon', tools, '✎');
     edit.title = 'Parameter';
     edit.onclick = () => {
@@ -474,6 +488,59 @@ function renderLibrary() {
     };
   }
 }
+
+// ---------- game mode (Spielmodus): one entry for good ----------
+
+const singleEntry = () => state.show.entries.find((e) => e.id === state.show.single) ?? null;
+
+function setSingle(id) {
+  state.show.single = id;
+  showChanged();
+  renderSingle();
+  if (id) {
+    state.follow = true;
+    selectEntry(id);
+    const e = singleEntry();
+    toast(`Spielmodus: „${e?.label || sceneInfo(e?.scene)?.title || e?.scene}“ bleibt auf der Wand`);
+  } else toast('Spielmodus beendet: der Ablauf gilt wieder');
+}
+
+function renderSingle() {
+  const e = singleEntry();
+  document.body.classList.toggle('single', !!e);
+  $('singleBox').hidden = !e;
+  $('singlePill').hidden = !e;
+  const o = out();
+  $('singleBack').hidden = !e || !o || o.entry === e.id;
+  if (!e) return;
+  const title = e.label || sceneInfo(e.scene)?.title || e.scene;
+  $('singleTitle').textContent = title;
+  $('singlePill').textContent = `Spielmodus: ${title}`;
+}
+$('singleOff').onclick = () => {
+  if (confirm('Spielmodus beenden? Dann gilt wieder der Ablauf (mit „automatisch weiter“ wechselt die Wand die Szenen).')) setSingle(null);
+};
+$('singleBack').onclick = () => {
+  if (state.show.single) link.send('play', { entry: state.show.single });
+};
+
+// a preset (wall-bevy --preset NAME): its name in the header, "Preset wiederherstellen" in the setup tab
+function renderPreset() {
+  const p = state.server?.preset;
+  $('presetPill').hidden = !p;
+  $('presetPill').textContent = p ? `Preset ${p.name}` : '';
+  $('presetPill').title = p?.title ?? '';
+  $('presetBtn').hidden = !p || !state.local;
+  $('presetBtn').textContent = p ? `Preset „${p.name}“ wiederherstellen` : '';
+  // the LED wall's defaults would not fit a preset's place
+  $('defaultsBtn').hidden = !!p;
+}
+$('presetBtn').onclick = () => {
+  const p = state.server?.preset;
+  if (!p || !confirm(`Wand-Setup, Projektionen und Show auf das Preset „${p.name}“ (${p.title}) zurücksetzen? Was hier geändert wurde, ist dann weg.`)) return;
+  link.send('preset.reset');
+  toast(`Preset „${p.name}“ wiederhergestellt`);
+};
 
 // ---------- params of a show entry ----------
 
@@ -1173,6 +1240,8 @@ function renderStatus(o) {
     rows.push(['Status der Szene', o.status || '–']);
   }
   if (state.server) {
+    if (state.server.preset) rows.push(['Preset', `${state.server.preset.name}: ${state.server.preset.title}`]);
+    if (state.show.single) rows.push(['Spielmodus', singleEntry()?.label || singleEntry()?.scene || '–']);
     rows.push(['Daten', state.server.data]);
     rows.push(['Version', `${state.server.version} (Framework ${state.server.build})`]);
   }
@@ -1232,6 +1301,7 @@ function loadShow(raw) {
   state.show = normalizeShow(raw);
   renderPlaylist();
   renderShowSettings();
+  renderSingle();
   if (state.selected && !state.show.entries.some((e) => e.id === state.selected)) selectEntry(null);
 }
 

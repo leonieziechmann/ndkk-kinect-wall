@@ -35,6 +35,10 @@ und stimmt Windows für die Show ab.
 start-wand.cmd
 ```
 
+Mit einem **Beamer** statt der LED-Wand (16:9, Full HD), z. B. für einen Spieleabend:
+`start-wand.cmd -Preset beamer` (Desktop-Symbol „Kinect-Beamer starten (Fruit Ninja)“, siehe
+„Beamer: das Preset“ unten).
+
 Allein, ohne Launcher (der Hub muss laufen):
 
 ```
@@ -57,6 +61,7 @@ einer angeschlossen wird. Beenden: Alt+F4 im Ausgabefenster (oder `quit.flag` im
 | `--fps N` | Bildrate begrenzen |
 | `--vsync fifo\|mailbox\|immediate` | Darstellung; Standard `fifo` (gleichmäßig, nie Risse) |
 | `--data DIR` | Datenordner (Standard: `KINECT_WALL_DIR`, sonst `wall-bevy/data/` des Haupt-Checkouts) |
+| `--preset NAME` | fertiges Setup für einen anderen Ort, mit eigenem Datenordner `wall-bevy/data-NAME/` (siehe „Beamer: das Preset“) |
 | `--control-port N`, `--control-bind IP` | Port der Steuerzentrale (Standard 8095, 0 = keine) und wo sie lauscht (Standard `0.0.0.0` = auch im Netz; `127.0.0.1` = nur dieser Rechner) |
 | `--control-dir DIR` | die Seite der Steuerzentrale aus `DIR` statt der eingebauten (zum Bearbeiten: `--control-dir control`, Neuladen im Browser genügt) |
 | `--mute`, `--no-control` | ohne Ton, ohne Steuerzentrale |
@@ -78,7 +83,15 @@ Datenordner.
 - **Live:** Vorschau des LED-Bilds (etwa 5 Bilder/s, nur solange eine Seite sie zeigt), was läuft,
   Personen, Kinect, Bildrate.
 - **Projektion, Wand-Setup, Testbilder, Status:** wie in [`WALL.md`](WALL.md) beschrieben.
-- **Tasten** am Rechner: `→`/`←` weiter/zurück, `B` Blackout.
+- **Spielmodus:** „∞“ an einem Eintrag des Ablaufs lässt nur diesen Eintrag laufen, dauerhaft: kein
+  automatisches Weiterschalten, Weiter/Zurück und die Pfeiltasten tun nichts, eine Szene, die immer
+  wieder abstürzt, wird neu gestartet statt übersprungen. Die Steuerzentrale blendet Ablauf und
+  Szenen-Liste aus und zeigt nur noch die Parameter dieses Eintrags; „Spielmodus beenden“ holt den
+  Ablauf zurück. Wird kurz etwas anderes gezeigt (▶ im Tab „Projektion“), bringt „Zurück zum Spiel“
+  den Eintrag wieder (mit „automatisch weiter“ auch von selbst nach dessen Dauer). Gespeichert als
+  `single` (Id des Eintrags) in `show.json`; die Ausgabe wärmt im Spielmodus beim Start nur diese
+  Szene vor.
+- **Tasten** am Rechner: `→`/`←` weiter/zurück (nicht im Spielmodus), `B` Blackout.
 
 **Fernbedienung:** Ein Handy oder Tablet im selben Netz öffnet dieselbe Seite (schmal angeordnet). Im
 Tab „Fernbedienung“ steht ein QR-Code mit Adresse und Code: einmal scannen, und das Gerät bleibt
@@ -99,10 +112,39 @@ Ausgabe; das meldet alle gekoppelten Geräte ab). Ohne Kamera: Adresse öffnen, 
 | `control-code.txt` | der Kopplungs-Code der Fernbedienung |
 | `control.json` | Adresse und Port der Steuerzentrale, solange die Ausgabe der Show läuft (für `start-wand`; Testfenster mit `--windowed`, `--scene` oder `--watch` schreiben sie nicht) |
 
+Ein Preset (`--preset NAME`) hat seinen eigenen Datenordner `wall-bevy/data-NAME/` daneben.
+
 Die Ausgabe schreibt die Dokumente kurz nach einer Änderung (atomar) und merkt, wenn ein anderes
 Programm sie ändert. Beim ersten Start übernimmt sie Setup, Projektionen und Show der früheren
 Browser-Ausgabe aus `web/.cache/wall/`, falls es den Ordner noch gibt. Mit `--shots` (Test) bleiben
 die Dokumente unangetastet und die Steuerzentrale aus.
+
+## Beamer: das Preset
+
+`wall-bevy --preset beamer` (oder `start-wand.cmd -Preset beamer`) macht aus der Ausgabe eine für
+einen 16:9-Beamer, ohne dass etwas einzurichten ist:
+
+- **Bild:** gerendert in 960 × 540 und in den Bildschirm des Beamers eingepasst (`output.fit: fit`):
+  auf Full HD genau 2× (scharfe Pixel, wie die Pixel-Art es will), bei anderer Auflösung skaliert,
+  bei anderem Seitenverhältnis mit schwarzen Rändern. Gemessen mit Fruit Ninja und zwei Personen:
+  so viel GPU wie auf der LED-Wand (18 %), nativ in 1920 × 1080 wären es 54 % und 4× so viel CPU
+  (wer das will: im Wand-Setup „LEDs breit/hoch“ auf 1920/1080). Der Beamer ist der zweite
+  Bildschirm (Windows: Win+P „Erweitern“; spiegelt er das Notebook, stellt E im Launcher um); die
+  Steuerzentrale geht aufs Notebook.
+- **Die „Wand“** ist das Bild: 3,56 × 2,0 m, Unterkante = Boden. Das ist kein Maß, das man am Beamer
+  messen muss, sondern der Ausschnitt der Welt, den das Bild zeigt: Menschen stehen unten im Bild und
+  sind darin so groß wie auf der 2 m hohen LED-Wand. Ein größeres `size` zeigt sie kleiner.
+- **Kinect:** mittig vor oder unter dem Bild, etwa 0,8–1 m hoch, Blick in den Raum; der Boden wird
+  erkannt. Gespielt wird 1,5–3,5 m davor.
+- **Projektion:** ein Rechteck von 3,2 m Breite um die Kinect (Fruit Ninja: 0,9–4,3 m vor der Wand):
+  ab etwa 2,3 m Abstand erreicht man die Bildränder, vor und zurück verschiebt nicht seitlich.
+- **Show:** nur Fruit Ninja, im **Spielmodus** (bleibt dauerhaft).
+
+Die Dokumente liegen in `wall-bevy/data-beamer/` (nicht in git). Beim ersten Start werden sie aus
+dem Preset angelegt (`presets/beamer/*.json`, ins Programm eingebaut); was danach in der
+Steuerzentrale geändert wird, bleibt. „Preset wiederherstellen“ (Tab „Wand-Setup“, nur am Rechner der
+Ausgabe) setzt Setup, Projektionen und Show wieder auf das Preset. Der Ordner der LED-Wand
+(`wall-bevy/data/`) bleibt unberührt.
 
 ## Was es gegen Ruckler tut
 

@@ -405,6 +405,11 @@ fn new_state(cfg: Config) -> OutputState {
     for e in &scene_errors {
         warn!("{e}");
     }
+    // a preset fills in what its data folder does not have yet (a test, too: it has nothing else)
+    if let Some(p) = cfg.preset {
+        let written = crate::presets::seed(p, &cfg.data_dir);
+        info!("Preset {} ({}): Daten in {}{}", p.name, p.title, cfg.data_dir.display(), if written.is_empty() { String::new() } else { format!(", neu angelegt: {}", written.join(", ")) });
+    }
     // tests (--shots) keep the documents as they are and need no control center
     let control = Control::start(crate::control::Options {
         port: if cfg.no_control || cfg.shots.is_some() { 0 } else { cfg.control_port },
@@ -416,6 +421,7 @@ fn new_state(cfg: Config) -> OutputState {
         // a test window (--windowed, --scene, --watch) must not pose as the show's output
         announce: !cfg.windowed && cfg.scene.is_none() && cfg.watch.is_none(),
         read_only: cfg.shots.is_some(),
+        preset: cfg.preset,
     });
     control.set_catalog(crate::scenes::catalog(&registry));
     let docs = control.docs();
@@ -762,15 +768,29 @@ impl OutputState {
     }
 
     fn step(&mut self, dir: i32, now: f64) {
+        // the game mode stays on its entry (next/previous only bring it back from something else)
+        if self.show.single.is_some() && self.entry.as_ref().map(|e| &e.id) == self.show.single.as_ref() {
+            return;
+        }
         let next = step_entry(&self.show, self.entry.as_ref().map(|e| e.id.as_str()), dir).cloned();
         if let Some(n) = next {
             self.play_entry(Some(n), self.show.transition, now);
         }
     }
 
-    /// The show changed: new params of the running entry apply at once.
+    /// The show changed: new params of the running entry apply at once; a new game mode entry plays.
     fn set_show(&mut self, raw: &Value, now: f64) {
+        let was_single = self.show.single.take();
         self.show = normalize_show(raw);
+        if self.warmed
+            && self.show.single.is_some()
+            && self.show.single != was_single
+            && let Some(e) = self.show.single_entry().cloned()
+            && self.entry.as_ref().is_none_or(|c| c.id != e.id)
+        {
+            self.play_entry(Some(e), self.show.transition, now);
+            return;
+        }
         let Some(cur) = self.entry.clone() else { return };
         let Some(e) = self.show.entries.iter().find(|e| e.id == cur.id).cloned() else {
             if cur.id != "adhoc" {
@@ -1150,6 +1170,14 @@ impl OutputState {
             {
                 // --scene NAME of a library that was not built yet (a new scene): it plays now
                 self.start_show(now);
+            } else if self.cfg.scene.is_none()
+                && self.current.is_none()
+                && self.pending.is_none()
+                && self.warmed
+                && self.show.single_entry().is_some_and(|e| names.contains(&e.scene.as_str()))
+            {
+                // the game mode's scene, whose library was not there yet: it plays now
+                self.start_show(now);
             }
         }
     }
@@ -1265,8 +1293,9 @@ impl OutputState {
             self.play_entry(Some(e), Transition::Cut, now);
             return;
         }
+        // the game mode's entry, else the one that played last
         let id = std::fs::read_to_string(remember_file(&self.cfg)).unwrap_or_default();
-        let entry = self.show.entries.iter().find(|e| e.id == id.trim() && e.enabled).cloned().or_else(|| step_entry(&self.show, None, 1).cloned());
+        let entry = self.show.single_entry().cloned().or_else(|| self.show.entries.iter().find(|e| e.id == id.trim() && e.enabled).cloned()).or_else(|| step_entry(&self.show, None, 1).cloned());
         self.play_entry(entry, Transition::Cut, now);
     }
 
@@ -1285,9 +1314,15 @@ impl OutputState {
         if self.warm.is_none() {
             // set up in parallel threads (shader compilation dominates)
             let led = self.led();
-            let defs: Vec<&'static SceneDef> = match &self.cfg.scene {
-                Some(n) if self.cfg.shots.is_some() => self.registry.iter().copied().filter(|d| d.name == n).collect(),
-                _ => self.registry.clone(),
+            // the game mode only needs its scene (a quicker start; another one compiles when shown)
+            let only = match (&self.cfg.scene, self.show.single_entry()) {
+                (Some(n), _) if self.cfg.shots.is_some() => Some(n.clone()),
+                (None, Some(e)) => Some(e.scene.clone()),
+                _ => None,
+            };
+            let defs: Vec<&'static SceneDef> = match only {
+                Some(n) => self.registry.iter().copied().filter(|d| d.name == n).collect(),
+                None => self.registry.clone(),
             };
             let mut handles: Vec<std::thread::JoinHandle<WarmResult>> = Vec::new();
             for def in defs {
@@ -1719,7 +1754,8 @@ impl OutputState {
         self.crowd = self.seen.iter().copied().max().unwrap_or(0);
         self.waiting = None;
         let Some(cur) = self.entry.clone() else { return };
-        if !self.show.auto || self.blackout || self.pending.is_some() {
+        // the game mode stays on its entry (something else shown meanwhile goes back to it)
+        if !self.show.auto || self.blackout || self.pending.is_some() || self.show.single.as_deref() == Some(cur.id.as_str()) {
             return;
         }
         let elapsed = (now - self.started_at) / 1000.0;
@@ -1827,7 +1863,8 @@ impl OutputState {
             "entryRemoved": self.entry_removed,
             "state": state,
             "elapsed": elapsed,
-            "remaining": if self.show.auto && self.entry.is_some() { json!((self.entry.as_ref().map(|e| e.duration).unwrap_or(0.0) - elapsed).max(0.0)) } else { Value::Null },
+            "remaining": if self.show.auto && self.entry.as_ref().is_some_and(|e| self.show.single.as_ref() != Some(&e.id)) { json!((self.entry.as_ref().map(|e| e.duration).unwrap_or(0.0) - elapsed).max(0.0)) } else { Value::Null },
+            "single": self.show.single,
             "waiting": self.waiting,
             "waitLeft": if self.waiting.is_some() { json!(self.wait_left) } else { Value::Null },
             "waitLimit": if self.waiting.is_some() { json!(self.wait_limit) } else { Value::Null },

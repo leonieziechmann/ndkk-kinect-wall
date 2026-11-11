@@ -15,6 +15,8 @@
   <span id="hubPill" class="pill">Kinect …</span>
   <span id="outPill" class="pill">Ausgabe …</span>
   <span id="peoplePill" class="pill">–</span>
+  <span id="presetPill" class="pill preset" hidden></span>
+  <span id="singlePill" class="pill single" hidden title="Spielmodus: eine Szene bleibt dauerhaft auf der Wand">Spielmodus</span>
   <span class="spacer"></span>
   <button id="blackoutBtn" class="btn blackout" title="Taste B">Blackout</button>
 </header>
@@ -32,8 +34,9 @@
         <div id="nowMeta" class="muted"></div>
       </div>
       <div class="now-buttons">
-        <button id="prevBtn" class="btn big" title="Taste ←">◀ Zurück</button>
-        <button id="nextBtn" class="btn big" title="Taste →">Weiter ▶</button>
+        <button id="singleBack" class="btn big" hidden title="Wieder das Spiel des Spielmodus zeigen">▶ Zurück zum Spiel</button>
+        <button id="prevBtn" class="btn big show-only" title="Taste ←">◀ Zurück</button>
+        <button id="nextBtn" class="btn big show-only" title="Taste →">Weiter ▶</button>
       </div>
     </div>
     <div class="row test-row">
@@ -55,6 +58,14 @@
   <section id="tab-show" class="tab">
     <div class="cols">
       <div>
+        <div id="singleBox" class="single-box" hidden>
+          <div class="single-head">Spielmodus: <b id="singleTitle">–</b></div>
+          <div id="singleText" class="muted">bleibt dauerhaft auf der Wand: kein automatisches Weiterschalten, kein Ablauf, „Weiter“ und die Pfeiltasten tun nichts. Ein Spiel startet seine Runden selbst, sobald jemand davor steht. Stürzt die Szene ab, startet die Ausgabe sie neu. Die Parameter rechts gelten sofort.</div>
+          <div class="row">
+            <button id="singleOff" class="btn small" title="Zurück zum normalen Ablauf mit allen Szenen">Spielmodus beenden</button>
+          </div>
+        </div>
+        <div class="show-only">
         <h2>Ablauf</h2>
         <div id="playlist" class="playlist"></div>
         <div class="show-settings">
@@ -69,6 +80,7 @@
         </div>
         <h2>Szenen <span id="libNote" class="muted"></span></h2>
         <div id="library" class="library"></div>
+        </div>
       </div>
       <div>
         <h2 id="paramsHead">Parameter</h2>
@@ -156,6 +168,7 @@
           <button id="exportBtn" class="btn small">Exportieren</button>
           <button id="importBtn" class="btn small">Importieren …</button>
           <button id="defaultsBtn" class="btn small">Standard (6 × 2 m, 1008 × 336)</button>
+          <button id="presetBtn" class="btn small" hidden>Preset wiederherstellen</button>
           <input type="file" id="importFile" accept="application/json,.json" hidden>
         </div>
       </div>

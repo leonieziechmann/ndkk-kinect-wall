@@ -14,6 +14,7 @@ mod newscene;
 mod output;
 mod patterns;
 mod platform;
+mod presets;
 mod preview;
 mod scenes;
 mod show;

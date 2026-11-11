@@ -57,5 +57,7 @@ export function normalizeShow(raw) {
     maxRoundWait: num(raw?.maxRoundWait, 0, 3600, 120), // s: at most this much longer
     transition: Object.values(TRANSITIONS).includes(raw?.transition) ? raw.transition : 'cross',
     fade: num(raw?.fade, 0, 10, 1.5), // s
+    // game mode (Spielmodus): only this entry plays, for good (show.rs)
+    single: typeof raw?.single === 'string' && entries.some((e) => e.id === raw.single) ? raw.single : null,
   };
 }

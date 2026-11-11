@@ -6,6 +6,8 @@
 //!   --hub 8091 | host:port | URL     the kinect-hub (default KINECT_HUB, else 127.0.0.1:8090)
 //!   --data DIR                       setup, projections, show, pairing code (default KINECT_WALL_DIR,
 //!                                    else wall-bevy/data of the main checkout)
+//!   --preset NAME                    a ready setup for another place (presets.rs: beamer): its own
+//!                                    data folder (wall-bevy/data-NAME), filled in from the preset
 //!   --control-port N                 the control center's port (default 8095, 0: none)
 //!   --control-bind IP                where it listens (default 0.0.0.0: the network too;
 //!                                    127.0.0.1: only this computer)
@@ -27,6 +29,8 @@ pub struct Config {
     pub hub: String,
     /// the wall's documents (setup, projection, show), the scenes' store, the pairing code
     pub data_dir: PathBuf,
+    /// --preset NAME: fills in the documents the data folder does not have yet (presets.rs)
+    pub preset: Option<&'static crate::presets::Preset>,
     /// where the documents were before (web/.cache/wall of the main checkout): taken over once
     pub legacy_dirs: Vec<PathBuf>,
     /// the control center's port (0: none)
@@ -121,6 +125,7 @@ impl Config {
         let mut cfg = Config {
             hub: String::new(),
             data_dir: PathBuf::new(),
+            preset: None,
             legacy_dirs: Vec::new(),
             control_port: 8095,
             control_bind: std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
@@ -147,6 +152,10 @@ impl Config {
             match a.as_str() {
                 "--hub" => hub = Some(value("--hub")?),
                 "--data" => data = Some(PathBuf::from(value("--data")?)),
+                "--preset" => {
+                    let name = value("--preset")?;
+                    cfg.preset = Some(crate::presets::find(&name).ok_or_else(|| format!("--preset {name}: gibt es nicht (da sind: {})", crate::presets::names()))?);
+                }
                 "--control-port" => cfg.control_port = value("--control-port")?.parse().map_err(|_| "--control-port: Zahl erwartet")?,
                 "--control-bind" => cfg.control_bind = value("--control-bind")?.parse().map_err(|_| "--control-bind: IP-Adresse erwartet (0.0.0.0 oder 127.0.0.1)")?,
                 "--control-dir" => cfg.control_dir = Some(PathBuf::from(value("--control-dir")?)),
@@ -194,13 +203,15 @@ impl Config {
         let top = checkout_top();
         let main = top.as_deref().map(main_checkout);
         let env_dir = std::env::var("KINECT_WALL_DIR").ok().filter(|d| !d.is_empty()).map(PathBuf::from);
-        cfg.data_dir = data.or(env_dir).or_else(|| main.as_ref().map(|m| m.join("wall-bevy").join("data"))).unwrap_or_else(|| {
+        // a preset keeps its documents apart from the LED wall's: data-NAME
+        let folder = cfg.preset.map_or_else(|| "data".to_string(), |p| format!("data-{}", p.name));
+        cfg.data_dir = data.or(env_dir).or_else(|| main.as_ref().map(|m| m.join("wall-bevy").join(&folder))).unwrap_or_else(|| {
             let exe_dir = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)).unwrap_or_default();
-            exe_dir.join("data")
+            exe_dir.join(&folder)
         });
         // where the browser's dev server kept them (setup and projection in the main checkout, the
-        // show per checkout)
-        for d in [main.as_ref(), top.as_ref()].into_iter().flatten() {
+        // show per checkout); never for a preset (its documents come from the preset)
+        for d in [main.as_ref(), top.as_ref()].into_iter().flatten().filter(|_| cfg.preset.is_none()) {
             let old = d.join("web").join(".cache").join("wall");
             if !cfg.legacy_dirs.contains(&old) {
                 cfg.legacy_dirs.push(old);
@@ -225,6 +236,8 @@ const HELP: &str = "wall-bevy: die LED-Wand-Ausgabe als native App (Bevy)
   --hub 8091|host:port|URL       kinect-hub (Standard KINECT_HUB oder 127.0.0.1:8090)
   --data DIR                     Setup, Projektionen, Show (Standard KINECT_WALL_DIR, sonst
                                  wall-bevy/data im Haupt-Checkout)
+  --preset NAME                  fertiges Setup für einen anderen Ort (beamer: 16:9 Full HD,
+                                 Spielmodus Fruit Ninja) mit eigenem Datenordner wall-bevy/data-NAME
   --control-port N               Port der Steuerzentrale (Standard 8095, 0: keine)
   --control-bind IP              0.0.0.0: auch im Netz (Standard), 127.0.0.1: nur hier
   --control-dir DIR              Dateien der Steuerzentrale aus DIR (zum Bearbeiten der Seite)

@@ -233,6 +233,7 @@ f.hold(phase == Phase::Countdown || phase == Phase::Play || (phase == Phase::Res
 | `waitForRound` | true | games (hold) switch between rounds instead, people in front or not |
 | `maxRoundWait` | 120 | s a game may run over waiting for the end of a round (not by the crowd: a round lasts as long with one player as with ten) |
 | entry `wait` | true | false: this entry switches exactly after its duration (ads) |
+| `single` | null | the game mode (Spielmodus, "∞" on an entry): the id of the one entry that plays for good. No auto advance, next/previous stay on it, a scene that keeps failing is restarted instead of skipped, the output warms up only its scene. Something else shown meanwhile (▶) goes back to it after its duration when `auto` is on. |
 
 The crowd is the most people the output saw in front of the wall within the last 8 s, so a track lost for a moment does not shrink the limit. The limit follows the crowd while it waits: when people leave, it may switch sooner.
 
@@ -246,6 +247,8 @@ The crowd is the most people the output saw in front of the wall within the last
 3. "Kalibrierung": stand in front of the wall at a few places. With mode `real` the dashed line and your skeleton must be exactly in front of you. Wrong side? Toggle "Spiegeln".
 4. Tab "Projektion", "Standard": run the assistant (walk the play field's corners) or drag the play field in the top view; check the stretch it shows. Then the games: pick each one, adjust what differs (field, curves, smoothing, body size) and try it with "▶ auf der Wand" and "Kalibrierung".
 5. Color: brightness (LED walls are very bright indoors), gamma, white balance. These apply on top of every scene.
+
+**Presets** (`wall-bevy --preset NAME`, `src/presets.rs`, the documents in `presets/NAME/`): the output ready for another place, with a data folder of its own (`wall-bevy/data-NAME/`), filled in from the preset at the first start. `beamer`: a 16:9 Full HD beamer (rendered at 960 × 540, fitted to its screen: 2× on Full HD; the "wall" 3.56 × 2 m with its bottom on the floor), Fruit Ninja in the game mode. See README.md, "Beamer: das Preset"; start-wand.ps1 `-Preset beamer`.
 
 **Where things are saved:** in the output's **data folder**: `wall-bevy/data/` of the main checkout (one wall for every worktree), or `--data DIR`, or `KINECT_WALL_DIR`. In it: `setup.json`, `projection.json`, `show.json` (the documents of the control center), `bevy-store.json` (what scenes keep, like high scores), `control-code.txt` (the pairing code), `control.json` (the control center's address while the show's output runs; test windows do not write it). The output writes them a moment after a change (atomically) and notices when another program changes them. On its first start it takes over the documents of the old browser output (`web/.cache/wall/`), if they are still there. "Exportieren"/"Importieren" in the setup tab saves setup, projections and show as one JSON file.
 

@@ -361,6 +361,12 @@ impl Painter {
         f * self.bw
     }
 
+    /// 1 on a wide wall; on a narrow one (a 16:9 beamer, 3.6 m) less: things that were composed
+    /// for 6 m of width (Fuji) get narrower, so they still fit in the picture
+    fn narrow(&self) -> f64 {
+        (self.bw / self.kb / 4.8).clamp(0.55, 1.0)
+    }
+
     fn r(&mut self) -> f64 {
         self.r.next()
     }
@@ -522,13 +528,14 @@ impl Painter {
 
     fn fuji(&mut self) {
         let kb = self.kb;
+        let k = self.narrow();
         let fx = self.x(0.6);
-        let peak = self.y(1.24);
+        let peak = self.y(0.6 + 0.64 * k.sqrt());
         let base = self.y(0.6);
-        let hw = 2.3 * kb;
+        let hw = 2.3 * kb * k;
         let top = move |x: f64| {
             let u = ((x - fx).abs() / hw).min(1.0);
-            let crater = if (x - fx).abs() < 0.09 * kb { 1.5 + (x * 1.3).sin() } else { 0.0 };
+            let crater = if (x - fx).abs() < 0.09 * kb * k { 1.5 + (x * 1.3).sin() } else { 0.0 };
             base - (base - peak) * (1.0 - u).powf(1.75) + crater
         };
         let inside = move |x: f64, y: f64| y >= top(x) && y <= base + 30.0;

@@ -1,0 +1,13 @@
+{
+  "led": { "w": 960, "h": 540 },
+  "size": { "w": 3.5556, "h": 2.0 },
+  "bottom": 0,
+  "cabinet": { "w": 60, "h": 60 },
+  "output": { "fit": "fit", "x": 0, "y": 0, "window": null },
+  "sensor": { "x": 0, "front": 0.3, "floor": "auto", "height": 0.85, "tilt": 0 },
+  "mirror": true,
+  "zone": { "near": 0.5, "far": 4.3 },
+  "map": { "mode": "fit", "distance": 2.3, "depth": 0, "factor": 1.5, "apply": "person", "clamp": true, "margin": 0.25, "lift": 0, "scaleY": 1, "image": "true" },
+  "color": { "brightness": 1, "gamma": 1, "r": 1, "g": 1, "b": 1 },
+  "blocks": []
+}

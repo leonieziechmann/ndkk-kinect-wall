@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 use tungstenite::protocol::{Role, WebSocketConfig};
 use tungstenite::{Message, WebSocket};
 
-use store::write_atomic;
+pub use store::write_atomic;
 
 /// Connections at a time (control centers, page loads).
 const MAX_CONNECTIONS: usize = 64;
@@ -69,6 +69,8 @@ pub struct Options {
     pub announce: bool,
     /// tests: nothing is written
     pub read_only: bool,
+    /// the preset of this data folder (--preset): "Preset wiederherstellen" in the control center
+    pub preset: Option<&'static crate::presets::Preset>,
 }
 
 struct Client {
@@ -104,6 +106,7 @@ struct Shared {
     page_dir: Option<PathBuf>,
     hub: String,
     read_only: bool,
+    preset: Option<&'static crate::presets::Preset>,
     connections: AtomicUsize,
 }
 
@@ -133,6 +136,7 @@ impl Control {
             page_dir: opts.page_dir,
             hub: opts.hub,
             read_only: opts.read_only,
+            preset: opts.preset,
             connections: AtomicUsize::new(0),
         });
         if let Some(l) = listener {
@@ -556,7 +560,10 @@ fn websocket(shared: &Arc<Shared>, mut stream: TcpStream, req: http::Request, lo
             "catalog": st.catalog,
             "telemetry": st.telemetry,
             "pairing": pairing(&st, shared.port),
-            "server": { "version": env!("CARGO_PKG_VERSION"), "build": wall::build_id(), "hub": shared.hub, "data": st.store.dir().display().to_string() },
+            "server": {
+                "version": env!("CARGO_PKG_VERSION"), "build": wall::build_id(), "hub": shared.hub, "data": st.store.dir().display().to_string(),
+                "preset": shared.preset.map(|p| json!({ "name": p.name, "title": p.title })),
+            },
         }});
         (id, Message::text(hello.to_string()))
     };
@@ -646,6 +653,21 @@ fn on_message(shared: &Arc<Shared>, id: u64, local: bool, text: &str) {
             let msg = Message::text(json!({ "type": "pairing", "data": pairing(&st, shared.port) }).to_string());
             broadcast(&mut st, &msg, None, false);
             info!("Steuerzentrale: neuer Kopplungscode, andere Geräte sind entkoppelt");
+        }
+        // the preset's documents again (setup, projections, show), for every control center and the output
+        "preset.reset" if local && !shared.read_only => {
+            let Some(p) = shared.preset else { return };
+            let mut st = shared.st.lock();
+            for kind in store::KINDS {
+                let Some(doc) = crate::presets::doc(p, kind) else { continue };
+                if !st.store.set(kind, doc.clone()) {
+                    continue;
+                }
+                let msg = Message::text(json!({ "type": "doc", "data": { "kind": kind, "doc": doc } }).to_string());
+                broadcast(&mut st, &msg, None, true);
+                let _ = shared.to_output.try_send(ControlIn::Doc(kind.to_string(), doc));
+            }
+            info!("Steuerzentrale: Preset {} wiederhergestellt", p.name);
         }
         "play" | "next" | "prev" | "stop" | "blackout" | "pattern" | "wizard" | "ping" => {
             let _ = shared.to_output.try_send(ControlIn::Cmd(kind.to_string(), data));

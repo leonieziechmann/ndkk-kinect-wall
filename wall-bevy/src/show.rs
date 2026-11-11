@@ -55,6 +55,17 @@ pub struct Show {
     pub max_round_wait: f64,
     pub transition: Transition,
     pub fade: f64,
+    /// game mode ("Spielmodus"): only this entry plays, for good: no auto advance, next/previous
+    /// stay on it, a scene that keeps failing is tried again instead of skipped
+    pub single: Option<String>,
+}
+
+impl Show {
+    /// The entry of the game mode (enabled or not: it is the one chosen).
+    pub fn single_entry(&self) -> Option<&Entry> {
+        let id = self.single.as_deref()?;
+        self.entries.iter().find(|e| e.id == id)
+    }
 }
 
 fn num(v: Option<&Value>, min: f64, max: f64, fallback: f64) -> f64 {
@@ -91,7 +102,9 @@ pub fn normalize_show(raw: &Value) -> Show {
         });
     }
     let max_wait = num(raw.get("maxWait"), 0.0, 3600.0, 120.0);
+    let single = raw.get("single").and_then(Value::as_str).filter(|id| entries.iter().any(|e| e.id == *id)).map(String::from);
     Show {
+        single,
         entries,
         auto: raw.get("auto").and_then(Value::as_bool) == Some(true),
         wait_for_empty: raw.get("waitForEmpty").and_then(Value::as_bool) != Some(false),
@@ -111,8 +124,11 @@ pub fn crowd_wait(show: &Show, crowd: usize) -> f64 {
     show.max_wait + (show.max_wait_many - show.max_wait) * u
 }
 
-/// The next enabled entry after `id` (dir +1) or before it (-1).
+/// The next enabled entry after `id` (dir +1) or before it (-1); in the game mode always its entry.
 pub fn step_entry<'a>(show: &'a Show, id: Option<&str>, dir: i32) -> Option<&'a Entry> {
+    if let Some(e) = show.single_entry() {
+        return Some(e);
+    }
     let list = &show.entries;
     if list.is_empty() {
         return None;

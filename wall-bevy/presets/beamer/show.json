@@ -1,0 +1,15 @@
+{
+  "entries": [
+    { "id": "fruitninja", "scene": "fruit-ninja", "label": "Fruit Ninja", "duration": 300, "enabled": true, "wait": true, "params": {} }
+  ],
+  "single": "fruitninja",
+  "auto": true,
+  "waitForEmpty": true,
+  "maxWait": 30,
+  "maxWaitMany": 120,
+  "manyPersons": 10,
+  "waitForRound": true,
+  "maxRoundWait": 120,
+  "transition": "cross",
+  "fade": 1.5
+}
