@@ -91,6 +91,8 @@ impl Sketch for SixSeven {
         let thr = f.num("schwelle");
         let pause = f.num("pause");
         let bodies = f.bodies();
+        let res = f.ctx.kinect.persons.clone();
+        let view = f.ctx.kinect.view.clone();
         f.clear(hex("#07040f"));
 
         // background: a slow "6 7" pulse
@@ -109,9 +111,11 @@ impl Sketch for SixSeven {
 
             let [lh, rh] = b.hands();
             let mut pumped = false;
-            if let (Some(l), Some(r)) = (lh, rh) {
-                // y grows downwards: d > 0 means the left hand is higher
-                let d = (r.y - l.y) / b.height.max(40.0);
+            // fast path: the hands straight from this depth frame's mask (30 fps); else the skeleton
+            let fast = res.as_deref().and_then(|r| view.visible.iter().find(|q| q.id == b.id).and_then(|q| hand_signal(r, q)));
+            let slow = lh.zip(rh).map(|(l, r)| (r.y - l.y) / b.height.max(40.0));
+            if let (Some(l), Some(r), Some(d)) = (lh, rh, fast.or(slow)) {
+                // d > 0 means the left hand is higher
                 let now_side = if d > thr { 1 } else if d < -thr { -1 } else { 0 };
                 if now_side != 0 && now_side != p.side {
                     if p.side != 0 {
@@ -215,4 +219,69 @@ impl Sketch for SixSeven {
         f.hold(running);
         f.status(format!("{} Personen, Rekord {}", bodies.len(), self.best.map_or("–".into(), |t| format!("{t:.2} s"))));
     }
+}
+
+/// The 6-7 signal from one depth frame, without waiting for the pose: the person's pixels in front of
+/// the torso (the forearms and hands) left and right of the body's middle; their mean heights give
+/// which hand is higher. > 0: the person's left hand is higher, in torso lengths. None when unsure.
+fn hand_signal(res: &wall::persons::PersonsResult, p: &wall::persons::Person) -> Option<f32> {
+    use wall::persons::{H, W};
+    let labels = res.labels.as_deref()?;
+    let depth = res.depth.as_deref()?;
+    let jt = |k: usize| p.image.joints.get(k).copied().flatten();
+    let (ls, rs) = (jt(j::LEFT_SHOULDER)?, jt(j::RIGHT_SHOULDER)?);
+    let neck = (ls + rs) * 0.5;
+    let pelvis = jt(j::PELVIS).or_else(|| jt(j::LEFT_HIP).zip(jt(j::RIGHT_HIP)).map(|(a, b)| (a + b) * 0.5))?;
+    let torso = (pelvis.y - neck.y).max(10.0);
+    let half = (ls.x - rs.x).abs().max(torso * 0.4);
+    let at = |u: i32, v: i32| -> Option<(u8, u16)> {
+        if u < 0 || v < 0 || u >= W as i32 || v >= H as i32 {
+            return None;
+        }
+        let i = v as usize * W + u as usize;
+        Some((*labels.get(i)?, *depth.get(i)?))
+    };
+    // the torso's depth: the median of the person's pixels around the chest
+    let mut chest = Vec::with_capacity(64);
+    for dv in -4..=4 {
+        for du in -4..=4 {
+            if let Some((l, d)) = at(neck.x as i32 + du * 2, (neck.y + torso * 0.25) as i32 + dv * 2)
+                && l == p.slot
+                && d > 0
+            {
+                chest.push(d);
+            }
+        }
+    }
+    if chest.len() < 10 {
+        return None;
+    }
+    chest.sort_unstable();
+    let body_d = *chest.get(chest.len() / 2)? as i32;
+    let front = body_d - 120;
+    // the box: shoulders' width plus an arm to each side, from above the head to below the hips
+    let (u0, u1) = ((neck.x - half * 2.0) as i32, (neck.x + half * 2.0) as i32);
+    let (v0, v1) = ((neck.y - torso * 0.8) as i32, (pelvis.y + torso * 0.3) as i32);
+    let left_is_low_u = ls.x < rs.x;
+    let (mut sl, mut nl, mut sr, mut nr) = (0f32, 0u32, 0f32, 0u32);
+    for v in (v0..=v1).step_by(2) {
+        for u in (u0..=u1).step_by(2) {
+            let Some((l, d)) = at(u, v) else { continue };
+            if l != p.slot || d == 0 || d as i32 > front {
+                continue;
+            }
+            if ((u as f32) < neck.x) == left_is_low_u {
+                sl += v as f32;
+                nl += 1;
+            } else {
+                sr += v as f32;
+                nr += 1;
+            }
+        }
+    }
+    if nl < 6 || nr < 6 {
+        return None;
+    }
+    // in body heights (a torso is about a third of one), like the skeleton fallback
+    Some((sr / nr as f32 - sl / nl as f32) / torso / 3.0)
 }
