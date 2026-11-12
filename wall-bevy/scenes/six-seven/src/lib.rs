@@ -12,7 +12,8 @@ wall::scene! {
     title: "6 7 Speedrun",
     params: [
         num("ziel", 67.0, 10.0, 200.0, 1.0, "Pumps bis zum Ziel"),
-        num("schwelle", 0.07, 0.02, 0.25, 0.01, "Hub (Anteil der Körpergröße)"),
+        num("hub", 0.04, 0.01, 0.25, 0.005, "Hub (Anteil der Körpergröße)"),
+        num("tempo", 0.5, 0.1, 3.0, 0.05, "Schnell ab (Körpergrößen/s): halber Hub genügt"),
         num("pause", 6.0, 2.0, 20.0, 0.5, "Ergebnis zeigen (s)"),
     ],
     persons: live,
@@ -37,8 +38,15 @@ enum Phase {
 struct Player {
     phase: Phase,
     count: u32,
-    /// +1 left hand is higher, -1 right hand is higher, 0 not yet decided
+    /// +1 the signal is rising (left hand going up), -1 falling, 0 not yet started
     side: i8,
+    /// the extremum of the signal since the last reversal
+    ext: f32,
+    /// the last distinct sample and its time (for the speed)
+    prev_d: f32,
+    prev_t: f32,
+    /// the first pump of the starting streak
+    first: f32,
     /// a flash after each pump (1 → 0)
     kick: f32,
     /// scene time of the last pump (an idle racer is reset)
@@ -88,7 +96,8 @@ impl Sketch for SixSeven {
     fn frame(&mut self, f: &mut Frame) {
         let (w, h, dt, now) = (f.w(), f.h(), f.dt(), f.t());
         let goal = f.num("ziel").round().max(1.0) as u32;
-        let thr = f.num("schwelle");
+        let thr = f.num("hub");
+        let fast_speed = f.num("tempo");
         let pause = f.num("pause");
         let bodies = f.bodies();
         let res = f.ctx.kinect.persons.clone();
@@ -116,15 +125,28 @@ impl Sketch for SixSeven {
             let slow = lh.zip(rh).map(|(l, r)| (r.y - l.y) / b.height.max(40.0));
             if let (Some(l), Some(r), Some(d)) = (lh, rh, fast.or(slow)) {
                 // d > 0 means the left hand is higher
-                let now_side = if d > thr { 1 } else if d < -thr { -1 } else { 0 };
-                if now_side != 0 && now_side != p.side {
-                    if p.side != 0 {
+                // a pump is a reversal of d, not a crossing of zero: follow d to its extremum and count
+                // once it has come back by the stroke. A fast reversal counts after half of it, so
+                // quick small pumps register at the turn itself.
+                if d != p.prev_d {
+                    let speed = (d - p.prev_d).abs() / (now - p.prev_t).max(0.005);
+                    p.prev_d = d;
+                    p.prev_t = now;
+                    if p.side == 0 {
+                        p.side = 1;
+                        p.ext = d;
+                    }
+                    let back = (p.ext - d) * f32::from(p.side);
+                    if back <= 0.0 {
+                        p.ext = d;
+                    } else if now - p.last > 0.05 && (back >= thr || (back >= thr * 0.5 && speed >= fast_speed)) {
+                        p.side = -p.side;
+                        p.ext = d;
                         pumped = true;
                     }
-                    p.side = now_side;
                 }
                 // the hands: "6" on the left, "7" on the right, the higher one shines
-                for (hand, label, up) in [(l, "6", d > 0.0), (r, "7", d < 0.0)] {
+                for (hand, label, up) in [(l, "6", p.side > 0), (r, "7", p.side < 0)] {
                     let glow = if up { 1.0 } else { 0.35 };
                     f.circle(hand.x, hand.y, 10.0 + 6.0 * p.kick, Paint::fill(c.mix(Color::WHITE, 0.3).fade(glow)).glow(12.0).add());
                     f.text(label, hand.x, hand.y - 26.0, &Text::new(28.0 + 10.0 * p.kick * glow).weight(900).color(Color::WHITE.fade(0.5 + 0.5 * glow)).glow(8.0));
@@ -132,13 +154,22 @@ impl Sketch for SixSeven {
             }
 
             if pumped {
+                let gap = p.last;
                 p.last = now;
                 p.kick = 1.0;
                 match p.phase {
                     Phase::Ready => {
-                        p.phase = Phase::Run { start: now };
-                        p.count = 1;
-                        f.play(&self.go, 0.5);
+                        // three pumps in a row start the race (one twitch does not); the clock
+                        // counts from the first of them
+                        if p.count == 0 || now - gap > 0.7 {
+                            p.count = 0;
+                            p.first = now;
+                        }
+                        p.count += 1;
+                        if p.count >= 3 {
+                            p.phase = Phase::Run { start: p.first };
+                            f.play(&self.go, 0.5);
+                        }
                     }
                     Phase::Run { start } => {
                         p.count += 1;
@@ -182,7 +213,7 @@ impl Sketch for SixSeven {
 
             // the panel over the head
             let top = b.top();
-            let (px, py) = (top.x, (top.y - 34.0).max(24.0));
+            let (px, py) = (top.x, (top.y - 34.0).max(46.0));
             match p.phase {
                 Phase::Ready => {
                     f.label("6 7 – Hände hoch & runter!", px, py, 13.0, c);
