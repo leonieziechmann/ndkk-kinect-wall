@@ -51,6 +51,8 @@ struct Player {
     turn_hands: (f32, f32),
     /// scene time of the last reversal (counted or not)
     last_turn: f32,
+    /// pumps per second, smoothed
+    rate: f32,
     /// the first pump of the starting streak
     first: f32,
     /// a flash after each pump (1 → 0)
@@ -68,6 +70,9 @@ struct SixSeven {
     fanfare: Pcm,
     go: Pcm,
     idle: Fade,
+    /// 0..1: how hard the fastest racer pumps (smoothed), and the flashes of the big 6 and 7
+    heat: f32,
+    flash: [f32; 2],
 }
 
 impl Sketch for SixSeven {
@@ -96,6 +101,8 @@ impl Sketch for SixSeven {
             fanfare,
             go,
             idle: Fade::new(0.6, 0.4),
+            heat: 0.0,
+            flash: [0.0; 2],
         })
     }
 
@@ -111,10 +118,32 @@ impl Sketch for SixSeven {
         let view = f.ctx.kinect.view.clone();
         f.clear(hex("#07040f"));
 
-        // background: a slow "6 7" pulse
+        // the intensity shakes the whole picture a little
+        let heat = self.heat;
+        let hot = hex("#7a3cff").mix(hex("#ff4a1f"), heat);
+        f.push();
+        f.translate((now * 61.0).sin() * 3.0 * heat * heat, (now * 47.0).cos() * 2.5 * heat * heat);
+
+        // background: the big 6 and 7 pulse slowly, jump with every pump and heat up with the pace
         let beat = (now * 2.0).fract();
-        f.text("6", w * 0.25, h * 0.5, &Text::new(300.0).weight(900).color(hex("#2a1450").alpha(0.35 + 0.2 * (1.0 - beat))));
-        f.text("7", w * 0.75, h * 0.5, &Text::new(300.0).weight(900).color(hex("#14304f").alpha(0.35 + 0.2 * beat)));
+        for (i, (digit, x, cold, idle)) in [("6", 0.25, "#2a1450", 1.0 - beat), ("7", 0.75, "#14304f", beat)].into_iter().enumerate() {
+            let fl = self.flash.get(i).copied().unwrap_or(0.0);
+            f.push();
+            f.translate(w * x, h * 0.5);
+            f.scale(1.0 + 0.12 * fl);
+            f.text(digit, 0.0, 0.0, &Text::new(300.0).weight(900).color(hex(cold).mix(hot, (heat * 0.6 + fl * 0.5).min(1.0)).alpha(0.35 + 0.2 * idle + 0.4 * fl)));
+            f.pop();
+        }
+        // glowing edges: the hotter, the brighter
+        if heat > 0.02 {
+            let edge = Paint::fill(hot.fade(0.25 + 0.75 * heat)).glow(10.0 + 30.0 * heat).add();
+            f.rect(0.0, 0.0, w, 2.0 + 4.0 * heat, edge);
+            f.rect(0.0, h - 2.0 - 4.0 * heat, w, 2.0 + 4.0 * heat, edge);
+        }
+        for fl in &mut self.flash {
+            *fl = (*fl - dt * 6.0).max(0.0);
+        }
+        let mut top_rate = 0.0f32;
 
         self.players.retain(|id, _| bodies.iter().any(|b| b.id == *id));
         let mut running = false;
@@ -123,7 +152,10 @@ impl Sketch for SixSeven {
             let c = Color::from_rgb(b.color);
             let p = self.players.entry(b.id).or_default();
             p.kick = (p.kick - dt * 4.0).max(0.0);
-            f.skeleton(b, 3.0);
+            if now - p.last > 0.4 {
+                p.rate *= (-dt * 3.0).exp();
+            }
+            f.skeleton(b, 3.0 + 2.5 * p.kick);
 
             let [lh, rh] = b.hands();
             let mut pumped = false;
@@ -168,6 +200,9 @@ impl Sketch for SixSeven {
                 for (hand, label, up) in [(l, "6", p.side > 0), (r, "7", p.side < 0)] {
                     let glow = if up { 1.0 } else { 0.35 };
                     f.circle(hand.x, hand.y, 10.0 + 6.0 * p.kick, Paint::fill(c.mix(Color::WHITE, 0.3).fade(glow)).glow(12.0).add());
+                    if up && p.kick > 0.0 {
+                        f.circle(hand.x, hand.y, 12.0 + 34.0 * (1.0 - p.kick), Paint::stroke(c.fade(p.kick), 2.5).glow(8.0).add());
+                    }
                     f.text(label, hand.x, hand.y - 26.0, &Text::new(28.0 + 10.0 * p.kick * glow).weight(900).color(Color::WHITE.fade(0.5 + 0.5 * glow)).glow(8.0));
                 }
             }
@@ -176,6 +211,10 @@ impl Sketch for SixSeven {
                 let gap = p.last;
                 p.last = now;
                 p.kick = 1.0;
+                p.rate += ((1.0 / (now - gap).max(0.07)) - p.rate) * 0.4;
+                if let Some(fl) = self.flash.get_mut(usize::from(p.side < 0)) {
+                    *fl = 1.0;
+                }
                 match p.phase {
                     Phase::Ready => {
                         // three pumps in a row start the race (one twitch does not); the clock
@@ -214,7 +253,7 @@ impl Sketch for SixSeven {
                     Phase::Done { .. } => {}
                 }
                 if let Some(hand) = lh.zip(rh).map(|(l, r)| if p.side > 0 { l } else { r }) {
-                    self.sparks.spray(hand, 6, vec2(0.0, -150.0), 0.9, 0.6, c);
+                    self.sparks.spray(hand, 5 + (p.rate * 2.0) as usize, vec2(0.0, -130.0 - 25.0 * p.rate), 0.9, 0.6, c.mix(hot, 0.4));
                 }
             }
 
@@ -242,6 +281,9 @@ impl Sketch for SixSeven {
                     let secs = ((now - start) * 10.0).floor() / 10.0;
                     f.text(&format!("{} / {goal}", p.count), px, py - 14.0, &Text::new(26.0 + 8.0 * p.kick).weight(900).color(Color::WHITE).glow(10.0));
                     f.progress(px - 60.0, py + 4.0, 120.0, 8.0, p.count as f32 / goal as f32, c);
+                    top_rate = top_rate.max(p.rate);
+                    let pace = (p.rate * 10.0).round() / 10.0;
+                    f.text(&format!("{pace:.1}/s"), px + 92.0, py + 8.0, &Text::new(13.0).weight(900).color(hot.mix(Color::WHITE, 0.4)).glow(6.0));
                     f.text(&format!("{secs:.1} s"), px, py + 22.0, &Text::new(14.0).bold().color(c.mix(Color::WHITE, 0.5)));
                 }
                 Phase::Done { time, at } => {
@@ -254,6 +296,10 @@ impl Sketch for SixSeven {
         }
 
         self.sparks.draw(f, dt);
+        f.pop();
+        // 8 pumps a second is full heat; it rises fast and cools slowly
+        let target = (top_rate / 8.0).min(1.0);
+        self.heat += (target - self.heat) * (dt * if target > self.heat { 6.0 } else { 1.5 }).min(1.0);
 
         // the record, top left
         let best = match self.best {
