@@ -1,0 +1,15 @@
+[package]
+name = "wall-scene-six-seven"
+version = "0.1.0"
+edition = "2024"
+description = "6-7 speedrun: pump both hands up and down 67 times, as fast as you can"
+publish = false
+
+[lib]
+crate-type = ["dylib"]
+
+[dependencies]
+wall.workspace = true
+
+[lints]
+workspace = true

@@ -4605,6 +4605,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "wall-scene-six-seven"
+version = "0.1.0"
+dependencies = [
+ "wall",
+]
+
+[[package]]
 name = "wall-scene-space-invaders"
 version = "0.1.0"
 dependencies = [
