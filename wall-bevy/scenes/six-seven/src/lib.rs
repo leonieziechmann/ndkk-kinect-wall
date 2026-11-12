@@ -14,6 +14,7 @@ wall::scene! {
         num("ziel", 67.0, 10.0, 200.0, 1.0, "Pumps bis zum Ziel"),
         num("hub", 0.04, 0.01, 0.25, 0.005, "Hub (Anteil der Körpergröße)"),
         num("tempo", 0.5, 0.1, 3.0, 0.05, "Schnell ab (Körpergrößen/s): halber Hub genügt"),
+        num("anteil", 0.2, 0.0, 0.45, 0.05, "Mindestanteil der schwächeren Hand am Hub"),
         num("pause", 6.0, 2.0, 20.0, 0.5, "Ergebnis zeigen (s)"),
     ],
     persons: live,
@@ -45,6 +46,11 @@ struct Player {
     /// the last distinct sample and its time (for the speed)
     prev_d: f32,
     prev_t: f32,
+    /// the heights of the (left, right) hand at the extremum and at the reversal before it
+    ext_hands: (f32, f32),
+    turn_hands: (f32, f32),
+    /// scene time of the last reversal (counted or not)
+    last_turn: f32,
     /// the first pump of the starting streak
     first: f32,
     /// a flash after each pump (1 → 0)
@@ -98,6 +104,7 @@ impl Sketch for SixSeven {
         let goal = f.num("ziel").round().max(1.0) as u32;
         let thr = f.num("hub");
         let fast_speed = f.num("tempo");
+        let share = f.num("anteil");
         let pause = f.num("pause");
         let bodies = f.bodies();
         let res = f.ctx.kinect.persons.clone();
@@ -122,9 +129,11 @@ impl Sketch for SixSeven {
             let mut pumped = false;
             // fast path: the hands straight from this depth frame's mask (30 fps); else the skeleton
             let fast = res.as_deref().and_then(|r| view.visible.iter().find(|q| q.id == b.id).and_then(|q| hand_signal(r, q)));
-            let slow = lh.zip(rh).map(|(l, r)| (r.y - l.y) / b.height.max(40.0));
-            if let (Some(l), Some(r), Some(d)) = (lh, rh, fast.or(slow)) {
+            let ny = b.joint(j::NECK).map_or(b.center.y, |n| n.y);
+            let slow = lh.zip(rh).map(|(l, r)| ((ny - l.y) / b.height.max(40.0), (ny - r.y) / b.height.max(40.0)));
+            if let (Some(l), Some(r), Some((hl, hr))) = (lh, rh, fast.or(slow)) {
                 // d > 0 means the left hand is higher
+                let d = hl - hr;
                 // a pump is a reversal of d, not a crossing of zero: follow d to its extremum and count
                 // once it has come back by the stroke. A fast reversal counts after half of it, so
                 // quick small pumps register at the turn itself.
@@ -135,14 +144,24 @@ impl Sketch for SixSeven {
                     if p.side == 0 {
                         p.side = 1;
                         p.ext = d;
+                        p.ext_hands = (hl, hr);
+                        p.turn_hands = (hl, hr);
                     }
                     let back = (p.ext - d) * f32::from(p.side);
                     if back <= 0.0 {
                         p.ext = d;
-                    } else if now - p.last > 0.05 && (back >= thr || (back >= thr * 0.5 && speed >= fast_speed)) {
+                        p.ext_hands = (hl, hr);
+                    } else if now - p.last_turn > 0.05 && (back >= thr || (back >= thr * 0.5 && speed >= fast_speed)) {
+                        // the stroke that just ended, per hand: it is a pump only if one hand went
+                        // up and the other down, and neither did nearly all of it (a wave, a nod)
+                        let (dl, dr) = (p.ext_hands.0 - p.turn_hands.0, p.ext_hands.1 - p.turn_hands.1);
+                        let both = dl * dr < 0.0 && dl.abs().min(dr.abs()) >= share * (dl.abs() + dr.abs());
+                        p.turn_hands = p.ext_hands;
                         p.side = -p.side;
                         p.ext = d;
-                        pumped = true;
+                        p.ext_hands = (hl, hr);
+                        p.last_turn = now;
+                        pumped = both;
                     }
                 }
                 // the hands: "6" on the left, "7" on the right, the higher one shines
@@ -254,8 +273,8 @@ impl Sketch for SixSeven {
 
 /// The 6-7 signal from one depth frame, without waiting for the pose: the person's pixels in front of
 /// the torso (the forearms and hands) left and right of the body's middle; their mean heights give
-/// which hand is higher. > 0: the person's left hand is higher, in torso lengths. None when unsure.
-fn hand_signal(res: &wall::persons::PersonsResult, p: &wall::persons::Person) -> Option<f32> {
+/// how high each hand is: (left, right) above the neck, in body heights. None when unsure.
+fn hand_signal(res: &wall::persons::PersonsResult, p: &wall::persons::Person) -> Option<(f32, f32)> {
     use wall::persons::{H, W};
     let labels = res.labels.as_deref()?;
     let depth = res.depth.as_deref()?;
@@ -314,5 +333,5 @@ fn hand_signal(res: &wall::persons::PersonsResult, p: &wall::persons::Person) ->
         return None;
     }
     // in body heights (a torso is about a third of one), like the skeleton fallback
-    Some((sr / nr as f32 - sl / nl as f32) / torso / 3.0)
+    Some(((neck.y - sl / nl as f32) / torso / 3.0, (neck.y - sr / nr as f32) / torso / 3.0))
 }
